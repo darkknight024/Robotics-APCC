@@ -1,0 +1,244 @@
+================================================================================
+           AUTOMATIC TRAJECTORY CONVERSION - FEATURE SUMMARY
+================================================================================
+
+WHAT CHANGED
+============
+
+✅ DEFAULT BEHAVIOR NOW: Auto-convert tool frame → robot base frame
+✅ NEW FLAG: --relative (skip conversion for robot base frame CSVs)
+✅ REMOVED: --convert flag (conversion is now default)
+✅ SMART: Automatic detection and appropriate handling
+
+BEHAVIOR
+========
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                        PLAYBACK MODE                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  NO FLAG (Default)                                                  │
+│  ├─ Assumes: CSV in TOOL/LOCAL coordinates                         │
+│  ├─ Action: Auto-convert to robot base frame                       │
+│  ├─ Output: temp_converted/<filename>_base_frame.csv               │
+│  └─ Cleanup: temp_converted/ deleted after playback                │
+│                                                                     │
+│  --relative FLAG                                                    │
+│  ├─ Assumes: CSV already in ROBOT BASE frame                       │
+│  ├─ Action: Skip conversion, use directly                          │
+│  ├─ Output: None (uses original CSV)                               │
+│  └─ Cleanup: Nothing to clean                                      │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+USAGE COMMANDS
+==============
+
+# External/Tool-frame trajectory (MOST COMMON)
+python Assests/irb_1300_example.py --mode p --csv external_path.csv
+
+# Recorded/Base-frame trajectory
+python Assests/irb_1300_example.py --mode p --csv recorded_path.csv --relative
+
+# Recording (always saves in base frame)
+python Assests/irb_1300_example.py --mode r
+
+IMPLEMENTATION DETAILS
+======================
+
+File: Assests/irb_1300_example.py
+
+Added Functions:
+  - convert_trajectory_to_base_frame()
+    └─ Calls trajectory_transform.py subprocess
+    └─ Converts tool → robot base coordinates
+    └─ Returns success/failure
+
+Modified Functions:
+  - main()
+    └─ Added conversion logic before playback
+    └─ Creates temp_converted/ directory
+    └─ Cleans up temp directory after playback
+
+Added Arguments:
+  - --relative (action="store_true")
+    └─ Skip conversion for robot base frame CSVs
+    └─ Default: False (always convert unless specified)
+
+Validation:
+  - Error if --relative used in record mode (warning only)
+  - Auto-cleanup of temp files
+
+CONVERSION PROCESS
+==================
+
+Step 1: Check mode and flags
+  ├─ Playback mode + no --relative? → Convert
+  └─ Playback mode + --relative? → Direct
+
+Step 2: Create temp directory (if converting)
+  ├─ Location: Same directory as input CSV
+  ├─ Name: temp_converted/
+  └─ File: <original_name>_base_frame.csv
+
+Step 3: Call trajectory_transform.py
+  ├─ Command: python trajectory_transform.py input.csv output.csv --meters
+  ├─ Transform: Tool frame → Robot base frame
+  └─ Units: Output in meters (Isaac Lab compatible)
+
+Step 4: Use converted CSV for playback
+  └─ Pass to run_playback_mode()
+
+Step 5: Cleanup temp directory
+  └─ Delete temp_converted/ after playback completes
+
+COORDINATE SYSTEMS
+==================
+
+Tool/Local Frame:
+  Origin: Tool center point (TCP) or local sensor
+  Units: millimeters (input)
+  Use case: External tools, CAD/CAM paths
+
+Robot Base Frame:
+  Origin: Robot base (Link_1)
+  Units: meters (Isaac Lab)
+  Use case: Recorded trajectories, robot control
+
+Transform Parameters:
+  Translation: [-367.773, -915.815, 520.4] mm
+  Rotation: [0.00516, 0.71263, -0.70152, 0.00040] (quat w,x,y,z)
+
+DECISION GUIDE
+==============
+
+Q: What CSV do I have?
+└─┬─ From external tool/CAD → No flag (auto-convert)
+  ├─ From this script's recording → Use --relative
+  ├─ Already converted → Use --relative
+  └─ Unknown origin → Try no flag first
+
+Q: Is the trajectory wrong?
+└─┬─ Robot moves to wrong place → Wrong frame assumption
+  ├─ Too far/offset → Need conversion (remove --relative)
+  └─ Correct location → Already base frame (add --relative)
+
+Q: How do I know which to use?
+└─┬─ See robot move in simulation
+  ├─ Wrong: Toggle --relative flag
+  └─ Correct: Keep current setting
+
+EXAMPLES
+========
+
+Example 1: External CAD Path
+  Source: CAD software export (tool frame)
+  Command: python Assests/irb_1300_example.py --mode p --csv cad_path.csv
+  Result: Auto-converted, plays correctly
+
+Example 2: Previously Recorded
+  Source: Recording from this script (base frame)
+  Command: python Assests/irb_1300_example.py --mode p --csv recorded.csv --relative
+  Result: Plays directly, no conversion
+
+Example 3: Unsure Origin
+  1. Try default: python Assests/irb_1300_example.py --mode p --csv unknown.csv
+  2. If wrong, try: python Assests/irb_1300_example.py --mode p --csv unknown.csv --relative
+  3. Observe which one looks correct
+
+ERROR HANDLING
+==============
+
+Error: "Conversion failed"
+  Cause: trajectory_transform.py not found or failed
+  Fix: Check scripts/utils/trajectory_transform.py exists
+
+Error: Robot at wrong position
+  Cause: Wrong coordinate frame assumption
+  Fix: Toggle --relative flag
+
+Error: Trajectory out of reach
+  Cause: Wrong coordinate frame or invalid trajectory
+  Fix: Check CSV format and coordinate frame
+
+FILES & DIRECTORIES
+===================
+
+Created by Conversion:
+  temp_converted/                    # Temporary, auto-deleted
+  └─ <filename>_base_frame.csv       # Converted trajectory
+
+Created by Playback:
+  speed_data/                        # Speed analysis results
+  ├─ speed_*.npz                     # Raw speed data
+  ├─ waypoint_speeds.png             # Speed per waypoint plot
+  ├─ step_speeds.png                 # Speed per step plot
+  └─ combined_speed_analysis.png     # Combined analysis
+
+  camera1_video_*.mp4                # Camera recordings
+  camera2_video_*.mp4
+  topdowncamera_video_*.mp4
+
+BENEFITS
+========
+
+✅ Easy to use: Just point to CSV, it auto-converts
+✅ Smart default: Most common use case is tool-frame
+✅ Flexible: --relative for base-frame CSVs
+✅ Clean: Auto-cleanup of temp files
+✅ Informative: Clear console output about what's happening
+✅ Error-safe: Validation and helpful error messages
+
+WORKFLOW
+========
+
+1. Get trajectory CSV from external source
+2. Run playback (default auto-converts):
+   python Assests/irb_1300_example.py --mode p --csv my_trajectory.csv
+
+3. Observe:
+   - Console shows conversion process
+   - temp_converted/ folder created
+   - Trajectory plays in simulation
+
+4. Review outputs:
+   - Speed analysis in speed_data/
+   - Camera videos
+   - Converted CSV in temp_converted/ (before cleanup)
+
+5. Script cleans up temp files automatically
+
+SUMMARY
+=======
+
+┌─────────────────────────────────────────────────────────────────┐
+│  DEFAULT = Auto-convert (tool → robot base)                     │
+│  --relative = Direct playback (already in robot base)           │
+│                                                                 │
+│  Most users will use DEFAULT (no flags)                        │
+│  Only use --relative for recorded/converted trajectories       │
+└─────────────────────────────────────────────────────────────────┘
+
+DOCUMENTATION
+=============
+
+Created Files:
+  - TRAJECTORY_CONVERSION_README.md    # Detailed guide
+  - PLAYBACK_USAGE.txt                 # Quick reference
+  - CONVERSION_FEATURE_SUMMARY.txt     # This file
+
+Updated Files:
+  - irb_1300_example.py                # Script docstring updated
+
+================================================================================
+                    READY TO USE! 🎯
+================================================================================
+
+The default behavior makes external trajectories work out of the box!
+
+
+
+
+
+
+
