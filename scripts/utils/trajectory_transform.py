@@ -32,45 +32,8 @@ import sys
 import os
 from pathlib import Path
 import numpy as np
-
-# ---------------------------
-# Quaternion utilities (w,x,y,z)
-# ---------------------------
-def quat_mul(q1, q2):
-    """Multiply quaternions q = q1 ⊗ q2. Both q's in (w,x,y,z) order."""
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    w = w1*w2 - x1*x2 - y1*y2 - z1*z2
-    x = w1*x2 + x1*w2 + y1*z2 - z1*y2
-    y = w1*y2 - x1*z2 + y1*w2 + z1*x2
-    z = w1*z2 + x1*y2 - y1*x2 + z1*w2
-    return np.array([w, x, y, z])
-
-def quat_to_rot_matrix(q):
-    """Return 3x3 rotation matrix from quaternion (w,x,y,z). Normalizes q internally."""
-    w, x, y, z = q
-    n = np.sqrt(w*w + x*x + y*y + z*z)
-    if n == 0:
-        return np.eye(3)
-    w, x, y, z = w/n, x/n, y/n, z/n
-    R = np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
-        [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
-        [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)]
-    ])
-    return R
-
-def invert_quaternion(q):
-    """
-    Invert a quaternion [w, x, y, z].
-    """
-    q = np.array(q, dtype=float)
-    w, x, y, z = q
-    conj = np.array([w, -x, -y, -z])
-    norm_sq = np.dot(q, q)
-    if norm_sq == 0:
-        raise ValueError("Cannot invert a zero-norm quaternion.")
-    return conj / norm_sq
+from math_utils import (quat_mul, quat_to_rot_matrix, quat_conjugate,
+                        invert_quaternion, normalize_quat)
 
 # ---------------------------
 # CSV parsing
@@ -136,14 +99,6 @@ def read_trajectories_from_csv(csv_path):
     return trajectories, speeds
 
 
-def normalize_quat(q):
-    q = np.asarray(q, dtype=float)
-    return q / np.linalg.norm(q)
-
-
-def quat_conjugate(q):  # q = [w,x,y,z]
-    w,x,y,z = q
-    return np.array([w, -x, -y, -z])
 
 
 def transform_knife_poses_to_plate_in_base_numpy(trajectories, t_base_knife, q_base_knife):

@@ -1,4 +1,5 @@
-# Python code to visualize the origin frame and the given frame (translation in mm and quaternion w,x,y,z).
+# Python code to visualize the origin frame and the given frame
+# (translation in mm and quaternion w,x,y,z).
 # It draws RGB arrows for X (red), Y (green), Z (blue) for both frames.
 # The script will display the gigure.
 # Requirements: numpy, matplotlib
@@ -8,46 +9,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import argparse
 import xml.etree.ElementTree as ET
+from math_utils import quat_to_rot_matrix, rpy_to_rot_matrix, make_transform
 
-def quat_to_rot_matrix(q):
-    """Convert quaternion (w,x,y,z) to a 3x3 rotation matrix. Normalizes input quaternion first."""
-    w, x, y, z = q
-    n = np.sqrt(w*w + x*x + y*y + z*z)
-    if n == 0:
-        raise ValueError("Zero-length quaternion")
-    w, x, y, z = w/n, x/n, y/n, z/n
-    R = np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
-        [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
-        [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)]
-    ])
-    return R
-
-def rpy_to_rot_matrix(roll, pitch, yaw):
-    """Convert URDF RPY (roll=X, pitch=Y, yaw=Z) to rotation matrix.
-    URDF applies R = Rz(yaw) * Ry(pitch) * Rx(roll).
-    """
-    cr, sr = np.cos(roll), np.sin(roll)
-    cp, sp = np.cos(pitch), np.sin(pitch)
-    cy, sy = np.cos(yaw), np.sin(yaw)
-
-    Rx = np.array([[1, 0, 0],
-                   [0, cr, -sr],
-                   [0, sr,  cr]])
-    Ry = np.array([[ cp, 0, sp],
-                   [  0, 1,  0],
-                   [-sp, 0, cp]])
-    Rz = np.array([[cy, -sy, 0],
-                   [sy,  cy, 0],
-                   [ 0,   0, 1]])
-    return Rz @ Ry @ Rx
-
-def make_transform(xyz, rpy):
-    """Build 4x4 transform from xyz (3,) in mm and rpy (3,) in radians."""
-    T = np.eye(4)
-    T[:3, :3] = rpy_to_rot_matrix(rpy[0], rpy[1], rpy[2])
-    T[:3, 3] = np.array(xyz, dtype=float)  # xyz should already be in mm
-    return T
 
 def parse_urdf(urdf_path):
     """Parse a URDF file and return links, joints, and a parent->joints map.
@@ -117,12 +80,15 @@ def draw_frame(ax, T, axis_len, linewidth=2.0, alpha=1.0, label=None):
     """Draw RGB axes for transform T (4x4). Optionally add text label."""
     R = T[:3, :3]
     p = T[:3, 3]
-    ax.quiver(p[0], p[1], p[2], R[0,0]*axis_len, R[1,0]*axis_len, R[2,0]*axis_len,
-              color='r', linewidth=linewidth, arrow_length_ratio=0.1, alpha=alpha)
-    ax.quiver(p[0], p[1], p[2], R[0,1]*axis_len, R[1,1]*axis_len, R[2,1]*axis_len,
-              color='g', linewidth=linewidth, arrow_length_ratio=0.1, alpha=alpha)
-    ax.quiver(p[0], p[1], p[2], R[0,2]*axis_len, R[1,2]*axis_len, R[2,2]*axis_len,
-              color='b', linewidth=linewidth, arrow_length_ratio=0.1, alpha=alpha)
+    ax.quiver(p[0], p[1], p[2], R[0, 0]*axis_len, R[1, 0]*axis_len,
+              R[2, 0]*axis_len, color='r', linewidth=linewidth,
+              arrow_length_ratio=0.1, alpha=alpha)
+    ax.quiver(p[0], p[1], p[2], R[0, 1]*axis_len, R[1, 1]*axis_len,
+              R[2, 1]*axis_len, color='g', linewidth=linewidth,
+              arrow_length_ratio=0.1, alpha=alpha)
+    ax.quiver(p[0], p[1], p[2], R[0, 2]*axis_len, R[1, 2]*axis_len,
+              R[2, 2]*axis_len, color='b', linewidth=linewidth,
+              arrow_length_ratio=0.1, alpha=alpha)
 
     # Add text label if provided
     if label is not None:
@@ -131,9 +97,12 @@ def draw_frame(ax, T, axis_len, linewidth=2.0, alpha=1.0, label=None):
         ax.text(p[0] + label_offset, p[1] + label_offset, p[2] + label_offset,
                 label, color='k', fontsize=8, alpha=0.8)
 
-    return np.vstack([p, p + R[:,0]*axis_len, p + R[:,1]*axis_len, p + R[:,2]*axis_len])
+    return np.vstack([p, p + R[:, 0]*axis_len, p + R[:, 1]*axis_len,
+                      p + R[:, 2]*axis_len])
 
-def draw_urdf_model(ax, urdf_path, base_link=None, joint_axis_len=120.0, frame_axis_len=140.0, text=False):
+def draw_urdf_model(ax, urdf_path, base_link=None,
+                     joint_axis_len=120.0, frame_axis_len=140.0,
+                     text=False):
     """Draw all link frames and joint axes from a URDF on the given axes.
     Returns an (M,3) array of points used for autoscaling.
 
@@ -161,7 +130,8 @@ def draw_urdf_model(ax, urdf_path, base_link=None, joint_axis_len=120.0, frame_a
         T_parent = T_world[parent]
 
         # Draw parent link frame
-        points.append(draw_frame(ax, T_parent, frame_axis_len, linewidth=1.5, alpha=0.9))
+        points.append(draw_frame(ax, T_parent, frame_axis_len,
+                                 linewidth=1.5, alpha=0.9))
 
         for jd in children_by_parent.get(parent, []):
             # Joint frame relative to parent
@@ -175,8 +145,9 @@ def draw_urdf_model(ax, urdf_path, base_link=None, joint_axis_len=120.0, frame_a
 
             # Draw simple axis arrow for all joint types (keeping it simple)
             ax.quiver(p_joint[0], p_joint[1], p_joint[2],
-                      axis_dir[0]*joint_axis_len, axis_dir[1]*joint_axis_len, axis_dir[2]*joint_axis_len,
-                      color='k', linewidth=1.5, arrow_length_ratio=0.1, alpha=0.7)
+                      axis_dir[0]*joint_axis_len, axis_dir[1]*joint_axis_len,
+                      axis_dir[2]*joint_axis_len, color='k', linewidth=1.5,
+                      arrow_length_ratio=0.1, alpha=0.7)
 
             # Zero joint motion (identity)
             T_child = T_joint
@@ -184,7 +155,9 @@ def draw_urdf_model(ax, urdf_path, base_link=None, joint_axis_len=120.0, frame_a
             q.append(jd['child'])
 
             # Draw child link frame with joint name as label
-            points.append(draw_frame(ax, T_child, frame_axis_len, linewidth=1.5, alpha=0.9, label=jd['name']))
+            points.append(draw_frame(ax, T_child, frame_axis_len,
+                                     linewidth=1.5, alpha=0.9,
+                                     label=jd['name']))
 
             # Connector line between links (thicker and more visible)
             ax.plot([T_parent[0,3], T_child[0,3]], [T_parent[1,3], T_child[1,3]], [T_parent[2,3], T_child[2,3]],
@@ -214,17 +187,30 @@ def set_axes_equal(ax):
     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
 
 # CLI to optionally load a URDF and/or visualize a single frame
-parser = argparse.ArgumentParser(description='Visualize origin, a transformed frame, and optionally a URDF robot model.')
-parser.add_argument('--urdf', type=str, default=None, help='Path to URDF file to visualize robot frames and joint axes')
-parser.add_argument('--base-link', type=str, default=None, help='Base/root link name (optional)')
-parser.add_argument('--tx', type=float, default=-367.773, help='Tool/frame translation X (mm)')
-parser.add_argument('--ty', type=float, default=-915.815, help='Tool/frame translation Y (mm)')
-parser.add_argument('--tz', type=float, default=520.4, help='Tool/frame translation Z (mm)')
-parser.add_argument('--qw', type=float, default=0.00515984, help='Frame quaternion w')
-parser.add_argument('--qx', type=float, default=0.712632, help='Frame quaternion x')
-parser.add_argument('--qy', type=float, default=-0.701518, help='Frame quaternion y')
-parser.add_argument('--qz', type=float, default=0.000396522, help='Frame quaternion z')
-parser.add_argument('--labels', action='store_true', help='Show text labels for joint names')
+parser = argparse.ArgumentParser(
+    description='Visualize origin, a transformed frame, and optionally '
+                'a URDF robot model.')
+parser.add_argument('--urdf', type=str, default=None,
+                    help='Path to URDF file to visualize robot frames '
+                         'and joint axes')
+parser.add_argument('--base-link', type=str, default=None,
+                    help='Base/root link name (optional)')
+parser.add_argument('--tx', type=float, default=-367.773,
+                    help='Tool/frame translation X (mm)')
+parser.add_argument('--ty', type=float, default=-915.815,
+                    help='Tool/frame translation Y (mm)')
+parser.add_argument('--tz', type=float, default=520.4,
+                    help='Tool/frame translation Z (mm)')
+parser.add_argument('--qw', type=float, default=0.00515984,
+                    help='Frame quaternion w')
+parser.add_argument('--qx', type=float, default=0.712632,
+                    help='Frame quaternion x')
+parser.add_argument('--qy', type=float, default=-0.701518,
+                    help='Frame quaternion y')
+parser.add_argument('--qz', type=float, default=0.000396522,
+                    help='Frame quaternion z')
+parser.add_argument('--labels', action='store_true',
+                    help='Show text labels for joint names')
 args = parser.parse_args()
 
 # --- Knife Tool (stationary) frame (from Jared's email) ---
@@ -247,23 +233,41 @@ ax = fig.add_subplot(111, projection='3d')
 ax.set_facecolor('white')
 
 # Plot origin frame axes (red, green, blue) with legend labels
-x_arrow = ax.quiver(origin[0], origin[1], origin[2], unit_axes[0,0]*arrow_length, unit_axes[1,0]*arrow_length, unit_axes[2,0]*arrow_length,
-          color='r', linewidth=linewidth, arrow_length_ratio=0.1, label='X axis (Red)')
-y_arrow = ax.quiver(origin[0], origin[1], origin[2], unit_axes[0,1]*arrow_length, unit_axes[1,1]*arrow_length, unit_axes[2,1]*arrow_length,
-          color='g', linewidth=linewidth, arrow_length_ratio=0.1, label='Y axis (Green)')
-z_arrow = ax.quiver(origin[0], origin[1], origin[2], unit_axes[0,2]*arrow_length, unit_axes[1,2]*arrow_length, unit_axes[2,2]*arrow_length,
-          color='b', linewidth=linewidth, arrow_length_ratio=0.1, label='Z axis (Blue)')
+x_arrow = ax.quiver(
+    origin[0], origin[1], origin[2],
+    unit_axes[0, 0]*arrow_length, unit_axes[1, 0]*arrow_length,
+    unit_axes[2, 0]*arrow_length,
+    color='r', linewidth=linewidth, arrow_length_ratio=0.1,
+    label='X axis (Red)')
+y_arrow = ax.quiver(
+    origin[0], origin[1], origin[2],
+    unit_axes[0, 1]*arrow_length, unit_axes[1, 1]*arrow_length,
+    unit_axes[2, 1]*arrow_length,
+    color='g', linewidth=linewidth, arrow_length_ratio=0.1,
+    label='Y axis (Green)')
+z_arrow = ax.quiver(
+    origin[0], origin[1], origin[2],
+    unit_axes[0, 2]*arrow_length, unit_axes[1, 2]*arrow_length,
+    unit_axes[2, 2]*arrow_length,
+    color='b', linewidth=linewidth, arrow_length_ratio=0.1,
+    label='Z axis (Blue)')
 
 # Plot transformed frame axes at translation (same RGB order)
-ax.quiver(translation_mm[0], translation_mm[1], translation_mm[2],
-          rotated_axes[0,0]*arrow_length, rotated_axes[1,0]*arrow_length, rotated_axes[2,0]*arrow_length,
-          color='r', linewidth=linewidth, arrow_length_ratio=0.1)
-ax.quiver(translation_mm[0], translation_mm[1], translation_mm[2],
-          rotated_axes[0,1]*arrow_length, rotated_axes[1,1]*arrow_length, rotated_axes[2,1]*arrow_length,
-          color='g', linewidth=linewidth, arrow_length_ratio=0.1)
-ax.quiver(translation_mm[0], translation_mm[1], translation_mm[2],
-          rotated_axes[0,2]*arrow_length, rotated_axes[1,2]*arrow_length, rotated_axes[2,2]*arrow_length,
-          color='b', linewidth=linewidth, arrow_length_ratio=0.1)
+ax.quiver(
+    translation_mm[0], translation_mm[1], translation_mm[2],
+    rotated_axes[0, 0]*arrow_length, rotated_axes[1, 0]*arrow_length,
+    rotated_axes[2, 0]*arrow_length,
+    color='r', linewidth=linewidth, arrow_length_ratio=0.1)
+ax.quiver(
+    translation_mm[0], translation_mm[1], translation_mm[2],
+    rotated_axes[0, 1]*arrow_length, rotated_axes[1, 1]*arrow_length,
+    rotated_axes[2, 1]*arrow_length,
+    color='g', linewidth=linewidth, arrow_length_ratio=0.1)
+ax.quiver(
+    translation_mm[0], translation_mm[1], translation_mm[2],
+    rotated_axes[0, 2]*arrow_length, rotated_axes[1, 2]*arrow_length,
+    rotated_axes[2, 2]*arrow_length,
+    color='b', linewidth=linewidth, arrow_length_ratio=0.1)
 
 # Draw rectangle at Robot Base frame origin
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -275,7 +279,8 @@ rect_corners = np.array([
     [-rect_size, rect_size, 0]
 ])
 rect_faces = [rect_corners]
-rect_3d = Poly3DCollection(rect_faces, alpha=0.3, facecolor='gray', edgecolor='black', linewidth=2)
+rect_3d = Poly3DCollection(rect_faces, alpha=0.3, facecolor='gray',
+                           edgecolor='black', linewidth=2)
 ax.add_collection3d(rect_3d)
 
 # Origin markers and labels
@@ -284,21 +289,40 @@ ax.text(30,30,30, 'Robot Base', color='k', fontsize=10, fontweight='bold')
 
 # Add upward arrow for knife tool frame
 up_arrow_length = 50.0
-ax.quiver(translation_mm[0], translation_mm[1], translation_mm[2], 0, 0, up_arrow_length,
-          color='purple', linewidth=2.5, arrow_length_ratio=0.3, alpha=0.8, label='Tool Orientation')
+ax.quiver(
+    translation_mm[0], translation_mm[1], translation_mm[2],
+    0, 0, up_arrow_length,
+    color='purple', linewidth=2.5, arrow_length_ratio=0.3, alpha=0.8,
+    label='Tool Orientation')
 
-ax.scatter(translation_mm[0], translation_mm[1], translation_mm[2], color='purple', s=50, marker='^')
-ax.text(translation_mm[0] + 30, translation_mm[1] + 30, translation_mm[2] + 30, 'Knife tool', color='purple', fontsize=10, fontweight='bold')
+ax.scatter(translation_mm[0], translation_mm[1], translation_mm[2],
+           color='purple', s=50, marker='^')
+ax.text(translation_mm[0] + 30, translation_mm[1] + 30,
+        translation_mm[2] + 30, 'Knife tool', color='purple',
+        fontsize=10, fontweight='bold')
 
 # Annotate basis directions
 label_offset = 25.0
-ax.text(unit_axes[0,0]*arrow_length + label_offset, unit_axes[1,0]*arrow_length, unit_axes[2,0]*arrow_length, 'X_o', color='r')
-ax.text(unit_axes[0,1]*arrow_length, unit_axes[1,1]*arrow_length + label_offset, unit_axes[2,1]*arrow_length, 'Y_o', color='g')
-ax.text(unit_axes[0,2]*arrow_length, unit_axes[1,2]*arrow_length, unit_axes[2,2]*arrow_length + label_offset, 'Z_o', color='b')
+ax.text(unit_axes[0, 0]*arrow_length + label_offset,
+        unit_axes[1, 0]*arrow_length, unit_axes[2, 0]*arrow_length,
+        'X_b', color='r')
+ax.text(unit_axes[0, 1]*arrow_length,
+        unit_axes[1, 1]*arrow_length + label_offset,
+        unit_axes[2, 1]*arrow_length, 'Y_b', color='g')
+ax.text(unit_axes[0, 2]*arrow_length,
+        unit_axes[1, 2]*arrow_length,
+        unit_axes[2, 2]*arrow_length + label_offset, 'Z_b', color='b')
 
-ax.text(translation_mm[0] + rotated_axes[0,0]*arrow_length + label_offset, translation_mm[1] + rotated_axes[1,0]*arrow_length, translation_mm[2] + rotated_axes[2,0]*arrow_length, 'X_f', color='r')
-ax.text(translation_mm[0] + rotated_axes[0,1]*arrow_length, translation_mm[1] + rotated_axes[1,1]*arrow_length + label_offset, translation_mm[2] + rotated_axes[2,1]*arrow_length, 'Y_f', color='g')
-ax.text(translation_mm[0] + rotated_axes[0,2]*arrow_length, translation_mm[1] + rotated_axes[1,2]*arrow_length, translation_mm[2] + rotated_axes[2,2]*arrow_length + label_offset, 'Z_f', color='b')
+ax.text(translation_mm[0] + rotated_axes[0, 0]*arrow_length + label_offset,
+        translation_mm[1] + rotated_axes[1, 0]*arrow_length,
+        translation_mm[2] + rotated_axes[2, 0]*arrow_length, 'X_k', color='r')
+ax.text(translation_mm[0] + rotated_axes[0, 1]*arrow_length,
+        translation_mm[1] + rotated_axes[1, 1]*arrow_length + label_offset,
+        translation_mm[2] + rotated_axes[2, 1]*arrow_length, 'Y_k', color='g')
+ax.text(translation_mm[0] + rotated_axes[0, 2]*arrow_length,
+        translation_mm[1] + rotated_axes[1, 2]*arrow_length,
+        translation_mm[2] + rotated_axes[2, 2]*arrow_length + label_offset,
+        'Z_k', color='b')
 
 # Optionally draw URDF robot model
 urdf_points = np.zeros((0,3))
@@ -318,8 +342,12 @@ ax.grid(True)
 
 # Make aspect equal
 # first set ranges to include origin, frame, and URDF comfortably
-frame_points = np.vstack([origin, translation_mm, origin + unit_axes.T*arrow_length, translation_mm + rotated_axes.T*arrow_length])
-all_points = frame_points if urdf_points.size == 0 else np.vstack([frame_points, urdf_points])
+frame_points = np.vstack([
+    origin, translation_mm,
+    origin + unit_axes.T*arrow_length,
+    translation_mm + rotated_axes.T*arrow_length])
+all_points = (frame_points if urdf_points.size == 0
+              else np.vstack([frame_points, urdf_points]))
 mins = all_points.min(axis=0) - 100
 maxs = all_points.max(axis=0) + 100
 ax.set_xlim(mins[0], maxs[0])
