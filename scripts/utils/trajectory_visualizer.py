@@ -24,6 +24,10 @@ Options:
     --odd               Show only odd-numbered trajectories (0-based indexing)
     --even              Show only even-numbered trajectories (0-based indexing)
     --waypoint-step N    Number of waypoints between coordinate frames (default: 15)
+
+Legend:
+    Red line = X axis, Green line = Y axis, Blue line = Z axis
+    Frame names: P (Plate), K (Knife), B (Base) - labeled directly on each coordinate frame
 """
 
 import csv
@@ -351,9 +355,8 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
         # Show coordinate frames at waypoints
         traj_waypoint_step = max(1, len(traj) // waypoint_step)
 
-        # Plot trajectory path
-        ax.plot(pts[:, 0], pts[:, 1], pts[:, 2], color=colors[i], linewidth=1, alpha=0.6,
-                label=f'Trajectory {i+1}')
+        # Plot trajectory path (without label to avoid duplicates in legend)
+        ax.plot(pts[:, 0], pts[:, 1], pts[:, 2], color=colors[i], linewidth=1, alpha=0.6)
 
         for j in range(0, len(traj), traj_waypoint_step):
             p = pts[j]
@@ -377,6 +380,7 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
                      length=waypoint_axis_len, normalize=True,
                      linewidth=1.5, alpha=0.9, color='blue')
 
+
     # Always show the origin (0,0,0) with XYZ coordinate frame
     origin = np.array([0.0, 0.0, 0.0])
 
@@ -386,21 +390,33 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
 
     # X axis (red)
     ax.quiver(origin[0], origin[1], origin[2], origin_R[0,0], origin_R[1,0], origin_R[2,0],
-              length=origin_axis_len, normalize=True, linewidth=2, color='red', label='Origin X')
+              length=origin_axis_len, normalize=True, linewidth=2, color='red')
     # Y axis (green)
     ax.quiver(origin[0], origin[1], origin[2], origin_R[0,1], origin_R[1,1], origin_R[2,1],
-              length=origin_axis_len, normalize=True, linewidth=2, color='green', label='Origin Y')
+              length=origin_axis_len, normalize=True, linewidth=2, color='green')
     # Z axis (blue)
     ax.quiver(origin[0], origin[1], origin[2], origin_R[0,2], origin_R[1,2], origin_R[2,2],
-              length=origin_axis_len, normalize=True, linewidth=2, color='blue', label='Origin Z')
+              length=origin_axis_len, normalize=True, linewidth=2, color='blue')
 
-    # Add origin label (without duplicate label)
+    # Add origin position marker
     ax.scatter([0], [0], [0], marker='o', s=30, color='black', alpha=0.8)
+
+    # Add text label for origin frame (using short form)
+    frame_short_name = frame_name
+    if "Plate Frame" in frame_name:
+        frame_short_name = "P"
+    elif "Knife Frame" in frame_name:
+        frame_short_name = "K"
+    elif "Robot Base Frame" in frame_name:
+        frame_short_name = "B"
+
+    ax.text(origin[0] + origin_axis_len * 1.2, origin[1], origin[2], frame_short_name,
+            fontsize=10, fontweight='bold', color='black')
 
     # Plot additional frame if provided (e.g., knife frame in base view)
     if frame_origin is not None and frame_axes_R is not None and show_frame_axes:
         ax.scatter([frame_origin[0]], [frame_origin[1]], [frame_origin[2]],
-                   marker='X', s=100, color='k', label='Knife Origin (in base)')
+                   marker='X', s=100, color='k')
 
         # Draw knife coordinate frame
         frame_axis_len = axis_length
@@ -409,19 +425,36 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
         z_dir = frame_axes_R[:, 2]
         ax.quiver(frame_origin[0], frame_origin[1], frame_origin[2],
                   x_dir[0], x_dir[1], x_dir[2], length=frame_axis_len,
-                  normalize=True, linewidth=2, color='r', label='Knife X')
+                  normalize=True, linewidth=2, color='r')
         ax.quiver(frame_origin[0], frame_origin[1], frame_origin[2],
                   y_dir[0], y_dir[1], y_dir[2], length=frame_axis_len,
-                  normalize=True, linewidth=2, color='g', label='Knife Y')
+                  normalize=True, linewidth=2, color='g')
         ax.quiver(frame_origin[0], frame_origin[1], frame_origin[2],
                   z_dir[0], z_dir[1], z_dir[2], length=frame_axis_len,
-                  normalize=True, linewidth=2, color='b', label='Knife Z')
+                  normalize=True, linewidth=2, color='b')
+
+        # Add text label for knife frame
+        ax.text(frame_origin[0] + frame_axis_len * 1.2, frame_origin[1], frame_origin[2], 'K',
+                fontsize=10, fontweight='bold', color='black')
+
+    # Create custom legend entries for axis colors and trajectory colors
+    legend_elements = [
+        plt.Line2D([0], [0], color='red', lw=2, label='X axis'),
+        plt.Line2D([0], [0], color='green', lw=2, label='Y axis'),
+        plt.Line2D([0], [0], color='blue', lw=2, label='Z axis')
+    ]
+
+    # Add trajectory colors to legend
+    for i in range(num_traj):
+        legend_elements.append(
+            plt.Line2D([0], [0], color=colors[i], lw=2, label=f'Trajectory {i+1}')
+        )
 
     # Show legend only for single views or the last plot in 'all' view mode
     if view_mode != 'all':
-        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
+        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1.0))
     elif frame_name == "Robot Base Frame (B)":  # Last plot in 'all' view
-        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0))
+        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1.0))
 
     # Set equal aspect ratio
     if len(all_pts) > 0:

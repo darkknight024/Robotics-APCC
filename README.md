@@ -29,9 +29,7 @@ This is the initial structure. This is expected to change after we bring in isaa
 │   │   ├── test_math_utils.py     # Math utility function tests
 │   │   ├── test_trajectory_transforms.py  # Transformation tests
 │   │   └── run_all_tests.py       # Test runner script
-│   ├── tests/
-│   │   ├── analyze_irb1300_trajectory.py  # Main kinematic analysis tool
-│   │   └── visualize_trajectory.py        # Simple trajectory plotting
+│   ├── analyze_irb1300_trajectory.py  # Main kinematic analysis tool
 │   └── utils/
 │       ├── math_utils.py           # Centralized math utilities
 │       ├── trajectory_transform.py        # Coordinate frame transformations
@@ -96,6 +94,9 @@ python scripts/utils/visualize_frames.py \
   - **T_B_P (Base Frame):** Transformed trajectories showing plate poses in robot base frame with knife frame visualization
 - Reads trajectory CSV files (x, y, z, qw, qx, qy, qz format)
 - Interactive 3D visualization with coordinate frames at waypoints
+- Customizable waypoint step for controlling visualization density
+- Color-coded legend showing both coordinate axes (Red=X, Green=Y, Blue=Z) and individual trajectories
+- Frame labels: P (Plate), K (Knife), B (Base) displayed directly on coordinate frames
 - Supports multiple trajectories in single file
 - Filtering options for trajectory selection
 
@@ -103,48 +104,52 @@ python scripts/utils/visualize_frames.py \
 ```bash
 python scripts/utils/trajectory_visualizer.py trajectory.csv [options]
 
-# Example: Show all three views side-by-side
-# CAUTION: This could result in slow rendering and probably push your computer to be irresponsive.
-# I highly recommend using this in conjuction with --num-trajectories arg, with that set to less than 5, or depending on how good your compute can handle. I can probably do a RAM analysis, but not a great use of time.
+# Example: Show all three views with controlled waypoint density
 python scripts/utils/trajectory_visualizer.py \
   "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view all
+  --view all --waypoint-step 10 --num-trajectories 3
 
 # Example: Show only T_P_K view (knife in plate frame)
-# this is essentially the csv file visualized, must be ideally the same as it looks in Grasshopper / Rhino
+# Raw CSV visualization - shows knife motion relative to plate
 python scripts/utils/trajectory_visualizer.py \
   "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view pk
+  --view pk --waypoint-step 5
 
-# Example: Show only T_K_P view (plate in knife frame)
-# These are the waypoints that the end effector plate must be taking with the static knife as origin
+# Example: Show T_K_P view (plate in knife frame)
+# Shows required plate motion with static knife - for robot control
 python scripts/utils/trajectory_visualizer.py \
   "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view kp
+  --view kp --waypoint-step 8
 
 # Example: Show T_B_P view (robot base frame) with knife visualization
-# These are the end effector waypoints with reference to robot base - we need to solve IK for these
+# Shows actual robot end-effector poses needed (solve IK for these)
 python scripts/utils/trajectory_visualizer.py \
   "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view bp
+  --view bp --waypoint-step 10
 
 # Example: Legacy robot-base mode (equivalent to --view bp)
 python scripts/utils/trajectory_visualizer.py \
   "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --robot-base
+  --robot-base --waypoint-step 15
 
-# Example: Show only even-numbered trajectories
+# Example: Show only even-numbered trajectories with custom waypoint step
 python scripts/utils/trajectory_visualizer.py \
   "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --even --view all
+  --even --view all --waypoint-step 20
 
 # Command Line Arguments:
 csv_file                 # Path to CSV file with trajectory data
---view VIEW              # View mode: 'pk', 'kp', 'bp', or 'all' (default: all)
---robot-base             # Legacy mode: equivalent to --view bp
+--view VIEW              # View mode: 'pk' (T_P_K), 'kp' (T_K_P), 'bp' (T_B_P), or 'all' (default: all)
+--robot-base             # Apply robot-base transform (same as --view bp)
 --num-trajectories N     # Number of trajectories to visualize (default: all)
 --odd                    # Show only odd-numbered trajectories (0-based indexing)
 --even                   # Show only even-numbered trajectories (0-based indexing)
+--waypoint-step N        # Number of waypoints between coordinate frames (default: 15)
+
+Legend:
+    Red line = X axis, Green line = Y axis, Blue line = Z axis
+    Colored lines = Individual trajectories (Trajectory 1, Trajectory 2, etc.)
+    Frame names: P (Plate), K (Knife), B (Base) - labeled directly on each coordinate frame
 ```
 
 ### 3. `trajectory_transform.py`
@@ -184,10 +189,10 @@ output.csv               # Output transformed CSV file
 
 **Usage:**
 ```bash
-python scripts/tests/analyze_irb1300_trajectory.py [options]
+python scripts/analyze_irb1300_trajectory.py [options]
 
 # Example: Analyze trajectory with custom parameters
-python scripts/tests/analyze_irb1300_trajectory.py \
+python scripts/analyze_irb1300_trajectory.py \
   --urdf "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf" \
   --csv "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
   --output-dir "results" --samples 100
@@ -201,17 +206,17 @@ python scripts/tests/analyze_irb1300_trajectory.py \
 --ik-max-iter N          # Maximum IK iterations (default: 1000)
 ```
 
-### 5. `visualize_trajectory.py`
-**Purpose:** Simple 2D plotting of trajectory position and orientation data.
+### 5. `toolpath_visualizer.py`
+**Purpose:** Alternative trajectory visualization tool located in the Assests directory.
 
 **Key Features:**
-- Position plot (x, y, z vs time/index)
-- Quaternion orientation plot (qw, qx, qy, qz vs time/index)
-- Basic CSV trajectory file parsing
+- 3D trajectory visualization
+- CSV trajectory file parsing
+- Basic plotting functionality
 
 **Usage:**
 ```bash
-python scripts/tests/visualize_trajectory.py trajectory.csv
+python Assests/toolpath_visualizer.py trajectory.csv
 
 # Command Line Arguments:
 csv_path                 # Path to trajectory CSV file
@@ -324,15 +329,21 @@ The unit tests verify:
 
 ### Basic Trajectory Visualization
 ```bash
-# Visualize a trajectory in 3D
+# Visualize a trajectory in all three reference frames
 python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv"
+  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
+  --view all --waypoint-step 10 --num-trajectories 2
+
+# Single view visualization with controlled density
+python scripts/utils/trajectory_visualizer.py \
+  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
+  --view bp --waypoint-step 5
 ```
 
 ### Kinematic Validation
 ```bash
 # Analyze trajectory feasibility for IRB-1300
-python scripts/tests/analyze_irb1300_trajectory.py \
+python scripts/analyze_irb1300_trajectory.py \
   --csv "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
   --samples 50
 ```
@@ -341,8 +352,8 @@ python scripts/tests/analyze_irb1300_trajectory.py \
 ```bash
 # Transform trajectory and visualize with robot model
 python scripts/utils/trajectory_transform.py input.csv transformed.csv
-python scripts/utils/trajectory_visualizer.py transformed.csv --robot-base
-python scripts/utils/visualize_frames.py --urdf "path/to/robot.urdf"
+python scripts/utils/trajectory_visualizer.py transformed.csv --view bp --waypoint-step 10
+python scripts/utils/visualize_frames.py --urdf "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf"
 ```
 
 ## Output Files
