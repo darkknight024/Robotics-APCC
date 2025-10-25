@@ -10,9 +10,10 @@ This script reads trajectories from a CSV and visualizes them in 3D with three d
 - Each valid row must have: x, y, z, qw, qx, qy, qz (quaternions are w,x,y,z).
 - A line with "T0" marks the end of a trajectory.
 - Lines with fewer than 7 elements are ignored.
+- Input CSV positions should be in millimeters (mm), automatically converted to meters (m).
 
-Units: Everything is handled in millimeters (mm). The robot-base transform
-is also interpreted in mm.
+Units: Everything is handled in meters (m) for URDF compatibility. The robot-base transform
+is also interpreted in meters. CSV input positions are automatically converted from mm to m.
 
 Usage:
     python trajectory_visualizer.py path/to/trajectories.csv [options]
@@ -74,24 +75,10 @@ def filter_trajectories(trajectories, odd=False, even=False):
     return trajectories
 
 # ---------------------------
-# Generic transformation function
-# ---------------------------
-
-# ---------------------------
-# Specialized transformation functions
-# ---------------------------
-
-
-# ---------------------------
-# Trajectory pair analysis functions
-# ---------------------------
-
-
-# ---------------------------
 # Visualization
 # ---------------------------
 def visualize_trajectories_three_views(trajectories_T_P_K, trajectories_T_K_P, trajectories_T_B_P,
-                                     T_B_K_t_mm, T_B_K_quat, view_mode='all', waypoint_step=15):
+                                     T_B_K_t_m, T_B_K_quat, view_mode='all', waypoint_step=15):
     """
     Visualize trajectories in three separate 3D plots showing different frames.
 
@@ -99,7 +86,7 @@ def visualize_trajectories_three_views(trajectories_T_P_K, trajectories_T_K_P, t
         trajectories_T_P_K: List of trajectories in T_P_K format (knife in plate frame)
         trajectories_T_K_P: List of trajectories in T_K_P format (plate in knife frame)
         trajectories_T_B_P: List of trajectories in T_B_P format (plate in base frame)
-        T_B_K_t_mm: Knife position in base frame (mm)
+        T_B_K_t_m: Knife position in base frame (meters)
         T_B_K_quat: Knife orientation in base frame
         view_mode: 'pk', 'kp', 'bp', or 'all'
         waypoint_step: Step size for displaying coordinate frames at waypoints
@@ -135,7 +122,7 @@ def visualize_trajectories_three_views(trajectories_T_P_K, trajectories_T_K_P, t
 
         # Plot 3: T_B_P (Base frame) with knife visualization
         ax3 = fig.add_subplot(gs[2], projection='3d')
-        _plot_single_view(ax3, trajectories_T_B_P, T_B_K_t_mm, knife_R, True,
+        _plot_single_view(ax3, trajectories_T_B_P, T_B_K_t_m, knife_R, True,
                          "T_B_P: Plate poses in Base frame\n(Base origin) + Knife frame",
                          "Robot Base Frame (B)", waypoint_step, view_mode)
 
@@ -155,7 +142,7 @@ def visualize_trajectories_three_views(trajectories_T_P_K, trajectories_T_K_P, t
                              "Knife Frame (K)", waypoint_step, view_mode)
         elif view_mode == 'bp':
             ax = fig.add_subplot(111, projection='3d')
-            _plot_single_view(ax, trajectories_T_B_P, T_B_K_t_mm, knife_R, True,
+            _plot_single_view(ax, trajectories_T_B_P, T_B_K_t_m, knife_R, True,
                              "T_B_P: Plate poses in Base frame\n(Base origin) + Knife frame",
                              "Robot Base Frame (B)", waypoint_step, view_mode)
 
@@ -179,9 +166,9 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
         view_mode: Current view mode ('pk', 'kp', 'bp', or 'all')
     """
     ax.set_title(title, fontsize=12, fontweight='bold')
-    ax.set_xlabel("X (mm)")
-    ax.set_ylabel("Y (mm)")
-    ax.set_zlabel("Z (mm)")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
 
     if not trajectories:
         print(f"Warning: No trajectories to plot for {frame_name}")
@@ -193,7 +180,7 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
     # Gather all points for axis scaling
     all_pts = np.vstack([traj[:, :3] for traj in trajectories])
 
-    # Calculate axis length for coordinate frame visualization
+    # Calculate axis length for coordinate frame visualization (now in meters)
     if len(all_pts) > 0:
         data_min = np.min(all_pts, axis=0)
         data_max = np.max(all_pts, axis=0)
@@ -202,9 +189,10 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
         data_max = np.maximum(data_max, origin)
         data_range = data_max - data_min
         max_range = np.max(data_range)
-        axis_length = np.clip(max_range * 0.12, 15.0, 100.0)
+        # Scale axes to 12% of data range, but clip to reasonable meter-scale values
+        axis_length = np.clip(max_range * 0.12, 0.015, 0.1)  # 15mm to 100mm in meters
     else:
-        axis_length = 20.0
+        axis_length = 0.02  # 20mm in meters
 
     # Plot trajectories
     for i, traj in enumerate(trajectories):
@@ -327,7 +315,7 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
         data_center = (data_min + data_max) / 2
         data_range = data_max - data_min
         max_range = np.max(data_range)
-        min_range = 10.0
+        min_range = 0.01  # 10mm in meters
         max_range = max(max_range, min_range)
         half_range = (max_range * 1.1) / 2
         ax.set_xlim([data_center[0] - half_range, data_center[0] + half_range])
@@ -341,7 +329,7 @@ def _plot_single_view(ax, trajectories, frame_origin, frame_axes_R, show_frame_a
 # ---------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize 3D trajectories in multiple reference frames (units: mm).")
+        description="Visualize 3D trajectories in multiple reference frames (units: m).")
     parser.add_argument("csv_file", type=str,
                         help="Path to the CSV file containing trajectories.")
     parser.add_argument("--view", type=str, default="all", choices=["pk", "kp", "bp", "all"],
@@ -383,8 +371,8 @@ def main():
 
     print(f"View mode: {view_mode}")
 
-    # Get knife pose in robot base frame from transformation module
-    T_B_K_t_mm, T_B_K_quat = get_knife_pose_base_frame()
+    # Get knife pose in robot base frame from transformation module (now in meters)
+    T_B_K_t_m, T_B_K_quat = get_knife_pose_base_frame()
 
     # Analyze trajectory pairs if requested
     if args.analyze_pairs:
@@ -403,18 +391,18 @@ def main():
 
     if args.num_trajectories is not None:
         print(f"Loaded first {len(trajectories_T_P_K_filtered)} of "
-              f"{args.num_trajectories} requested trajectories (units: mm). "
+              f"{args.num_trajectories} requested trajectories (units: m). "
               "Visualizing...")
     else:
         print(f"Loaded {len(trajectories_T_P_K_filtered)} trajectories "
-              "(units: mm). Visualizing...")
+              "(units: m). Visualizing...")
 
     # Visualize based on selected view mode
     visualize_trajectories_three_views(
         trajectories_T_P_K_filtered,
         trajectories_T_K_P,
         trajectories_T_B_P,
-        T_B_K_t_mm,
+        T_B_K_t_m,
         T_B_K_quat,
         view_mode,
         args.waypoint_step

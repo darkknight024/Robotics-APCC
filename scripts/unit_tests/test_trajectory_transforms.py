@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Unit tests for trajectory_visualizer.py functionality.
+Unit tests for trajectory transformation functionality.
 
 Tests include:
-- Round-trip composition tests for coordinate transformations
-- CSV reading and parsing
+- Round-trip composition tests for coordinate transformations (in meters)
+- CSV reading and parsing with mm→m unit conversion
 - Trajectory filtering (--odd, --even)
 - Transformation matrix operations
+
+Note: All tests now work with meters (m) for URDF compatibility.
+CSV input positions are automatically converted from mm to meters.
 """
 
 import numpy as np
@@ -25,8 +28,8 @@ from handle_transforms import (
 from math_utils import quat_to_rot_matrix, pose_to_matrix, matrix_to_pose
 from trajectory_visualizer import filter_trajectories
 
-# Get test data from the transformation module
-T_B_K_t_mm, T_B_K_quat = get_knife_pose_base_frame()
+# Get test data from the transformation module (now in meters)
+T_B_K_t_m, T_B_K_quat = get_knife_pose_base_frame()
 
 
 def test_round_trip_composition():
@@ -37,50 +40,50 @@ def test_round_trip_composition():
     """
     print("Testing round-trip composition...")
 
-    # Test with a few random poses T_P_K (plate relative to knife)
-    test_poses = [
+    # Test with a few random poses T_P_K (plate relative to knife) - positions in meters
+    test_poses_m = [
         # Simple translation only
-        np.array([10.0, 20.0, 30.0, 1.0, 0.0, 0.0, 0.0]),
+        np.array([0.010, 0.020, 0.030, 1.0, 0.0, 0.0, 0.0]),
         # 90 degree rotation around Z
-        np.array([0.0, 0.0, 0.0, 0.707, 0.0, 0.0, 0.707]),
+        np.array([0.000, 0.000, 0.000, 0.707, 0.0, 0.0, 0.707]),
         # Combined translation and rotation
-        np.array([15.0, -10.0, 5.0, 0.866, 0.0, 0.0, 0.5]),
+        np.array([0.015, -0.010, 0.005, 0.866, 0.0, 0.0, 0.5]),
         # Random orientation
-        np.array([5.0, 5.0, 5.0, 0.5, 0.5, 0.5, 0.5])
+        np.array([0.005, 0.005, 0.005, 0.5, 0.5, 0.5, 0.5])
     ]
 
-    for i, pose_P_K in enumerate(test_poses):
-        print(f"  Test pose {i+1}: {pose_P_K}")
+    for i, pose_P_K_m in enumerate(test_poses_m):
+        print(f"  Test pose {i+1}: {pose_P_K_m}")
 
         # Step 1: Compute T_B_P using the function
-        trajectories_T_P_K = [np.array([pose_P_K])]
-        trajectories_T_B_P = transform_to_ee_poses_matrix(
-            trajectories_T_P_K)
-        T_B_P = pose_to_matrix(trajectories_T_B_P[0][0, :3], trajectories_T_B_P[0][0, 3:7])
+        trajectories_T_P_K_m = [np.array([pose_P_K_m])]
+        trajectories_T_B_P_m = transform_to_ee_poses_matrix(
+            trajectories_T_P_K_m)
+        T_B_P_m = pose_to_matrix(trajectories_T_B_P_m[0][0, :3], trajectories_T_B_P_m[0][0, 3:7])
 
-        # Step 2: Extract T_P_K from the input pose
-        t_P_K = pose_P_K[:3]
-        q_P_K = pose_P_K[3:7]
-        T_P_K = pose_to_matrix(t_P_K, q_P_K)
+        # Step 2: Extract T_P_K from the input pose (positions in meters)
+        t_P_K_m = pose_P_K_m[:3]
+        q_P_K = pose_P_K_m[3:7]
+        T_P_K_m = pose_to_matrix(t_P_K_m, q_P_K)
 
-        # Step 3: Compute round-trip: T_B_K_check = T_B_P @ T_P_K
-        T_B_K_check = T_B_P @ T_P_K
+        # Step 3: Compute round-trip: T_B_K_check = T_B_P_m @ T_P_K_m
+        T_B_K_check_m = T_B_P_m @ T_P_K_m
 
-        # Step 4: Extract components and compare with original T_B_K
-        t_B_K_check, q_B_K_check = matrix_to_pose(T_B_K_check)
-        T_B_K_original = pose_to_matrix(T_B_K_t_mm, T_B_K_quat)
+        # Step 4: Extract components and compare with original T_B_K (in meters)
+        t_B_K_check_m, q_B_K_check = matrix_to_pose(T_B_K_check_m)
+        T_B_K_original_m = pose_to_matrix(T_B_K_t_m, T_B_K_quat)
 
-        # Compare translations (within 1mm tolerance)
-        trans_error = np.linalg.norm(t_B_K_check - T_B_K_t_mm)
-        print(f"    Translation error: {trans_error:.6f} mm")
+        # Compare translations (within 1mm = 0.001m tolerance)
+        trans_error_m = np.linalg.norm(t_B_K_check_m - T_B_K_t_m)
+        print(f"    Translation error: {trans_error_m*1000:.6f} mm")
 
         # Compare quaternions (within 0.01 tolerance)
         quat_error = np.linalg.norm(q_B_K_check - T_B_K_quat)
         print(f"    Quaternion error: {quat_error:.6f}")
 
-        # Assert tolerances
-        assert trans_error < 1.0, f"Translation error too large: {trans_error} mm"
-        assert quat_error < 0.01, f"Quaternion error too large: {quat_error}"
+        # Assert tolerances (1mm = 0.001m tolerance)
+        assert trans_error_m < 0.001, f"Translation error too large: {trans_error_m*1000:.6f} mm"
+        assert quat_error < 0.01, f"Quaternion error too large: {quat_error:.6f}"
 
         print(f"    + Round-trip test passed for pose {i+1}")
 

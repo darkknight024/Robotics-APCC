@@ -46,7 +46,9 @@ from math_utils import (quat_mul, quat_to_rot_matrix, quat_conjugate,
 # =============================================================================
 
 # Knife pose in robot base frame (from Jared's email)
-T_B_K_TRANSLATION = np.array([-367.773, -915.815, 520.4])  # mm
+# Convert from mm to meters for URDF compatibility
+T_B_K_TRANSLATION_mm = np.array([-367.773, -915.815, 520.4])  # mm
+T_B_K_TRANSLATION = T_B_K_TRANSLATION_mm / 1000.0  # Convert to meters
 T_B_K_QUATERNION = np.array([0.00515984, 0.712632, -0.701518, 0.000396522])  # w,x,y,z
 
 
@@ -163,6 +165,7 @@ def transform_to_ee_poses_matrix(trajectories_t_p_k):
     quaternion_norm = T_B_K_QUATERNION / np.linalg.norm(T_B_K_QUATERNION)
 
     # Construct 4x4 transformation matrix for T_B_K (knife pose in base frame)
+    # T_B_K_TRANSLATION is already in meters for URDF compatibility
     matrix_b_k = pose_to_matrix(T_B_K_TRANSLATION, quaternion_norm)
 
     def _base_transform(matrix_p_k):
@@ -179,7 +182,7 @@ def get_knife_pose_base_frame():
 
     Returns:
         tuple: (translation, quaternion) where:
-            - translation (np.ndarray): Translation vector [x, y, z] in mm
+            - translation (np.ndarray): Translation vector [x, y, z] in meters
             - quaternion (np.ndarray): Quaternion [w, x, y, z] (unit quaternion)
     """
     return T_B_K_TRANSLATION.copy(), T_B_K_QUATERNION.copy()

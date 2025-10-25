@@ -3,7 +3,16 @@
 ABB IRB 1300 Trajectory Analysis Script
 
 This script analyzes the kinematic reachability and singularity proximity
-of an ABB IRB 1300 6-axis robot along a specified trajectory using Pinocchio.
+of an ABB IRB 1300 6-axis robot along multiple trajectories using Pinocchio.
+
+The script automatically processes all trajectories found in the CSV file
+(separated by T0 markers) and generates comprehensive analysis for each one.
+
+Units: The script expects CSV input positions in millimeters (mm) but automatically
+converts them to meters (m) for URDF compatibility. All internal calculations use:
+- Positions: meters (m)
+- Angles: radians (rad)
+- Outputs are labeled with appropriate unit suffixes
 
 Requirements:
     - pinocchio
@@ -12,7 +21,20 @@ Requirements:
     - matplotlib
 
 Usage:
-    python analyze_irb1300_trajectory.py
+    python analyze_irb1300_trajectory.py [options]
+
+The script analyzes all trajectories in T_P_K format (knife poses in end effector plate frame)
+found in the CSV file and automatically transforms them to robot base frame for kinematic analysis.
+
+The script uses hardcoded paths for URDF model and trajectory CSV file:
+- URDF: Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf
+- CSV: Assests/Robot APCC/Toolpaths/20250212_mc_PlqTest_Carve_1U.csv
+
+Options:
+    -o, --output DIR        Output directory (default: output/)
+    --max-iterations INT    Max IK iterations (default: 1000)
+    --tolerance FLOAT       IK tolerance (default: 1e-4)
+    --visualize             Generate visualization plots (default: True)
 """
 
 import pinocchio as pin
@@ -25,15 +47,17 @@ import os
 from pathlib import Path
 import argparse
 from tqdm import tqdm
-import subprocess
 import sys
-import shutil
-import uuid
+
+# Import existing utilities
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"))
+from math_utils import quat_to_rot_matrix
+from csv_handling import read_trajectories_from_csv
+from handle_transforms import transform_to_ee_poses_matrix, get_knife_pose_base_frame
 
 # Configuration
 URDF_PATH = "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf"
-#URDF_PATH = "Assests/Robot APCC/IRB-1300 900 URDF/urdf/IRB-1300 900 URDF_ee.urdf"
-CSV_PATH = "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv"
+CSV_PATH = "Assests/Robot APCC/Toolpaths/20250212_mc_PlqTest_Carve_1U.csv"
 OUTPUT_DIR = "output"
 RESULTS_CSV = "trajectory_analysis_results.csv"
 MANIPULABILITY_PLOT = "manipulability_plot.png"
@@ -42,7 +66,7 @@ SINGULARITY_PLOT = "singularity_measure_plot.png"
 JOINT_ANGLES_PLOT = "joint_angles_plot.png"
 TRAJECTORY_3D_PLOT = "trajectory_3d_comparison.png"
 
-# IK parameters
+# IK parameters (will be set by command line arguments)
 IK_MAX_ITERATIONS = 1000
 IK_TOLERANCE = 1e-4
 IK_DT = 1e-1
@@ -52,126 +76,123 @@ IK_DAMP = 1e-6
 def load_robot_model(urdf_path):
     """
     Load the robot model from URDF file.
-    
+
     Args:
         urdf_path: Path to the URDF file
-        
+
     Returns:
         model: Pinocchio model
         data: Pinocchio data
     """
     print(f"Loading robot model from: {urdf_path}")
-    
+
     # Get the directory containing the URDF
     urdf_dir = os.path.dirname(os.path.abspath(urdf_path))
-    
+
     # Load the model
     model = pin.buildModelFromUrdf(urdf_path)
     data = model.createData()
-    
+
     print(f"Robot model loaded successfully")
     print(f"  - Number of joints: {model.nq}")
-    print(f"  - Number of frames: {model.nframes}")
     print(f"  - End-effector frame: ee_link")
-    
+
     return model, data
 
-
-def load_trajectory(csv_path):
+def load_and_transform_trajectory(csv_path):
     """
-    Load trajectory waypoints from CSV file.
-    
+    Load trajectories from CSV and transform to robot base frame.
+
+    CSV handling module automatically converts positions from mm to meters.
+    This function receives data already in meters.
+
     Args:
-        csv_path: Path to the CSV file containing trajectory (x, y, z, qw, qx, qy, qz)
-        
+        csv_path: Path to the CSV file containing trajectories (x, y, z, qw, qx, qy, qz)
+
     Returns:
-        trajectory: Numpy array of shape (n_waypoints, 7)
+        trajectories_m: List of numpy arrays, each of shape (n_waypoints, 7) in robot base frame (meters)
     """
     print(f"\nLoading trajectory from: {csv_path}")
-    
-    # Read only the first 7 columns, skip header row, and ensure they are converted to float
-    trajectory_df = pd.read_csv(csv_path, usecols=range(7), header=0, dtype=float)
-    trajectory = trajectory_df.to_numpy(dtype=np.float64)
-    
+
+    # Read all trajectories from CSV (positions already converted to meters in csv_handling.py)
+    trajectories_m = read_trajectories_from_csv(csv_path)
+
+    if not trajectories_m:
+        raise ValueError(f"No valid trajectories found in {csv_path}")
+
     print(f"Trajectory loaded successfully")
-    print(f"  - Number of waypoints: {trajectory.shape[0]}")
-    
-    return trajectory
+    print(f"  - Number of trajectories: {len(trajectories_m)}")
 
+    for traj_id, trajectory_m in enumerate(trajectories_m):
+        print(f"    Trajectory {traj_id + 1}: {trajectory_m.shape[0]} waypoints")
+        print(f"      Position range: X=[{trajectory_m[:, 0].min():.3f}, {trajectory_m[:, 0].max():.3f}] m, "
+              f"Y=[{trajectory_m[:, 1].min():.3f}, {trajectory_m[:, 1].max():.3f}] m, "
+              f"Z=[{trajectory_m[:, 2].min():.3f}, {trajectory_m[:, 2].max():.3f}] m")
 
-def quaternion_to_rotation_matrix(qw, qx, qy, qz):
-    """
-    Convert quaternion to rotation matrix using Pinocchio.
-    
-    Args:
-        qw, qx, qy, qz: Quaternion components
-        
-    Returns:
-        R: 3x3 rotation matrix
-    """
-    # Pinocchio uses (x, y, z, w) convention
-    quat = pin.Quaternion(qx, qy, qz, qw)
-    quat.normalize()
-    return quat.toRotationMatrix()
+    # Transform from T_P_K (knife in plate frame) to T_B_P (plate in base frame)
+    # All data already in meters
+    trajectories_t_b_p_m = transform_to_ee_poses_matrix(trajectories_m)
 
+    print(f"Transformation complete")
+    print(f"  - Transformed {len(trajectories_t_b_p_m)} trajectories to robot base frame")
 
-def solve_inverse_kinematics(model, data, target_pose, q_init=None):
+    return trajectories_t_b_p_m
+
+def solve_inverse_kinematics(model, data, target_pose, q_init=None, max_iterations=1000, tolerance=1e-4):
     """
     Solve inverse kinematics for a target end-effector pose.
-    
+
     Args:
         model: Pinocchio model
         data: Pinocchio data
         target_pose: Target SE3 pose
         q_init: Initial joint configuration guess
-        
+        max_iterations: Maximum number of iterations
+        tolerance: Convergence tolerance
+
     Returns:
         success: Boolean indicating if IK converged
         q: Joint configuration (or None if failed)
     """
     if q_init is None:
         q_init = pin.neutral(model)
-    
+
     # Get the end-effector frame ID
     ee_frame_id = model.getFrameId("ee_link")
-    
+
     # Set up the inverse kinematics
     q = q_init.copy()
-    
-    for i in range(IK_MAX_ITERATIONS):
+
+    for i in range(max_iterations):
         # Forward kinematics
         pin.forwardKinematics(model, data, q)
         pin.updateFramePlacements(model, data)
-        
+
         # Get current end-effector pose
         current_pose = data.oMf[ee_frame_id]
-        
+
         # Compute error
         error = pin.log(current_pose.inverse() * target_pose)
-
-        # test : temporary relax orientation
-        #error.angular[:] = 0.0   # ignore rotation error; keep only translation
-        
         error_norm = np.linalg.norm(error.vector)
-        
+
         # Check convergence
-        if error_norm < IK_TOLERANCE:
+        if error_norm < tolerance:
             return True, q
-        
+
         # Compute Jacobian
         J = pin.computeFrameJacobian(model, data, q, ee_frame_id, pin.LOCAL)
-        
+
         # Damped least squares
         JtJ = J.T @ J
         damped_inv = np.linalg.inv(JtJ + IK_DAMP * np.eye(model.nv))
         dq = damped_inv @ J.T @ error.vector
-        
+
         # Update configuration
         q = pin.integrate(model, q, dq * IK_DT)
-        
+
         # Check joint limits
         q = np.clip(q, model.lowerPositionLimit, model.upperPositionLimit)
-    
+
     # Return best-effort configuration even if not converged
     return False, q
 
@@ -179,10 +200,10 @@ def solve_inverse_kinematics(model, data, target_pose, q_init=None):
 def compute_manipulability_index(jacobian):
     """
     Compute manipulability index (Yoshikawa measure).
-    
+
     Args:
         jacobian: 6xn Jacobian matrix
-        
+
     Returns:
         manipulability: Manipulability index
     """
@@ -194,10 +215,10 @@ def compute_minimum_singular_value(jacobian):
     """
     Compute the minimum singular value of the Jacobian.
     A small value indicates proximity to singularity.
-    
+
     Args:
         jacobian: 6xn Jacobian matrix
-        
+
     Returns:
         min_sv: Minimum singular value
     """
@@ -209,10 +230,10 @@ def compute_condition_number(jacobian):
     """
     Compute the condition number of the Jacobian.
     A large value indicates proximity to singularity.
-    
+
     Args:
         jacobian: 6xn Jacobian matrix
-        
+
     Returns:
         condition_number: Condition number
     """
@@ -222,151 +243,248 @@ def compute_condition_number(jacobian):
     return np.max(singular_values) / np.min(singular_values)
 
 
-def analyze_trajectory(model, data, trajectory):
+def check_joint_continuity(joint_angles, waypoint_indices, threshold_deg=30):
     """
-    Analyze the trajectory for reachability and singularity proximity.
-    
+    Check joint continuity between consecutive waypoints.
+
+    Args:
+        joint_angles: List of joint configurations (n_waypoints, n_joints)
+        waypoint_indices: Corresponding waypoint indices
+        threshold_deg: Maximum allowed joint angle change in degrees
+
+    Returns:
+        discontinuities: List of dictionaries with discontinuity information
+    """
+    discontinuities = []
+    threshold_rad = np.deg2rad(threshold_deg)
+
+    for i in range(1, len(joint_angles)):
+        if waypoint_indices[i] == waypoint_indices[i-1] + 1:  # Consecutive waypoints
+            angle_changes = np.array(joint_angles[i]) - np.array(joint_angles[i-1])
+
+            # Check each joint for large changes
+            for j in range(len(angle_changes)):
+                if abs(angle_changes[j]) > threshold_rad:
+                    discontinuities.append({
+                        'waypoint_index': waypoint_indices[i],
+                        'joint_index': j + 1,
+                        'angle_change_deg': np.rad2deg(angle_changes[j]),
+                        'threshold_deg': threshold_deg
+                    })
+
+    return discontinuities
+
+
+def analyze_orientation_constraints(results, tolerance_deg=5):
+    """
+    Analyze orientation constraints along the trajectory.
+
+    Args:
+        results: List of result dictionaries
+        tolerance_deg: Maximum allowed orientation deviation in degrees
+
+    Returns:
+        orientation_issues: List of dictionaries with orientation issues
+    """
+    orientation_issues = []
+    tolerance_rad = np.deg2rad(tolerance_deg)
+
+    for i, result in enumerate(results):
+        if result['reachable'] and i < len(results) - 1:
+            # Compare with next waypoint if it exists and is reachable
+            next_result = results[i + 1]
+            if next_result['reachable']:
+                # Extract orientations (joint angles in radians)
+                current_q_rad = [result.get(f'q{j+1}_rad', 0) for j in range(6)]
+                next_q_rad = [next_result.get(f'q{j+1}_rad', 0) for j in range(6)]
+
+                # Compute joint angle differences (in radians)
+                angle_changes_rad = np.array(next_q_rad) - np.array(current_q_rad)
+
+                # Check for large orientation changes that might indicate issues
+                max_change_rad = np.max(np.abs(angle_changes_rad))
+                if max_change_rad > tolerance_rad:
+                    orientation_issues.append({
+                        'start_waypoint': i,
+                        'end_waypoint': i + 1,
+                        'max_joint_change_rad': max_change_rad,
+                        'max_joint_change_deg': np.rad2deg(max_change_rad),
+                        'tolerance_deg': tolerance_deg,
+                        'joint_changes_rad': angle_changes_rad,
+                        'joint_changes_deg': np.rad2deg(angle_changes_rad)
+                    })
+
+    return orientation_issues
+
+
+def analyze_trajectory_kinematics(model, data, trajectory_m, trajectory_id=1, q_prev_rad=None, max_iterations=1000, tolerance=1e-4):
+    """
+    Analyze a single trajectory for kinematic feasibility and singularity proximity.
+
     Args:
         model: Pinocchio model
         data: Pinocchio data
-        trajectory: Numpy array of waypoints (n_waypoints, 7)
-        
+        trajectory_m: Numpy array of waypoints (n_waypoints, 7) in robot base frame (meters)
+        trajectory_id: Identifier for this trajectory (for result labeling)
+        q_prev_rad: Previous joint configuration in radians
+        max_iterations: Maximum IK iterations
+        tolerance: IK tolerance in meters
+
     Returns:
         results: List of dictionaries containing analysis results
     """
-    
+
     results = []
     ee_frame_id = model.getFrameId("ee_link")
-    q_prev = pin.neutral(model)
-    print(f"q_prev: {q_prev}")
-    
-    pbar = tqdm(total=len(trajectory), desc="Waypoints", unit="wp", leave=False)
-    for i, waypoint in enumerate(trajectory):
-        # Extract pose components
-        x, y, z, qw, qx, qy, qz = waypoint
-        
-        # Convert to SE3 pose
-        position = np.array([x, y, z])
-        rotation = quaternion_to_rotation_matrix(qw, qx, qy, qz)
-        target_pose = pin.SE3(rotation, position)
-        
-        # Pre-compute target tool-X direction for visualization (match visualizer style)
-        # Using the tool X-axis expressed in world frame
-        target_dir_world = rotation @ np.array([1.0, 0.0, 0.0])
-        
-        # Try IK with previous solution first
-        success, q_solution = solve_inverse_kinematics(model, data, target_pose, q_prev)
-        
+
+    if q_prev_rad is None:
+        q_prev_rad = pin.neutral(model)
+
+    print(f"Analyzing trajectory {trajectory_id}: {len(trajectory_m)} waypoints...")
+
+    pbar = tqdm(total=len(trajectory_m), desc=f"Trajectory {trajectory_id}", unit="wp")
+
+    for i, waypoint_m in enumerate(trajectory_m):
+        # Extract pose components (positions already in meters)
+        x_m, y_m, z_m, qw, qx, qy, qz = waypoint_m
+
+        # Convert to SE3 pose (position in meters)
+        position_m = np.array([x_m, y_m, z_m])
+        rotation = quat_to_rot_matrix(np.array([qw, qx, qy, qz]))
+        target_pose_m = pin.SE3(rotation, position_m)
+
+        # Try IK with previous solution first (all positions in meters)
+        success, q_solution_rad = solve_inverse_kinematics(model, data, target_pose_m, q_prev_rad, max_iterations, tolerance)
+
         # If failed, try with neutral configuration
         if not success:
-            success, q_solution = solve_inverse_kinematics(model, data, target_pose, pin.neutral(model))
-        
+            success, q_solution_rad = solve_inverse_kinematics(model, data, target_pose_m, pin.neutral(model), max_iterations, tolerance)
+
         # If still failed, try with random configurations
         if not success:
             for _ in range(3):
-                q_random = pin.randomConfiguration(model)
-                success, q_solution = solve_inverse_kinematics(model, data, target_pose, q_random)
+                q_random_rad = pin.randomConfiguration(model)
+                success, q_solution_rad = solve_inverse_kinematics(model, data, target_pose_m, q_random_rad, max_iterations, tolerance)
                 if success:
                     break
-        
+
         result = {
+            'trajectory_id': trajectory_id,
             'waypoint_index': i,
-            'x': x,
-            'y': y,
-            'z': z,
+            'x_m': x_m,
+            'y_m': y_m,
+            'z_m': z_m,
             'reachable': success,
-            # Record target pose direction (tool X-axis in world frame)
-            'target_dir_x': float(target_dir_world[0]),
-            'target_dir_y': float(target_dir_world[1]),
-            'target_dir_z': float(target_dir_world[2])
         }
-        
+
         if success:
             # Use this solution as initial guess for next waypoint
-            q_prev = q_solution.copy()
-            
+            q_prev_rad = q_solution_rad.copy()
+
             # Compute forward kinematics
-            pin.forwardKinematics(model, data, q_solution)
+            pin.forwardKinematics(model, data, q_solution_rad)
             pin.updateFramePlacements(model, data)
-            
-            # Get actual end-effector position achieved
-            actual_ee_pose = data.oMf[ee_frame_id]
-            actual_position = actual_ee_pose.translation
-            actual_rotation = actual_ee_pose.rotation
-            
+
+            # Get actual end-effector position achieved (in meters)
+            actual_ee_pose_m = data.oMf[ee_frame_id]
+            actual_position_m = actual_ee_pose_m.translation
+
             # Compute Jacobian at this configuration
-            J = pin.computeFrameJacobian(model, data, q_solution, ee_frame_id, pin.LOCAL_WORLD_ALIGNED)
-            
+            J = pin.computeFrameJacobian(model, data, q_solution_rad, ee_frame_id, pin.LOCAL_WORLD_ALIGNED)
+
             # Compute singularity measures
             manipulability = compute_manipulability_index(J)
             min_singular_value = compute_minimum_singular_value(J)
             condition_number = compute_condition_number(J)
-            
-            result['manipulability'] = manipulability
-            result['min_singular_value'] = min_singular_value
-            result['condition_number'] = condition_number
-            
-            # Store actual end-effector position
-            result['actual_ee_x'] = actual_position[0]
-            result['actual_ee_y'] = actual_position[1]
-            result['actual_ee_z'] = actual_position[2]
-            
-            # Store actual achieved tool-X direction for visualization (match visualizer style)
-            actual_dir_world = actual_rotation @ np.array([1.0, 0.0, 0.0])
-            result['actual_dir_x'] = float(actual_dir_world[0])
-            result['actual_dir_y'] = float(actual_dir_world[1])
-            result['actual_dir_z'] = float(actual_dir_world[2])
-            
-            # Compute position error
-            position_error = np.linalg.norm(position - actual_position)
-            result['position_error'] = position_error
-            
-            # Store joint configuration
+
+            result.update({
+                'manipulability': manipulability,
+                'min_singular_value': min_singular_value,
+                'condition_number': condition_number,
+                'actual_ee_x_m': actual_position_m[0],
+                'actual_ee_y_m': actual_position_m[1],
+                'actual_ee_z_m': actual_position_m[2],
+                'position_error_m': np.linalg.norm(position_m - actual_position_m),
+            })
+
+            # Store joint configuration (in radians)
             for j in range(model.nq):
-                result[f'q{j+1}'] = q_solution[j]
+                result[f'q{j+1}_rad'] = q_solution_rad[j]
+
         else:
-            # Best-effort: compute FK at the last attempted configuration to see where robot would go
-            pin.forwardKinematics(model, data, q_solution)
+            # Best-effort: compute FK at the last attempted configuration
+            pin.forwardKinematics(model, data, q_solution_rad)
             pin.updateFramePlacements(model, data)
-            actual_ee_pose = data.oMf[ee_frame_id]
-            actual_position = actual_ee_pose.translation
-            actual_rotation = actual_ee_pose.rotation
+            actual_ee_pose_m = data.oMf[ee_frame_id]
+            actual_position_m = actual_ee_pose_m.translation
 
-            # No Jacobian quality metrics when not converged (set None)
-            result['manipulability'] = None
-            result['min_singular_value'] = None
-            result['condition_number'] = None
+            # No Jacobian quality metrics when not converged
+            result.update({
+                'manipulability': None,
+                'min_singular_value': None,
+                'condition_number': None,
+                'actual_ee_x_m': actual_position_m[0],
+                'actual_ee_y_m': actual_position_m[1],
+                'actual_ee_z_m': actual_position_m[2],
+                'position_error_m': np.linalg.norm(position_m - actual_position_m),
+            })
 
-            # Record best-effort actual robot pose
-            result['actual_ee_x'] = actual_position[0]
-            result['actual_ee_y'] = actual_position[1]
-            result['actual_ee_z'] = actual_position[2]
-            actual_dir_world = actual_rotation @ np.array([1.0, 0.0, 0.0])
-            result['actual_dir_x'] = float(actual_dir_world[0])
-            result['actual_dir_y'] = float(actual_dir_world[1])
-            result['actual_dir_z'] = float(actual_dir_world[2])
-
-            # Position error relative to target position
-            position_error = np.linalg.norm(position - actual_position)
-            result['position_error'] = position_error
-            
             for j in range(model.nq):
-                result[f'q{j+1}'] = None
-        
+                result[f'q{j+1}_rad'] = None
+
         results.append(result)
-        
-        # Progress indicator
         pbar.update(1)
 
     pbar.close()
-    
+
     return results
+
+
+def print_trajectory_summary(results, trajectory_id):
+    """
+    Print a brief summary of trajectory analysis results.
+
+    Args:
+        results: List of result dictionaries for this trajectory
+        trajectory_id: The trajectory identifier
+    """
+    if not results:
+        print(f"  Trajectory {trajectory_id}: No results")
+        return
+
+    # Basic stats
+    total_waypoints = len(results)
+    reachable_waypoints = sum(1 for r in results if r['reachable'])
+    unreachable_waypoints = total_waypoints - reachable_waypoints
+    reachability_rate = (reachable_waypoints / total_waypoints) * 100
+
+    # Quality metrics (only for reachable waypoints)
+    reachable_results = [r for r in results if r['reachable']]
+
+    if reachable_results:
+        avg_manipulability = np.mean([r['manipulability'] for r in reachable_results if r['manipulability'] is not None])
+        avg_min_singular = np.mean([r['min_singular_value'] for r in reachable_results if r['min_singular_value'] is not None])
+        avg_condition = np.mean([r['condition_number'] for r in reachable_results if r['condition_number'] is not None])
+        max_position_error = max([r['position_error_m'] for r in reachable_results if r['position_error_m'] is not None])
+
+        print(f"  Trajectory {trajectory_id} Summary:")
+        print(f"    - Waypoints: {total_waypoints} total, {reachable_waypoints} reachable ({reachability_rate:.1f}%)")
+        print(f"    - Unreachable: {unreachable_waypoints} waypoints")
+        print(f"    - Avg manipulability: {avg_manipulability:.3f}")
+        print(f"    - Avg min singular value: {avg_min_singular:.6f}")
+        print(f"    - Avg condition number: {avg_condition:.2f}")
+        print(f"    - Max position error: {max_position_error:.6f} m")
+    else:
+        print(f"  Trajectory {trajectory_id} Summary:")
+        print(f"    - Waypoints: {total_waypoints} total, {reachable_waypoints} reachable ({reachability_rate:.1f}%)")
+        print(f"    - Unreachable: {unreachable_waypoints} waypoints (100% unreachable)")
+        print(f"    - No quality metrics available (no reachable waypoints)")
 
 
 def save_results(results, output_dir, filename):
     """
     Save analysis results to CSV file.
-    
+
     Args:
         results: List of result dictionaries
         output_dir: Output directory
@@ -374,456 +492,300 @@ def save_results(results, output_dir, filename):
     """
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # Convert to DataFrame and save
     df = pd.DataFrame(results)
     output_path = os.path.join(output_dir, filename)
     df.to_csv(output_path, index=False)
-    
+
     print(f"\nResults saved to: {output_path}")
-    
+
     # Print summary statistics
     total_waypoints = len(results)
     reachable_waypoints = sum(1 for r in results if r['reachable'])
     unreachable_waypoints = total_waypoints - reachable_waypoints
-    
+
     print(f"\nSummary Statistics:")
     print(f"  - Total waypoints: {total_waypoints}")
     print(f"  - Reachable: {reachable_waypoints} ({100*reachable_waypoints/total_waypoints:.1f}%)")
     print(f"  - Unreachable: {unreachable_waypoints} ({100*unreachable_waypoints/total_waypoints:.1f}%)")
-    
+
     if reachable_waypoints > 0:
         reachable_results = [r for r in results if r['reachable']]
-        manip_values = [r['manipulability'] for r in reachable_results]
-        min_sv_values = [r['min_singular_value'] for r in reachable_results]
-        cond_values = [r['condition_number'] for r in reachable_results if r['condition_number'] != np.inf]
-        position_errors = [r['position_error'] for r in reachable_results]
-        
+        manip_values = [r['manipulability'] for r in reachable_results if r['manipulability'] is not None]
+        min_sv_values = [r['min_singular_value'] for r in reachable_results if r['min_singular_value'] is not None]
+        cond_values = [r['condition_number'] for r in reachable_results if r['condition_number'] is not None and r['condition_number'] != np.inf]
+        position_errors_m = [r['position_error_m'] for r in reachable_results]
+
         print(f"\nPosition Accuracy (for reachable waypoints):")
-        print(f"  Average Error: {np.mean(position_errors)*1000:.4f} mm")
-        print(f"  Max Error: {np.max(position_errors)*1000:.4f} mm")
-        print(f"  Min Error: {np.min(position_errors)*1000:.4f} mm")
-        
+        if position_errors_m:
+            print(f"  Average Error: {np.mean(position_errors_m)*1000:.4f} mm")
+            print(f"  Max Error: {np.max(position_errors_m)*1000:.4f} mm")
+            print(f"  Min Error: {np.min(position_errors_m)*1000:.4f} mm")
+
         print(f"\nSingularity Measures (for reachable waypoints):")
-        print(f"  Manipulability:")
-        print(f"    - Mean: {np.mean(manip_values):.6f}")
-        print(f"    - Min: {np.min(manip_values):.6f}")
-        print(f"    - Max: {np.max(manip_values):.6f}")
-        print(f"  Minimum Singular Value:")
-        print(f"    - Mean: {np.mean(min_sv_values):.6f}")
-        print(f"    - Min: {np.min(min_sv_values):.6f}")
-        print(f"    - Max: {np.max(min_sv_values):.6f}")
+        if manip_values:
+            print(f"  Manipulability:")
+            print(f"    - Mean: {np.mean(manip_values):.6f}")
+            print(f"    - Min: {np.min(manip_values):.6f}")
+            print(f"    - Max: {np.max(manip_values):.6f}")
+
+        if min_sv_values:
+            print(f"  Minimum Singular Value:")
+            print(f"    - Mean: {np.mean(min_sv_values):.6f}")
+            print(f"    - Min: {np.min(min_sv_values):.6f}")
+            print(f"    - Max: {np.max(min_sv_values):.6f}")
+
         if cond_values:
             print(f"  Condition Number:")
             print(f"    - Mean: {np.mean(cond_values):.2f}")
             print(f"    - Min: {np.min(cond_values):.2f}")
             print(f"    - Max: {np.max(cond_values):.2f}")
 
+        # Joint continuity analysis
+        discontinuities = [r for r in results if r.get('joint_discontinuity', False)]
+        orientation_issues = [r for r in results if r.get('orientation_issue', False)]
+
+        print(f"\nJoint Space Continuity:")
+        print(f"  - Waypoints with joint discontinuities: {len(discontinuities)}")
+        if discontinuities:
+            print(f"    - Max joint angle change: {max(d.get('angle_change_deg', 0) for d in discontinuities if 'angle_change_deg' in d):.1f}°")
+        print(f"  - Waypoints with orientation issues: {len(orientation_issues)}")
+
 
 def generate_3d_trajectory_plot(results, output_dir):
     """
-    Generate a 3D plot comparing target trajectory vs actual end-effector positions.
-    
+    Generate a 3D plot comparing target trajectories vs actual end-effector positions.
+
     Args:
-        results: List of result dictionaries
+        results: List of result dictionaries (from multiple trajectories)
         output_dir: Output directory for saving plots
     """
     print("\nGenerating 3D trajectory comparison plot...")
-    
+
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Extract target trajectory (all waypoints)
-    target_x = [r['x'] for r in results]
-    target_y = [r['y'] for r in results]
-    target_z = [r['z'] for r in results]
-    target_dir_x = [r.get('target_dir_x', 0.0) for r in results]
-    target_dir_y = [r.get('target_dir_y', 0.0) for r in results]
-    target_dir_z = [r.get('target_dir_z', 1.0) for r in results]
-    
-    # Extract actual achieved positions (only reachable)
-    reachable_results = [r for r in results if r['reachable']]
-    actual_x = [r['actual_ee_x'] for r in reachable_results]
-    actual_y = [r['actual_ee_y'] for r in reachable_results]
-    actual_z = [r['actual_ee_z'] for r in reachable_results]
-    actual_dir_x = [r.get('actual_dir_x', 0.0) for r in reachable_results]
-    actual_dir_y = [r.get('actual_dir_y', 0.0) for r in reachable_results]
-    actual_dir_z = [r.get('actual_dir_z', 1.0) for r in reachable_results]
-    
-    # Extract unreachable waypoints
-    unreachable_results = [r for r in results if not r['reachable']]
-    unreachable_x = [r['x'] for r in unreachable_results]
-    unreachable_y = [r['y'] for r in unreachable_results]
-    unreachable_z = [r['z'] for r in unreachable_results]
-    
+
+    # Group results by trajectory_id
+    trajectories = {}
+    for r in results:
+        traj_id = r['trajectory_id']
+        if traj_id not in trajectories:
+            trajectories[traj_id] = []
+        trajectories[traj_id].append(r)
+
+    # Get unique trajectory IDs and sort them
+    traj_ids = sorted(trajectories.keys())
+    colors = plt.cm.tab10(np.linspace(0, 1, len(traj_ids)))
+
+    print(f"  - Plotting {len(traj_ids)} trajectories")
+
     # Create 3D plot
     fig = plt.figure(figsize=(16, 12))
     ax = fig.add_subplot(111, projection='3d')
-    
+
     # Plot robot base at origin
     ax.scatter([0], [0], [0], c='black', marker='o', s=200, label='Robot Base', zorder=10)
-    
-    # Compute a consistent arrow length based on data spread
-    all_x = [0] + target_x
-    all_y = [0] + target_y
-    all_z = [0] + target_z
-    max_range = np.array([
-        max(all_x) - min(all_x),
-        max(all_y) - min(all_y),
-        max(all_z) - min(all_z)
-    ]).max() / 2.0 if target_x else 1.0
-    arrow_length = max(1e-6, 0.08 * max_range)
 
-    # Draw per-waypoint arrows only (no bulk target layer), start/end markers remain
-    
-    # Highlight start and end points
-    ax.scatter(target_x[0], target_y[0], target_z[0], c='green', marker='o', s=150, 
-               edgecolors='darkgreen', linewidths=2, label='Start Point', zorder=5)
-    ax.scatter(target_x[-1], target_y[-1], target_z[-1], c='red', marker='o', s=150, 
-               edgecolors='darkred', linewidths=2, label='End Point', zorder=5)
-    
-    # Render pose arrows per waypoint:
-    # - Reachable: green arrow at achieved pose
-    # - Unreachable: draw two arrows — yellow at target pose, red at best-effort robot pose
-    for r in results:
-        px, py, pz = r['x'], r['y'], r['z']
-        if r['reachable']:
-            ax.quiver(
-                [r['actual_ee_x']], [r['actual_ee_y']], [r['actual_ee_z']],
-                [r.get('actual_dir_x', 0.0)], [r.get('actual_dir_y', 0.0)], [r.get('actual_dir_z', 1.0)],
-                length=arrow_length, normalize=True, linewidths=1.8, colors='green', alpha=0.95, zorder=5
-            )
-        else:
-            # Yellow: target pose
-            ax.quiver(
-                [px], [py], [pz],
-                [r.get('target_dir_x', 0.0)], [r.get('target_dir_y', 0.0)], [r.get('target_dir_z', 1.0)],
-                length=arrow_length, normalize=True, linewidths=1.8, colors='gold', alpha=0.95, zorder=5
-            )
-            # Red: where the robot went (best-effort)
-            ax.quiver(
-                [r.get('actual_ee_x', px)], [r.get('actual_ee_y', py)], [r.get('actual_ee_z', pz)],
-                [r.get('actual_dir_x', 0.0)], [r.get('actual_dir_y', 0.0)], [r.get('actual_dir_z', 1.0)],
-                length=arrow_length, normalize=True, linewidths=1.8, colors='red', alpha=0.95, zorder=6
-            )
-    
-    # Removed extra 'x' markers; unreachable are represented by red pose arrows
-    
+    # Plot each trajectory
+    for i, traj_id in enumerate(traj_ids):
+        traj_results = trajectories[traj_id]
+        color = colors[i]
+
+        # Extract target trajectory (positions in meters)
+        target_x_m = [r['x_m'] for r in traj_results]
+        target_y_m = [r['y_m'] for r in traj_results]
+        target_z_m = [r['z_m'] for r in traj_results]
+
+        # Extract actual achieved positions (only reachable, in meters)
+        reachable_results = [r for r in traj_results if r['reachable']]
+        actual_x_m = [r['actual_ee_x_m'] for r in reachable_results]
+        actual_y_m = [r['actual_ee_y_m'] for r in reachable_results]
+        actual_z_m = [r['actual_ee_z_m'] for r in reachable_results]
+
+        # Extract unreachable waypoints (positions in meters)
+        unreachable_results = [r for r in traj_results if not r['reachable']]
+        unreachable_x_m = [r['x_m'] for r in unreachable_results]
+        unreachable_y_m = [r['y_m'] for r in unreachable_results]
+        unreachable_z_m = [r['z_m'] for r in unreachable_results]
+
+        # Highlight start and end points
+        if target_x_m:
+            ax.scatter(target_x_m[0], target_y_m[0], target_z_m[0], c=color, marker='o', s=150,
+                       edgecolors='black', linewidths=2, label=f'Traj {traj_id} Start', zorder=5)
+            ax.scatter(target_x_m[-1], target_y_m[-1], target_z_m[-1], c=color, marker='s', s=150,
+                       edgecolors='black', linewidths=2, label=f'Traj {traj_id} End', zorder=5)
+
+        # Plot target trajectory
+        if target_x_m:
+            ax.plot(target_x_m, target_y_m, target_z_m, color=color, linestyle='-', linewidth=2,
+                    alpha=0.7, label=f'Target Trajectory {traj_id}')
+
+        # Plot actual achieved positions (reachable)
+        if actual_x_m:
+            ax.plot(actual_x_m, actual_y_m, actual_z_m, color=color, linestyle='-', linewidth=3,
+                    label=f'Achieved Trajectory {traj_id}')
+
+        # Plot unreachable waypoints
+        if unreachable_x_m:
+            ax.scatter(unreachable_x_m, unreachable_y_m, unreachable_z_m, c=color, marker='x', s=100,
+                       label=f'Unreachable Points {traj_id}', zorder=5)
+
     # Labels and title
     ax.set_xlabel('X (meters)', fontsize=12, labelpad=10)
     ax.set_ylabel('Y (meters)', fontsize=12, labelpad=10)
     ax.set_zlabel('Z (meters)', fontsize=12, labelpad=10)
-    ax.set_title('3D Trajectory Comparison: Target vs Actual End-Effector Position\n(Robot at Origin)', 
+    ax.set_title('3D Trajectory Analysis: Multiple Trajectories\n(Robot at Origin)',
                  fontsize=14, fontweight='bold', pad=20)
-    
-    # Legend (move to upper right to avoid overlapping the summary textbox)
-    legend_handles = [
-        Line2D([0], [0], color='green', lw=3, label='Reachable IK Pose (arrow)'),
-        Line2D([0], [0], color='gold', lw=3, label='Unreachable Target Pose (arrow)'),
-        Line2D([0], [0], color='red', lw=3, label='Robot Went (unreachable)'),
-        Line2D([0], [0], marker='o', color='black', label='Robot Base', markersize=10, linestyle='None'),
-        Line2D([0], [0], marker='o', color='green', label='Start Point', markersize=10, linestyle='None'),
-        Line2D([0], [0], marker='o', color='red', label='End Point', markersize=10, linestyle='None'),
-    ]
-    ax.legend(handles=legend_handles, fontsize=10, loc='upper right')
-    
+
+    # Create legend with unique entries
+    legend_elements = [plt.Line2D([0], [0], color='black', marker='o', label='Robot Base', markersize=8)]
+    for i, traj_id in enumerate(traj_ids):
+        legend_elements.append(plt.Line2D([0], [0], color=colors[i], label=f'Trajectory {traj_id}'))
+
+    ax.legend(handles=legend_elements, fontsize=10, loc='upper right')
+
     # Grid
     ax.grid(True, alpha=0.3)
-    
-    # Set equal aspect ratio for better visualization (include robot base)
-    all_x = [0] + target_x
-    all_y = [0] + target_y
-    all_z = [0] + target_z
-    
-    max_range = np.array([
-        max(all_x) - min(all_x),
-        max(all_y) - min(all_y),
-        max(all_z) - min(all_z)
-    ]).max() / 2.0 if target_x else 1.0
-    
-    mid_x = (max(all_x) + min(all_x)) * 0.5
-    mid_y = (max(all_y) + min(all_y)) * 0.5
-    mid_z = (max(all_z) + min(all_z)) * 0.5
-    
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
-    
-    # Add some statistics as text
-    if reachable_results:
-        avg_error = np.mean([r['position_error'] for r in reachable_results])
-        max_error = np.max([r['position_error'] for r in reachable_results])
-        stats_text = f'Reachable: {len(reachable_results)}/{len(results)} ({100*len(reachable_results)/len(results):.1f}%)\n'
-        stats_text += f'Avg Position Error: {avg_error*1000:.3f} mm\n'
-        stats_text += f'Max Position Error: {max_error*1000:.3f} mm'
-        
-        ax.text2D(0.02, 0.98, stats_text, transform=ax.transAxes, 
-                  fontsize=10, verticalalignment='top',
-                  bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-    
+
+    # Set equal aspect ratio based on all trajectories
+    all_x_m, all_y_m, all_z_m = [0], [0], [0]  # Include robot base (in meters)
+    for traj_id in traj_ids:
+        traj_results = trajectories[traj_id]
+        target_x_m = [r['x_m'] for r in traj_results]
+        target_y_m = [r['y_m'] for r in traj_results]
+        target_z_m = [r['z_m'] for r in traj_results]
+        all_x_m.extend(target_x_m)
+        all_y_m.extend(target_y_m)
+        all_z_m.extend(target_z_m)
+
+    if all_x_m:
+        max_range = np.array([
+            max(all_x_m) - min(all_x_m),
+            max(all_y_m) - min(all_y_m),
+            max(all_z_m) - min(all_z_m)
+        ]).max() / 2.0
+
+        mid_x_m = (max(all_x_m) + min(all_x_m)) * 0.5
+        mid_y_m = (max(all_y_m) + min(all_y_m)) * 0.5
+        mid_z_m = (max(all_z_m) + min(all_z_m)) * 0.5
+
+        ax.set_xlim(mid_x_m - max_range, mid_x_m + max_range)
+        ax.set_ylim(mid_y_m - max_range, mid_y_m + max_range)
+        ax.set_zlim(mid_z_m - max_range, mid_z_m + max_range)
+
+    # Add statistics as text
+    total_waypoints = len(results)
+    reachable_waypoints = sum(1 for r in results if r['reachable'])
+    total_trajectories = len(traj_ids)
+
+    stats_text = f'Total Trajectories: {total_trajectories}\n'
+    stats_text += f'Total Waypoints: {total_waypoints}\n'
+    stats_text += f'Reachable: {reachable_waypoints} ({100*reachable_waypoints/total_waypoints:.1f}%)\n'
+
+    if reachable_waypoints > 0:
+        reachable_results = [r for r in results if r['reachable']]
+        position_errors_m = [r['position_error_m'] for r in reachable_results if 'position_error_m' in r]
+        if position_errors_m:
+            avg_error_m = np.mean(position_errors_m)
+            max_error_m = np.max(position_errors_m)
+            stats_text += f'Avg Position Error: {avg_error_m*1000:.3f} mm\n'
+            stats_text += f'Max Position Error: {max_error_m*1000:.3f} mm'
+
+    ax.text2D(0.02, 0.98, stats_text, transform=ax.transAxes,
+              fontsize=10, verticalalignment='top',
+              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
     plt.tight_layout()
-    
+
     trajectory_3d_path = os.path.join(output_dir, TRAJECTORY_3D_PLOT)
     plt.savefig(trajectory_3d_path, dpi=300, bbox_inches='tight')
     print(f"  - Saved: {trajectory_3d_path}")
     plt.close()
 
 
-def generate_3d_trajectory_plot_zoomed(results, output_dir):
+def generate_analysis_plots(results, model, output_dir):
     """
-    Generate a zoomed-in 3D plot focusing on the trajectory (without robot base).
-    Shows orientation-aware pose arrows for target (thicker) and actual (thinner) poses.
+    Generate analysis plots for reachability, manipulability, and singularity measures.
+
+    Args:
+        results: List of result dictionaries
+        model: Pinocchio model
+        output_dir: Output directory for saving plots
     """
-    print("\nGenerating zoomed-in 3D trajectory plot...")
+    print("\nGenerating analysis plots...")
 
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
-    # Extract target trajectory (all waypoints)
-    target_x = [r['x'] for r in results]
-    target_y = [r['y'] for r in results]
-    target_z = [r['z'] for r in results]
-    target_dir_x = [r.get('target_dir_x', 0.0) for r in results]
-    target_dir_y = [r.get('target_dir_y', 0.0) for r in results]
-    target_dir_z = [r.get('target_dir_z', 1.0) for r in results]
-
-    # Extract actual achieved positions (only reachable)
-    reachable_results = [r for r in results if r['reachable']]
-    actual_x = [r['actual_ee_x'] for r in reachable_results]
-    actual_y = [r['actual_ee_y'] for r in reachable_results]
-    actual_z = [r['actual_ee_z'] for r in reachable_results]
-    actual_dir_x = [r.get('actual_dir_x', 0.0) for r in reachable_results]
-    actual_dir_y = [r.get('actual_dir_y', 0.0) for r in reachable_results]
-    actual_dir_z = [r.get('actual_dir_z', 1.0) for r in reachable_results]
-
-    # Extract unreachable waypoints
-    unreachable_results = [r for r in results if not r['reachable']]
-    unreachable_x = [r['x'] for r in unreachable_results]
-    unreachable_y = [r['y'] for r in unreachable_results]
-    unreachable_z = [r['z'] for r in unreachable_results]
-
-    # Create 3D plot
-    fig = plt.figure(figsize=(16, 12))
-    ax = fig.add_subplot(111, projection='3d')
-
-    # Compute a consistent arrow length based on trajectory spread (exclude base)
-    if target_x:
-        max_range = np.array([
-            max(target_x) - min(target_x),
-            max(target_y) - min(target_y),
-            max(target_z) - min(target_z)
-        ]).max() / 2.0
-    else:
-        max_range = 1.0
-    arrow_length = max(1e-6, 0.08 * max_range)
-
-    # Draw per-waypoint arrows only (no bulk target layer)
-
-    # Highlight start and end points
-    if target_x:
-        ax.scatter(target_x[0], target_y[0], target_z[0], c='green', marker='o', s=150, 
-                   edgecolors='darkgreen', linewidths=2, label='Start Point', zorder=5)
-        ax.scatter(target_x[-1], target_y[-1], target_z[-1], c='red', marker='o', s=150, 
-                   edgecolors='darkred', linewidths=2, label='End Point', zorder=5)
-
-    # Render pose arrows per waypoint:
-    # - Reachable: green arrow at achieved pose
-    # - Unreachable: draw two arrows — yellow at target pose, red at best-effort robot pose
+    # Group results by trajectory_id
+    trajectories = {}
     for r in results:
-        px, py, pz = r['x'], r['y'], r['z']
-        if r['reachable']:
-            ax.quiver(
-                [r['actual_ee_x']], [r['actual_ee_y']], [r['actual_ee_z']],
-                [r.get('actual_dir_x', 0.0)], [r.get('actual_dir_y', 0.0)], [r.get('actual_dir_z', 1.0)],
-                length=arrow_length, normalize=True, linewidths=1.8, colors='green', alpha=0.95, zorder=5
-            )
-        else:
-            # Yellow: target pose
-            ax.quiver(
-                [px], [py], [pz],
-                [r.get('target_dir_x', 0.0)], [r.get('target_dir_y', 0.0)], [r.get('target_dir_z', 1.0)],
-                length=arrow_length, normalize=True, linewidths=1.8, colors='gold', alpha=0.95, zorder=5
-            )
-            # Red: where the robot went (best-effort)
-            ax.quiver(
-                [r.get('actual_ee_x', px)], [r.get('actual_ee_y', py)], [r.get('actual_ee_z', pz)],
-                [r.get('actual_dir_x', 0.0)], [r.get('actual_dir_y', 0.0)], [r.get('actual_dir_z', 1.0)],
-                length=arrow_length, normalize=True, linewidths=1.8, colors='red', alpha=0.95, zorder=6
-            )
+        traj_id = r['trajectory_id']
+        if traj_id not in trajectories:
+            trajectories[traj_id] = []
+        trajectories[traj_id].append(r)
 
-    # Removed extra 'x' markers; unreachable are represented by red pose arrows
+    # Get unique trajectory IDs and sort them
+    traj_ids = sorted(trajectories.keys())
+    colors = plt.cm.tab10(np.linspace(0, 1, len(traj_ids)))
 
-    # Labels and title
-    ax.set_xlabel('X (meters)', fontsize=12, labelpad=10)
-    ax.set_ylabel('Y (meters)', fontsize=12, labelpad=10)
-    ax.set_zlabel('Z (meters)', fontsize=12, labelpad=10)
-    ax.set_title('3D Trajectory (Zoomed): Target vs Actual End-Effector Pose', 
-                 fontsize=14, fontweight='bold', pad=20)
+    print(f"  - Plotting analysis for {len(traj_ids)} trajectories")
 
-    # Legend (upper right)
-    legend_handles = [
-        Line2D([0], [0], color='green', lw=3, label='Reachable IK Pose (arrow)'),
-        Line2D([0], [0], color='gold', lw=3, label='Unreachable Target Pose (arrow)'),
-        Line2D([0], [0], color='red', lw=3, label='Robot Went (unreachable)'),
-        Line2D([0], [0], marker='o', color='green', label='Start Point', markersize=10, linestyle='None'),
-        Line2D([0], [0], marker='o', color='red', label='End Point', markersize=10, linestyle='None'),
-    ]
-    ax.legend(handles=legend_handles, fontsize=10, loc='upper right')
+    # Extract data for all trajectories combined
+    all_indices = [r['waypoint_index'] for r in results]
+    all_reachable = [1 if r['reachable'] else 0 for r in results]
 
-    # Grid
-    ax.grid(True, alpha=0.3)
-
-    # Set equal aspect tightly around trajectory (exclude base)
-    if target_x:
-        mid_x = (max(target_x) + min(target_x)) * 0.5
-        mid_y = (max(target_y) + min(target_y)) * 0.5
-        mid_z = (max(target_z) + min(target_z)) * 0.5
-        ax.set_xlim(mid_x - max_range, mid_x + max_range)
-        ax.set_ylim(mid_y - max_range, mid_y + max_range)
-        ax.set_zlim(mid_z - max_range, mid_z + max_range)
-
-    # Add some statistics as text (retain top-left placement)
-    if reachable_results:
-        avg_error = np.mean([r['position_error'] for r in reachable_results])
-        max_error = np.max([r['position_error'] for r in reachable_results])
-        stats_text = f'Reachable: {len(reachable_results)}/{len(results)} ({100*len(reachable_results)/len(results):.1f}%)\n'
-        stats_text += f'Avg Position Error: {avg_error*1000:.3f} mm\n'
-        stats_text += f'Max Position Error: {max_error*1000:.3f} mm'
-        ax.text2D(0.02, 0.98, stats_text, transform=ax.transAxes, 
-                  fontsize=10, verticalalignment='top',
-                  bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-    plt.tight_layout()
-
-    trajectory_3d_zoomed_path = os.path.join(output_dir, 'trajectory_3d_comparison_zoomed.png')
-    plt.savefig(trajectory_3d_zoomed_path, dpi=300, bbox_inches='tight')
-    print(f"  - Saved: {trajectory_3d_zoomed_path}")
-    plt.close()
-
-
-def generate_joint_angles_plot(results, model, output_dir):
-    """
-    Generate a 6-subplot figure showing joint angles along trajectory with limits.
-    
-    Args:
-        results: List of result dictionaries
-        model: Pinocchio model (for joint limits)
-        output_dir: Output directory for saving plots
-    """
-    print("\nGenerating joint angles plot...")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Filter reachable waypoints
-    reachable_results = [r for r in results if r['reachable']]
-    
-    if not reachable_results:
-        print("  - No reachable waypoints to plot joint angles")
-        return
-    
-    # Extract data
-    indices = [r['waypoint_index'] for r in reachable_results]
-    
-    # Joint names for labels
-    joint_names = ['Joint 1 (Base)', 'Joint 2 (Shoulder)', 'Joint 3 (Elbow)', 
-                   'Joint 4 (Wrist Roll)', 'Joint 5 (Wrist Bend)', 'Joint 6 (Wrist Twist)']
-    
-    # Create figure with 6 subplots (3 rows, 2 columns)
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
-    axes = axes.flatten()
-    
-    # Use joint limits in radians (model limits are already in radians)
-    lower_limits_rad = model.lowerPositionLimit
-    upper_limits_rad = model.upperPositionLimit
-    
-    for i in range(6):
-        ax = axes[i]
-        
-        # Extract joint angles for this joint (radians)
-        joint_angles = [r[f'q{i+1}'] for r in reachable_results]
-        
-        # Plot joint angles
-        ax.plot(indices, joint_angles, 'b-', linewidth=2, label='Joint Angle')
-        
-        # Plot joint limits
-        ax.axhline(y=lower_limits_rad[i], color='r', linestyle='--', linewidth=2, 
-                   label=f'Min Limit ({lower_limits_rad[i]:.2f} rad)')
-        ax.axhline(y=upper_limits_rad[i], color='r', linestyle='--', linewidth=2, 
-                   label=f'Max Limit ({upper_limits_rad[i]:.2f} rad)')
-        
-        # Fill limit regions
-        ax.fill_between(indices, lower_limits_rad[i], upper_limits_rad[i], 
-                        alpha=0.1, color='green', label='Valid Range')
-        
-        # Labels and title
-        ax.set_xlabel('Waypoint Index', fontsize=11)
-        ax.set_ylabel('Angle (radians)', fontsize=11)
-        ax.set_title(joint_names[i], fontsize=12, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        # Show legend only on the first subplot to avoid repetition
-        if i == 0:
-            ax.legend(fontsize=8, loc='best')
-        
-        # Add some statistics
-        mean_angle = np.mean(joint_angles)
-        ax.axhline(y=mean_angle, color='orange', linestyle=':', linewidth=1.5, alpha=0.7)
-        
-    plt.suptitle('Joint Angles Along Trajectory', fontsize=16, fontweight='bold', y=0.995)
-    plt.tight_layout()
-    
-    joint_angles_path = os.path.join(output_dir, JOINT_ANGLES_PLOT)
-    plt.savefig(joint_angles_path, dpi=300, bbox_inches='tight')
-    print(f"  - Saved: {joint_angles_path}")
-    plt.close()
-
-
-def generate_plots(results, output_dir):
-    """
-    Generate visualization plots for the analysis.
-    
-    Args:
-        results: List of result dictionaries
-        output_dir: Output directory for saving plots
-    """
-    print("\nGenerating plots...")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Extract data
-    indices = [r['waypoint_index'] for r in results]
-    reachable = [1 if r['reachable'] else 0 for r in results]
-    
     # Filter reachable waypoints for singularity measures
-    reachable_indices = [r['waypoint_index'] for r in results if r['reachable']]
-    manipulability = [r['manipulability'] for r in results if r['reachable']]
-    min_singular_values = [r['min_singular_value'] for r in results if r['reachable']]
-    condition_numbers = [r['condition_number'] for r in results if r['reachable'] and r['condition_number'] != np.inf]
-    condition_indices = [r['waypoint_index'] for r in results if r['reachable'] and r['condition_number'] != np.inf]
-    
-    # Plot 1: Reachability
+    all_reachable_indices = [r['waypoint_index'] for r in results if r['reachable']]
+    all_manipulability = [r['manipulability'] for r in results if r['reachable'] and r['manipulability'] is not None]
+    all_min_singular_values = [r['min_singular_value'] for r in results if r['reachable'] and r['min_singular_value'] is not None]
+    all_condition_numbers = [r['condition_number'] for r in results if r['reachable'] and r['condition_number'] is not None and r['condition_number'] != np.inf]
+
+    # Plot 1: Reachability (all trajectories)
     plt.figure(figsize=(12, 6))
-    plt.plot(indices, reachable, 'b-', linewidth=1.5)
-    plt.fill_between(indices, 0, reachable, alpha=0.3)
+
+    # Plot each trajectory separately
+    for i, traj_id in enumerate(traj_ids):
+        traj_results = trajectories[traj_id]
+        color = colors[i]
+
+        indices = [r['waypoint_index'] for r in traj_results]
+        reachable = [1 if r['reachable'] else 0 for r in traj_results]
+
+        plt.plot(indices, reachable, color=color, linewidth=2, label=f'Trajectory {traj_id}')
+        plt.fill_between(indices, 0, reachable, alpha=0.3, color=color)
+
     plt.xlabel('Waypoint Index', fontsize=12)
     plt.ylabel('Reachable (1=Yes, 0=No)', fontsize=12)
-    plt.title('Kinematic Reachability Along Trajectory', fontsize=14, fontweight='bold')
+    plt.title('Kinematic Reachability Along All Trajectories', fontsize=14, fontweight='bold')
     plt.grid(True, alpha=0.3)
     plt.ylim([-0.1, 1.1])
+    plt.legend(fontsize=10)
     plt.tight_layout()
     reachability_path = os.path.join(output_dir, REACHABILITY_PLOT)
     plt.savefig(reachability_path, dpi=300, bbox_inches='tight')
     print(f"  - Saved: {reachability_path}")
     plt.close()
-    
-    # Plot 2: Manipulability Index
-    if manipulability:
+
+    # Plot 2: Manipulability Index (all trajectories)
+    if all_manipulability:
         plt.figure(figsize=(12, 6))
-        plt.plot(reachable_indices, manipulability, 'g-', linewidth=1.5, label='Manipulability Index')
+
+        # Plot each trajectory separately
+        for i, traj_id in enumerate(traj_ids):
+            traj_results = trajectories[traj_id]
+            color = colors[i]
+
+            reachable_indices = [r['waypoint_index'] for r in traj_results if r['reachable']]
+            manipulability = [r['manipulability'] for r in traj_results if r['reachable'] and r['manipulability'] is not None]
+
+            if manipulability:
+                plt.plot(reachable_indices, manipulability, color=color, linewidth=2, label=f'Trajectory {traj_id}')
+
         plt.xlabel('Waypoint Index', fontsize=12)
         plt.ylabel('Manipulability Index', fontsize=12)
-        plt.title('Manipulability Index Along Trajectory', fontsize=14, fontweight='bold')
+        plt.title('Manipulability Index Along All Trajectories', fontsize=14, fontweight='bold')
         plt.grid(True, alpha=0.3)
         plt.legend(fontsize=10)
         plt.tight_layout()
@@ -831,73 +793,171 @@ def generate_plots(results, output_dir):
         plt.savefig(manip_path, dpi=300, bbox_inches='tight')
         print(f"  - Saved: {manip_path}")
         plt.close()
-    
+
     # Plot 3: Singularity Measures (Minimum Singular Value)
-    if min_singular_values:
+    if all_min_singular_values:
         plt.figure(figsize=(12, 6))
-        plt.plot(reachable_indices, min_singular_values, 'r-', linewidth=1.5, label='Min. Singular Value')
+
+        # Plot each trajectory separately
+        for i, traj_id in enumerate(traj_ids):
+            traj_results = trajectories[traj_id]
+            color = colors[i]
+
+            reachable_indices = [r['waypoint_index'] for r in traj_results if r['reachable']]
+            min_singular_values = [r['min_singular_value'] for r in traj_results if r['reachable'] and r['min_singular_value'] is not None]
+
+            if min_singular_values:
+                plt.plot(reachable_indices, min_singular_values, color=color, linewidth=2, label=f'Trajectory {traj_id}')
+
         plt.xlabel('Waypoint Index', fontsize=12)
         plt.ylabel('Minimum Singular Value', fontsize=12)
-        plt.title('Singularity Proximity Along Trajectory\n(Lower values = closer to singularity)', 
+        plt.title('Singularity Proximity Along All Trajectories\n(Lower values = closer to singularity)',
                   fontsize=14, fontweight='bold')
         plt.grid(True, alpha=0.3)
         plt.legend(fontsize=10)
-        
+
         # Add threshold line for warning
         threshold = 0.1
-        plt.axhline(y=threshold, color='orange', linestyle='--', linewidth=2, 
+        plt.axhline(y=threshold, color='orange', linestyle='--', linewidth=2,
                     label=f'Warning Threshold ({threshold})')
         plt.legend(fontsize=10)
-        
+
         plt.tight_layout()
         sing_path = os.path.join(output_dir, SINGULARITY_PLOT)
         plt.savefig(sing_path, dpi=300, bbox_inches='tight')
         print(f"  - Saved: {sing_path}")
         plt.close()
-    
-    # Plot 4: Combined singularity measures
-    if manipulability and min_singular_values:
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-        
-        # Manipulability
-        ax1.plot(reachable_indices, manipulability, 'g-', linewidth=1.5)
-        ax1.set_ylabel('Manipulability Index', fontsize=12)
-        ax1.set_title('Singularity Analysis Along Trajectory', fontsize=14, fontweight='bold')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_xlabel('Waypoint Index', fontsize=12)
-        
-        # Minimum Singular Value
-        ax2.plot(reachable_indices, min_singular_values, 'r-', linewidth=1.5)
-        ax2.set_xlabel('Waypoint Index', fontsize=12)
-        ax2.set_ylabel('Min. Singular Value', fontsize=12)
-        ax2.grid(True, alpha=0.3)
-        ax2.axhline(y=0.1, color='orange', linestyle='--', linewidth=2, alpha=0.7)
-        
-        plt.tight_layout()
-        combined_path = os.path.join(output_dir, 'combined_singularity_analysis.png')
-        plt.savefig(combined_path, dpi=300, bbox_inches='tight')
-        print(f"  - Saved: {combined_path}")
-        plt.close()
 
 
-def process_single_csv(model, csv_path: str, output_dir: str):
+def generate_joint_analysis_plot(results, model, output_dir):
     """
-    Run the full analysis pipeline for a single CSV.
+    Generate joint angles plot with continuity analysis.
+
+    Args:
+        results: List of result dictionaries (from multiple trajectories)
+        model: Pinocchio model
+        output_dir: Output directory for saving plots
     """
-    data = model.createData()
-    trajectory = load_trajectory(str(csv_path))
-    print("\nAnalyzing trajectory... ")
-    results = analyze_trajectory(model, data, trajectory)
-    save_results(results, str(output_dir), RESULTS_CSV)
-    generate_plots(results, str(output_dir))
-    generate_3d_trajectory_plot(results, str(output_dir))
-    generate_3d_trajectory_plot_zoomed(results, str(output_dir))
-    generate_joint_angles_plot(results, model, str(output_dir))
+    print("\nGenerating joint analysis plot...")
+
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Group results by trajectory_id
+    trajectories = {}
+    for r in results:
+        traj_id = r['trajectory_id']
+        if traj_id not in trajectories:
+            trajectories[traj_id] = []
+        trajectories[traj_id].append(r)
+
+    # Get unique trajectory IDs and sort them
+    traj_ids = sorted(trajectories.keys())
+    colors = plt.cm.tab10(np.linspace(0, 1, len(traj_ids)))
+
+    print(f"  - Plotting joint analysis for {len(traj_ids)} trajectories")
+
+    # Filter reachable waypoints across all trajectories
+    all_reachable_results = [r for r in results if r['reachable']]
+
+    if not all_reachable_results:
+        print("  - No reachable waypoints to plot joint angles")
+        return
+
+    # Extract data for all trajectories
+    all_indices = [r['waypoint_index'] for r in all_reachable_results]
+
+    # Joint names for labels
+    joint_names = ['Joint 1 (Base)', 'Joint 2 (Shoulder)', 'Joint 3 (Elbow)',
+                   'Joint 4 (Wrist Roll)', 'Joint 5 (Wrist Bend)', 'Joint 6 (Wrist Twist)']
+
+    # Create figure with 6 subplots (3 rows, 2 columns)
+    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
+    axes = axes.flatten()
+
+    # Use joint limits in radians (model limits are already in radians)
+    lower_limits_rad = model.lowerPositionLimit
+    upper_limits_rad = model.upperPositionLimit
+
+    # Get discontinuity and orientation issue markers for all trajectories
+    discontinuity_indices = [r['waypoint_index'] for r in results if r.get('joint_discontinuity', False)]
+    orientation_issue_indices = [r['waypoint_index'] for r in results if r.get('orientation_issue', False)]
+
+    for i in range(6):
+        ax = axes[i]
+
+        # Plot joint angles for each trajectory
+        for j, traj_id in enumerate(traj_ids):
+            traj_results = trajectories[traj_id]
+            color = colors[j]
+
+            # Filter reachable results for this trajectory
+            traj_reachable_results = [r for r in traj_results if r['reachable']]
+            if not traj_reachable_results:
+                continue
+
+            indices = [r['waypoint_index'] for r in traj_reachable_results]
+            joint_angles_rad = [r[f'q{i+1}_rad'] for r in traj_reachable_results]
+
+            # Plot joint angles for this trajectory
+            ax.plot(indices, joint_angles_rad, color=color, linewidth=2, label=f'Trajectory {traj_id}' if i == 0 else "")
+
+        # Plot joint limits
+        ax.axhline(y=lower_limits_rad[i], color='r', linestyle='--', linewidth=2,
+                   label=f'Min Limit ({lower_limits_rad[i]:.2f} rad)' if i == 0 else "")
+        ax.axhline(y=upper_limits_rad[i], color='r', linestyle='--', linewidth=2,
+                   label=f'Max Limit ({upper_limits_rad[i]:.2f} rad)' if i == 0 else "")
+
+        # Fill limit regions
+        if all_indices:  # Use all_indices for x-axis range
+            ax.fill_between(all_indices, lower_limits_rad[i], upper_limits_rad[i],
+                            alpha=0.1, color='green', label='Valid Range' if i == 0 else "")
+
+        # Mark discontinuities
+        for disc_idx in discontinuity_indices:
+            if disc_idx in all_indices:
+                ax.axvline(x=disc_idx, color='orange', linestyle=':', linewidth=2,
+                          label='Discontinuity' if i == 0 else "")
+
+        # Mark orientation issues
+        for issue_idx in orientation_issue_indices:
+            if issue_idx in all_indices:
+                # Find the joint angle value at this waypoint
+                issue_result = next((r for r in all_reachable_results if r['waypoint_index'] == issue_idx), None)
+                if issue_result:
+                    joint_angle_rad = issue_result.get(f'q{i+1}_rad', 0)
+                    ax.scatter([issue_idx], [joint_angle_rad], color='red', s=50, marker='x',
+                              label='Orientation Issue' if i == 0 else "")
+
+        # Labels and title
+        ax.set_xlabel('Waypoint Index', fontsize=11)
+        ax.set_ylabel('Angle (radians)', fontsize=11)
+        ax.set_title(joint_names[i], fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+        # Show legend only on the first subplot to avoid repetition
+        if i == 0:
+            ax.legend(fontsize=8, loc='best')
+
+        # Add mean line for all trajectories combined
+        all_joint_angles_rad = [r[f'q{i+1}_rad'] for r in all_reachable_results if f'q{i+1}_rad' in r]
+        if all_joint_angles_rad:
+            mean_angle_rad = np.mean(all_joint_angles_rad)
+            ax.axhline(y=mean_angle_rad, color='purple', linestyle=':', linewidth=1.5, alpha=0.7,
+                      label=f'Mean ({mean_angle_rad:.2f} rad)' if i == 0 else "")
+
+    plt.suptitle('Joint Angles Along All Trajectories with Continuity Analysis', fontsize=16, fontweight='bold', y=0.995)
+    plt.tight_layout()
+
+    joint_angles_path = os.path.join(output_dir, JOINT_ANGLES_PLOT)
+    plt.savefig(joint_angles_path, dpi=300, bbox_inches='tight')
+    print(f"  - Saved: {joint_angles_path}")
+    plt.close()
 
 
 def main():
     """
-    Main function to run the trajectory analysis for a single CSV or a folder of CSVs.
+    Main function to run the trajectory analysis.
     """
     print("=" * 70)
     print("ABB IRB 1300 Trajectory Analysis using Pinocchio")
@@ -907,86 +967,94 @@ def main():
     script_dir = Path(__file__).parent.parent
 
     # CLI arguments
-    parser = argparse.ArgumentParser(description="Analyze IRB1300 trajectory from CSV or folder of CSVs.")
-    parser.add_argument("-i", "--input", type=str, default=None,
-                        help="Path to a CSV file or a folder containing CSV files.")
-    parser.add_argument("-u", "--urdf", type=str, default=None,
-                        help="Path to the URDF file. Defaults to configured URDF_PATH.")
+    parser = argparse.ArgumentParser(description="Analyze IRB1300 trajectory kinematic feasibility using T_P_K format trajectories.")
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="Output directory to store results. Defaults to configured OUTPUT_DIR.")
-    parser.add_argument("-b", "--base", action="store_true",
-                        help="Assume input CSV(s) are already in robot base frame. If omitted, inputs will be converted first.")
+    parser.add_argument("--max-iterations", type=int, default=IK_MAX_ITERATIONS,
+                        help="Maximum IK iterations (default: 1000)")
+    parser.add_argument("--tolerance", type=float, default=IK_TOLERANCE,
+                        help="IK tolerance (default: 1e-4)")
+    parser.add_argument("--visualize", action="store_true", default=True,
+                        help="Generate visualization plots (default: True)")
+
     args = parser.parse_args()
 
     # Resolve paths
-    urdf_path = Path(args.urdf) if args.urdf else (script_dir / URDF_PATH)
-    input_path = Path(args.input) if args.input else (script_dir / CSV_PATH)
-    output_base_dir = Path(args.output) if args.output else (script_dir / OUTPUT_DIR)
+    urdf_path = script_dir / URDF_PATH
+    input_path = script_dir / CSV_PATH
+    output_dir = Path(args.output) if args.output else (script_dir / OUTPUT_DIR)
 
-    # Ensure output base directory exists
-    os.makedirs(output_base_dir, exist_ok=True)
+    print(f"Configuration:")
+    print(f"  - URDF: {urdf_path}")
+    print(f"  - Input CSV: {input_path}")
+    print(f"  - Output directory: {output_dir}")
+    print(f"  - Input format: T_P_K (knife poses in plate frame)")
+    print(f"  - IK max iterations: {args.max_iterations}")
+    print(f"  - IK tolerance: {args.tolerance}")
+    print(f"  - Generate plots: {args.visualize}")
 
-    # Optionally convert inputs to base frame if --base not passed
-    cleanup_temp_dir = None
-    transformer_script = script_dir / "scripts" / "utils" / "trajectory_transform.py"
-    converted_input_path = input_path
-
-    if not args.base:
-        try:
-            if input_path.is_dir():
-                # Folder conversion -> create temp folder under the input folder
-                cleanup_temp_dir = input_path / ("_converted_tmp_" + uuid.uuid4().hex[:8])
-                os.makedirs(cleanup_temp_dir, exist_ok=True)
-                print(f"Converting folder to base frame (meters): {input_path} -> {cleanup_temp_dir}")
-                cmd = [sys.executable, str(transformer_script), str(input_path), str(cleanup_temp_dir), "--meters"]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(result.stdout)
-                    print(result.stderr)
-                    raise RuntimeError("Conversion failed for folder input")
-                converted_input_path = cleanup_temp_dir
-            else:
-                # Single file conversion -> create temp folder next to file
-                cleanup_temp_dir = input_path.parent / ("_converted_tmp_" + uuid.uuid4().hex[:8])
-                os.makedirs(cleanup_temp_dir, exist_ok=True)
-                dest_csv = cleanup_temp_dir / input_path.name
-                print(f"Converting CSV to base frame (meters): {input_path} -> {dest_csv}")
-                cmd = [sys.executable, str(transformer_script), str(input_path), str(dest_csv), "--meters"]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(result.stdout)
-                    print(result.stderr)
-                    raise RuntimeError("Conversion failed for single CSV input")
-                converted_input_path = dest_csv
-        except Exception as e:
-            # Ensure cleanup attempt before re-raising
-            if cleanup_temp_dir and cleanup_temp_dir.exists():
-                shutil.rmtree(cleanup_temp_dir, ignore_errors=True)
-            raise
-
-    # Load robot model once
-    model, _ = load_robot_model(str(urdf_path))
-
+    # Load robot model
     try:
-        if converted_input_path.is_dir():
-            csv_files = sorted(list(converted_input_path.glob("*.csv")))
-            if not csv_files:
-                print(f"No CSV files found in folder: {converted_input_path}")
-                return
+        model, data = load_robot_model(str(urdf_path))
+    except Exception as e:
+        print(f"Error loading robot model: {e}")
+        return
 
-            print(f"\nBatch processing {len(csv_files)} file(s) from: {converted_input_path}")
-            for csv_file in tqdm(csv_files, desc="Files", unit="file"):
-                # Create a per-file subfolder under output directory
-                per_file_output = output_base_dir / csv_file.stem
-                os.makedirs(per_file_output, exist_ok=True)
-                process_single_csv(model, str(csv_file), str(per_file_output))
-        else:
-            # Single CSV processing; keep prior behavior (no extra subfolder)
-            process_single_csv(model, str(converted_input_path), str(output_base_dir))
-    finally:
-        # Cleanup temporary conversion dir if created
-        if cleanup_temp_dir and cleanup_temp_dir.exists():
-            shutil.rmtree(cleanup_temp_dir, ignore_errors=True)
+    # Load and transform trajectories (data already in meters from CSV)
+    try:
+        trajectories_m = load_and_transform_trajectory(str(input_path))
+    except Exception as e:
+        print(f"Error loading trajectory: {e}")
+        return
+
+    # Analyze all trajectories
+    print("\nStarting kinematic analysis...")
+    all_results = []
+    q_prev_rad = None  # Reset between trajectories for independent analysis (radians)
+
+    for traj_id, trajectory_m in enumerate(trajectories_m):
+        print(f"\nAnalyzing trajectory {traj_id + 1}/{len(trajectories_m)}...")
+        results = analyze_trajectory_kinematics(model, data, trajectory_m,
+                                              trajectory_id=traj_id + 1,
+                                              q_prev_rad=q_prev_rad,
+                                              max_iterations=args.max_iterations,
+                                              tolerance=args.tolerance)
+
+        # Print immediate summary for this trajectory
+        print_trajectory_summary(results, traj_id + 1)
+
+        all_results.extend(results)
+        q_prev_rad = None  # Reset for next trajectory
+
+    # Perform additional analyses
+    print("\nPerforming joint continuity analysis...")
+    reachable_results = [r for r in all_results if r['reachable']]
+    if reachable_results:
+        joint_angles_rad = []
+        waypoint_indices = []
+        for r in reachable_results:
+            joint_angles_rad.append([r.get(f'q{j+1}_rad', 0) for j in range(model.nq)])
+            waypoint_indices.append(r['waypoint_index'])
+
+        joint_discontinuities = check_joint_continuity(joint_angles_rad, waypoint_indices)
+        orientation_issues = analyze_orientation_constraints(all_results)
+
+        print(f"  - Found {len(joint_discontinuities)} joint discontinuities")
+        print(f"  - Found {len(orientation_issues)} orientation constraint issues")
+
+        # Add analysis results to the results data
+        for i, result in enumerate(all_results):
+            result['joint_discontinuity'] = any(d['waypoint_index'] == result['waypoint_index'] for d in joint_discontinuities)
+            result['orientation_issue'] = any(o['start_waypoint'] == i or o['end_waypoint'] == i for o in orientation_issues)
+
+    # Save results
+    save_results(all_results, str(output_dir), RESULTS_CSV)
+
+    # Generate plots if requested
+    if args.visualize:
+        generate_3d_trajectory_plot(all_results, str(output_dir))
+        generate_analysis_plots(all_results, model, str(output_dir))
+        generate_joint_analysis_plot(all_results, model, str(output_dir))
 
     print("\n" + "=" * 70)
     print("Analysis complete!")
@@ -995,4 +1063,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

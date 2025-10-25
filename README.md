@@ -40,7 +40,7 @@ This is the initial structure. This is expected to change after we bring in isaa
 │   │   ├── test_math_utils.py     # Math utility function tests
 │   │   ├── test_trajectory_transforms.py  # Transformation tests
 │   │   └── run_all_tests.py       # Test runner script
-│   ├── analyze_irb1300_trajectory.py  # Main kinematic analysis tool
+│   ├── analyze_irb1300_trajectory.py  # Main kinematic analysis tool (uses hardcoded paths)
 │   └── utils/
 │       ├── csv_handling.py        # CSV file parsing and handling
 │       ├── handle_transforms.py   # Coordinate frame transformations
@@ -257,33 +257,87 @@ output.csv               # Output transformed CSV file
 **Purpose:** Comprehensive kinematic analysis of IRB-1300 robot trajectories using Pinocchio.
 
 **Key Features:**
-- Forward and inverse kinematics validation
+- Forward and inverse kinematics validation for multiple trajectories
 - Manipulability index calculation (Yoshikawa measure)
-- Singularity detection and proximity analysis
+- Singularity detection and proximity analysis (minimum singular values, condition numbers)
 - Joint limit checking and trajectory feasibility
+- Joint space continuity analysis for smooth motion
+- Orientation constraint analysis
 - Reachability analysis and workspace validation
-- Statistical analysis and visualization
+- Statistical analysis and comprehensive visualization
+- Automatic coordinate frame transformation (T_P_K to T_B_P)
+- Support for multiple trajectories in a single CSV file (separated by T0 markers)
 
 **Usage:**
 ```bash
 python scripts/analyze_irb1300_trajectory.py [options]
 
-# Example: Analyze trajectory with custom parameters
-python scripts/analyze_irb1300_trajectory.py \
-  --urdf "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf" \
-  --csv "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --output-dir "results" --samples 100
+# Basic usage - analyzes all trajectories in the default CSV file
+python scripts/analyze_irb1300_trajectory.py
+
+# Example: Custom output directory
+python scripts/analyze_irb1300_trajectory.py -o "my_analysis"
+
+# Example: Use strict tolerance and more iterations
+python scripts/analyze_irb1300_trajectory.py --tolerance 1e-5 --max-iterations 2000
 
 # Command Line Arguments:
---urdf PATH              # Path to robot URDF file (default: IRB-1300 1150)
---csv PATH               # Path to trajectory CSV file (default: plq_curve.csv)
---output-dir DIR         # Output directory for results (default: output)
---samples N              # Number of trajectory samples to analyze (default: all)
---ik-tolerance FLOAT     # Inverse kinematics tolerance (default: 1e-4)
---ik-max-iter N          # Maximum IK iterations (default: 1000)
-```
+-o, --output DIR         # Output directory (default: output/)
+--max-iterations INT     # Max IK iterations (default: 1000)
+--tolerance FLOAT        # IK tolerance (default: 1e-4)
+--visualize              # Generate visualization plots (default: True)
 
-### 5. `toolpath_visualizer.py`
+## Input Data Format
+
+The trajectory CSV file should contain columns in this order:
+- `x, y, z`: Position in **millimeters (mm)**
+- `qw, qx, qy, qz`: Quaternion orientation (w, x, y, z format)
+
+**Important Unit Note:** The CSV handling module automatically converts positions from millimeters to meters for URDF compatibility. All internal calculations use meters for positions and radians for joint angles. Users should continue providing CSV data in millimeters as before.
+
+The script expects trajectories in **T_P_K format** (knife poses in end effector plate frame) and automatically transforms them to robot base frame (T_B_P) for kinematic analysis.
+
+## Configuration
+
+The script uses these hardcoded paths (relative to project root):
+
+- **URDF:** `Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf`
+- **CSV:** `Assests/Robot APCC/Toolpaths/converted/plq_curve.csv`
+- **Output:** `output/`
+
+To use different files, modify the constants in the script source code.
+
+## Output
+
+The script generates:
+
+1. **Results CSV file** (`trajectory_analysis_results.csv`):
+   - Trajectory ID for each waypoint
+   - Reachability status for each waypoint
+   - Target positions in meters (`x_m`, `y_m`, `z_m`)
+   - Actual achieved positions in meters (`actual_ee_x_m`, `actual_ee_y_m`, `actual_ee_z_m`)
+   - Joint angles in radians (`q1_rad`, `q2_rad`, ..., `q6_rad`)
+   - Singularity measures (manipulability, singular values, condition number)
+   - Position errors in meters (`position_error_m`)
+   - Joint continuity and orientation constraint analysis
+
+2. **Visualization plots** (each showing all trajectories with different colors):
+   - 3D trajectory comparison (multiple trajectories plotted together)
+   - Reachability analysis (all trajectories)
+   - Manipulability indices (all trajectories)
+   - Singularity measures (all trajectories)
+   - Joint angles with continuity markers (all trajectories)
+
+3. **Console output** with comprehensive statistics:
+   - Number of trajectories processed
+   - Total waypoints across all trajectories
+   - Reachability percentages
+   - Position accuracy metrics (errors reported in mm for convenience, calculated in meters internally)
+   - Singularity analysis
+   - Joint continuity issues (angles in degrees)
+   - Orientation constraint violations
+
+### 6. `toolpath_visualizer.py`
 **Purpose:** Alternative trajectory visualization tool located in the Assests directory.
 
 **Key Features:**
@@ -299,7 +353,7 @@ python Assests/toolpath_visualizer.py trajectory.csv
 csv_path                 # Path to trajectory CSV file
 ```
 
-### 6. `graphing_utility.py`
+### 7. `graphing_utility.py`
 **Purpose:** Data collection and advanced plotting utilities for trajectory playback analysis.
 
 **Key Features:**

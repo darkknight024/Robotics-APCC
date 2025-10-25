@@ -3,20 +3,25 @@
 csv_handling.py
 
 Module for handling CSV file operations related to trajectory data.
-This module provides functionality to read trajectory data from CSV files.
+This module provides functionality to read trajectory data from CSV files with
+proper validation, normalization, and unit conversion.
 
 Functions:
     read_trajectories_from_csv: Parse trajectory data from CSV files with
-                               proper validation and normalization.
+                               proper validation, normalization, and mm→m conversion.
 
 Usage:
     This module is designed to be imported and used by other scripts.
     It should not be run directly.
 
+    IMPORTANT: Input CSV data should contain positions in millimeters (mm).
+    The module automatically converts positions to meters (m) for URDF compatibility.
+
     Example:
         from csv_handling import read_trajectories_from_csv
 
-        trajectories = read_trajectories_from_csv('path/to/trajectories.csv')
+        trajectories_m = read_trajectories_from_csv('path/to/trajectories.csv')
+        # trajectories_m contains positions in meters, ready for robotics calculations
 """
 
 import csv
@@ -30,10 +35,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def read_trajectories_from_csv(csv_path, max_trajectories=None):
     """
-    Read trajectory data from a CSV file.
+    Read trajectory data from a CSV file and convert to meters for robotics applications.
 
     Parses CSV files containing trajectory data where each valid row contains:
     x, y, z, qw, qx, qy, qz (position and quaternion orientation).
+
+    IMPORTANT: Input positions are assumed to be in millimeters (mm) and are automatically
+    converted to meters (m) for compatibility with robotics frameworks like Pinocchio/Isaac Sim.
 
     Args:
         csv_path (str): Path to the CSV file containing trajectory data
@@ -42,7 +50,8 @@ def read_trajectories_from_csv(csv_path, max_trajectories=None):
 
     Returns:
         list: List of numpy arrays, each representing a trajectory with shape (N, 7)
-              where columns are: [x, y, z, qw, qx, qy, qz]
+              where columns are: [x_m, y_m, z_m, qw, qx, qy, qz]
+              Positions are in meters (m), quaternions are unit quaternions.
 
     Raises:
         FileNotFoundError: If the specified CSV file doesn't exist
@@ -53,6 +62,7 @@ def read_trajectories_from_csv(csv_path, max_trajectories=None):
         - Rows starting with "T0" mark the end of a trajectory
         - Quaternion normalization is performed automatically
         - Empty lines and malformed data are gracefully skipped
+        - Positions are converted from mm to meters for URDF compatibility
     """
     trajectories = []
     current_traj = []
@@ -116,21 +126,25 @@ def _finalize_trajectory(trajectories, current_traj, max_trajectories):
 
 def _parse_trajectory_point(row):
     """
-    Parse a single trajectory point from a CSV row.
+    Parse a single trajectory point from a CSV row and convert units.
 
     Args:
         row (list): List of string values from CSV row
 
     Returns:
-        list: Parsed trajectory point [x, y, z, qw, qx, qy, qz] or None if invalid
+        list: Parsed trajectory point [x_m, y_m, z_m, qw, qx, qy, qz] or None if invalid
+              Positions are converted from mm to meters for URDF compatibility.
 
     Raises:
         ValueError: If the row cannot be parsed as valid numbers
         IndexError: If the row doesn't have enough elements
     """
     try:
-        # Parse position (x, y, z)
-        x, y, z = map(float, row[:3])
+        # Parse position (x, y, z) in millimeters, convert to meters
+        x_mm, y_mm, z_mm = map(float, row[:3])
+        x_m = x_mm / 1000.0  # Convert mm to meters
+        y_m = y_mm / 1000.0  # Convert mm to meters
+        z_m = z_mm / 1000.0  # Convert mm to meters
 
         # Parse quaternion (qw, qx, qy, qz)
         qw, qx, qy, qz = map(float, row[3:7])
@@ -146,7 +160,7 @@ def _parse_trajectory_point(row):
         else:
             quaternion = quaternion / norm
 
-        return [x, y, z, quaternion[0], quaternion[1], quaternion[2], quaternion[3]]
+        return [x_m, y_m, z_m, quaternion[0], quaternion[1], quaternion[2], quaternion[3]]
 
     except (ValueError, IndexError) as e:
         raise ValueError(f"Invalid trajectory point data: {e}")
