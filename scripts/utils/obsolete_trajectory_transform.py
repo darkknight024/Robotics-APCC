@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-trajectory_transform.py
+obsolete_trajectory_transform.py
+
+OBSOLETE: This script is obsolete and should not be used. 
+It is kept here for reference only and expected to be removed in the future.
 
 This script reads trajectories from a CSV and transforms them from tool frame to robot base frame.
 - Each valid row must have: x, y, z, qw, qx, qy, qz (quaternions are w,x,y,z).

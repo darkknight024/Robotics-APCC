@@ -1,7 +1,7 @@
 # Python code to visualize the origin frame and the given frame
 # (translation in mm and quaternion w,x,y,z).
 # It draws RGB arrows for X (red), Y (green), Z (blue) for both frames.
-# The script will display the gigure.
+# The script will display the figure.
 # Requirements: numpy, matplotlib
 
 import numpy as np

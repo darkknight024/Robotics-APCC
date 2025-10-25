@@ -10,6 +10,17 @@ The Robotics-APCC project focuses on:
 - **Kinematic analysis** including manipulability, reachability, and singularity detection
 - **Knife pose optimization** for siping processes
 
+## Modular Design
+
+The project follows a modular architecture with dedicated utility modules:
+
+- **`csv_handling.py`**: Handles CSV file parsing and trajectory data loading
+- **`handle_transforms.py`**: Manages coordinate frame transformations and trajectory analysis
+- **`math_utils.py`**: Provides core mathematical operations (quaternions, matrices, poses)
+- **`trajectory_visualizer.py`**: Focuses solely on 3D visualization and user interface
+
+This separation ensures high code reusability, easier testing, and cleaner maintenance. The utility modules are designed as libraries and should not be executed directly.
+
 ## Repository Structure
 
 This is the initial structure. This is expected to change after we bring in isaac sim stuff, and based on the recommendation from Sahil, Jared and anyone else who intend to use this repo.
@@ -31,10 +42,12 @@ This is the initial structure. This is expected to change after we bring in isaa
 │   │   └── run_all_tests.py       # Test runner script
 │   ├── analyze_irb1300_trajectory.py  # Main kinematic analysis tool
 │   └── utils/
-│       ├── math_utils.py           # Centralized math utilities
-│       ├── trajectory_transform.py        # Coordinate frame transformations
-│       ├── trajectory_visualizer.py       # Advanced 3D trajectory visualization
-│       └── visualize_frames.py            # Coordinate frame and URDF visualization
+│       ├── csv_handling.py        # CSV file parsing and handling
+│       ├── handle_transforms.py   # Coordinate frame transformations
+│       ├── math_utils.py          # Centralized math utilities
+│       ├── trajectory_transform.py     # Coordinate frame transformations (legacy)
+│       ├── trajectory_visualizer.py    # Advanced 3D trajectory visualization
+│       └── visualize_frames.py         # Coordinate frame and URDF visualization
 └── requirements.txt               # Python dependencies
 ```
 
@@ -59,7 +72,70 @@ This is the initial structure. This is expected to change after we bring in isaa
 
 ## Scripts Overview
 
-### 1. `visualize_frames.py`
+### Utility Modules (Library Functions)
+
+These modules provide core functionality and are designed to be imported by other scripts. They should not be run directly.
+
+#### `csv_handling.py`
+**Purpose:** CSV file parsing and handling for trajectory data.
+
+**Key Features:**
+- Reads trajectory data from CSV files with proper validation
+- Supports multiple trajectories separated by "T0" markers
+- Automatic quaternion normalization
+- Robust error handling for malformed data
+- Configurable trajectory limits
+
+**Usage:**
+```python
+from scripts.utils.csv_handling import read_trajectories_from_csv
+
+# Read all trajectories from CSV file
+trajectories = read_trajectories_from_csv('path/to/trajectories.csv')
+
+# Read only first 3 trajectories
+trajectories = read_trajectories_from_csv('path/to/trajectories.csv', max_trajectories=3)
+```
+
+#### `handle_transforms.py`
+**Purpose:** Coordinate frame transformations and trajectory analysis utilities.
+
+**Key Features:**
+- Generic trajectory transformation framework
+- Specialized transformations between coordinate frames (T_P_K, T_K_P, T_B_P)
+- Trajectory pair analysis and comparison
+- Hardcoded robot-base calibration parameters (T_B_K)
+- Comprehensive transformation chain validation
+
+**Coordinate Frame Conventions:**
+- **T_P_K:** Knife pose in plate coordinates (raw CSV data)
+- **T_K_P:** Plate pose in knife coordinates (inverse of T_P_K)
+- **T_B_P:** Plate pose in robot base coordinates (for robot control)
+- **T_B_K:** Knife pose in robot base coordinates (calibration data)
+
+**Usage:**
+```python
+from scripts.utils.handle_transforms import (
+    transform_to_knife_frame,
+    transform_to_ee_poses_matrix,
+    analyze_trajectory_pairs,
+    get_knife_pose_base_frame
+)
+
+# Get hardcoded knife pose
+t_b_k, q_b_k = get_knife_pose_base_frame()
+
+# Transform trajectories between frames
+trajectories_k_p = transform_to_knife_frame(trajectories_p_k)
+trajectories_b_p = transform_to_ee_poses_matrix(trajectories_p_k)
+
+# Analyze trajectory pairs
+analysis_results = analyze_trajectory_pairs(trajectories_p_k)
+```
+
+### Executable Scripts
+
+#### 1. `visualize_frames.py`
 **Purpose:** Visualizes coordinate frames, robot models, and knife poses in 3D space.
 
 **Key Features:**
@@ -84,7 +160,7 @@ python scripts/utils/visualize_frames.py \
 --labels                 # Show joint name labels (optional)
 ```
 
-### 2. `trajectory_visualizer.py`
+#### 2. `trajectory_visualizer.py`
 **Purpose:** Advanced 3D visualization of trajectory data with multiple coordinate frame views for comprehensive trajectory analysis.
 
 **Key Features:**
@@ -92,13 +168,14 @@ python scripts/utils/visualize_frames.py \
   - **T_P_K (Plate Frame):** Raw CSV trajectories showing knife poses in plate frame
   - **T_K_P (Knife Frame):** Inverted trajectories showing plate poses in knife frame
   - **T_B_P (Base Frame):** Transformed trajectories showing plate poses in robot base frame with knife frame visualization
-- Reads trajectory CSV files (x, y, z, qw, qx, qy, qz format)
+- Modular design using `csv_handling.py` and `handle_transforms.py` utilities
 - Interactive 3D visualization with coordinate frames at waypoints
 - Customizable waypoint step for controlling visualization density
 - Color-coded legend showing both coordinate axes (Red=X, Green=Y, Blue=Z) and individual trajectories
 - Frame labels: P (Plate), K (Knife), B (Base) displayed directly on coordinate frames
 - Supports multiple trajectories in single file
-- Filtering options for trajectory selection
+- Filtering options for trajectory selection (--odd, --even)
+- Trajectory pair analysis with `--analyze-pairs` option
 
 **Usage:**
 ```bash

@@ -24,210 +24,68 @@ Options:
     --odd               Show only odd-numbered trajectories (0-based indexing)
     --even              Show only even-numbered trajectories (0-based indexing)
     --waypoint-step N    Number of waypoints between coordinate frames (default: 15)
+    --analyze-pairs      Analyze trajectory pairs for rotational differences in T_P_K, T_K_P and T_B_P frames (requires even number of trajectories)
 
 Legend:
     Red line = X axis, Green line = Y axis, Blue line = Z axis
     Frame names: P (Plate), K (Knife), B (Base) - labeled directly on each coordinate frame
 """
 
-import csv
 import argparse
 import sys
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 needed for 3d projection
 import matplotlib.cm as cm
-from math_utils import (quat_mul, quat_to_rot_matrix, quat_conjugate,
-                        pose_to_matrix, matrix_to_pose)
+
+# Add current directory to path to import local modules
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from math_utils import quat_to_rot_matrix
+from csv_handling import read_trajectories_from_csv
+from handle_transforms import (transform_to_knife_frame, transform_to_ee_poses_matrix,
+                               analyze_trajectory_pairs, get_knife_pose_base_frame)
 
 # ---------------------------
-# CSV parsing
+# Trajectory filtering utilities
 # ---------------------------
-def read_trajectories_from_csv(csv_path, max_trajectories=None):
+def filter_trajectories(trajectories, odd=False, even=False):
     """
-    Returns list of numpy arrays, each shape (N,7) columns = x,y,z,qw,qx,qy,qz
-    Assumes CSV values are numbers. Skips rows with <7 elements. A row with
-    "T0" separates trajectories.
-    max_trajectories: if specified, only return the first N trajectories
+    Filter trajectories based on odd/even indexing.
+
+    Args:
+        trajectories (list): List of trajectory arrays to filter
+        odd (bool): If True, return only odd-numbered trajectories (0-based indexing)
+        even (bool): If True, return only even-numbered trajectories (0-based indexing)
+
+    Returns:
+        list: Filtered list of trajectories
     """
-    trajectories = []
-    current_traj = []
-
-    with open(csv_path, 'r', newline='') as f:
-        reader = csv.reader(f)
-        for row in reader:
-            # Strip tokens and drop empty tokens
-            row = [r.strip() for r in row if r.strip()]
-
-            if len(row) == 0:
-                continue
-
-            if len(row) == 1 and row[0] == "T0":
-                # End of current trajectory
-                if current_traj:
-                    trajectories.append(np.array(current_traj, dtype=float))
-                    current_traj = []
-                    # Stop if we've reached the maximum number of trajectories
-                    if max_trajectories is not None and len(trajectories) >= max_trajectories:
-                        break
-                continue
-
-            if len(row) < 7:
-                # Ignore incomplete lines
-                continue
-
-            try:
-                x, y, z = map(float, row[:3])
-                qw, qx, qy, qz = map(float, row[3:7])
-                # Normalize quaternion to ensure it's a unit quaternion
-                q_norm = np.array([qw, qx, qy, qz])
-                q_norm = q_norm / np.linalg.norm(q_norm) if np.linalg.norm(q_norm) > 0 else q_norm
-
-                current_traj.append([x, y, z, q_norm[0], q_norm[1], q_norm[2], q_norm[3]])
-            except ValueError:
-                # Skip rows that can't be parsed to floats
-                continue
-
-        # push last trajectory if present and we haven't hit the limit
-        if current_traj and (max_trajectories is None or len(trajectories) < max_trajectories):
-            trajectories.append(np.array(current_traj, dtype=float))
+    if odd and even:
+        print("Warning: Both --odd and --even specified. Using --even.")
+        odd = False
+    elif odd:
+        # Show only odd-numbered trajectories (0-based indexing: 1, 3, 5, ...)
+        return [traj for i, traj in enumerate(trajectories) if i % 2 == 1]
+    elif even:
+        # Show only even-numbered trajectories (0-based indexing: 0, 2, 4, ...)
+        return [traj for i, traj in enumerate(trajectories) if i % 2 == 0]
 
     return trajectories
 
 # ---------------------------
+# Generic transformation function
+# ---------------------------
+
+# ---------------------------
 # Specialized transformation functions
 # ---------------------------
-def transform_to_knife_frame(trajectories_T_P_K):
-    """
-    Transform trajectories from T_P_K to T_K_P (plate poses in knife frame).
 
-    trajectories_T_P_K: List of trajectories where each point is T_P_K
-                        pose of the knife in plate coordinates (knife w.r.t plate) in format [x, y, z, qw, qx, qy, qz]
-
-    Returns: List of trajectories representing T_K_P (plate w.r.t. knife,
-             i.e., how the plate should move relative to the static knife)
-    """
-    out_trajs = []
-    for traj in trajectories_T_P_K:
-        pts_P_K = traj[:, 0:3]  # Positions of knife w.r.t. plate
-        q_P_K = traj[:, 3:7]    # Orientations of knife w.r.t. plate
-        # Normalize all quaternions at once
-        q_P_K_norm = q_P_K / np.linalg.norm(q_P_K, axis=1, keepdims=True)
-        N = len(traj)
-        out_pts = np.zeros((N, 3))
-        out_quats = np.zeros((N, 4))
-
-        for i in range(N):
-            # Construct 4x4 transformation matrix for T_P_K
-            t_P_K = pts_P_K[i]
-            q_P_K_i = q_P_K_norm[i]
-            T_P_K = pose_to_matrix(t_P_K, q_P_K_i)
-
-            # Invert T_P_K to get T_K_P (plate pose in knife frame)
-            T_K_P = np.linalg.inv(T_P_K)
-
-            # Extract position and quaternion from T_K_P
-            out_pts[i], out_quats[i] = matrix_to_pose(T_K_P)
-
-        # Combine positions and orientations
-        new_traj = np.hstack([out_pts, out_quats])
-        out_trajs.append(new_traj)
-
-    return out_trajs
-
-
-def transform_to_ee_poses_matrix(trajectories_T_P_K, T_B_K_t_mm, T_B_K_quat):
-    """
-    Transform trajectories using 4x4 transformation matrices.
-
-    trajectories_T_P_K: List of trajectories where each point is T_P_K
-                        pose of the knife in plate coordinates (knife w.r.t plate) in format [x, y, z, qw, qx, qy, qz]
-
-    T_B_K_t_mm: (3,) translation of knife origin expressed in base frame (mm)
-    T_B_K_quat: (4,) quaternion (w,x,y,z) of knife expressed in base frame
-
-    Returns: List of trajectories representing T_B_P (plate w.r.t. base,
-             i.e., end effector poses)
-    """
-    # Normalize the knife transform quaternion
-    T_B_K_quat_norm = T_B_K_quat / np.linalg.norm(T_B_K_quat)
-
-    # Construct 4x4 transformation matrix for T_B_K (knife pose in base frame)
-    T_B_K = pose_to_matrix(T_B_K_t_mm, T_B_K_quat_norm)
-
-    out_trajs = []
-    for traj in trajectories_T_P_K:
-        pts_P_K = traj[:, 0:3]  # Positions of plate w.r.t. knife
-        q_P_K = traj[:, 3:7]    # Orientations of plate w.r.t. knife
-        # Normalize all quaternions at once
-        q_P_K_norm = q_P_K / np.linalg.norm(q_P_K, axis=1, keepdims=True)
-        N = len(traj)
-        out_pts = np.zeros((N, 3))
-        out_quats = np.zeros((N, 4))
-
-        for i in range(N):
-            # Construct 4x4 transformation matrix for T_P_K
-            t_P_K = pts_P_K[i]
-            q_P_K_i = q_P_K_norm[i]
-            T_P_K = pose_to_matrix(t_P_K, q_P_K_i)
-
-            # Invert T_P_K to get T_K_P
-            T_K_P = np.linalg.inv(T_P_K)
-
-            # Multiply T_B_K with T_K_P to get T_B_P
-            T_B_P = T_B_K @ T_K_P
-
-            # Extract position and quaternion from T_B_P
-            out_pts[i], out_quats[i] = matrix_to_pose(T_B_P)
-
-        # Combine positions and orientations
-        new_traj = np.hstack([out_pts, out_quats])
-        out_trajs.append(new_traj)
-
-    return out_trajs
 
 # ---------------------------
-# Apply transform: tool -> base (Original approach - commented for experimentation)
+# Trajectory pair analysis functions
 # ---------------------------
-# def transform_to_ee_poses(trajectories_T_P_K, T_B_K_t_mm, T_B_K_quat):
-#     """
-#     Transform trajectories from tool frame to robot base frame for robot control.
-#
-#     trajectories_T_P_K: List of trajectories where each point is T_P_K (plate w.r.t. knife)
-#                         in format [x, y, z, qw, qx, qy, qz]
-#
-#     T_B_K_t_mm: (3,) translation of knife origin expressed in base frame (mm)
-#     T_B_K_quat: (4,) quaternion (w,x,y,z) of knife expressed in base frame
-#
-#     Returns: List of trajectories representing T_B_P (plate w.r.t. base, i.e., end effector poses)
-#     """
-#     # Normalize the knife transform quaternion
-#     T_B_K_quat_norm = T_B_K_quat / np.linalg.norm(T_B_K_quat)
-#     R_B_K = quat_to_rot_matrix(T_B_K_quat_norm)
-#
-#     out_trajs = []
-#     for traj in trajectories_T_P_K:
-#         pts_P_K = traj[:, 0:3]  # Positions of plate w.r.t. knife
-#         q_P_K = traj[:, 3:7]    # Orientations of plate w.r.t. knife
-#
-#         # Normalize all quaternions at once
-#         q_P_K_norm = q_P_K / np.linalg.norm(q_P_K, axis=1, keepdims=True)
-#
-#         # Compute rotation matrices for all poses (vectorized)
-#         R_P_K_all = np.array([quat_to_rot_matrix(q) for q in q_P_K_norm])
-#
-#         # Transform from tool frame to base frame: T_B_P = T_B_K * T_P_K
-#         # Translation: t_B_P = R_B_K * t_P_K + t_B_K
-#         out_pts = np.einsum('ij,kj->ki', R_B_K, pts_P_K) + T_B_K_t_mm
-#
-#         # Rotation: q_B_P = q_B_K * q_P_K (quaternion multiplication)
-#         out_quats = np.array([quat_mul(T_B_K_quat_norm, q) for q in q_P_K_norm])
-#
-#         # Combine positions and orientations
-#         new_traj = np.hstack([out_pts, out_quats])
-#         out_trajs.append(new_traj)
-#
-#     return out_trajs
+
 
 # ---------------------------
 # Visualization
@@ -498,6 +356,8 @@ def main():
                         help="Show only even-numbered trajectories (0-based indexing).")
     parser.add_argument("--waypoint-step", type=int, default=15,
                         help="Number of waypoints between coordinate frames (default: 15).")
+    parser.add_argument("--analyze-pairs", action="store_true",
+                        help="Analyze trajectory pairs for rotational differences (requires even number of trajectories).")
     args = parser.parse_args()
 
     try:
@@ -511,18 +371,9 @@ def main():
         sys.exit(1)
 
     # Filter trajectories based on --odd or --even flags
-    trajectories_T_P_K_filtered = trajectories_T_P_K
-    if args.odd and args.even:
-        print("Warning: Both --odd and --even specified. Using --even.")
-        args.odd = False
-    elif args.odd:
-        # Show only odd-numbered trajectories (0-based indexing: 1, 3, 5, ...)
-        trajectories_T_P_K_filtered = [traj for i, traj in enumerate(trajectories_T_P_K) if i % 2 == 1]
-        print(f"Filtering to {len(trajectories_T_P_K_filtered)} odd-numbered trajectories.")
-    elif args.even:
-        # Show only even-numbered trajectories (0-based indexing: 0, 2, 4, ...)
-        trajectories_T_P_K_filtered = [traj for i, traj in enumerate(trajectories_T_P_K) if i % 2 == 0]
-        print(f"Filtering to {len(trajectories_T_P_K_filtered)} even-numbered trajectories.")
+    trajectories_T_P_K_filtered = filter_trajectories(trajectories_T_P_K, args.odd, args.even)
+    if args.odd or args.even:
+        print(f"Filtering to {len(trajectories_T_P_K_filtered)} trajectories.")
 
     # Determine view mode
     if args.robot_base:
@@ -532,13 +383,23 @@ def main():
 
     print(f"View mode: {view_mode}")
 
-    # Knife pose in robot base frame (from Jared's email)
-    T_B_K_t_mm = np.array([-367.773, -915.815, 520.4])  # mm
-    T_B_K_quat = np.array([0.00515984, 0.712632, -0.701518, 0.000396522])  # w,x,y,z
+    # Get knife pose in robot base frame from transformation module
+    T_B_K_t_mm, T_B_K_quat = get_knife_pose_base_frame()
+
+    # Analyze trajectory pairs if requested
+    if args.analyze_pairs:
+        # For pair analysis, we need all trajectories without filtering
+        # But we should warn if filtering would affect the analysis
+        if args.odd or args.even:
+            print("Warning: Pair analysis is most meaningful with all trajectories (--analyze-pairs without --odd or --even).")
+            print("Consider running without --odd or --even flags for complete pair analysis.")
+        analyze_trajectory_pairs(trajectories_T_P_K, enable_analysis=True)
+    else:
+        print("Pair analysis disabled. Use --analyze-pairs to enable trajectory pair analysis.")
 
     # Compute all three trajectory representations
     trajectories_T_K_P = transform_to_knife_frame(trajectories_T_P_K_filtered)
-    trajectories_T_B_P = transform_to_ee_poses_matrix(trajectories_T_P_K_filtered, T_B_K_t_mm, T_B_K_quat)
+    trajectories_T_B_P = transform_to_ee_poses_matrix(trajectories_T_P_K_filtered)
 
     if args.num_trajectories is not None:
         print(f"Loaded first {len(trajectories_T_P_K_filtered)} of "
