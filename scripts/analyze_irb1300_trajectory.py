@@ -40,9 +40,6 @@ Options:
 import pinocchio as pin
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from matplotlib.lines import Line2D
 import os
 from pathlib import Path
 import argparse
@@ -54,17 +51,13 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils"
 from math_utils import quat_to_rot_matrix
 from csv_handling import read_trajectories_from_csv
 from handle_transforms import transform_to_ee_poses_matrix, get_knife_pose_base_frame
+from graph_utils import generate_all_analysis_plots
 
 # Configuration
 URDF_PATH = "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf"
-CSV_PATH = "Assests/Robot APCC/Toolpaths/20250212_mc_PlqTest_Carve_1U.csv"
+CSV_PATH = "Assests/Robot APCC/Toolpaths/Successful/20250820_mc_HyperFree_AF1.csv"
 OUTPUT_DIR = "output"
 RESULTS_CSV = "trajectory_analysis_results.csv"
-MANIPULABILITY_PLOT = "manipulability_plot.png"
-REACHABILITY_PLOT = "reachability_plot.png"
-SINGULARITY_PLOT = "singularity_measure_plot.png"
-JOINT_ANGLES_PLOT = "joint_angles_plot.png"
-TRAJECTORY_3D_PLOT = "trajectory_3d_comparison.png"
 
 # IK parameters (will be set by command line arguments)
 IK_MAX_ITERATIONS = 1000
@@ -135,6 +128,22 @@ def load_and_transform_trajectory(csv_path):
 
     print(f"Transformation complete")
     print(f"  - Transformed {len(trajectories_t_b_p_m)} trajectories to robot base frame")
+    # print the entire trajectories_t_b_p_m 
+    # Print details of each trajectory in trajectories_t_b_p_m (list of np.arrays)
+    print("\nTrajectories in base frame (T_B_P):")
+    for i, traj in enumerate(trajectories_t_b_p_m):
+        print(f"\nTrajectory {i+1}:")
+        print(f"  Shape: {traj.shape}")  # Each trajectory is (n_points, 7) - position (3) + quaternion (4)
+        print(f"  Position range (meters):")
+        print(f"    X: [{traj[:,0].min():.4f}, {traj[:,0].max():.4f}]")
+        print(f"    Y: [{traj[:,1].min():.4f}, {traj[:,1].max():.4f}]") 
+        print(f"    Z: [{traj[:,2].min():.4f}, {traj[:,2].max():.4f}]")
+        print("    Points:")
+        for j in range(len(traj)):
+            pos = traj[j,:3]  # Get x,y,z position
+            pos_norm = np.linalg.norm(pos)  # Calculate norm of position vector
+            print(f"      Point {j}: Position (x,y,z): [{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}], Norm: {pos_norm:.4f}")
+        # print(f"    Quaternion (w,x,y,z): [{traj[0,3]:.4f}, {traj[0,4]:.4f}, {traj[0,5]:.4f}, {traj[0,6]:.4f}]")
 
     return trajectories_t_b_p_m
 
@@ -160,13 +169,9 @@ def ik_solve_damped(model, data, target_pose, q_init=None,
 
     ee_frame_id = model.getFrameId("ee_link")
 
-    # Weight matrix W (6x6). Order must match pin.log and computeFrameJacobian ordering.
-    # pin.log() returns motion vector in order: [linear, angular] or [v, ω]
-    # First 3 elements: translation (x,y,z), Last 3 elements: rotation axis
-    # VERIFIED: pin.log() returns [0.1, 0.2, 0.3, 0, 0, 0] for pure translation
-    # VERIFIED: pin.log() returns [0, 0, 0, 0.1, 0, 0] for pure rotation
-    # W = np.diag([rot_weight, rot_weight, rot_weight, trans_weight, trans_weight, trans_weight])
-    W = np.diag([trans_weight, trans_weight, trans_weight, rot_weight, rot_weight, rot_weight])
+    # Weight matrix W (6x6). Pinocchio uses spatial motion order [angular; linear].
+    # Align weights accordingly: first 3 angular, last 3 linear components.
+    W = np.diag([rot_weight, rot_weight, rot_weight, trans_weight, trans_weight, trans_weight])
 
     info = {'iterations': 0, 'residual_norm': None, 'reason': None,
             'sigma_min': None, 'sigma_max': None, 'converged': False, 'clip_count': 0}
@@ -451,7 +456,7 @@ def analyze_trajectory_kinematics(
             target_pose=target_pose_m,
             q_init=q_prev_rad,
             max_iterations=max_iterations,
-            tol=1e-4,
+            tol=tolerance,
             rot_weight=0.2,
             trans_weight=1.0,
             lambda0=1e-3,
@@ -465,7 +470,7 @@ def analyze_trajectory_kinematics(
                 model, data, target_pose_m,
                 q_init=pin.neutral(model),
                 max_iterations=max_iterations,
-                tol=1e-4
+                tol=tolerance
             )
 
         # If still failed, try random configurations
@@ -476,7 +481,7 @@ def analyze_trajectory_kinematics(
                     model, data, target_pose_m,
                     q_init=q_random_rad,
                     max_iterations=max_iterations,
-                    tol=1e-4
+                    tol=tolerance
                 )
                 if success:
                     break
@@ -491,9 +496,11 @@ def analyze_trajectory_kinematics(
         }
 
         # Optional: log diagnostics
+        sigma_min_str = f"{info['sigma_min']:.2e}" if info['sigma_min'] is not None else "N/A"
+        residual_str = f"{info['residual_norm']:.2e}" if info['residual_norm'] is not None else "N/A"
         print(f"IK success: {success}, reason: {info['reason']}, "
-            f"iters: {info['iterations']}, residual: {info['residual_norm']:.2e}, "
-            f"sigma_min: {info['sigma_min']:.2e}")
+            f"iters: {info['iterations']}, residual: {residual_str}, "
+            f"sigma_min: {sigma_min_str}")
 
         if success:
             # Use this solution as initial guess for next waypoint
@@ -674,408 +681,6 @@ def save_results(results, output_dir, filename, joint_discontinuities=None):
         print(f"  - Waypoints with orientation issues: {len(orientation_issues)}")
 
 
-def generate_3d_trajectory_plot(results, output_dir):
-    """
-    Generate a 3D plot comparing target trajectories vs actual end-effector positions.
-
-    Args:
-        results: List of result dictionaries (from multiple trajectories)
-        output_dir: Output directory for saving plots
-    """
-    print("\nGenerating 3D trajectory comparison plot...")
-
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Group results by trajectory_id
-    trajectories = {}
-    for r in results:
-        traj_id = r['trajectory_id']
-        if traj_id not in trajectories:
-            trajectories[traj_id] = []
-        trajectories[traj_id].append(r)
-
-    # Get unique trajectory IDs and sort them
-    traj_ids = sorted(trajectories.keys())
-    colors = plt.cm.tab10(np.linspace(0, 1, len(traj_ids)))
-
-    print(f"  - Plotting {len(traj_ids)} trajectories")
-
-    # Create 3D plot
-    fig = plt.figure(figsize=(16, 12))
-    ax = fig.add_subplot(111, projection='3d')
-
-    # Plot robot base at origin
-    ax.scatter([0], [0], [0], c='black', marker='o', s=200, label='Robot Base', zorder=10)
-
-    # Plot each trajectory
-    for i, traj_id in enumerate(traj_ids):
-        traj_results = trajectories[traj_id]
-        color = colors[i]
-
-        # Extract target trajectory (positions in meters)
-        target_x_m = [r['x_m'] for r in traj_results]
-        target_y_m = [r['y_m'] for r in traj_results]
-        target_z_m = [r['z_m'] for r in traj_results]
-
-        # Extract actual achieved positions (only reachable, in meters)
-        reachable_results = [r for r in traj_results if r['reachable']]
-        actual_x_m = [r['actual_ee_x_m'] for r in reachable_results]
-        actual_y_m = [r['actual_ee_y_m'] for r in reachable_results]
-        actual_z_m = [r['actual_ee_z_m'] for r in reachable_results]
-
-        # Extract unreachable waypoints (positions in meters)
-        unreachable_results = [r for r in traj_results if not r['reachable']]
-        unreachable_x_m = [r['x_m'] for r in unreachable_results]
-        unreachable_y_m = [r['y_m'] for r in unreachable_results]
-        unreachable_z_m = [r['z_m'] for r in unreachable_results]
-
-        # Highlight start and end points
-        if target_x_m:
-            ax.scatter(target_x_m[0], target_y_m[0], target_z_m[0], c=color, marker='o', s=150,
-                       edgecolors='black', linewidths=2, label=f'Traj {traj_id} Start', zorder=5)
-            ax.scatter(target_x_m[-1], target_y_m[-1], target_z_m[-1], c=color, marker='s', s=150,
-                       edgecolors='black', linewidths=2, label=f'Traj {traj_id} End', zorder=5)
-
-        # Plot target trajectory
-        if target_x_m:
-            ax.plot(target_x_m, target_y_m, target_z_m, color=color, linestyle='-', linewidth=2,
-                    alpha=0.7, label=f'Target Trajectory {traj_id}')
-
-        # Plot actual achieved positions (reachable)
-        if actual_x_m:
-            ax.plot(actual_x_m, actual_y_m, actual_z_m, color=color, linestyle='-', linewidth=3,
-                    label=f'Achieved Trajectory {traj_id}')
-
-        # Plot unreachable waypoints
-        if unreachable_x_m:
-            ax.scatter(unreachable_x_m, unreachable_y_m, unreachable_z_m, c=color, marker='x', s=100,
-                       label=f'Unreachable Points {traj_id}', zorder=5)
-
-    # Labels and title
-    ax.set_xlabel('X (meters)', fontsize=12, labelpad=10)
-    ax.set_ylabel('Y (meters)', fontsize=12, labelpad=10)
-    ax.set_zlabel('Z (meters)', fontsize=12, labelpad=10)
-    ax.set_title('3D Trajectory Analysis: Multiple Trajectories\n(Robot at Origin)',
-                 fontsize=14, fontweight='bold', pad=20)
-
-    # Create legend with unique entries
-    legend_elements = [plt.Line2D([0], [0], color='black', marker='o', label='Robot Base', markersize=8)]
-    for i, traj_id in enumerate(traj_ids):
-        legend_elements.append(plt.Line2D([0], [0], color=colors[i], label=f'Trajectory {traj_id}'))
-
-    ax.legend(handles=legend_elements, fontsize=10, loc='upper right')
-
-    # Grid
-    ax.grid(True, alpha=0.3)
-
-    # Set equal aspect ratio based on all trajectories
-    all_x_m, all_y_m, all_z_m = [0], [0], [0]  # Include robot base (in meters)
-    for traj_id in traj_ids:
-        traj_results = trajectories[traj_id]
-        target_x_m = [r['x_m'] for r in traj_results]
-        target_y_m = [r['y_m'] for r in traj_results]
-        target_z_m = [r['z_m'] for r in traj_results]
-        all_x_m.extend(target_x_m)
-        all_y_m.extend(target_y_m)
-        all_z_m.extend(target_z_m)
-
-    if all_x_m:
-        max_range = np.array([
-            max(all_x_m) - min(all_x_m),
-            max(all_y_m) - min(all_y_m),
-            max(all_z_m) - min(all_z_m)
-        ]).max() / 2.0
-
-        mid_x_m = (max(all_x_m) + min(all_x_m)) * 0.5
-        mid_y_m = (max(all_y_m) + min(all_y_m)) * 0.5
-        mid_z_m = (max(all_z_m) + min(all_z_m)) * 0.5
-
-        ax.set_xlim(mid_x_m - max_range, mid_x_m + max_range)
-        ax.set_ylim(mid_y_m - max_range, mid_y_m + max_range)
-        ax.set_zlim(mid_z_m - max_range, mid_z_m + max_range)
-
-    # Add statistics as text
-    total_waypoints = len(results)
-    reachable_waypoints = sum(1 for r in results if r['reachable'])
-    total_trajectories = len(traj_ids)
-
-    stats_text = f'Total Trajectories: {total_trajectories}\n'
-    stats_text += f'Total Waypoints: {total_waypoints}\n'
-    stats_text += f'Reachable: {reachable_waypoints} ({100*reachable_waypoints/total_waypoints:.1f}%)\n'
-
-    if reachable_waypoints > 0:
-        reachable_results = [r for r in results if r['reachable']]
-        position_errors_m = [r['position_error_m'] for r in reachable_results if 'position_error_m' in r]
-        if position_errors_m:
-            avg_error_m = np.mean(position_errors_m)
-            max_error_m = np.max(position_errors_m)
-            stats_text += f'Avg Position Error: {avg_error_m*1000:.3f} mm\n'
-            stats_text += f'Max Position Error: {max_error_m*1000:.3f} mm'
-
-    ax.text2D(0.02, 0.98, stats_text, transform=ax.transAxes,
-              fontsize=10, verticalalignment='top',
-              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-    plt.tight_layout()
-
-    trajectory_3d_path = os.path.join(output_dir, TRAJECTORY_3D_PLOT)
-    plt.savefig(trajectory_3d_path, dpi=300, bbox_inches='tight')
-    print(f"  - Saved: {trajectory_3d_path}")
-    plt.close()
-
-
-def generate_analysis_plots(results, model, output_dir):
-    """
-    Generate analysis plots for reachability, manipulability, and singularity measures.
-
-    Args:
-        results: List of result dictionaries
-        model: Pinocchio model
-        output_dir: Output directory for saving plots
-    """
-    print("\nGenerating analysis plots...")
-
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Group results by trajectory_id
-    trajectories = {}
-    for r in results:
-        traj_id = r['trajectory_id']
-        if traj_id not in trajectories:
-            trajectories[traj_id] = []
-        trajectories[traj_id].append(r)
-
-    # Get unique trajectory IDs and sort them
-    traj_ids = sorted(trajectories.keys())
-    colors = plt.cm.tab10(np.linspace(0, 1, len(traj_ids)))
-
-    print(f"  - Plotting analysis for {len(traj_ids)} trajectories")
-
-    # Extract data for all trajectories combined
-    all_indices = [r['waypoint_index'] for r in results]
-    all_reachable = [1 if r['reachable'] else 0 for r in results]
-
-    # Filter reachable waypoints for singularity measures
-    all_reachable_indices = [r['waypoint_index'] for r in results if r['reachable']]
-    all_manipulability = [r['manipulability'] for r in results if r['reachable'] and r['manipulability'] is not None]
-    all_min_singular_values = [r['min_singular_value'] for r in results if r['reachable'] and r['min_singular_value'] is not None]
-    all_condition_numbers = [r['condition_number'] for r in results if r['reachable'] and r['condition_number'] is not None and r['condition_number'] != np.inf]
-
-    # Plot 1: Reachability (all trajectories)
-    plt.figure(figsize=(12, 6))
-
-    # Plot each trajectory separately
-    for i, traj_id in enumerate(traj_ids):
-        traj_results = trajectories[traj_id]
-        color = colors[i]
-
-        indices = [r['waypoint_index'] for r in traj_results]
-        reachable = [1 if r['reachable'] else 0 for r in traj_results]
-
-        plt.plot(indices, reachable, color=color, linewidth=2, label=f'Trajectory {traj_id}')
-        plt.fill_between(indices, 0, reachable, alpha=0.3, color=color)
-
-    plt.xlabel('Waypoint Index', fontsize=12)
-    plt.ylabel('Reachable (1=Yes, 0=No)', fontsize=12)
-    plt.title('Kinematic Reachability Along All Trajectories', fontsize=14, fontweight='bold')
-    plt.grid(True, alpha=0.3)
-    plt.ylim([-0.1, 1.1])
-    plt.legend(fontsize=10)
-    plt.tight_layout()
-    reachability_path = os.path.join(output_dir, REACHABILITY_PLOT)
-    plt.savefig(reachability_path, dpi=300, bbox_inches='tight')
-    print(f"  - Saved: {reachability_path}")
-    plt.close()
-
-    # Plot 2: Manipulability Index (all trajectories)
-    if all_manipulability:
-        plt.figure(figsize=(12, 6))
-
-        # Plot each trajectory separately
-        for i, traj_id in enumerate(traj_ids):
-            traj_results = trajectories[traj_id]
-            color = colors[i]
-
-            reachable_indices = [r['waypoint_index'] for r in traj_results if r['reachable']]
-            manipulability = [r['manipulability'] for r in traj_results if r['reachable'] and r['manipulability'] is not None]
-
-            if manipulability:
-                plt.plot(reachable_indices, manipulability, color=color, linewidth=2, label=f'Trajectory {traj_id}')
-
-        plt.xlabel('Waypoint Index', fontsize=12)
-        plt.ylabel('Manipulability Index', fontsize=12)
-        plt.title('Manipulability Index Along All Trajectories', fontsize=14, fontweight='bold')
-        plt.grid(True, alpha=0.3)
-        plt.legend(fontsize=10)
-        plt.tight_layout()
-        manip_path = os.path.join(output_dir, MANIPULABILITY_PLOT)
-        plt.savefig(manip_path, dpi=300, bbox_inches='tight')
-        print(f"  - Saved: {manip_path}")
-        plt.close()
-
-    # Plot 3: Singularity Measures (Minimum Singular Value)
-    if all_min_singular_values:
-        plt.figure(figsize=(12, 6))
-
-        # Plot each trajectory separately
-        for i, traj_id in enumerate(traj_ids):
-            traj_results = trajectories[traj_id]
-            color = colors[i]
-
-            reachable_indices = [r['waypoint_index'] for r in traj_results if r['reachable']]
-            min_singular_values = [r['min_singular_value'] for r in traj_results if r['reachable'] and r['min_singular_value'] is not None]
-
-            if min_singular_values:
-                plt.plot(reachable_indices, min_singular_values, color=color, linewidth=2, label=f'Trajectory {traj_id}')
-
-        plt.xlabel('Waypoint Index', fontsize=12)
-        plt.ylabel('Minimum Singular Value', fontsize=12)
-        plt.title('Singularity Proximity Along All Trajectories\n(Lower values = closer to singularity)',
-                  fontsize=14, fontweight='bold')
-        plt.grid(True, alpha=0.3)
-        plt.legend(fontsize=10)
-
-        # Add threshold line for warning
-        threshold = 0.1
-        plt.axhline(y=threshold, color='orange', linestyle='--', linewidth=2,
-                    label=f'Warning Threshold ({threshold})')
-        plt.legend(fontsize=10)
-
-        plt.tight_layout()
-        sing_path = os.path.join(output_dir, SINGULARITY_PLOT)
-        plt.savefig(sing_path, dpi=300, bbox_inches='tight')
-        print(f"  - Saved: {sing_path}")
-        plt.close()
-
-
-def generate_joint_analysis_plot(results, model, output_dir):
-    """
-    Generate joint angles plot with continuity analysis.
-
-    Args:
-        results: List of result dictionaries (from multiple trajectories)
-        model: Pinocchio model
-        output_dir: Output directory for saving plots
-    """
-    print("\nGenerating joint analysis plot...")
-
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Group results by trajectory_id
-    trajectories = {}
-    for r in results:
-        traj_id = r['trajectory_id']
-        if traj_id not in trajectories:
-            trajectories[traj_id] = []
-        trajectories[traj_id].append(r)
-
-    # Get unique trajectory IDs and sort them
-    traj_ids = sorted(trajectories.keys())
-    colors = plt.cm.tab10(np.linspace(0, 1, len(traj_ids)))
-
-    print(f"  - Plotting joint analysis for {len(traj_ids)} trajectories")
-
-    # Filter reachable waypoints across all trajectories
-    all_reachable_results = [r for r in results if r['reachable']]
-
-    if not all_reachable_results:
-        print("  - No reachable waypoints to plot joint angles")
-        return
-
-    # Extract data for all trajectories
-    all_indices = [r['waypoint_index'] for r in all_reachable_results]
-
-    # Joint names for labels
-    joint_names = ['Joint 1 (Base)', 'Joint 2 (Shoulder)', 'Joint 3 (Elbow)',
-                   'Joint 4 (Wrist Roll)', 'Joint 5 (Wrist Bend)', 'Joint 6 (Wrist Twist)']
-
-    # Create figure with 6 subplots (3 rows, 2 columns)
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
-    axes = axes.flatten()
-
-    # Use joint limits in radians (model limits are already in radians)
-    lower_limits_rad = model.lowerPositionLimit
-    upper_limits_rad = model.upperPositionLimit
-
-    # Get discontinuity and orientation issue markers for all trajectories
-    discontinuity_indices = [r['waypoint_index'] for r in results if r.get('joint_discontinuity', False)]
-    orientation_issue_indices = [r['waypoint_index'] for r in results if r.get('orientation_issue', False)]
-
-    for i in range(6):
-        ax = axes[i]
-
-        # Plot joint angles for each trajectory
-        for j, traj_id in enumerate(traj_ids):
-            traj_results = trajectories[traj_id]
-            color = colors[j]
-
-            # Filter reachable results for this trajectory
-            traj_reachable_results = [r for r in traj_results if r['reachable']]
-            if not traj_reachable_results:
-                continue
-
-            indices = [r['waypoint_index'] for r in traj_reachable_results]
-            joint_angles_rad = [r[f'q{i+1}_rad'] for r in traj_reachable_results]
-
-            # Plot joint angles for this trajectory
-            ax.plot(indices, joint_angles_rad, color=color, linewidth=2, label=f'Trajectory {traj_id}' if i == 0 else "")
-
-        # Plot joint limits
-        ax.axhline(y=lower_limits_rad[i], color='r', linestyle='--', linewidth=2,
-                   label=f'Min Limit ({lower_limits_rad[i]:.2f} rad)' if i == 0 else "")
-        ax.axhline(y=upper_limits_rad[i], color='r', linestyle='--', linewidth=2,
-                   label=f'Max Limit ({upper_limits_rad[i]:.2f} rad)' if i == 0 else "")
-
-        # Fill limit regions
-        if all_indices:  # Use all_indices for x-axis range
-            ax.fill_between(all_indices, lower_limits_rad[i], upper_limits_rad[i],
-                            alpha=0.1, color='green', label='Valid Range' if i == 0 else "")
-
-        # Mark discontinuities
-        for disc_idx in discontinuity_indices:
-            if disc_idx in all_indices:
-                ax.axvline(x=disc_idx, color='orange', linestyle=':', linewidth=2,
-                          label='Discontinuity' if i == 0 else "")
-
-        # Mark orientation issues
-        for issue_idx in orientation_issue_indices:
-            if issue_idx in all_indices:
-                # Find the joint angle value at this waypoint
-                issue_result = next((r for r in all_reachable_results if r['waypoint_index'] == issue_idx), None)
-                if issue_result:
-                    joint_angle_rad = issue_result.get(f'q{i+1}_rad', 0)
-                    ax.scatter([issue_idx], [joint_angle_rad], color='red', s=50, marker='x',
-                              label='Orientation Issue' if i == 0 else "")
-
-        # Labels and title
-        ax.set_xlabel('Waypoint Index', fontsize=11)
-        ax.set_ylabel('Angle (radians)', fontsize=11)
-        ax.set_title(joint_names[i], fontsize=12, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-
-        # Show legend only on the first subplot to avoid repetition
-        if i == 0:
-            ax.legend(fontsize=8, loc='best')
-
-        # Add mean line for all trajectories combined
-        all_joint_angles_rad = [r[f'q{i+1}_rad'] for r in all_reachable_results if f'q{i+1}_rad' in r]
-        if all_joint_angles_rad:
-            mean_angle_rad = np.mean(all_joint_angles_rad)
-            ax.axhline(y=mean_angle_rad, color='purple', linestyle=':', linewidth=1.5, alpha=0.7,
-                      label=f'Mean ({mean_angle_rad:.2f} rad)' if i == 0 else "")
-
-    plt.suptitle('Joint Angles Along All Trajectories with Continuity Analysis', fontsize=16, fontweight='bold', y=0.995)
-    plt.tight_layout()
-
-    joint_angles_path = os.path.join(output_dir, JOINT_ANGLES_PLOT)
-    plt.savefig(joint_angles_path, dpi=300, bbox_inches='tight')
-    print(f"  - Saved: {joint_angles_path}")
-    plt.close()
-
-
 def main():
     """
     Main function to run the trajectory analysis.
@@ -1176,9 +781,7 @@ def main():
 
     # Generate plots if requested
     if args.visualize:
-        generate_3d_trajectory_plot(all_results, str(output_dir))
-        generate_analysis_plots(all_results, model, str(output_dir))
-        generate_joint_analysis_plot(all_results, model, str(output_dir))
+        generate_all_analysis_plots(all_results, model, str(output_dir))
 
     print("\n" + "=" * 70)
     print("Analysis complete!")
