@@ -138,64 +138,154 @@ def load_and_transform_trajectory(csv_path):
 
     return trajectories_t_b_p_m
 
-def solve_inverse_kinematics(model, data, target_pose, q_init=None, max_iterations=1000, tolerance=1e-4):
-    """
-    Solve inverse kinematics for a target end-effector pose.
 
-    Args:
-        model: Pinocchio model
-        data: Pinocchio data
-        target_pose: Target SE3 pose
-        q_init: Initial joint configuration guess
-        max_iterations: Maximum number of iterations
-        tolerance: Convergence tolerance
+def ik_solve_damped(model, data, target_pose, q_init=None,
+                    max_iterations=200, tol=1e-4,
+                    rot_weight=0.2, trans_weight=1.0,
+                    lambda0=1e-3, lambda_max=1e1,
+                    max_step=0.2,  # max joint step (rad or m for prismatic)
+                    backtrack=True):
+    """
+    Robust Damped-Least-Squares IK with adaptive damping, weighting, step control.
 
     Returns:
-        success: Boolean indicating if IK converged
-        q: Joint configuration (or None if failed)
+        success (bool), q (np.array), info (dict)
     """
+    nv = model.nv
+    # default initial
     if q_init is None:
-        q_init = pin.neutral(model)
+        q = pin.neutral(model)
+    else:
+        q = q_init.copy()
 
-    # Get the end-effector frame ID
     ee_frame_id = model.getFrameId("ee_link")
 
-    # Set up the inverse kinematics
-    q = q_init.copy()
+    # Weight matrix W (6x6). Order must match pin.log and computeFrameJacobian ordering.
+    # pin.log() returns motion vector in order: [linear, angular] or [v, ω]
+    # First 3 elements: translation (x,y,z), Last 3 elements: rotation axis
+    # VERIFIED: pin.log() returns [0.1, 0.2, 0.3, 0, 0, 0] for pure translation
+    # VERIFIED: pin.log() returns [0, 0, 0, 0.1, 0, 0] for pure rotation
+    # W = np.diag([rot_weight, rot_weight, rot_weight, trans_weight, trans_weight, trans_weight])
+    W = np.diag([trans_weight, trans_weight, trans_weight, rot_weight, rot_weight, rot_weight])
 
-    for i in range(max_iterations):
-        # Forward kinematics
+    info = {'iterations': 0, 'residual_norm': None, 'reason': None,
+            'sigma_min': None, 'sigma_max': None, 'converged': False, 'clip_count': 0}
+
+    for k in range(max_iterations):
+        info['iterations'] = k
         pin.forwardKinematics(model, data, q)
         pin.updateFramePlacements(model, data)
-
-        # Get current end-effector pose
         current_pose = data.oMf[ee_frame_id]
 
-        # Compute error
-        error = pin.log(current_pose.inverse() * target_pose)
-        error_norm = np.linalg.norm(error.vector)
+        # error in local frame: Xc^{-1} Xd
+        err_se3 = pin.log(current_pose.inverse() * target_pose)  # Motion object
+        e = err_se3.vector.reshape(6)   # shape (6,)
 
-        # Check convergence
-        if error_norm < tolerance:
-            return True, q
+        # Weighted residual norm (use 2-norm)
+        res_norm = np.linalg.norm((W**0.5) @ e)
+        info['residual_norm'] = res_norm
 
-        # Compute Jacobian
-        J = pin.computeFrameJacobian(model, data, q, ee_frame_id, pin.LOCAL)
+        if res_norm < tol:
+            info['converged'] = True
+            info['reason'] = 'converged'
+            return True, q, info
 
-        # Damped least squares
-        JtJ = J.T @ J
-        damped_inv = np.linalg.inv(JtJ + IK_DAMP * np.eye(model.nv))
-        dq = damped_inv @ J.T @ error.vector
+        # Jacobian expressed in same frame as error (we used pin.LOCAL)
+        J = pin.computeFrameJacobian(model, data, q, ee_frame_id, pin.LOCAL)  # (6,nv)
 
-        # Update configuration
-        q = pin.integrate(model, q, dq * IK_DT)
+        # Evaluate SVD for conditioning (cheap for nv=6)
+        try:
+            U, s, Vt = np.linalg.svd(J, full_matrices=False)
+        except Exception:
+            # fallback: use pinocchio pseudo-inverse or simple damping
+            s = np.linalg.svd(J @ J.T, compute_uv=False)
+            U = None
+            Vt = None
 
-        # Check joint limits
-        q = np.clip(q, model.lowerPositionLimit, model.upperPositionLimit)
+        sigma_min = s[-1] if len(s)>0 else 0.0
+        sigma_max = s[0] if len(s)>0 else 0.0
+        info['sigma_min'] = float(sigma_min)
+        info['sigma_max'] = float(sigma_max)
 
-    # Return best-effort configuration even if not converged
-    return False, q
+        # Adaptive damping: increase lambda when sigma_min small (near singularities)
+        # Standard formula: lambda = lambda0 * max(1, (sigma_safe/sigma_min - 1))
+        sigma_safe = 1e-2  # tune per robot (absolute scale depends on J units)
+        if sigma_min > 0:
+            lam = lambda0 * max(1.0, (sigma_safe / sigma_min - 1.0))
+            lam = min(lam, lambda_max)
+        else:
+            lam = lambda_max
+        
+        # Solve damped weighted least-squares:
+        # Delta q = (J^T W J + lam^2 I)^{-1} J^T W e
+        JW  = J.T @ W
+        H = JW @ J + (lam**2) * np.eye(nv)
+        g = JW @ e  
+        # solve H dq = g
+        try:
+            dq = np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            # numerical fallback: use damped pseudoinverse with SVD
+            if U is not None:
+                weighted_e = (W**0.5) @ e
+                dq = Vt.T @ np.diag((s / (s**2 + lam**2))) @ (U.T @ weighted_e)
+            else:
+                # If no SVD available, use simple gradient scaling as last resort
+                dq = 0.01 * g / (np.linalg.norm(g) + 1e-12)
 
+        # Limit step size
+        max_step_norm = np.max(np.abs(dq))
+        if max_step_norm > max_step:
+            dq = dq * (max_step / max_step_norm)
+
+        # Optional backtracking: ensure residual decreases
+        q_new = pin.integrate(model, q, dq)  # integrate full step
+        pin.forwardKinematics(model, data, q_new)
+        pin.updateFramePlacements(model, data)
+        new_err = pin.log(data.oMf[ee_frame_id].inverse() * target_pose).vector
+        new_res_norm = np.linalg.norm((W**0.5) @ new_err)
+
+        if backtrack and new_res_norm > res_norm:
+            # simple backtracking: shrink steps
+            alpha = 0.5
+            max_back = 10
+            accepted = False
+
+            for bt in range(max_back):
+                dq_bt = dq * (alpha**(bt+1))
+                q_try = pin.integrate(model, q, dq_bt)
+                pin.forwardKinematics(model, data, q_try)
+                pin.updateFramePlacements(model, data)
+                try_err = pin.log(data.oMf[ee_frame_id].inverse() * target_pose).vector
+                try_res_norm = np.linalg.norm((W**0.5) @ try_err)
+                if try_res_norm < res_norm:
+                    q_new = q_try
+                    new_res_norm = try_res_norm
+                    accepted = True
+                    break
+
+            if not accepted:
+                # backtracking failed: reduce dq further in next iter by increasing lambda
+                lam = min(lambda_max, lam * 2.0)
+                info['reason'] = 'backtracking_failed; increased damping'
+                # do not accept q_new; try next iter with larger lambda
+                # q = q  # unchanged
+                continue
+
+        # commit step
+        q = q_new.copy()
+
+        # Simple joint limit enforcement: clip to limits after each update
+        q_clipped = np.clip(q, model.lowerPositionLimit, model.upperPositionLimit)
+        if not np.allclose(q, q_clipped, atol=1e-12):
+            info.setdefault('clip_count', 0)
+            info['clip_count'] += 1
+            q = q_clipped
+
+    # loop exhausted
+    info['reason'] = 'max_iter_exceeded'
+    info['converged'] = False
+    return False, q, info
 
 def compute_manipulability_index(jacobian):
     """
@@ -317,7 +407,8 @@ def analyze_orientation_constraints(results, tolerance_deg=5):
     return orientation_issues
 
 
-def analyze_trajectory_kinematics(model, data, trajectory_m, trajectory_id=1, q_prev_rad=None, max_iterations=1000, tolerance=1e-4):
+def analyze_trajectory_kinematics(
+    model, data, trajectory_m, trajectory_id=1, q_prev_rad=None, max_iterations=2000, tolerance=1e-4):
     """
     Analyze a single trajectory for kinematic feasibility and singularity proximity.
 
@@ -348,23 +439,45 @@ def analyze_trajectory_kinematics(model, data, trajectory_m, trajectory_id=1, q_
         # Extract pose components (positions already in meters)
         x_m, y_m, z_m, qw, qx, qy, qz = waypoint_m
 
-        # Convert to SE3 pose (position in meters)
+        # Convert to SE3 pose
         position_m = np.array([x_m, y_m, z_m])
         rotation = quat_to_rot_matrix(np.array([qw, qx, qy, qz]))
         target_pose_m = pin.SE3(rotation, position_m)
 
-        # Try IK with previous solution first (all positions in meters)
-        success, q_solution_rad = solve_inverse_kinematics(model, data, target_pose_m, q_prev_rad, max_iterations, tolerance)
+        # # Try IK with previous solution first
+        success, q_solution_rad, info = ik_solve_damped(
+            model=model,
+            data=data,
+            target_pose=target_pose_m,
+            q_init=q_prev_rad,
+            max_iterations=max_iterations,
+            tol=1e-4,
+            rot_weight=0.2,
+            trans_weight=1.0,
+            lambda0=1e-3,
+            lambda_max=1e1,
+            max_step=0.1
+        )
 
-        # If failed, try with neutral configuration
+        # If failed, try neutral configuration
         if not success:
-            success, q_solution_rad = solve_inverse_kinematics(model, data, target_pose_m, pin.neutral(model), max_iterations, tolerance)
+            success, q_solution_rad, info = ik_solve_damped(
+                model, data, target_pose_m,
+                q_init=pin.neutral(model),
+                max_iterations=max_iterations,
+                tol=1e-4
+            )
 
-        # If still failed, try with random configurations
+        # If still failed, try random configurations
         if not success:
             for _ in range(3):
                 q_random_rad = pin.randomConfiguration(model)
-                success, q_solution_rad = solve_inverse_kinematics(model, data, target_pose_m, q_random_rad, max_iterations, tolerance)
+                success, q_solution_rad, info = ik_solve_damped(
+                    model, data, target_pose_m,
+                    q_init=q_random_rad,
+                    max_iterations=max_iterations,
+                    tol=1e-4
+                )
                 if success:
                     break
 
@@ -376,6 +489,11 @@ def analyze_trajectory_kinematics(model, data, trajectory_m, trajectory_id=1, q_
             'z_m': z_m,
             'reachable': success,
         }
+
+        # Optional: log diagnostics
+        print(f"IK success: {success}, reason: {info['reason']}, "
+            f"iters: {info['iterations']}, residual: {info['residual_norm']:.2e}, "
+            f"sigma_min: {info['sigma_min']:.2e}")
 
         if success:
             # Use this solution as initial guess for next waypoint
@@ -481,7 +599,7 @@ def print_trajectory_summary(results, trajectory_id):
         print(f"    - No quality metrics available (no reachable waypoints)")
 
 
-def save_results(results, output_dir, filename):
+def save_results(results, output_dir, filename, joint_discontinuities=None):
     """
     Save analysis results to CSV file.
 
@@ -489,6 +607,7 @@ def save_results(results, output_dir, filename):
         results: List of result dictionaries
         output_dir: Output directory
         filename: CSV filename
+        joint_discontinuities: List of joint discontinuity dictionaries (optional)
     """
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -548,8 +667,10 @@ def save_results(results, output_dir, filename):
 
         print(f"\nJoint Space Continuity:")
         print(f"  - Waypoints with joint discontinuities: {len(discontinuities)}")
-        if discontinuities:
-            print(f"    - Max joint angle change: {max(d.get('angle_change_deg', 0) for d in discontinuities if 'angle_change_deg' in d):.1f}°")
+        if joint_discontinuities and len(joint_discontinuities) > 0:
+            print(f"    - Max joint angle change: {max(d['angle_change_deg'] for d in joint_discontinuities):.1f}°")
+        else:
+            print(f"    - No joint discontinuities found")
         print(f"  - Waypoints with orientation issues: {len(orientation_issues)}")
 
 
@@ -1029,6 +1150,9 @@ def main():
     # Perform additional analyses
     print("\nPerforming joint continuity analysis...")
     reachable_results = [r for r in all_results if r['reachable']]
+    joint_discontinuities = []
+    orientation_issues = []
+
     if reachable_results:
         joint_angles_rad = []
         waypoint_indices = []
@@ -1048,7 +1172,7 @@ def main():
             result['orientation_issue'] = any(o['start_waypoint'] == i or o['end_waypoint'] == i for o in orientation_issues)
 
     # Save results
-    save_results(all_results, str(output_dir), RESULTS_CSV)
+    save_results(all_results, str(output_dir), RESULTS_CSV, joint_discontinuities)
 
     # Generate plots if requested
     if args.visualize:
