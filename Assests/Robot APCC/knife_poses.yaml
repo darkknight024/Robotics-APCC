@@ -1,0 +1,54 @@
+# =============================================================================
+# Knife Pose Configuration
+# =============================================================================
+# This file defines the transformation parameters T_B_K (knife pose in robot base frame)
+# for different knife configurations used in the robotic system.
+#
+# Each pose defines:
+#   - translation: Translation vector [x, y, z] in millimeters (mm)
+#   - rotation: Quaternion [w, x, y, z] representing the rotation
+#
+# Format: pose_<name>
+#   translation:
+#     x: value in mm
+#     y: value in mm
+#     z: value in mm
+#   rotation:
+#     w: quaternion w component
+#     x: quaternion x component
+#     y: quaternion y component
+#     z: quaternion z component
+#
+# Notes:
+#   - Translations are specified in millimeters and will be converted to meters
+#   - Quaternions should be unit quaternions (norm = 1)
+#   - Multiple poses can be added for different knife configurations
+# =============================================================================
+
+poses:
+  pose_1:
+    description: "Standard knife pose (from calibration data - Jared's email)"
+    translation:
+      x: -367.773  # mm
+      y: -915.815  # mm
+      z: 520.4     # mm
+    rotation:
+      w: 0.00515984   # quaternion w component
+      x: 0.712632     # quaternion x component
+      y: -0.701518    # quaternion y component
+      z: 0.000396522  # quaternion z component
+
+  # Add more knife poses as needed below
+  # Uncomment and modify for additional poses:
+  #
+  # pose_2:
+  #   description: "Alternative knife pose (example)"
+  #   translation:
+  #     x: -367.773  # mm
+  #     y: -915.815  # mm
+  #     z: 520.4     # mm
+  #   rotation:
+  #     w: 0.00515984   # quaternion w component
+  #     x: 0.712632     # quaternion x component
+  #     y: -0.701518    # quaternion y component
+  #     z: 0.000396522  # quaternion z component

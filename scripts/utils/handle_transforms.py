@@ -176,6 +176,50 @@ def transform_to_ee_poses_matrix(trajectories_t_p_k):
     return transform_trajectories_generic(trajectories_t_p_k, _base_transform)
 
 
+def transform_to_ee_poses_matrix_with_pose(trajectories_t_p_k,
+                                          knife_translation_m,
+                                          knife_rotation):
+    """
+    Transform trajectories using custom knife pose parameters.
+
+    This is a flexible version that accepts custom T_B_K transformation
+    parameters (translation and rotation) instead of using hardcoded values.
+
+    Args:
+        trajectories_t_p_k (list): List of trajectories where each point is T_P_K
+                                  pose of the knife in plate coordinates
+        knife_translation_m (np.ndarray): Knife translation [x, y, z] in meters
+        knife_rotation (np.ndarray): Knife quaternion [w, x, y, z] (unit quaternion)
+
+    Returns:
+        list: List of trajectories representing T_B_P (plate w.r.t. base)
+
+    Notes:
+        Transformation chain: T_B_P = T_B_K × T_K_P
+        Where T_K_P = T_P_K^(-1)
+        This function allows parametric variation of the knife pose for
+        batch processing across multiple knife configurations.
+
+    Example:
+        >>> translation = np.array([-0.368, -0.916, 0.520])  # meters
+        >>> rotation = np.array([0.005, 0.713, -0.702, 0.0])  # quaternion
+        >>> trajectories = transform_to_ee_poses_matrix_with_pose(
+        ...     trajectories_t_p_k, translation, rotation)
+    """
+    # Normalize the knife transform quaternion
+    quaternion_norm = knife_rotation / np.linalg.norm(knife_rotation)
+
+    # Construct 4x4 transformation matrix for T_B_K
+    matrix_b_k = pose_to_matrix(knife_translation_m, quaternion_norm)
+
+    def _base_transform(matrix_p_k):
+        """Transform from knife frame to base frame: T_B_P = T_B_K @ T_K_P"""
+        matrix_k_p = np.linalg.inv(matrix_p_k)  # First get T_K_P
+        return matrix_b_k @ matrix_k_p         # Then transform to base frame
+
+    return transform_trajectories_generic(trajectories_t_p_k, _base_transform)
+
+
 def get_knife_pose_base_frame():
     """
     Get the hardcoded knife pose in robot base frame.
