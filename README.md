@@ -1,61 +1,29 @@
-# Robotics-APCC: Kinematic Validation and Knife Pose Estimation
+# Robotics APCC Trajectory Processing System
 
-This repository provides tools for kinematic validation of robot models and trajectory analysis for optimal knife poses in manufacturing applications. It supports ABB IRB-1300 and KUKA robot models with comprehensive trajectory planning and analysis capabilities.
+A comprehensive batch processing system for analyzing 6-DOF robotic trajectories across multiple ABB IRB 1300 robot configurations, toolpaths, and knife poses. The system performs kinematic feasibility analysis, continuity checks, and generates publication-quality visualizations.
 
-## Overview
+## Table of Contents
 
-The Robotics-APCC project focuses on:
-- **Kinematic validation** of robot trajectories using forward and inverse kinematics
-- **3D visualization** of robot models, trajectories, and coordinate frames
-- **Kinematic analysis** including manipulability, reachability, and singularity detection
-- **Knife pose optimization** for siping processes
+- [Quickstart](#quickstart)
+- [System Architecture](#system-architecture)
+- [Configuration](#configuration)
+- [Advanced Usage](#advanced-usage)
+- [Dependencies](#dependencies)
+- [Troubleshooting](#troubleshooting)
+- [Output Structure](#output-structure)
+- [Running Individual Scripts](#running-individual-scripts)
+- [Project Structure](#project-structure)
+- [Getting Help](#getting-help)
 
-## Modular Design
+---
 
-The project follows a modular architecture with dedicated utility modules:
+## Quickstart
 
-- **`csv_handling.py`**: Handles CSV file parsing and trajectory data loading
-- **`handle_transforms.py`**: Manages coordinate frame transformations and trajectory analysis
-- **`math_utils.py`**: Provides core mathematical operations (quaternions, matrices, poses)
-- **`trajectory_visualizer.py`**: Focuses solely on 3D visualization and user interface
+### Installation
 
-This separation ensures high code reusability, easier testing, and cleaner maintenance. The utility modules are designed as libraries and should not be executed directly.
-
-## Repository Structure
-
-This is the initial structure. This is expected to change after we bring in isaac sim stuff, and based on the recommendation from Sahil, Jared and anyone else who intend to use this repo.
-
-```
-├── Assests/
-│   ├── Robot APCC/                 # Robot model definitions
-│   │   ├── IRB-1300 1150 URDF/    # ABB IRB-1300 1150mm reach model
-│   │   └── IRB-1300 900 URDF/      # ABB IRB-1300 900mm reach model
-│   ├── Toolpaths/                  # Trajectory data files
-│   │   ├── converted/             # Processed trajectories
-│   │   └── Successful/            # Validated trajectory examples
-│   └── graphing_utility.py        # Data collection and plotting utilities
-├── scripts/
-│   ├── unit_tests/                # Comprehensive unit tests
-│   │   ├── test_trajectories.csv  # Test trajectory data
-│   │   ├── test_math_utils.py     # Math utility function tests
-│   │   ├── test_trajectory_transforms.py  # Transformation tests
-│   │   └── run_all_tests.py       # Test runner script
-│   ├── analyze_irb1300_trajectory.py  # Main kinematic analysis tool (uses hardcoded paths)
-│   └── utils/
-│       ├── csv_handling.py        # CSV file parsing and handling
-│       ├── handle_transforms.py   # Coordinate frame transformations
-│       ├── math_utils.py          # Centralized math utilities
-│       ├── trajectory_transform.py     # Coordinate frame transformations (legacy)
-│       ├── trajectory_visualizer.py    # Advanced 3D trajectory visualization
-│       └── visualize_frames.py         # Coordinate frame and URDF visualization
-└── requirements.txt               # Python dependencies
-```
-
-## Installation
-
-1. **Clone the repository:**
+1. **Clone and setup the project:**
    ```bash
-   git clone <repository-url>
+   git clone <repo_url>
    cd Robotics-APCC
    ```
 
@@ -64,443 +32,557 @@ This is the initial structure. This is expected to change after we bring in isaa
    pip install -r requirements.txt
    ```
 
-3. **Required packages:**
-   - `numpy` - Numerical computations
-   - `pandas` - Data manipulation
-   - `matplotlib` - Plotting and visualization
-   - `pinocchio` - Robot kinematics and dynamics
+   **System Requirements:**
+   - Python 3.7+
+   - For macOS with Apple Silicon: Ensure compatible versions of `torch` and `pinocchio`
+   - For Linux/Windows: Standard pip installation works
 
-## Scripts Overview
+3. **Verify installation:**
+   ```bash
+   python -c "import pinocchio; import numpy; import pandas; print('✓ All dependencies installed')"
+   ```
 
-### Utility Modules (Library Functions)
+### Run Batch Processing
 
-These modules provide core functionality and are designed to be imported by other scripts. They should not be run directly.
-
-#### `csv_handling.py`
-**Purpose:** CSV file parsing and handling for trajectory data.
-
-**Key Features:**
-- Reads trajectory data from CSV files with proper validation
-- Supports multiple trajectories separated by "T0" markers
-- Automatic quaternion normalization
-- Robust error handling for malformed data
-- Configurable trajectory limits
-
-**Usage:**
-```python
-from scripts.utils.csv_handling import read_trajectories_from_csv
-
-# Read all trajectories from CSV file
-trajectories = read_trajectories_from_csv('path/to/trajectories.csv')
-
-# Read only first 3 trajectories
-trajectories = read_trajectories_from_csv('path/to/trajectories.csv', max_trajectories=3)
-```
-
-#### `handle_transforms.py`
-**Purpose:** Coordinate frame transformations and trajectory analysis utilities.
-
-**Key Features:**
-- Generic trajectory transformation framework
-- Specialized transformations between coordinate frames (T_P_K, T_K_P, T_B_P)
-- Trajectory pair analysis and comparison
-- Hardcoded robot-base calibration parameters (T_B_K)
-- Comprehensive transformation chain validation
-
-**Coordinate Frame Conventions:**
-- **T_P_K:** Knife pose in plate coordinates (raw CSV data)
-- **T_K_P:** Plate pose in knife coordinates (inverse of T_P_K)
-- **T_B_P:** Plate pose in robot base coordinates (for robot control)
-- **T_B_K:** Knife pose in robot base coordinates (calibration data)
-
-**Usage:**
-```python
-from scripts.utils.handle_transforms import (
-    transform_to_knife_frame,
-    transform_to_ee_poses_matrix,
-    analyze_trajectory_pairs,
-    get_knife_pose_base_frame
-)
-
-# Get hardcoded knife pose
-t_b_k, q_b_k = get_knife_pose_base_frame()
-
-# Transform trajectories between frames
-trajectories_k_p = transform_to_knife_frame(trajectories_p_k)
-trajectories_b_p = transform_to_ee_poses_matrix(trajectories_p_k)
-
-# Analyze trajectory pairs
-analysis_results = analyze_trajectory_pairs(trajectories_p_k)
-```
-
-### Executable Scripts
-
-#### 1. `visualize_frames.py`
-**Purpose:** Visualizes coordinate frames, robot models, and knife poses in 3D space.
-
-**Key Features:**
-- Displays origin and transformed coordinate frames (RGB arrows)
-- Loads and visualizes URDF robot models
-- Shows knife tool position and orientation
-- Interactive 3D matplotlib visualization
-
-**Usage:**
+**Basic Usage:**
 ```bash
-python scripts/utils/visualize_frames.py [options]
-
-# Example: Visualize knife pose with robot model
-python scripts/utils/visualize_frames.py \
-  --urdf "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf" 
-
-# Command Line Arguments:
---urdf PATH              # Path to URDF file for robot visualization
---base-link NAME         # Base/root link name (optional)
---tx, --ty, --tz FLOAT   # Tool/frame translation (mm) (optional) - Default set in code from Jared's email
---qw, --qx, --qy, --qz FLOAT  # Frame quaternion (w,x,y,z) (optional) - Default set in code from Jared's email
---labels                 # Show joint name labels (optional)
+cd Robotics-APCC
+python scripts/batch_trajectory_processor.py -c scripts/config_batch_processing.yaml
 ```
 
-#### 2. `trajectory_visualizer.py`
-**Purpose:** Advanced 3D visualization of trajectory data with multiple coordinate frame views for comprehensive trajectory analysis.
-
-**Key Features:**
-- **Three View Modes:** Visualize trajectories in different reference frames
-  - **T_P_K (Plate Frame):** Raw CSV trajectories showing knife poses in plate frame
-  - **T_K_P (Knife Frame):** Inverted trajectories showing plate poses in knife frame
-  - **T_B_P (Base Frame):** Transformed trajectories showing plate poses in robot base frame with knife frame visualization
-- Modular design using `csv_handling.py` and `handle_transforms.py` utilities
-- Interactive 3D visualization with coordinate frames at waypoints
-- Customizable waypoint step for controlling visualization density
-- Color-coded legend showing both coordinate axes (Red=X, Green=Y, Blue=Z) and individual trajectories
-- Frame labels: P (Plate), K (Knife), B (Base) displayed directly on coordinate frames
-- Supports multiple trajectories in single file
-- Filtering options for trajectory selection (--odd, --even)
-- Trajectory pair analysis with `--analyze-pairs` option
-
-**Usage:**
+**Custom Output Directory:**
 ```bash
-python scripts/utils/trajectory_visualizer.py trajectory.csv [options]
-
-# Example: Show all three views with controlled waypoint density
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view all --waypoint-step 10 --num-trajectories 3
-
-# Example: Show only T_P_K view (knife in plate frame)
-# Raw CSV visualization - shows knife motion relative to plate
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view pk --waypoint-step 5
-
-# Example: Show T_K_P view (plate in knife frame)
-# Shows required plate motion with static knife - for robot control
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view kp --waypoint-step 8
-
-# Example: Show T_B_P view (robot base frame) with knife visualization
-# Shows actual robot end-effector poses needed (solve IK for these)
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view bp --waypoint-step 10
-
-# Example: Legacy robot-base mode (equivalent to --view bp)
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --robot-base --waypoint-step 15
-
-# Example: Show only even-numbered trajectories with custom waypoint step
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --even --view all --waypoint-step 20
-
-# Command Line Arguments:
-csv_file                 # Path to CSV file with trajectory data
---view VIEW              # View mode: 'pk' (T_P_K), 'kp' (T_K_P), 'bp' (T_B_P), or 'all' (default: all)
---robot-base             # Apply robot-base transform (same as --view bp)
---num-trajectories N     # Number of trajectories to visualize (default: all)
---odd                    # Show only odd-numbered trajectories (0-based indexing)
---even                   # Show only even-numbered trajectories (0-based indexing)
---waypoint-step N        # Number of waypoints between coordinate frames (default: 15)
-
-Legend:
-    Red line = X axis, Green line = Y axis, Blue line = Z axis
-    Colored lines = Individual trajectories (Trajectory 1, Trajectory 2, etc.)
-    Frame names: P (Plate), K (Knife), B (Base) - labeled directly on each coordinate frame
+python scripts/batch_trajectory_processor.py -c scripts/config_batch_processing.yaml -o /path/to/output
 ```
 
-### 3. `trajectory_transform.py`
-**Purpose:** Transforms trajectory data between coordinate frames and exports to new CSV files.
+**What happens:**
+1. Loads robot URDF files from configured paths
+2. Discovers all CSV trajectory files
+3. For each CSV, trajectory, and robot combination:
+   - Reads trajectory poses (in millimeters)
+   - Transforms to robot base frame using knife pose
+   - Analyzes kinematic reachability via IK solving
+   - Generates analysis results and visualizations
+   - Performs C¹ continuity checks (velocity limits)
+4. Saves results in organized directory structure:
+   ```
+   results/
+   ├── csv_filename_1/
+   │   ├── Robot_Model_pose_1/
+   │   │   ├── Traj_1_[1-50]/
+   │   │   │   ├── experiment_results.yaml
+   │   │   │   ├── experiment.csv
+   │   │   │   ├── Traj_1_visualization.png
+   │   │   │   |── pose_viz/
+   |   |   |   |   └── Traj_1_[1-86]_comparison.png
+   │   │   │   |   └── Traj_1_[1-86]_data_comparison.png
+   │   │   │   └── continuity/
+   |   |   |       └── Traj_1_continuity.png
+   │   │   │       └── continuity_analysis.yaml
+   │   │   └── Traj_2_[1-100]/
+   │   └── csv_summary.yaml
+   └── batch_processing_summary.yaml
+   ```
+### Sample Results
 
-**Key Features:**
-- Reads trajectory CSV files with optional speed data
-- Applies coordinate frame transformations
-- Outputs transformed trajectories in mm or meters
-- Preserves or separates multiple trajectories
+The batch processor generates comprehensive visualizations for each trajectory. Here are representative examples:
 
-**Usage:**
-```bash
-python scripts/utils/trajectory_transform.py input.csv output.csv [options]
+#### Joint Angles Analysis
+![Joint Angles](./Assests/Robot%20APCC/Toolpaths/sample_results/joint_angles_plot.png)
+*Example of joint angle trajectories over time, showing smooth transitions and constraint satisfaction*
 
-# Example: Transform to meters with trajectory separation
-python scripts/utils/trajectory_transform.py \
-  input.csv output_meters.csv --meters --separated
+#### 3D Pose Visualization Comparison
+![3D Pose Comparison](./Assests/Robot%20APCC/Toolpaths/sample_results/pose_comparison_sample.png)
+*Original vs. transformed trajectory poses in 3D space, with coordinate frame visualizations*
 
-# Command Line Arguments:
-input.csv                # Input trajectory CSV file
-output.csv               # Output transformed CSV file
---meters                 # Output positions in meters (default: mm)
---separated              # Preserve trajectory separators in output
+#### C¹ Continuity Analysis
+![Continuity Analysis](Assests/Robot%20APCC/Toolpaths/sample_results/continuity_analysis_sample.png)
+*Cartesian velocity profiles and joint velocity constraints, demonstrating C¹ continuity compliance*
+
+
+
+---
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Batch Trajectory Processor (Orchestration)             │
+│  batch_trajectory_processor.py                          │
+│  ├─ Discovers robots, toolpaths, knife poses           │
+│  ├─ Manages nested loops (CSV → Robot → Pose → Traj)   │
+│  └─ Aggregates results                                  │
+└──────────────────┬──────────────────────────────────────┘
+                   │
+        ┌──────────┴──────────┬──────────────────┐
+        │                     │                  │
+        ▼                     ▼                  ▼
+   ┌─────────────┐   ┌──────────────┐   ┌─────────────────┐
+   │ Trajectory  │   │ Trajectory   │   │ Handle          │
+   │ Analysis    │   │ Continuity   │   │ Transforms      │
+   │ (IK, FK,    │   │ (C¹, C² chks)│   │ (Coordinate     │
+   │ Manipulab.) │   │              │   │  transforms)    │
+   └─────────────┘   └──────────────┘   └─────────────────┘
+        │                    │                   │
+        └────────────────────┴───────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────────┐
+        │ Utilities (CSV, Math, Graphs)  │
+        │ ├─ csv_handling.py             │
+        │ ├─ math_utils.py               │
+        │ ├─ graph_utils.py              │
+        │ ├─ results_handler.py          │
+        │ └─ batch_processor.py          │
+        └────────────────────────────────┘
 ```
 
-### 4. `analyze_irb1300_trajectory.py`
-**Purpose:** Comprehensive kinematic analysis of IRB-1300 robot trajectories using Pinocchio.
-
-**Key Features:**
-- Forward and inverse kinematics validation for multiple trajectories
-- Manipulability index calculation (Yoshikawa measure)
-- Singularity detection and proximity analysis (minimum singular values, condition numbers)
-- Joint limit checking and trajectory feasibility
-- Joint space continuity analysis for smooth motion
-- Orientation constraint analysis
-- Reachability analysis and workspace validation
-- Statistical analysis and comprehensive visualization
-- Automatic coordinate frame transformation (T_P_K to T_B_P)
-- Support for multiple trajectories in a single CSV file (separated by T0 markers)
-
-**Usage:**
-```bash
-python scripts/analyze_irb1300_trajectory.py [options]
-
-# Basic usage - analyzes all trajectories in the default CSV file
-python scripts/analyze_irb1300_trajectory.py
-
-# Example: Custom output directory
-python scripts/analyze_irb1300_trajectory.py -o "my_analysis"
-
-# Example: Use strict tolerance and more iterations
-python scripts/analyze_irb1300_trajectory.py --tolerance 1e-5 --max-iterations 2000
-
-# Command Line Arguments:
--o, --output DIR         # Output directory (default: output/)
---max-iterations INT     # Max IK iterations (default: 1000)
---tolerance FLOAT        # IK tolerance (default: 1e-4)
---visualize              # Generate visualization plots (default: True)
-
-## Input Data Format
-
-The trajectory CSV file should contain columns in this order:
-- `x, y, z`: Position in **millimeters (mm)**
-- `qw, qx, qy, qz`: Quaternion orientation (w, x, y, z format)
-
-**Important Unit Note:** The CSV handling module automatically converts positions from millimeters to meters for URDF compatibility. All internal calculations use meters for positions and radians for joint angles. Users should continue providing CSV data in millimeters as before.
-
-The script expects trajectories in **T_P_K format** (knife poses in end effector plate frame) and automatically transforms them to robot base frame (T_B_P) for kinematic analysis.
+---
 
 ## Configuration
 
-The script uses these hardcoded paths (relative to project root):
+### Main Config File: `config_batch_processing.yaml`
 
-- **URDF:** `Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf`
-- **CSV:** `Assests/Robot APCC/Toolpaths/converted/plq_curve.csv`
-- **Output:** `output/`
+The configuration file controls all aspects of batch processing. Here's what each section does:
 
-To use different files, modify the constants in the script source code.
+#### **Robots Section**
+```yaml
+robots:
+  - path: "Assests/Robot APCC/IRB-1300-1400-URDF"
+    model: "IRB 1300-7/1.4"
+    reach_m: 1.4
+    velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
+    acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0] (dummy values-its not used right now)
+```
+- Defines which robot configurations to process
+- Specifies kinematic limits for continuity checking
+- Robot discovery is automatic if URDF files exist in `urdf/` subdirectories
 
-## Output
+#### **Toolpaths Section**
+```yaml
+toolpaths:
+  - "Assests/Robot APCC/Toolpaths/debug/testings"
+```
+- Specifies CSV files or directories to process
+- If directory: all `.csv` files are processed
+- If file: only that specific file is processed
 
-The script generates:
+#### **Knife Poses Section**
+```yaml
+knife_poses:
+  pose_1:
+    description: "Standard knife pose (from calibration data)"
+    translation:
+      x: -367.773  # mm
+      y: -915.815  # mm
+      z: 520.4     # mm
+    rotation:
+      w: 0.00515984
+      x: 0.712632
+      y: -0.701518
+      z: 0.000396522
+```
+- Defines end-effector to tool transformations
+- All translations in **millimeters** (automatically converted to meters)
+- Quaternions must be unit quaternions [w, x, y, z]
+- Multiple poses can be defined for multi-configuration analysis
 
-1. **Results CSV file** (`trajectory_analysis_results.csv`):
-   - Trajectory ID for each waypoint
-   - Reachability status for each waypoint
-   - Target positions in meters (`x_m`, `y_m`, `z_m`)
-   - Actual achieved positions in meters (`actual_ee_x_m`, `actual_ee_y_m`, `actual_ee_z_m`)
-   - Joint angles in radians (`q1_rad`, `q2_rad`, ..., `q6_rad`)
-   - Singularity measures (manipulability, singular values, condition number)
-   - Position errors in meters (`position_error_m`)
-   - Joint continuity and orientation constraint analysis
+#### **Visualization Section**
+```yaml
+visualization:
+  enabled: true
+  plot_3d:
+    enabled: true
+    scale: 0.01        # Axis size in meters (0 = disabled)
+    point_size: 20
+  data_comparison:
+    enabled: true
+  delta_analysis:
+    enabled: true
+```
+- Controls what plots are generated
+- `scale`: Shows coordinate frame axes at poses (useful for orientation checking)
+- Comparison graphs show original vs transformed trajectories
 
-2. **Visualization plots** (each showing all trajectories with different colors):
-   - 3D trajectory comparison (multiple trajectories plotted together)
-   - Reachability analysis (all trajectories)
-   - Manipulability indices (all trajectories)
-   - Singularity measures (all trajectories)
-   - Joint angles with continuity markers (all trajectories)
+#### **Analysis Section**
+```yaml
+analysis:
+  enabled: true
+  ik:
+    max_iterations: 2000
+    tolerance: 1e-4
+    rot_weight: 0.2
+    trans_weight: 1.0
+```
+- IK solver parameters for kinematic feasibility
+- Lower tolerance = more precise solutions (slower)
+- Weights control translation vs rotation importance
 
-3. **Console output** with comprehensive statistics:
-   - Number of trajectories processed
-   - Total waypoints across all trajectories
-   - Reachability percentages
-   - Position accuracy metrics (errors reported in mm for convenience, calculated in meters internally)
-   - Singularity analysis
-   - Joint continuity issues (angles in degrees)
-   - Orientation constraint violations
+#### **Continuity Section**
+```yaml
+continuity:
+  enabled: true
+  pose_scale_m_per_rad: 0.1
+  safety_factor: 1.05
+  generate_graphs: true
+```
+- Enables C¹ (velocity) continuity checks
+- Uses robot velocity limits from robot configuration
+- Speed extracted from CSV 8th column (first pose)
+- Safety factor adds margin to limits (1.05 = 5% margin)
 
-### 6. `toolpath_visualizer.py`
-**Purpose:** Alternative trajectory visualization tool located in the Assests directory.
+### CSV Format
 
-**Key Features:**
-- 3D trajectory visualization
-- CSV trajectory file parsing
-- Basic plotting functionality
+**Expected CSV Structure:**
+```
+x_mm,  y_mm,  z_mm,  qw,   qx,   qy,   qz,  speed_mm_s
+100.0, 200.0, 300.0, 1.0,  0.0,  0.0,  0.0, 150.0
+101.0, 201.0, 301.0, 0.99, 0.05, 0.0,  0.0, 150.0
+...
+T0  (trajectory separator)
+200.0, 300.0, 400.0, 1.0,  0.0,  0.0,  0.0, 200.0
+...
+```
 
-**Usage:**
+**Key Points:**
+- Columns 1-7: Position (mm) + Quaternion [w, x, y, z]
+- Column 8 (optional): Speed in mm/s (used for continuity analysis)
+- Single-column rows like "T0" separate trajectories
+- Positions **must** be in millimeters (auto-converted to meters)
+- Quaternions should be normalized to unit length
+
+---
+
+## Advanced Usage
+
+### Custom Batch Processing
+
+**Create a custom config file:**
+```yaml
+# my_config.yaml
+robots:
+  - path: "Assests/Robot APCC/IRB-1300-1400-URDF"
+    model: "IRB 1300-7/1.4"
+    reach_m: 1.4
+    velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
+
+toolpaths:
+  - "path/to/my/trajectories.csv"
+
+knife_poses:
+  pose_custom:
+    translation: {x: -370.0, y: -910.0, z: 525.0}
+    rotation: {w: 0.005, x: 0.713, y: -0.701, z: 0.001}
+
+visualization:
+  enabled: true
+  plot_3d: {enabled: true, scale: 0.01}
+
+analysis:
+  enabled: true
+  ik: {max_iterations: 2000, tolerance: 1e-4}
+
+continuity:
+  enabled: true
+```
+
+**Run with custom config:**
 ```bash
-python Assests/toolpath_visualizer.py trajectory.csv
-
-# Command Line Arguments:
-csv_path                 # Path to trajectory CSV file
+python scripts/batch_trajectory_processor.py -c my_config.yaml -o my_results/
 ```
 
-### 7. `graphing_utility.py`
-**Purpose:** Data collection and advanced plotting utilities for trajectory playback analysis.
+### Debug and Interactive Visualization
 
-**Key Features:**
-- End-effector speed analysis and tracking
-- Joint position monitoring and limit checking
-- Waypoint transition detection
-- Statistical analysis of trajectory execution
-- Multiple plot types for performance analysis
+For interactive trajectory exploration, see [Debug Tools](#debug-tools) section.
 
-**Usage:**
-```python
-# Import and use in trajectory playback scripts
-from Assests.graphing_utility import SpeedDataCollector
+---
 
-# Initialize collector
-collector = SpeedDataCollector(dt=0.01, target_speeds_mm_s=target_speeds)
+## Debug Tools
 
-# Record data during playback
-collector.record_step(ee_position, current_waypoint)
+For advanced trajectory visualization and analysis, see: **[`scripts/debug/README.md`](scripts/debug/README.md)**
 
-# Generate plots and save data
-collector.save_data("trajectory_analysis.csv")
-collector.plot_all_metrics()
+---
+
+## Dependencies
+
+See `requirements.txt` for complete list:
+
+**Core Dependencies:**
+- `pinocchio` (≥2.6.0) - Robotics kinematics and dynamics
+- `numpy` (≥1.21.0) - Numerical computing
+- `pandas` (≥1.3.0) - Data manipulation
+- `matplotlib` (≥3.5.0) - Plotting and visualization
+- `pyyaml` - Configuration file parsing
+- `tqdm` - Progress bars
+
+**Installation:**
+```bash
+pip install -r requirements.txt
 ```
 
-## Robot Models
+**Platform Notes:**
+- **macOS with Apple Silicon**: Ensure compatible `torch` and `pinocchio` versions
+- **Linux/Windows**: Standard installation works
+- **URDF Dependencies**: Pinocchio automatically handles URDF parsing
 
-### ABB IRB-1300 1150mm Reach
-- **URDF Location:** `Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf`
-- **Joint Limits:** 6 joints with standard ABB IRB-1300 ranges
-- **End Effector:** Configured for knife/tool mounting
+---
 
-### ABB IRB-1300 900mm Reach
-- **URDF Location:** `Assests/Robot APCC/IRB-1300 900 URDF/urdf/IRB-1300 900 URDF_ee.urdf`
-- **Joint Limits:** 6 joints with ABB IRB-1300 900mm specifications
-- **End Effector:** Configured for manufacturing applications
+## Troubleshooting
 
-## Trajectory Data Format
+### "URDF file not found"
+- Ensure robot folder has `urdf/` subdirectory
+- Check that URDF files have `.urdf` extension
+- Verify path in `config_batch_processing.yaml`
 
-Trajectory CSV files should contain:
-- **Position:** x, y, z (millimeters)
-- **Orientation:** qw, qx, qy, qz (unit quaternion, w,x,y,z order)
-- **Optional:** speed (mm/s) in 8th column
-- **Separators:** Single row with "T0" to separate multiple trajectories
+### "IK failed for all poses"
+- Check knife pose quaternion is normalized (norm = 1)
+- Verify trajectories are within robot workspace
+- Increase `max_iterations` and decrease `tolerance` in config
 
-Example CSV format:
-```csv
-x,y,z,qw,qx,qy,qz,speed_mm_s
--100.0,200.0,50.0,1.0,0.0,0.0,0.0,100.0
--90.0,190.0,55.0,0.995,0.0,0.0,0.105,95.0
-T0
--80.0,180.0,60.0,0.990,0.0,0.0,0.141,90.0
+### "Continuity checks fail"
+- Speed column (column 8) might be missing from CSV
+- Check that joint angles were successfully computed (requires reachable IK)
+- Verify velocity limits are realistic for the robot model
+
+### Memory issues with large batches
+- Process subsets of trajectories separately
+- Use smaller CSV files
+- Disable visualization to reduce memory usage
+
+---
+
+## Output Structure
+
+All results are saved in `results/` directory:
+
+```
+results/
+├── batch_processing_summary.yaml          # Overall batch statistics
+├── csv_name_1/
+│   ├── batch_summary.yaml                 # CSV-level summary
+│   ├── Robot_Model_pose_1/
+│   │   ├── Traj_1_[1-50]/
+│   │   │   ├── experiment_results.yaml    # Analysis results (reachability, IK success, etc.)
+│   │   │   ├── experiment.csv             # Joint angles for all poses
+│   │   │   ├── Traj_1_visualization.png   # 3D trajectory plot
+│   │   │   ├── pose_viz/
+│   │   │   │   ├── Traj_1_comparison.png  # Original vs Transformed
+│   │   │   │   ├── Traj_1_data_comparison.png
+│   │   │   │   └── Traj_1_delta_analysis.png
+│   │   │   └── continuity/
+│   │   │       ├── continuity_analysis.yaml
+│   │   │       └── continuity_analysis.png
+│   │   └── Traj_2_[1-100]/
+│   │       └── (same structure)
+│   └── Robot_Model_pose_2/
+│       └── (same structure)
+└── csv_name_2/
+    └── (same structure)
 ```
 
-## Coordinate Frame Transformations
+---
 
-The repository uses the following coordinate frame conventions:
+## Project Structure
 
-1. **T_P_K (Plate Frame):** Knife pose expressed in plate coordinates (raw CSV data)
-2. **T_K_P (Knife Frame):** Plate pose expressed in knife coordinates (inverse of T_P_K)
-3. **T_B_P (Base Frame):** Plate pose expressed in robot base coordinates (for robot control)
+### Root Level Files
 
-**Transformation Chain:**
-- **T_K_P = T_P_K^(-1)** (matrix inversion)
-- **T_B_P = T_B_K × T_K_P** (coordinate transformation)
+**`batch_trajectory_processor.py`** - Main Orchestration Script
+- Entry point for all batch processing
+- Manages 3-level nested loops: CSV files → Robots → Knife poses → Trajectories
+- Coordinates between analysis, continuity checking, and visualization modules
+- Generates batch-level and CSV-level summary reports
 
-Key transformation parameters (from robot-base calibration):
-- **Knife in Base (T_B_K):** Translation `[-367.773, -915.815, 520.4]` mm, Quaternion `[0.00515984, 0.712632, -0.701518, 0.000396522]` (w,x,y,z)
+**`config_batch_processing.yaml`** - Configuration File
+- Defines robots to process (paths, velocity/acceleration limits)
+- Specifies trajectory CSV locations
+- Sets knife pose transformations
+- Controls visualization, analysis, and continuity settings
+- See [Configuration](#configuration) section for details
 
-**Understanding the Views:**
-- **T_P_K:** Shows how the knife would move relative to the plate if the knife were mobile
-- **T_K_P:** Shows how the plate should move relative to the static knife (robot motion)
-- **T_B_P:** Shows the actual robot end-effector poses needed to achieve the desired knife motion
+### Key Directories
 
-## Unit Testing
+#### `scripts/trajectory_processing/`
+Core analysis algorithms:
 
-The repository includes comprehensive unit tests for all mathematical transformations and trajectory processing functionality.
+**`analyze_irb1300_trajectory.py`** - Kinematic Analysis Engine
+- Performs Inverse Kinematics (IK) on trajectory poses using Pinocchio
+- Calculates joint angles for all reachable poses
+- Computes manipulability index (Yoshikawa metric)
+- Generates reachability statistics and analysis plots
+- Exports joint configurations for continuity analysis
 
-### Running Tests
+**`trajectory_continuity_analyzer.py`** - Continuity Verification
+- Analyzes C⁰ continuity (position continuity)
+- Analyzes C¹ continuity (velocity constraints with joint limits)
+- Analyzes C² continuity (acceleration smoothness)
+- Computes unified pose distance metrics
+- Generates detailed continuity reports and graphs
+
+**`trajectory_visualizer.py`** - Non-Interactive Visualization
+- Creates 3D trajectory visualizations (point clouds, not lines)
+- Generates data comparison graphs (original vs transformed)
+- Creates delta analysis graphs (pose-to-pose changes)
+- Exports all plots as high-resolution PNG files
+
+#### `scripts/utils/`
+Utility modules shared across the system:
+
+**`batch_processor.py`** - Discovery and Configuration Loading
+- Discovers robot URDF files in directory trees
+- Loads knife pose configurations from YAML
+- Generates output directory names
+
+**`csv_handling.py`** - CSV Parsing and Validation
+- Reads trajectory CSV files with proper validation
+- Handles trajectory separators (single-column rows)
+- Automatically converts positions from mm to meters for URDF compatibility
+- Normalizes quaternions
+
+**`handle_transforms.py`** - Coordinate Frame Transformations
+- Transforms trajectories from plate frame (T_P_K) to base frame (T_B_K)
+- Applies knife pose offset transformations
+- Validates quaternion-based rotations
+
+**`math_utils.py`** - Mathematical Utilities
+- Quaternion to rotation matrix conversions
+- Quaternion operations (conjugates, products)
+- Common geometric calculations
+
+**`graph_utils.py`** - Plotting and Visualization
+- Generates all analysis plots (reachability, manipulability, etc.)
+- Creates comparison graphs with multiple subplots
+- Handles matplotlib backend and styling
+
+**`results_handler.py`** - Results Management
+- Formats and saves analysis results to YAML and CSV
+- Generates experiment reports
+- Aggregates batch-level statistics
+
+**`trajectory_visualizer.py`** - Utility Visualization Functions
+- Creates 3D plots with optional coordinate frames
+- Generates comparison visualizations
+- Exports figures to files
+
+#### `Assests/Robot APCC/`
+Robot and trajectory data:
+
+**Robot URDF Directories:**
+- `IRB-1300 1150 URDF/` - 1.15m reach robot configuration
+- `IRB-1300 900 URDF/` - 0.9m reach robot configuration
+- `IRB-1300-1400-URDF/` - 1.4m reach robot configuration
+
+Each contains:
+- `urdf/` - URDF files with end-effector definitions
+- `config/` - Joint configuration YAML
+- `meshes/` - STL visual/collision geometry
+- `launch/` - ROS launch files
+
+**`Toolpaths/` Directory:**
+- `Successful/` - Production-ready trajectory CSV files
+- `debug/` - Test trajectories for validation
+- `converted/` - Converted trajectory formats
+- `Toolpaths/converted/` - Older converted files
+
+#### `scripts/debug/`
+Advanced interactive tools (see [Debug Tools](#debug-tools)):
+
+**`pose_3d_visualizer.py`** - Interactive Single-Trajectory Visualization
+- Real-time 3D visualization with mouse controls
+- Optional coordinate frame axes overlay
+- Debug mode with pose indexing
+- Side-by-side transformation comparison
+- Keyboard controls (Ctrl+S to save)
+
+**`pose_3d_batch.py`** - Batch Trajectory Processor
+- Non-interactive batch processing of trajectory folders
+- Extracts individual trajectories from CSVs
+- Runs all analysis and visualization automatically
+- Generates reports for each trajectory
+
+**`continuity_analyzer.py`** - Standalone Continuity Analysis
+- Detailed C¹ and C² continuity visualization
+- Extracts speed from CSV 8th column
+- Creates publication-quality continuity graphs
+
+**`pose_analyzer.py`** - Delta Analysis Tool
+- Analyzes pose-to-pose changes (deltas)
+- Generates delta comparison graphs
+- Useful for trajectory smoothness assessment
+
+**Config Files:**
+- `compare.yaml` - Configuration for comparison mode visualization
+- `default.yaml` - Default visualization settings
+
+---
+
+## Running Individual Scripts
+
+### `analyze_irb1300_trajectory.py` - Standalone Kinematic Analysis
+
+Run IK solving and manipulability analysis on a single trajectory independently:
 
 ```bash
-# Run all unit tests
-python scripts/unit_tests/run_all_tests.py
-
-# Run individual test files
-python scripts/unit_tests/test_trajectory_transforms.py
-python scripts/unit_tests/test_math_utils.py
-
-# Run tests with verbose output
-python scripts/unit_tests/test_trajectory_transforms.py
+cd Robotics-APCC
+python scripts/trajectory_processing/analyze_irb1300_trajectory.py \
+  -o output_directory \
+  --max-iterations 2000 \
+  --tolerance 1e-4
 ```
 
-### Test Coverage
+**Parameters:**
+- `-o, --output DIR` - Output directory for results (default: `output/`)
+- `--max-iterations INT` - Maximum IK solver iterations (default: 1000)
+- `--tolerance FLOAT` - IK convergence tolerance in meters (default: 1e-4)
 
-The unit tests verify:
-- **Round-trip composition**: `T_B_K_check = T_B_P @ T_P_K ≈ T_B_K`
-- **CSV trajectory parsing**: Reading and validation of trajectory files
-- **Trajectory filtering**: `--odd` and `--even` command line options
-- **Coordinate transformations**: Robot-base frame transformations
-- **Quaternion operations**: Multiplication, rotation matrices, normalization
-- **Edge cases**: Empty data, invalid quaternions, error handling
+**Note:** Modify the hardcoded paths in the script for URDF and CSV files (lines 57-58)
 
-## Usage Examples
+---
 
-### Basic Trajectory Visualization
-```bash
-# Visualize a trajectory in all three reference frames
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view all --waypoint-step 10 --num-trajectories 2
+### `trajectory_visualizer.py` - Non-Interactive Batch Visualization
 
-# Single view visualization with controlled density
-python scripts/utils/trajectory_visualizer.py \
-  "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --view bp --waypoint-step 5
-```
+This script is designed to run within the batch processor pipeline. **For interactive visualization, use the debug tools instead:**
 
-### Kinematic Validation
-```bash
-# Analyze trajectory feasibility for IRB-1300
-python scripts/analyze_irb1300_trajectory.py \
-  --csv "Assests/Robot APCC/Toolpaths/converted/plq_curve.csv" \
-  --samples 50
-```
+**Use [`pose_3d_visualizer.py`](scripts/debug/README.md) for:**
+- Interactive 3D visualization with mouse controls
+- Single or side-by-side trajectory comparison
+- Manual transformation testing
+- CSV export of transformed trajectories
 
-### Frame Transformation and Visualization
-```bash
-# Transform trajectory and visualize with robot model
-python scripts/utils/trajectory_transform.py input.csv transformed.csv
-python scripts/utils/trajectory_visualizer.py transformed.csv --view bp --waypoint-step 10
-python scripts/utils/visualize_frames.py --urdf "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf"
-```
+See [`scripts/debug/README.md`](scripts/debug/README.md) for detailed usage instructions.
 
-## Output Files
+---
 
-Analysis scripts generate:
-- **CSV files:** Trajectory data, joint angles, analysis results
-- **PNG files:** Manipulability plots, reachability maps, singularity analysis
-- **Statistical reports:** Feasibility analysis and performance metrics
+### `continuity_analyzer.py` - Trajectory Continuity Analysis
 
-## Contributing
+**Note:** This script requires pre-computed IK solutions (joint angles). It **cannot run standalone** as it depends on kinematic data from the main batch processor.
 
-1. Follow the existing code structure and naming conventions
-2. Add proper documentation and command-line argument descriptions
-3. Include example usage in docstrings
-4. Test with provided trajectory files before submitting
+**To analyze continuity:**
 
-## License
+1. **Run batch processing first** to compute IK solutions:
+   ```bash
+   python scripts/batch_trajectory_processor.py -c scripts/config_batch_processing.yaml
+   ```
 
-This project is part of Nike's robotics research and development efforts for advanced manufacturing processes.
+2. **Enable continuity analysis** in your config (`config_batch_processing.yaml`):
+   ```yaml
+   continuity:
+     enabled: true
+     generate_graphs: true
+   ```
+
+3. **Results are automatically generated** in `results/{csv_name}/{robot_model}_{pose}/continuity/`
+
+---
+
+## Getting Help
+
+1. **Check Debug Tools Documentation:** [`scripts/debug/README.md`](scripts/debug/README.md)
+2. **Review Configuration Example:** `scripts/config_batch_processing.yaml`
+3. **Inspect Output YAML Files:** Each trajectory generates `experiment_results.yaml` with detailed analysis
+4. **Check Console Output:** Batch processor prints progress and errors to stdout
+
+---
+
+**Last Updated:** 2025-01-18  
+**System Version:** 1.0
+

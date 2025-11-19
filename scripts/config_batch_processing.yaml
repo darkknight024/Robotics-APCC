@@ -1,0 +1,223 @@
+# =============================================================================
+# Unified Batch Trajectory Processing Configuration
+# =============================================================================
+#
+# Single configuration file for all batch trajectory processing parameters.
+# Simple, clean, and self-contained - no external config files needed.
+#
+# Usage:
+#   python batch_trajectory_processor.py -c config_batch_processing.yaml
+#   python batch_trajectory_processor.py -c config_batch_processing.yaml -o /custom/output
+#   python batch_trajectory_processor.py -c config_batch_processing.yaml --no-visualize
+
+# =============================================================================
+# ROBOT MODELS
+# =============================================================================
+# Robot URDF directories to process
+# Can be individual directories or a parent directory for auto-discovery
+
+robots:
+  - path: "Assests/Robot APCC/IRB-1300-1400-URDF"
+    model: "IRB 1300-7/1.4"
+    reach_m: 1.4          # Workspace reach in meters (extracted from model name: 1.4 m)
+    velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
+    acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0]
+
+  - path: "Assests/Robot APCC/IRB-1300 1150 URDF"
+    model: "IRB 1300-10/1.15"
+    reach_m: 1.15         # Workspace reach in meters (extracted from model name: 1.15 m)
+    velocity_limits_rad_s: [4.887, 3.979, 5.864, 8.727, 7.245, 12.566]
+    acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0]
+
+  - path: "Assests/Robot APCC/IRB-1300 900 URDF"
+    model: "IRB 1300-11/0.9"
+    reach_m: 0.9          # Workspace reach in meters (extracted from model name: 0.9 m)
+    velocity_limits_rad_s: [4.887, 3.979, 5.760, 8.727, 7.245, 12.566]
+    acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0]
+
+# =============================================================================
+# TOOLPATHS (Trajectories)
+# =============================================================================
+# CSV trajectory files to process
+# Specify individual files or directories (processes all *.csv)
+
+toolpaths:
+  - "Assests/Robot APCC/Toolpaths/debug/testings"
+  #- "Assests/Robot APCC/Toolpaths/Successful"
+
+# Examples:
+# Individual files:
+# toolpaths:
+#   - "Assests/Robot APCC/Toolpaths/Successful/20250820_mc_HyperFree_AF1.csv"
+#   - "Assests/Robot APCC/Toolpaths/Successful/20250804_mc_HyperFree_1.csv"
+
+# =============================================================================
+# KNIFE POSES
+# =============================================================================
+# Define knife pose transformations (T_B_K: knife in robot base frame)
+# All translations in millimeters (automatically converted to meters)
+# Quaternions must be unit quaternions [w, x, y, z]
+
+knife_poses:
+  pose_1:   # Knife pose from Jared via email
+    description: "Standard knife pose (from calibration data)"
+    translation:
+      x: -367.773  # mm
+      y: -915.815  # mm
+      z: 520.4     # mm
+    rotation:
+      w: 0.00515984   # quaternion w
+      x: 0.712632     # quaternion x
+      y: -0.701518    # quaternion y
+      z: 0.000396522  # quaternion z
+
+  # Add more knife poses as needed:
+  # pose_2:
+  #   description: "Alternative knife pose"
+  #   translation:
+  #     x: -370.0
+  #     y: -910.0
+  #     z: 525.0
+  #   rotation:
+  #     w: 0.005
+  #     x: 0.713
+  #     y: -0.701
+  #     z: 0.001
+
+# =============================================================================
+# VISUALIZATION SETTINGS
+# =============================================================================
+# All visualization and plot generation settings grouped together
+# Transformations are always applied for IK computation
+
+visualization:
+  # Enable/disable all visualizations
+  enabled: true
+
+  # 3D Visualization Settings
+  plot_3d:
+    enabled: true
+    scale: 0.01           # Coordinate frame axis scale in meters (0 = disabled, typical: 0.01-0.1)
+    point_size: 20        # Marker size in plots
+
+  # Data Comparison Graphs (original vs transformed)
+  data_comparison:
+    enabled: true
+    show_labels: true     # Show annotations/labels
+
+  # Delta Analysis Graphs (pose-to-pose changes)
+  delta_analysis:
+    enabled: true
+
+  # Debug Mode
+  debug: false            # Show pose indices in plots
+
+# =============================================================================
+# OUTPUT SETTINGS
+# =============================================================================
+# Output directory and what to save
+
+output:
+  directory: "results"    # Default output directory (override with -o flag)
+  
+  # Save transformed trajectory CSV files
+  save_transformed_csv: true
+
+# =============================================================================
+# ANALYSIS SETTINGS
+# =============================================================================
+# Kinematic feasibility analysis parameters
+
+analysis:
+  # Enable/disable kinematic analysis
+  enabled: true
+
+  # IK Solver Parameters
+  ik:
+    max_iterations: 2000      # Maximum IK iterations
+    tolerance: 1e-4           # Convergence tolerance (meters)
+    rot_weight: 0.2           # Rotational error weight
+    trans_weight: 1.0         # Translational error weight
+    lambda0: 1e-3             # Initial damping
+    lambda_max: 1e1           # Maximum damping
+
+  # Generate analysis plots
+  visualize_plots: true
+
+# =============================================================================
+# CONTINUITY ANALYSIS SETTINGS
+# =============================================================================
+# C0/C1/C2 continuity checks on trajectories with timing/speed constraints
+
+continuity:
+  # Enable/disable C1 continuity analysis (velocity limits)
+  enabled: true
+  
+  # C1 Continuity: Velocity Continuity Check
+  # Verifies joint velocities do not exceed hardware limits (velocity_limits_rad_s per robot)
+  # Speed is extracted from CSV 8th column (first pose of each trajectory)
+  # Scale factor for trajectory parameterization (not used in C1 check, kept for reference)
+  pose_scale_m_per_rad: 0.1
+  
+  # Safety factor for limit checking
+  # Actual checked limit = nominal_limit * safety_factor (default 5% margin)
+  safety_factor: 1.05
+  
+  # Generate C1 continuity graphs
+  generate_graphs: true
+  
+  # NOTE: Acceleration limits are NOT used for C1 analysis (future C2 use)
+  # These are kept for reference and future acceleration continuity checks
+  default_acceleration_limits_rad_s2: null
+
+# =============================================================================
+# BATCH PROCESSING SETTINGS
+# =============================================================================
+# Global batch processing behavior
+
+batch:
+  continue_on_error: true # Continue if individual trajectory fails
+  verbose: true           # Verbose logging (shows full tracebacks for errors)
+
+# =============================================================================
+# NOTES
+# =============================================================================
+#
+# CSV FILE FORMAT:
+#   - Columns: x, y, z, qw, qx, qy, qz (all in millimeters)
+#   - Single-column rows separate trajectories (e.g., "T0")
+#
+# ROBOT DISCOVERY:
+#   - Each robot folder must contain 'urdf/' subdirectory
+#   - Prefers '*_ee.urdf' (end-effector variant)
+#   - Falls back to any '.urdf' file found
+#
+# KNIFE POSES:
+#   - All translations in millimeters
+#   - Quaternions in [w, x, y, z] format
+#   - Must be unit quaternions (norm = 1)
+#   - Transformations always applied for IK computation
+#
+# TRANSFORMATIONS:
+#   - Always applied to robot base frame for kinematic analysis
+#   - Set save_transformed_csv: true to export transformed poses
+#
+# OUTPUT STRUCTURE:
+#   results/
+#   ├── csv_name_1/
+#   │   ├── batch_summary.yaml
+#   │   ├── Traj_1_[1-50]/
+#   │   │   ├── experiment_results.yaml
+#   │   │   ├── experiment.csv
+#   │   │   ├── Traj_1_[1-50]_visualization.png
+#   │   │   ├── Traj_1_[1-50]_data_comparison.png
+#   │   │   ├── Traj_1_[1-50]_delta_analysis.png
+#   │   │   └── Traj_1_[1-50]_transformed.csv (if enabled)
+#   │   └── Traj_2_[1-100]/
+#   └── csv_name_2/
+#
+# COMMAND USAGE:
+#   python batch_trajectory_processor.py -c config_batch_processing.yaml
+#   python batch_trajectory_processor.py -c config_batch_processing.yaml -o custom_output
+#   python batch_trajectory_processor.py -c config_batch_processing.yaml --no-visualize
+

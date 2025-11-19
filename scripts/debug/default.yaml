@@ -1,0 +1,136 @@
+# Default Configuration for 3D Pose Visualizer
+# ===============================================
+# This file defines all visualization and transformation parameters.
+# Copy and modify this file for different scenarios.
+#
+# Usage:
+#   python pose_3d_visualizer.py trajectory.csv --config config.yaml
+#   python pose_3d_visualizer.py trajectory.csv  # Uses this default config
+#
+
+# Visualization Settings
+# =====================
+visualization:
+  # Scale factor for coordinate frame axis markers
+  # 0 = disabled (points only)
+  # 0.01 = small markers
+  # 0.02 = default markers
+  # 0.05 = larger markers
+  scale: 0.00
+  
+  # Marker point size in the 3D plot
+  point_size: 20
+  
+  # Show coordinate frame axes every N poses (reduces clutter for dense trajectories)
+  # 1 = show at every pose
+  # 5 = show every 5th pose
+  # 10 = show every 10th pose
+  every: 1
+  
+  # Display mode: single or comparison
+  # single = show only one trajectory
+  # comparison = show original and transformed side-by-side
+  mode: "single"  # "single" or "comparison"
+  
+  # Whether to display the plot interactively
+  show: true
+  
+  # Debug mode: show CSV row indices on the plot
+  debug: true
+
+
+# Transformation Settings
+# =======================
+transformation:
+  # Enable trajectory transformation to robot base frame
+  enabled: true
+  
+  # Knife pose relative to robot base (tool offset)
+  # These define the transformation from robot base to end-effector
+  knife_pose:
+    # Translation components (millimeters)
+    translation:
+      x: -367.773
+      y: -915.815
+      z: 520.4
+    
+    # Quaternion orientation (w, x, y, z format)
+    # Normalized representation of rotation
+    quaternion:
+      w: 0.00515984
+      x: 0.712632
+      y: -0.701518
+      z: 0.000396522
+  
+  # Export transformed trajectory to separate CSV file
+  # Only applies when transformation is enabled
+  save_transformed_csv: false
+
+
+# Comparison Settings
+# ===================
+comparison:
+  # Enable side-by-side comparison visualization
+  # Only works when transformation is enabled
+  enabled: true
+  
+  # Display original on left, transformed on right
+  show_labels: true
+  
+  # Generate line graphs comparing translation (x,y,z) and rotation (qw,qx,qy,qz)
+  # Shows 4 subplots: original translation, original rotation, transformed translation, transformed rotation
+  # Graphs are automatically saved (not displayed interactively)
+  create_bar_graph: false
+
+
+# Pose Analyzer Settings
+# ======================
+# Analyzes delta (changes) between consecutive poses
+# Generates graphs showing position and rotation changes
+pose_analyzer:
+  # Enable delta analysis
+  # Only works when transformation is enabled
+  enabled: false
+  
+  # Save delta analysis graphs
+  # Shows 4 graphs: original position delta, original rotation delta, transformed position delta, transformed rotation delta
+  save_delta_graphs: false
+
+
+# Continuity Analyzer Settings
+# =============================
+# Analyzes C^1 and C^2 continuity of trajectories
+# C^1: Position and rotation velocities (first derivatives)
+# C^2: Position and rotation accelerations (second derivatives)
+continuity_analyzer:
+  # Enable continuity analysis
+  enabled: false
+  
+  # Generate C^1 continuity graphs (velocity analysis)
+  # Compares CSV-commanded speed vs required velocity from pose differences
+  save_c1_graphs: false
+  
+  # Generate C^2 continuity graphs (acceleration analysis)
+  # Shows smoothness by analyzing acceleration changes
+  save_c2_graphs: false # not implemented yet
+
+
+# Output Settings
+# ===============
+output:
+  # Directory for saving output files
+  # If not specified or null, uses the same directory as input CSV (default)
+  # Set to a path to save all outputs to that directory instead
+  path: null
+  
+  # Automatically save visualization to PNG using Ctrl+S
+  # Files are saved to the output path
+  # Naming: {basename}_visualization.png (single mode)
+  #         {basename}_comparison.png (comparison mode)
+  auto_save: false
+  
+  # Figure quality (DPI)
+  dpi: 300
+  
+  # Output format
+  format: "png"  # "png" or other matplotlib-supported formats
