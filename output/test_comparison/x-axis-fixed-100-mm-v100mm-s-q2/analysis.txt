@@ -1,0 +1,68 @@
+============================================================
+Analysis Report: x-axis-fixed-100-mm-v100mm-s-q2
+============================================================
+Generated: 2026-01-07 15:28:55
+
+TRAJECTORY INFORMATION
+----------------------------------------
+CSV File: x-axis-fixed-100-mm-v100mm-s-q2
+Number of Waypoints: 187
+
+EUCLIDEAN DISTANCE ERROR (millimeters)
+----------------------------------------
+  Minimum: 0.000616 mm
+  Maximum: 0.000696 mm
+  Mean:    0.000657 mm
+  RMS:     0.000657 mm
+  Std Dev: 0.000016 mm
+  Median:  0.000657 mm
+
+POSITION ERROR STATISTICS (millimeters) - Absolute Values
+----------------------------------------
+  X-axis:
+    Min: 0.000056 mm, Max: 0.000073 mm
+    Mean: 0.000065 mm, RMS: 0.000065 mm
+    Std: 0.000005 mm
+  Y-axis:
+    Min: 0.000412 mm, Max: 0.000472 mm
+    Mean: 0.000442 mm, RMS: 0.000443 mm
+    Std: 0.000016 mm
+  Z-axis:
+    Min: 0.000445 mm, Max: 0.000516 mm
+    Mean: 0.000480 mm, RMS: 0.000481 mm
+    Std: 0.000018 mm
+
+INVERSE KINEMATICS ANALYSIS
+----------------------------------------
+  IK Success Rate: 187/187 (100.0%)
+
+IK JOINT ERROR STATISTICS (degrees) - Absolute Values
+----------------------------------------
+  J1:
+    Min: 0.000792 deg, Max: 0.002074 deg
+    Mean: 0.001922 deg, RMS: 0.001928 deg
+    Std: 0.000150 deg
+  J2:
+    Min: 0.000405 deg, Max: 0.013700 deg
+    Mean: 0.001066 deg, RMS: 0.001702 deg
+    Std: 0.001328 deg
+  J3:
+    Min: 0.001528 deg, Max: 0.016177 deg
+    Mean: 0.001941 deg, RMS: 0.002657 deg
+    Std: 0.001815 deg
+  J4:
+    Min: 0.012309 deg, Max: 0.013739 deg
+    Mean: 0.012852 deg, RMS: 0.012857 deg
+    Std: 0.000362 deg
+  J5:
+    Min: 0.001045 deg, Max: 0.017030 deg
+    Mean: 0.004001 deg, RMS: 0.004146 deg
+    Std: 0.001088 deg
+  J6:
+    Min: 0.005944 deg, Max: 0.010441 deg
+    Mean: 0.007342 deg, RMS: 0.007398 deg
+    Std: 0.000911 deg
+
+============================================================
+End of Report
+============================================================

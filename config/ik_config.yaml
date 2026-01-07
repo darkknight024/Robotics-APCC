@@ -1,0 +1,33 @@
+# =============================================================================
+# IK Solver Configuration
+# =============================================================================
+# Configuration parameters for the Pinocchio-based inverse kinematics solver.
+# These values are used by the IKSolver class in core/ik_solver.py.
+
+ik_parameters:
+  # Maximum number of iterations for convergence
+  max_iterations: 1000
+  
+  # Convergence tolerance (residual norm threshold)
+  tolerance: 1.0e-4
+  
+  # Weight for rotation error in cost function
+  rot_weight: 0.2
+  
+  # Weight for translation error in cost function
+  trans_weight: 1.0
+  
+  # Initial damping factor for Levenberg-Marquardt
+  lambda0: 1.0e-3
+  
+  # Maximum damping factor
+  lambda_max: 1.0e1
+  
+  # Maximum step size per iteration (radians)
+  max_step: 0.2
+  
+  # Enable backtracking line search
+  backtrack: true
+  
+  # End-effector frame name in URDF
+  ee_frame_name: "ee_link"

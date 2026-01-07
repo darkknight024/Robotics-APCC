@@ -1,0 +1,30 @@
+# =============================================================================
+# RobotStudio Test Trajectory Configuration
+# =============================================================================
+# Configuration for FK/IK comparison with RobotStudio test trajectories.
+# Used by solver_comparison_test_trajectory.py
+
+# =============================================================================
+# Robot to Use
+# =============================================================================
+# Reference robot name from config/robots_config.yaml
+robot_name: "IRB 1300-7/1.4"
+
+# =============================================================================
+# I/O Directories
+# =============================================================================
+input_folder: "input/robostudio_trajectories"
+output_folder: "output/test_comparison"
+
+# =============================================================================
+# Processing Options
+# =============================================================================
+options:
+  # Use adaptive scaling for plots (if false, uniform scale)
+  adaptive_scale: false
+  
+  # Generate FK comparison plots
+  generate_fk_plots: true
+  
+  # Generate IK comparison plots
+  generate_ik_plots: true

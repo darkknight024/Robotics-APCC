@@ -1,0 +1,57 @@
+# =============================================================================
+# Knife Pose Configuration
+# =============================================================================
+# Defines knife poses (T_B_K) in robot base frame for trajectory transformation.
+# Multiple poses can be defined for different knife configurations.
+#
+# Format:
+#   poses:
+#     pose_name:
+#       description: "Description"
+#       translation_mm:       # Position in millimeters (converted to meters)
+#         x: value
+#         y: value
+#         z: value
+#       rotation:             # Quaternion [w, x, y, z]
+#         w: value
+#         x: value
+#         y: value
+#         z: value
+
+poses:
+  pose_1:
+    description: "Standard knife pose (from calibration data)"
+    translation_mm:
+      x: -367.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: 0.00515984
+      x: 0.712632
+      y: -0.701518
+      z: 0.000396522
+
+
+  Zund:   # Knife pose for Zund tool
+    description: "Knife pose for Zund tool"
+    translation_mm:
+      x: -368.0146  # mm
+      y: -916.879  # mm
+      z: 519.791     # mm
+    rotation:
+      w: 0.00976529   # quaternion w
+      x: 0.718246     # quaternion x
+      y: -0.695702    # quaternion y
+      z: -0.0051531  # quaternion z
+  # Example additional pose (uncomment to use):
+  # pose_2:
+  #   description: "Alternative knife pose"
+  #   translation_mm:
+  #     x: -350.0
+  #     y: -900.0
+  #     z: 500.0
+  #   rotation:
+  #     w: 1.0
+  #     x: 0.0
+  #     y: 0.0
+  #     z: 0.0

@@ -26,7 +26,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Base.STL" />
+          filename="../meshes/Base.STL" />
       </geometry>
       <material
         name="">
@@ -40,7 +40,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Base.STL" />
+          filename="../meshes/Base.STL" />
       </geometry>
     </collision>
   </link>
@@ -66,7 +66,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_1.STL" />
+          filename="../meshes/Link_1.STL" />
       </geometry>
       <material
         name="">
@@ -80,7 +80,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_1.STL" />
+          filename="../meshes/Link_1.STL" />
       </geometry>
     </collision>
   </link>
@@ -124,7 +124,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_2.STL" />
+          filename="../meshes/Link_2.STL" />
       </geometry>
       <material
         name="">
@@ -138,7 +138,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_2.STL" />
+          filename="../meshes/Link_2.STL" />
       </geometry>
     </collision>
   </link>
@@ -182,7 +182,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_3.STL" />
+          filename="../meshes/Link_3.STL" />
       </geometry>
       <material
         name="">
@@ -196,7 +196,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_3.STL" />
+          filename="../meshes/Link_3.STL" />
       </geometry>
     </collision>
   </link>
@@ -240,7 +240,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_4.STL" />
+          filename="../meshes/Link_4.STL" />
       </geometry>
       <material
         name="">
@@ -254,7 +254,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_4.STL" />
+          filename="../meshes/Link_4.STL" />
       </geometry>
     </collision>
   </link>
@@ -298,7 +298,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_5.STL" />
+          filename="../meshes/Link_5.STL" />
       </geometry>
       <material
         name="">
@@ -312,7 +312,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_5.STL" />
+          filename="../meshes/Link_5.STL" />
       </geometry>
     </collision>
   </link>
@@ -356,7 +356,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_7.STL" />
+          filename="../meshes/Link_7.STL" />
       </geometry>
       <material
         name="">
@@ -370,7 +370,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="E:\Work\Projects\Robotics-APCC-copy\Assests\Robot APCC\IRB-1300-1400-URDF\meshes\Link_7.STL" />
+          filename="../meshes/Link_7.STL" />
       </geometry>
     </collision>
   </link>

@@ -1,0 +1,58 @@
+# =============================================================================
+# Toolpath Processing Configuration
+# =============================================================================
+# Configuration for batch toolpath processing across multiple robots and knives.
+# Used by solver_comparison_toolpath_trajectory.py and feasibility_analysis_batch.py.
+
+# =============================================================================
+# Robots to Process
+# =============================================================================
+# Reference robot names from config/robots_config.yaml
+robots_to_use:
+  - "IRB 1300-7/1.4"
+  # - "IRB 1300-10/1.15"
+  # - "IRB 1300-11/0.9"
+
+# =============================================================================
+# Knife Poses to Use
+# =============================================================================
+# Reference knife pose names from config/knife_config.yaml
+knife_poses_to_use:
+  - "pose_1"
+
+# =============================================================================
+# Toolpath Input Paths
+# =============================================================================
+# Folder containing toolpath CSVs (T_P_K format, positions in mm)
+# Each CSV can contain multiple trajectories separated by "T0" marker
+toolpaths_folder: "input/toolpaths"
+
+# =============================================================================
+# RobotStudio Recorded Joints (for comparison)
+# =============================================================================
+# Folder containing RobotStudio-recorded joint CSVs
+# IMPORTANT: Each file must have the SAME NAME as its corresponding toolpath CSV
+# Format: trajectory_id, j1_deg, j2_deg, j3_deg, j4_deg, j5_deg, j6_deg
+# Number of trajectories per file must match the toolpath CSV
+robostudio_joints_folder: "input/robostudio_joints"
+
+# =============================================================================
+# Output Directory
+# =============================================================================
+output_folder: "output/toolpath_comparison"
+
+# =============================================================================
+# Processing Options
+# =============================================================================
+options:
+  # Save computed joint positions to CSV
+  save_joint_csv: true
+  
+  # Generate comparison plots
+  generate_plots: true
+  
+  # Use adaptive scaling for plots
+  adaptive_plot_scale: false
+  
+  # Number of parallel workers (0 = use all CPUs)
+  num_workers: 0

@@ -1,0 +1,41 @@
+# Lula Robot Description File for ABB IRB 1300-1400
+# Generated for use with NVIDIA Isaac Sim's LulaKinematicsSolver
+#
+# This file defines the configuration space (c-space) for the robot
+# and specifies which joints are actuated.
+#
+# Reference URDF: IRB-1300-1400-URDF_ee.urdf
+
+api_version: 1.0
+
+# Configuration space joints (actuated joints)
+# These are the joints that the kinematics solver will control
+cspace:
+  - Joint_1
+  - Joint_2
+  - Joint_3
+  - Joint_4
+  - Joint_5
+  - Joint_6
+
+# Default configuration (neutral position) in radians
+# All joints at zero position
+default_q:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+
+# Mapping rules from c-space to URDF joint names
+# Empty since joint names match directly
+cspace_to_urdf_rules: []
+
+# End-effector frame name (defined in URDF)
+end_effector_frame: ee_link
+
+# Robot base link name
+root_link: Base
+
+

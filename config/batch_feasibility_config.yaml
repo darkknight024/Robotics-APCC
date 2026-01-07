@@ -1,0 +1,83 @@
+# =============================================================================
+# Batch Feasibility Analysis Configuration
+# =============================================================================
+# Configuration for trajectory feasibility analysis.
+# Controls which checks to run and their thresholds.
+
+# =============================================================================
+# Robots to Analyze
+# =============================================================================
+# Reference robot names from config/robots_config.yaml
+robots_to_use:
+  - "IRB 1300-7/1.4"
+
+# =============================================================================
+# Knife Poses to Use
+# =============================================================================
+# Reference knife pose names from config/knife_config.yaml
+knife_poses_to_use:
+  - "pose_1"
+
+# =============================================================================
+# I/O Directories
+# =============================================================================
+toolpaths_folder: "Assests/Robot APCC/Toolpaths/Successful"
+output_folder: "output/feasibility_batch"
+
+# =============================================================================
+# Checks to Run
+# =============================================================================
+checks:
+  # Compute and plot manipulability index (Yoshikawa measure)
+  manipulability: true
+  
+  # Compute and plot minimum singular value (singularity proximity)
+  singularity: true
+  
+  # Check kinematic reachability (IK solvability)
+  reachability: true
+  
+  # Compute condition number (optional, expensive)
+  condition_number: false
+  
+  # Continuity analysis (C1 velocity limits)
+  continuity: true
+
+# =============================================================================
+# Thresholds
+# =============================================================================
+thresholds:
+  # Minimum singular value below which to warn about singularity
+  singularity_warning: 0.01
+  
+  # Manipulability below which to warn about poor dexterity
+  manipulability_warning: 0.001
+
+# =============================================================================
+# Continuity Analysis Settings
+# =============================================================================
+continuity:
+  # Enable continuity analysis
+  enabled: true
+  
+  # Pose scale factor (meters per radian) for unified pose metric
+  pose_scale_m_per_rad: 0.1
+  
+  # Safety factor for velocity limit checks (1.05 = 5% margin)
+  safety_factor: 1.05
+  
+  # Default end-effector speed (mm/s) if not in trajectory
+  default_speed_mm_s: 100.0
+
+# =============================================================================
+# Output Options
+# =============================================================================
+output:
+  # Generate per-waypoint plots
+  per_waypoint_plots: true
+  
+  # Generate trajectory summary plots
+  summary_plots: true
+  
+  # Save analysis report to text file
+  save_analysis: true
