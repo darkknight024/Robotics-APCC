@@ -56,6 +56,10 @@ from .feasibility_plot import (
     plot_continuity_analysis
 )
 
+from .generate_combinatorial_plots import (
+    generate_ranking_plot
+)
+
 from .config_loader import (
     load_ik_config,
     load_knife_config,
@@ -101,6 +105,8 @@ __all__ = [
     'plot_reachability_per_waypoint',
     'plot_manipulability_per_waypoint',
     'plot_reachability_summary',
+    'plot_continuity_analysis',
+    'generate_ranking_plot',
     # Config
     'load_ik_config',
     'load_knife_config',
