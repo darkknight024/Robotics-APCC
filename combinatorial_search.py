@@ -1,0 +1,1346 @@
+#!/usr/bin/env python3
+"""
+Combinatorial Search - Feasibility Ranking Batch Processor
+
+Performs combinatorial search across robots, knife poses, and toolpaths.
+Computes kinematic heuristics, normalizes metrics, and generates ranked reports.
+
+Output Structure:
+    output/feasibility_ranking/
+    ├── per_robot/
+    │   ├── IRB_1300-7_1.4_knifepose_ranking.csv
+    │   ├── IRB_1300-7_1.4_detailed_results.json
+    │   └── IRB_1300-7_1.4_ranking_plot.png
+    ├── robot_name__knife_name__toolpath_name/
+    │   └── summary.json
+    ├── global_ranking.csv
+    ├── batch_ranking_summary.json
+    └── feasibility_ranking_report.md
+
+Usage:
+    python combinatorial_search.py --config config/batch_feasibility_config.yaml
+    python combinatorial_search.py --config config/batch_feasibility_config.yaml --output output/ranking --workers 8
+    python combinatorial_search.py --config config/batch_feasibility_config.yaml --weights config/scoring_weights.yaml
+
+Command-line Arguments:
+    --config, -c    Path to batch feasibility config YAML (required)
+    --output, -o    Base output directory (overrides config)
+    --workers, -w   Number of parallel workers (default: 1)
+    --weights       Path to scoring weights YAML (optional)
+    --knife-config  Path to knife poses YAML (default: config/generated_knife_poses.yaml)
+    --debug         Enable debug logging
+"""
+
+import argparse
+import json
+import logging
+import math
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from pathlib import Path
+from statistics import mean
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import yaml
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from utils import (
+    load_knife_config,
+    load_toolpath_config,
+    load_feasibility_config,
+    load_yaml,
+    KnifePose,
+    RobotConfig
+)
+
+# Import the single toolpath processor
+from feasibility_analysis import process_toolpath
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Default Scoring Weights
+# =============================================================================
+
+DEFAULT_WEIGHTS = {
+    'w_IK_failure_rate': 50.0,
+    'w_singularity_rate': 25.0,
+    'w_min_manipulability': 10.0,
+    'w_mean_manipulability': 10.0,
+    'w_mean_min_singular_value': 5.0,
+}
+
+
+# =============================================================================
+# Data Classes
+# =============================================================================
+
+@dataclass
+class FeasibilityTask:
+    """Task for parallel feasibility analysis."""
+    robot_name: str
+    urdf_path: str
+    robot_reach_m: float
+    velocity_limits_rad_s: Optional[np.ndarray]
+    knife_name: str
+    knife_translation_m: np.ndarray
+    knife_quaternion: np.ndarray
+    toolpath_path: str
+    toolpath_name: str
+    output_dir: str
+    singularity_threshold: float
+    speed_mm_s: float
+    run_continuity: bool
+    save_analysis: bool = False
+
+
+@dataclass
+class TrajectoryMetrics:
+    """Per-trajectory computed metrics."""
+    trajectory_index: int
+    n_waypoints: int
+    reachable_count: int
+    IK_failure_rate: float
+    singularity_count: int
+    singularity_rate: float
+    mean_manipulability: float
+    min_manipulability: float
+    mean_min_singular_value: float
+    continuity_passed: Optional[bool] = None
+
+
+@dataclass
+class CombinationResult:
+    """Result for a single (robot, knife, toolpath) combination."""
+    robot_name: str
+    knife_pose_id: str
+    toolpath_name: str
+    success: bool
+    error: Optional[str] = None
+    n_trajectories: int = 0
+    trajectory_metrics: List[TrajectoryMetrics] = field(default_factory=list)
+    # Aggregated metrics across trajectories
+    max_IK_failure_rate: float = 1.0
+    max_singularity_rate: float = 1.0
+    min_min_manipulability: float = 0.0
+    mean_mean_manipulability: float = 0.0
+    mean_mean_min_singular_value: float = 0.0
+
+
+@dataclass
+class AggregatedKnifePoseResult:
+    """Aggregated result for a (robot, knife_pose) across all toolpaths."""
+    robot_name: str
+    knife_pose_id: str
+    n_toolpaths: int
+    n_successful: int
+    # Aggregated metrics (worst-case across toolpaths)
+    max_IK_failure_rate: float = 1.0
+    max_singularity_rate: float = 1.0
+    min_min_manipulability: float = 0.0
+    mean_mean_manipulability: float = 0.0
+    mean_mean_min_singular_value: float = 0.0
+    # Normalized metrics
+    norm_IK_failure_rate: float = 1.0
+    norm_singularity_rate: float = 1.0
+    norm_min_manipulability: float = 1.0
+    norm_mean_manipulability: float = 1.0
+    norm_mean_min_singular_value: float = 1.0
+    # Score
+    normalized_score: float = 1.0
+    raw_score: float = 0.0
+    rank: int = 0
+    # Per-toolpath results
+    toolpath_results: List[CombinationResult] = field(default_factory=list)
+
+
+# =============================================================================
+# Scoring and Normalization Functions
+# =============================================================================
+
+def load_weights(weights_path: Optional[str]) -> Dict[str, float]:
+    """
+    Load scoring weights from YAML file or return defaults.
+    
+    Args:
+        weights_path: Path to weights YAML file (optional)
+        
+    Returns:
+        Dictionary of weight name to weight value
+    """
+    if weights_path is None:
+        logger.info("Using default scoring weights")
+        return DEFAULT_WEIGHTS.copy()
+    
+    try:
+        config = load_yaml(weights_path)
+        weights = config.get('weights', config)
+        
+        # Merge with defaults for any missing keys
+        result = DEFAULT_WEIGHTS.copy()
+        result.update(weights)
+        
+        logger.info(f"Loaded weights from {weights_path}")
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to load weights from {weights_path}: {e}. Using defaults.")
+        return DEFAULT_WEIGHTS.copy()
+
+
+def normalize_metric_lower_better(values: np.ndarray) -> np.ndarray:
+    """
+    Normalize metric where lower is better (0=best, 1=worst).
+    
+    Args:
+        values: Array of metric values
+        
+    Returns:
+        Normalized values in [0, 1]
+    """
+    values = np.array(values, dtype=float)
+    
+    # Handle NaN values
+    valid_mask = ~np.isnan(values)
+    if not np.any(valid_mask):
+        return np.ones_like(values)
+    
+    min_val = np.nanmin(values)
+    max_val = np.nanmax(values)
+    
+    if max_val - min_val < 1e-10:
+        # All values are the same
+        return np.zeros_like(values)
+    
+    normalized = (values - min_val) / (max_val - min_val)
+    
+    # Replace NaN with worst case (1.0)
+    normalized = np.where(np.isnan(normalized), 1.0, normalized)
+    
+    return np.clip(normalized, 0.0, 1.0)
+
+
+def normalize_metric_higher_better(values: np.ndarray) -> np.ndarray:
+    """
+    Normalize metric where higher is better (0=best, 1=worst).
+    Inverts the normalization so that 0=best, 1=worst.
+    
+    Args:
+        values: Array of metric values
+        
+    Returns:
+        Normalized values in [0, 1] (0=best, 1=worst)
+    """
+    values = np.array(values, dtype=float)
+    
+    # Handle NaN values
+    valid_mask = ~np.isnan(values)
+    if not np.any(valid_mask):
+        return np.ones_like(values)
+    
+    min_val = np.nanmin(values)
+    max_val = np.nanmax(values)
+    
+    if max_val - min_val < 1e-10:
+        # All values are the same
+        return np.zeros_like(values)
+    
+    # Invert: (max - value) / (max - min)
+    normalized = (max_val - values) / (max_val - min_val)
+    
+    # Replace NaN with worst case (1.0)
+    normalized = np.where(np.isnan(normalized), 1.0, normalized)
+    
+    return np.clip(normalized, 0.0, 1.0)
+
+
+def compute_weighted_score(
+    norm_IK_failure_rate: float,
+    norm_singularity_rate: float,
+    norm_min_manipulability: float,
+    norm_mean_manipulability: float,
+    norm_mean_min_singular_value: float,
+    weights: Dict[str, float]
+) -> Tuple[float, float]:
+    """
+    Compute weighted score from normalized metrics.
+    
+    Args:
+        norm_*: Normalized metric values (0=best, 1=worst)
+        weights: Weight dictionary
+        
+    Returns:
+        (normalized_score, raw_score)
+    """
+    raw_score = (
+        weights['w_IK_failure_rate'] * norm_IK_failure_rate +
+        weights['w_singularity_rate'] * norm_singularity_rate +
+        weights['w_min_manipulability'] * norm_min_manipulability +
+        weights['w_mean_manipulability'] * norm_mean_manipulability +
+        weights['w_mean_min_singular_value'] * norm_mean_min_singular_value
+    )
+    
+    total_weight = sum(weights.values())
+    normalized_score = raw_score / total_weight if total_weight > 0 else raw_score
+    
+    return normalized_score, raw_score
+
+
+# =============================================================================
+# Metric Extraction and Aggregation
+# =============================================================================
+
+def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryMetrics:
+    """
+    Extract and compute metrics from a single trajectory result.
+    
+    Args:
+        trajectory_result: Dictionary from process_toolpath trajectory_results
+        
+    Returns:
+        TrajectoryMetrics with computed IK_failure_rate and singularity_rate
+    """
+    n_waypoints = trajectory_result.get('n_waypoints', 0)
+    reachable_count = trajectory_result.get('reachable_count', 0)
+    singularity_count = trajectory_result.get('singularity_count', 0)
+    
+    # Compute derived metrics
+    IK_failure_rate = 1.0 - (reachable_count / n_waypoints) if n_waypoints > 0 else 1.0
+    singularity_rate = singularity_count / n_waypoints if n_waypoints > 0 else 1.0
+    
+    # Get continuity status
+    continuity_info = trajectory_result.get('continuity')
+    continuity_passed = None
+    if continuity_info is not None:
+        continuity_passed = continuity_info.get('passed')
+    
+    return TrajectoryMetrics(
+        trajectory_index=trajectory_result.get('trajectory_index', 0),
+        n_waypoints=n_waypoints,
+        reachable_count=reachable_count,
+        IK_failure_rate=IK_failure_rate,
+        singularity_count=singularity_count,
+        singularity_rate=singularity_rate,
+        mean_manipulability=trajectory_result.get('mean_manipulability', 0.0),
+        min_manipulability=trajectory_result.get('min_manipulability', 0.0),
+        mean_min_singular_value=trajectory_result.get('mean_min_singular_value', 0.0),
+        continuity_passed=continuity_passed
+    )
+
+
+def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, float]:
+    """
+    Aggregate metrics across multiple trajectories for scoring.
+    
+    Uses worst-case aggregation for failure-related metrics.
+    
+    Args:
+        metrics: List of per-trajectory metrics
+        
+    Returns:
+        Dictionary with aggregated metrics
+    """
+    if not metrics:
+        return {
+            'max_IK_failure_rate': 1.0,
+            'max_singularity_rate': 1.0,
+            'min_min_manipulability': 0.0,
+            'mean_mean_manipulability': 0.0,
+            'mean_mean_min_singular_value': 0.0,
+        }
+    
+    return {
+        'max_IK_failure_rate': max(m.IK_failure_rate for m in metrics),
+        'max_singularity_rate': max(m.singularity_rate for m in metrics),
+        'min_min_manipulability': min(m.min_manipulability for m in metrics),
+        'mean_mean_manipulability': mean(m.mean_manipulability for m in metrics),
+        'mean_mean_min_singular_value': mean(m.mean_min_singular_value for m in metrics),
+    }
+
+
+def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, float]:
+    """
+    Aggregate metrics across multiple toolpaths for a (robot, knife_pose).
+    
+    Args:
+        results: List of CombinationResult for same (robot, knife_pose)
+        
+    Returns:
+        Dictionary with aggregated metrics
+    """
+    successful = [r for r in results if r.success]
+    
+    if not successful:
+        return {
+            'max_IK_failure_rate': 1.0,
+            'max_singularity_rate': 1.0,
+            'min_min_manipulability': 0.0,
+            'mean_mean_manipulability': 0.0,
+            'mean_mean_min_singular_value': 0.0,
+        }
+    
+    return {
+        'max_IK_failure_rate': max(r.max_IK_failure_rate for r in successful),
+        'max_singularity_rate': max(r.max_singularity_rate for r in successful),
+        'min_min_manipulability': min(r.min_min_manipulability for r in successful),
+        'mean_mean_manipulability': mean(r.mean_mean_manipulability for r in successful),
+        'mean_mean_min_singular_value': mean(r.mean_mean_min_singular_value for r in successful),
+    }
+
+
+# =============================================================================
+# Task Execution
+# =============================================================================
+
+def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
+    """
+    Run feasibility analysis for a single (robot, knife, toolpath) combination.
+    
+    Args:
+        task: FeasibilityTask with all parameters
+        
+    Returns:
+        CombinationResult with metrics or error
+    """
+    try:
+        result = process_toolpath(
+            toolpath_path=task.toolpath_path,
+            urdf_path=task.urdf_path,
+            knife_translation_m=task.knife_translation_m,
+            knife_quaternion=task.knife_quaternion,
+            output_dir=task.output_dir,
+            robot_reach_m=task.robot_reach_m,
+            singularity_threshold=task.singularity_threshold,
+            velocity_limits_rad_s=task.velocity_limits_rad_s,
+            speed_mm_s=task.speed_mm_s,
+            run_continuity=task.run_continuity,
+            save_analysis=task.save_analysis
+        )
+        
+        # Extract per-trajectory metrics
+        trajectory_metrics = []
+        for traj_result in result.get('trajectory_results', []):
+            metrics = extract_trajectory_metrics(traj_result)
+            trajectory_metrics.append(metrics)
+        
+        # Aggregate across trajectories
+        aggregated = aggregate_trajectory_metrics(trajectory_metrics)
+        
+        return CombinationResult(
+            robot_name=task.robot_name,
+            knife_pose_id=task.knife_name,
+            toolpath_name=task.toolpath_name,
+            success=True,
+            n_trajectories=result.get('n_trajectories', 0),
+            trajectory_metrics=trajectory_metrics,
+            max_IK_failure_rate=aggregated['max_IK_failure_rate'],
+            max_singularity_rate=aggregated['max_singularity_rate'],
+            min_min_manipulability=aggregated['min_min_manipulability'],
+            mean_mean_manipulability=aggregated['mean_mean_manipulability'],
+            mean_mean_min_singular_value=aggregated['mean_mean_min_singular_value'],
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed: {task.robot_name}/{task.knife_name}/{task.toolpath_name}: {e}")
+        return CombinationResult(
+            robot_name=task.robot_name,
+            knife_pose_id=task.knife_name,
+            toolpath_name=task.toolpath_name,
+            success=False,
+            error=str(e),
+        )
+
+
+# =============================================================================
+# Output Generation
+# =============================================================================
+
+def generate_ranking_plot(
+    results: List[AggregatedKnifePoseResult],
+    output_path: str,
+    robot_name: str,
+    top_n: int = 10
+) -> None:
+    """
+    Generate bar chart showing top-N best and worst knife poses.
+    
+    Args:
+        results: Sorted list of aggregated results (best first)
+        output_path: Path to save PNG
+        robot_name: Robot name for title
+        top_n: Number of poses to show on each end
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        
+        if len(results) < 2:
+            logger.warning(f"Not enough results to generate plot for {robot_name}")
+            return
+        
+        # Get best and worst
+        n_show = min(top_n, len(results) // 2)
+        if n_show < 1:
+            n_show = 1
+        
+        best = results[:n_show]
+        worst = results[-n_show:]
+        
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        
+        # Best poses
+        ax1 = axes[0]
+        names_best = [r.knife_pose_id[:25] + '...' if len(r.knife_pose_id) > 25 else r.knife_pose_id for r in best]
+        scores_best = [r.normalized_score for r in best]
+        colors_best = plt.cm.Greens(np.linspace(0.4, 0.8, len(best)))
+        
+        ax1.barh(range(len(best)), scores_best, color=colors_best)
+        ax1.set_yticks(range(len(best)))
+        ax1.set_yticklabels(names_best)
+        ax1.set_xlabel('Normalized Score (lower=better)')
+        ax1.set_title(f'Top {n_show} Best Knife Poses')
+        ax1.invert_yaxis()
+        ax1.set_xlim(0, 1)
+        
+        # Worst poses
+        ax2 = axes[1]
+        names_worst = [r.knife_pose_id[:25] + '...' if len(r.knife_pose_id) > 25 else r.knife_pose_id for r in worst]
+        scores_worst = [r.normalized_score for r in worst]
+        colors_worst = plt.cm.Reds(np.linspace(0.4, 0.8, len(worst)))
+        
+        ax2.barh(range(len(worst)), scores_worst, color=colors_worst)
+        ax2.set_yticks(range(len(worst)))
+        ax2.set_yticklabels(names_worst)
+        ax2.set_xlabel('Normalized Score (lower=better)')
+        ax2.set_title(f'Top {n_show} Worst Knife Poses')
+        ax2.invert_yaxis()
+        ax2.set_xlim(0, 1)
+        
+        plt.suptitle(f'Knife Pose Ranking for {robot_name}', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Saved ranking plot: {output_path}")
+        
+    except ImportError:
+        logger.warning("matplotlib not available, skipping plot generation")
+    except Exception as e:
+        logger.error(f"Failed to generate plot: {e}")
+
+
+def save_per_robot_csv(
+    results: List[AggregatedKnifePoseResult],
+    output_path: str,
+    robot_name: str
+) -> None:
+    """
+    Save per-robot ranking CSV.
+    
+    Args:
+        results: Sorted list of aggregated results
+        output_path: Path to save CSV
+        robot_name: Robot name
+    """
+    rows = []
+    for r in results:
+        for toolpath_result in r.toolpath_results:
+            rows.append({
+                'knife_pose_id': r.knife_pose_id,
+                'toolpath_name': toolpath_result.toolpath_name,
+                'IK_failure_rate': toolpath_result.max_IK_failure_rate,
+                'singularity_rate': toolpath_result.max_singularity_rate,
+                'min_manipulability': toolpath_result.min_min_manipulability,
+                'mean_manipulability': toolpath_result.mean_mean_manipulability,
+                'mean_min_singular_value': toolpath_result.mean_mean_min_singular_value,
+                'normalized_score': r.normalized_score,
+                'raw_score': r.raw_score,
+                'rank': r.rank,
+            })
+    
+    df = pd.DataFrame(rows)
+    df.to_csv(output_path, index=False)
+    logger.info(f"Saved ranking CSV: {output_path}")
+
+
+def save_per_robot_json(
+    results: List[AggregatedKnifePoseResult],
+    output_path: str,
+    robot_name: str
+) -> None:
+    """
+    Save detailed per-robot results as JSON.
+    
+    Args:
+        results: List of aggregated results
+        output_path: Path to save JSON
+        robot_name: Robot name
+    """
+    def convert_to_serializable(obj):
+        """Convert numpy types to Python types for JSON serialization."""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.int32, np.int64)):
+            return int(obj)
+        elif hasattr(obj, '__dict__'):
+            return {k: convert_to_serializable(v) for k, v in obj.__dict__.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(i) for i in obj]
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        return obj
+    
+    data = {
+        'robot_name': robot_name,
+        'generated': datetime.now().isoformat(),
+        'n_knife_poses': len(results),
+        'results': [convert_to_serializable(asdict(r)) for r in results]
+    }
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, default=str)
+    
+    logger.info(f"Saved detailed JSON: {output_path}")
+
+
+def save_global_ranking_csv(
+    all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
+    output_path: str
+) -> None:
+    """
+    Save global ranking CSV across all robots.
+    
+    Args:
+        all_robot_results: Dictionary mapping robot name to results
+        output_path: Path to save CSV
+    """
+    rows = []
+    
+    for robot_name, results in all_robot_results.items():
+        for r in results:
+            rows.append({
+                'robot_name': robot_name,
+                'knife_pose_id': r.knife_pose_id,
+                'n_toolpaths': r.n_toolpaths,
+                'n_successful': r.n_successful,
+                'max_IK_failure_rate': r.max_IK_failure_rate,
+                'max_singularity_rate': r.max_singularity_rate,
+                'min_min_manipulability': r.min_min_manipulability,
+                'mean_mean_manipulability': r.mean_mean_manipulability,
+                'mean_mean_min_singular_value': r.mean_mean_min_singular_value,
+                'normalized_score': r.normalized_score,
+                'raw_score': r.raw_score,
+                'robot_rank': r.rank,
+            })
+    
+    df = pd.DataFrame(rows)
+    
+    # Add global rank
+    df = df.sort_values('normalized_score')
+    df['global_rank'] = range(1, len(df) + 1)
+    
+    df.to_csv(output_path, index=False)
+    logger.info(f"Saved global ranking CSV: {output_path}")
+
+
+def generate_markdown_report(
+    all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
+    all_combination_results: List[CombinationResult],
+    output_path: str,
+    weights: Dict[str, float]
+) -> None:
+    """
+    Generate markdown summary report.
+    
+    Args:
+        all_robot_results: Dictionary mapping robot name to results
+        all_combination_results: All combination results
+        output_path: Path to save markdown
+        weights: Scoring weights used
+    """
+    lines = []
+    lines.append("# Feasibility Ranking Report")
+    lines.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+    
+    # Summary statistics
+    total_combos = len(all_combination_results)
+    successful_combos = sum(1 for r in all_combination_results if r.success)
+    failed_combos = total_combos - successful_combos
+    
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- **Total combinations processed**: {total_combos}")
+    lines.append(f"- **Successful**: {successful_combos}")
+    lines.append(f"- **Failed**: {failed_combos}")
+    lines.append(f"- **Number of robots**: {len(all_robot_results)}")
+    lines.append("")
+    
+    # Scoring weights
+    lines.append("## Scoring Weights")
+    lines.append("")
+    lines.append("| Metric | Weight |")
+    lines.append("|--------|--------|")
+    for name, weight in weights.items():
+        lines.append(f"| {name} | {weight} |")
+    lines.append("")
+    
+    # Per-robot results
+    for robot_name, results in all_robot_results.items():
+        lines.append(f"## {robot_name}")
+        lines.append("")
+        
+        if not results:
+            lines.append("*No successful results*")
+            lines.append("")
+            continue
+        
+        # Top 5 best
+        lines.append("### Top 5 Best Knife Poses")
+        lines.append("")
+        lines.append("| Rank | Knife Pose | Score | IK Fail Rate | Singularity Rate | Min Manipulability |")
+        lines.append("|------|------------|-------|--------------|------------------|-------------------|")
+        
+        for r in results[:5]:
+            lines.append(
+                f"| {r.rank} | {r.knife_pose_id[:40]} | {r.normalized_score:.4f} | "
+                f"{r.max_IK_failure_rate:.3f} | {r.max_singularity_rate:.3f} | {r.min_min_manipulability:.4f} |"
+            )
+        lines.append("")
+        
+        # Bottom 5 worst
+        lines.append("### Top 5 Worst Knife Poses")
+        lines.append("")
+        lines.append("| Rank | Knife Pose | Score | IK Fail Rate | Singularity Rate | Failure Reason |")
+        lines.append("|------|------------|-------|--------------|------------------|----------------|")
+        
+        for r in results[-5:]:
+            # Determine failure reason
+            reasons = []
+            if r.max_IK_failure_rate > 0.2:
+                reasons.append(f"IK failure > 20%")
+            if r.max_singularity_rate > 0.3:
+                reasons.append(f"Singularity rate high")
+            if r.min_min_manipulability < 0.001:
+                reasons.append(f"Low manipulability")
+            reason_str = "; ".join(reasons) if reasons else "Low overall score"
+            
+            lines.append(
+                f"| {r.rank} | {r.knife_pose_id[:40]} | {r.normalized_score:.4f} | "
+                f"{r.max_IK_failure_rate:.3f} | {r.max_singularity_rate:.3f} | {reason_str} |"
+            )
+        lines.append("")
+        
+        # Sanity check
+        best_score = results[0].normalized_score if results else 1.0
+        if best_score < 0.2:
+            lines.append(f"✅ Sanity check passed: Best score ({best_score:.4f}) < 0.2")
+        else:
+            lines.append(f"⚠️ Warning: Best score ({best_score:.4f}) >= 0.2 - no ideal candidate found")
+        lines.append("")
+    
+    # Failed combinations
+    failed = [r for r in all_combination_results if not r.success]
+    if failed:
+        lines.append("## Failed Combinations")
+        lines.append("")
+        lines.append("| Robot | Knife Pose | Toolpath | Error |")
+        lines.append("|-------|------------|----------|-------|")
+        for r in failed[:20]:  # Show first 20
+            error_short = (r.error or "Unknown")[:50]
+            lines.append(f"| {r.robot_name} | {r.knife_pose_id} | {r.toolpath_name} | {error_short} |")
+        
+        if len(failed) > 20:
+            lines.append(f"\n*...and {len(failed) - 20} more failed combinations*")
+        lines.append("")
+    
+    lines.append("---")
+    lines.append("*End of Report*")
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    
+    logger.info(f"Saved markdown report: {output_path}")
+
+
+def save_batch_summary_json(
+    all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
+    all_combination_results: List[CombinationResult],
+    output_path: str
+) -> None:
+    """
+    Save batch ranking summary JSON.
+    
+    Args:
+        all_robot_results: Dictionary mapping robot name to results
+        all_combination_results: All combination results
+        output_path: Path to save JSON
+    """
+    total = len(all_combination_results)
+    successful = sum(1 for r in all_combination_results if r.success)
+    
+    top_per_robot = {}
+    for robot_name, results in all_robot_results.items():
+        if results:
+            top_per_robot[robot_name] = {
+                'best_knife': results[0].knife_pose_id,
+                'best_score': results[0].normalized_score,
+                'total_knife_poses': len(results),
+            }
+    
+    summary = {
+        'generated': datetime.now().isoformat(),
+        'total_combinations': total,
+        'successful_combinations': successful,
+        'failed_combinations': total - successful,
+        'robots_processed': list(all_robot_results.keys()),
+        'top_per_robot': top_per_robot,
+    }
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2)
+    
+    logger.info(f"Saved batch summary: {output_path}")
+
+
+def save_combination_summary(result: CombinationResult, output_dir: str) -> None:
+    """
+    Save per-combination summary JSON.
+    
+    Args:
+        result: CombinationResult
+        output_dir: Directory to save summary.json
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    def convert_to_serializable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.int32, np.int64)):
+            return int(obj)
+        elif hasattr(obj, '__dict__'):
+            return {k: convert_to_serializable(v) for k, v in obj.__dict__.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(i) for i in obj]
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        return obj
+    
+    summary = convert_to_serializable(asdict(result))
+    
+    output_path = Path(output_dir) / "summary.json"
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, default=str)
+
+
+# =============================================================================
+# Main Processing Logic
+# =============================================================================
+
+def validate_knife_ids(knife_poses: Dict[str, KnifePose]) -> bool:
+    """
+    Validate that all knife IDs are unique.
+    
+    Args:
+        knife_poses: Dictionary of knife poses
+        
+    Returns:
+        True if all IDs are unique
+    """
+    ids = list(knife_poses.keys())
+    unique_ids = set(ids)
+    
+    if len(ids) != len(unique_ids):
+        duplicates = [x for x in ids if ids.count(x) > 1]
+        logger.error(f"Duplicate knife IDs found: {set(duplicates)}")
+        return False
+    
+    return True
+
+
+def process_ranking_batch(
+    config_path: str,
+    output_base: str = None,
+    num_workers: int = 1,
+    weights_path: str = None,
+    knife_config_path: str = None
+) -> Dict[str, Any]:
+    """
+    Run feasibility ranking on all combinations.
+    
+    Args:
+        config_path: Path to batch config YAML
+        output_base: Base output directory
+        num_workers: Number of parallel workers
+        weights_path: Path to scoring weights YAML
+        knife_config_path: Path to knife poses YAML
+        
+    Returns:
+        Dictionary with batch results
+    """
+    # Load configs
+    config = load_toolpath_config(config_path)
+    
+    # Load knife poses
+    if knife_config_path is None:
+        knife_config_path = str(Path(__file__).parent / "config" / "generated_knife_poses.yaml")
+    
+    if not Path(knife_config_path).exists():
+        # Fallback to default knife config
+        knife_config_path = str(Path(__file__).parent / "config" / "knife_config.yaml")
+    
+    knife_poses = load_knife_config(knife_config_path)
+    logger.info(f"Loaded {len(knife_poses)} knife poses from {knife_config_path}")
+    
+    # Validate knife IDs
+    if not validate_knife_ids(knife_poses):
+        raise ValueError("Knife pose IDs must be unique")
+    
+    # Load feasibility config
+    feasibility_config_path = str(Path(__file__).parent / "config" / "batch_feasibility_config.yaml")
+    try:
+        feas_config = load_feasibility_config(feasibility_config_path)
+    except FileNotFoundError:
+        feas_config = {
+            'thresholds': {'singularity_warning': 0.01},
+            'continuity': {'enabled': True}
+        }
+    
+    # Load scoring weights
+    weights = load_weights(weights_path)
+    
+    # Setup output directory
+    output_dir = Path(output_base or config.get('output_folder', 'output/feasibility_ranking'))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    per_robot_dir = output_dir / "per_robot"
+    per_robot_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get configuration parameters
+    singularity_threshold = feas_config.get('thresholds', {}).get('singularity_warning', 0.01)
+    continuity_config = feas_config.get('continuity', {})
+    run_continuity = continuity_config.get('enabled', True)
+    speed_mm_s = continuity_config.get('default_speed_mm_s', 100.0)
+    
+    # Find toolpath files
+    toolpaths_folder = Path(config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')))
+    toolpath_files = []
+    
+    if toolpaths_folder.exists():
+        toolpath_files = sorted(toolpaths_folder.glob("*.csv"))
+    
+    for tp_path in config.get('toolpaths', []):
+        tp = Path(tp_path)
+        if tp.is_file():
+            toolpath_files.append(tp)
+        elif tp.is_dir():
+            toolpath_files.extend(sorted(tp.glob("*.csv")))
+    
+    toolpath_files = list(set(toolpath_files))
+    
+    # Use ALL knife poses from the knife config file (generated_knife_poses.yaml)
+    # This enables full combinatorial search across all generated poses
+    knife_poses_to_use = list(knife_poses.keys())
+    logger.info(f"Using all {len(knife_poses_to_use)} knife poses from knife config")
+    
+    logger.info(f"Found {len(toolpath_files)} toolpath file(s)")
+    logger.info(f"Processing {len(config['robots'])} robot(s) and {len(knife_poses_to_use)} knife pose(s)")
+    logger.info(f"Continuity analysis: {'Enabled' if run_continuity else 'Disabled'}")
+    
+    # Build task list
+    tasks = []
+    
+    for robot in config['robots']:
+        velocity_limits = None
+        if robot.velocity_limits_rad_s:
+            velocity_limits = np.array(robot.velocity_limits_rad_s)
+        
+        for pose_name in knife_poses_to_use:
+            if pose_name not in knife_poses:
+                logger.warning(f"Knife pose '{pose_name}' not found, skipping")
+                continue
+            
+            knife = knife_poses[pose_name]
+            
+            for toolpath_file in toolpath_files:
+                toolpath_name = toolpath_file.stem
+                robot_name_clean = robot.name.replace(" ", "_").replace("/", "-")
+                combo_output = output_dir / f"{robot_name_clean}__{pose_name}__{toolpath_name}"
+                
+                tasks.append(FeasibilityTask(
+                    robot_name=robot.name,
+                    urdf_path=robot.urdf_path,
+                    robot_reach_m=robot.reach_m,
+                    velocity_limits_rad_s=velocity_limits,
+                    knife_name=pose_name,
+                    knife_translation_m=knife.translation_m,
+                    knife_quaternion=knife.quaternion,
+                    toolpath_path=str(toolpath_file),
+                    toolpath_name=toolpath_name,
+                    output_dir=str(combo_output),
+                    singularity_threshold=singularity_threshold,
+                    speed_mm_s=speed_mm_s,
+                    run_continuity=run_continuity,
+                    save_analysis=False  # Don't save plots for each combo
+                ))
+    
+    total_tasks = len(tasks)
+    logger.info(f"Prepared {total_tasks} analysis tasks")
+    
+    if total_tasks == 0:
+        logger.warning("No tasks to process!")
+        return {'total_combinations': 0, 'successful': 0, 'failed': 0, 'results': []}
+    
+    # Execute tasks
+    all_results: List[CombinationResult] = []
+    
+    if num_workers <= 1:
+        # Sequential execution
+        for i, task in enumerate(tasks):
+            logger.info(f"[{i+1}/{total_tasks}] {task.robot_name} / {task.knife_name} / {task.toolpath_name}")
+            result = run_single_analysis(task)
+            all_results.append(result)
+            
+            # Save per-combination summary
+            save_combination_summary(result, task.output_dir)
+            
+            if result.success:
+                logger.debug(f"  Completed: {result.n_trajectories} trajectories")
+            else:
+                logger.warning(f"  FAILED: {result.error}")
+    else:
+        # Parallel execution
+        logger.info(f"Running with {num_workers} parallel workers...")
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            future_to_task = {executor.submit(run_single_analysis, task): task for task in tasks}
+            
+            completed = 0
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                completed += 1
+                
+                try:
+                    result = future.result()
+                    all_results.append(result)
+                    
+                    # Save per-combination summary
+                    save_combination_summary(result, task.output_dir)
+                    
+                    if result.success:
+                        logger.info(f"[{completed}/{total_tasks}] Completed: {task.knife_name}/{task.toolpath_name}")
+                    else:
+                        logger.warning(f"[{completed}/{total_tasks}] FAILED: {task.knife_name} - {result.error}")
+                        
+                except Exception as e:
+                    logger.error(f"[{completed}/{total_tasks}] ERROR: {task.knife_name} - {e}")
+    
+    # Organize results by robot
+    results_by_robot: Dict[str, Dict[str, List[CombinationResult]]] = {}
+    
+    for result in all_results:
+        if result.robot_name not in results_by_robot:
+            results_by_robot[result.robot_name] = {}
+        
+        if result.knife_pose_id not in results_by_robot[result.robot_name]:
+            results_by_robot[result.robot_name][result.knife_pose_id] = []
+        
+        results_by_robot[result.robot_name][result.knife_pose_id].append(result)
+    
+    # Aggregate and score per (robot, knife_pose)
+    all_robot_results: Dict[str, List[AggregatedKnifePoseResult]] = {}
+    
+    for robot_name, knife_results in results_by_robot.items():
+        logger.info(f"Processing robot: {robot_name}")
+        
+        # Create aggregated results
+        aggregated_list: List[AggregatedKnifePoseResult] = []
+        
+        for knife_id, combo_results in knife_results.items():
+            successful = [r for r in combo_results if r.success]
+            aggregated_metrics = aggregate_across_toolpaths(combo_results)
+            
+            agg = AggregatedKnifePoseResult(
+                robot_name=robot_name,
+                knife_pose_id=knife_id,
+                n_toolpaths=len(combo_results),
+                n_successful=len(successful),
+                max_IK_failure_rate=aggregated_metrics['max_IK_failure_rate'],
+                max_singularity_rate=aggregated_metrics['max_singularity_rate'],
+                min_min_manipulability=aggregated_metrics['min_min_manipulability'],
+                mean_mean_manipulability=aggregated_metrics['mean_mean_manipulability'],
+                mean_mean_min_singular_value=aggregated_metrics['mean_mean_min_singular_value'],
+                toolpath_results=combo_results,
+            )
+            aggregated_list.append(agg)
+        
+        if not aggregated_list:
+            logger.warning(f"No results for robot {robot_name}")
+            all_robot_results[robot_name] = []
+            continue
+        
+        # Normalize metrics (per-robot normalization)
+        ik_rates = np.array([a.max_IK_failure_rate for a in aggregated_list])
+        sing_rates = np.array([a.max_singularity_rate for a in aggregated_list])
+        min_manips = np.array([a.min_min_manipulability for a in aggregated_list])
+        mean_manips = np.array([a.mean_mean_manipulability for a in aggregated_list])
+        mean_svs = np.array([a.mean_mean_min_singular_value for a in aggregated_list])
+        
+        # Normalize: lower is better for rates, higher is better for manipulability/sv
+        norm_ik = normalize_metric_lower_better(ik_rates)
+        norm_sing = normalize_metric_lower_better(sing_rates)
+        norm_min_manip = normalize_metric_higher_better(min_manips)
+        norm_mean_manip = normalize_metric_higher_better(mean_manips)
+        norm_mean_sv = normalize_metric_higher_better(mean_svs)
+        
+        # Compute scores and assign normalized values
+        for i, agg in enumerate(aggregated_list):
+            agg.norm_IK_failure_rate = float(norm_ik[i])
+            agg.norm_singularity_rate = float(norm_sing[i])
+            agg.norm_min_manipulability = float(norm_min_manip[i])
+            agg.norm_mean_manipulability = float(norm_mean_manip[i])
+            agg.norm_mean_min_singular_value = float(norm_mean_sv[i])
+            
+            agg.normalized_score, agg.raw_score = compute_weighted_score(
+                agg.norm_IK_failure_rate,
+                agg.norm_singularity_rate,
+                agg.norm_min_manipulability,
+                agg.norm_mean_manipulability,
+                agg.norm_mean_min_singular_value,
+                weights
+            )
+        
+        # Sort by score (lower is better) and assign ranks
+        aggregated_list.sort(key=lambda x: x.normalized_score)
+        for rank, agg in enumerate(aggregated_list, 1):
+            agg.rank = rank
+        
+        all_robot_results[robot_name] = aggregated_list
+        
+        # Save per-robot outputs
+        robot_name_clean = robot_name.replace(" ", "_").replace("/", "-")
+        
+        save_per_robot_csv(
+            aggregated_list,
+            str(per_robot_dir / f"{robot_name_clean}_knifepose_ranking.csv"),
+            robot_name
+        )
+        
+        save_per_robot_json(
+            aggregated_list,
+            str(per_robot_dir / f"{robot_name_clean}_detailed_results.json"),
+            robot_name
+        )
+        
+        generate_ranking_plot(
+            aggregated_list,
+            str(per_robot_dir / f"{robot_name_clean}_ranking_plot.png"),
+            robot_name
+        )
+        
+        # Sanity check
+        if aggregated_list:
+            best_score = aggregated_list[0].normalized_score
+            if best_score >= 0.2:
+                logger.warning(
+                    f"Robot {robot_name}: Best score ({best_score:.4f}) >= 0.2. "
+                    "No ideal candidate found."
+                )
+            else:
+                logger.info(
+                    f"Robot {robot_name}: Best knife pose '{aggregated_list[0].knife_pose_id}' "
+                    f"with score {best_score:.4f}"
+                )
+    
+    # Save global outputs
+    save_global_ranking_csv(all_robot_results, str(output_dir / "global_ranking.csv"))
+    
+    generate_markdown_report(
+        all_robot_results,
+        all_results,
+        str(output_dir / "feasibility_ranking_report.md"),
+        weights
+    )
+    
+    save_batch_summary_json(
+        all_robot_results,
+        all_results,
+        str(output_dir / "batch_ranking_summary.json")
+    )
+    
+    # Print summary
+    successful_count = sum(1 for r in all_results if r.success)
+    failed_count = len(all_results) - successful_count
+    
+    print("\n" + "=" * 60)
+    print("BATCH RANKING COMPLETE")
+    print("=" * 60)
+    print(f"Total combinations: {len(all_results)}")
+    print(f"Successful: {successful_count}")
+    print(f"Failed: {failed_count}")
+    print(f"Output directory: {output_dir}")
+    print("")
+    
+    for robot_name, results in all_robot_results.items():
+        if results:
+            best = results[0]
+            print(f"  {robot_name}:")
+            print(f"    Best knife pose: {best.knife_pose_id}")
+            print(f"    Score: {best.normalized_score:.4f}")
+            print(f"    IK failure rate: {best.max_IK_failure_rate:.3f}")
+    
+    print("=" * 60)
+    
+    return {
+        'total_combinations': len(all_results),
+        'successful': successful_count,
+        'failed': failed_count,
+        'results': all_results,
+        'robot_results': all_robot_results,
+    }
+
+
+# =============================================================================
+# Validation Function
+# =============================================================================
+
+def validate_ranking_outputs(output_dir: str) -> bool:
+    """
+    Validate that ranking outputs are correctly formatted.
+    
+    Args:
+        output_dir: Path to output directory
+        
+    Returns:
+        True if all validations pass
+    """
+    output_path = Path(output_dir)
+    errors = []
+    
+    # Check global ranking CSV exists
+    global_csv = output_path / "global_ranking.csv"
+    if not global_csv.exists():
+        errors.append(f"Missing global_ranking.csv")
+    else:
+        try:
+            df = pd.read_csv(global_csv)
+            required_cols = [
+                'robot_name', 'knife_pose_id', 'normalized_score', 
+                'raw_score', 'robot_rank', 'global_rank'
+            ]
+            missing_cols = [c for c in required_cols if c not in df.columns]
+            if missing_cols:
+                errors.append(f"global_ranking.csv missing columns: {missing_cols}")
+        except Exception as e:
+            errors.append(f"Failed to read global_ranking.csv: {e}")
+    
+    # Check batch summary JSON
+    batch_summary = output_path / "batch_ranking_summary.json"
+    if not batch_summary.exists():
+        errors.append("Missing batch_ranking_summary.json")
+    else:
+        try:
+            with open(batch_summary, 'r') as f:
+                data = json.load(f)
+            if 'top_per_robot' not in data:
+                errors.append("batch_ranking_summary.json missing 'top_per_robot'")
+        except Exception as e:
+            errors.append(f"Failed to read batch_ranking_summary.json: {e}")
+    
+    # Check per_robot directory
+    per_robot_dir = output_path / "per_robot"
+    if not per_robot_dir.exists():
+        errors.append("Missing per_robot/ directory")
+    else:
+        csv_files = list(per_robot_dir.glob("*_knifepose_ranking.csv"))
+        if not csv_files:
+            errors.append("No per-robot CSV files found")
+        
+        for csv_file in csv_files:
+            try:
+                df = pd.read_csv(csv_file)
+                if 'knife_pose_id' not in df.columns or 'rank' not in df.columns:
+                    errors.append(f"{csv_file.name} missing required columns")
+            except Exception as e:
+                errors.append(f"Failed to read {csv_file.name}: {e}")
+    
+    # Report results
+    if errors:
+        print("Validation FAILED:")
+        for err in errors:
+            print(f"  - {err}")
+        return False
+    
+    print("Validation PASSED: All outputs correctly formatted")
+    return True
+
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Combinatorial search for feasibility ranking across robots, knives, and toolpaths"
+    )
+    parser.add_argument('--config', '-c', default='config/batch_feasibility_config.yaml',
+                        help="Path to batch feasibility config YAML")
+    parser.add_argument('--output', '-o', default='output/feasibility_ranking',
+                        help="Output directory")
+    parser.add_argument('--workers', '-w', type=int, default=1,
+                        help="Number of parallel workers (1 = sequential)")
+    parser.add_argument('--weights', 
+                        help="Path to scoring weights YAML (optional)")
+    parser.add_argument('--knife-config',
+                        help="Path to knife poses YAML (default: config/generated_knife_poses.yaml)")
+    parser.add_argument('--debug', action='store_true',
+                        help="Enable debug logging")
+    parser.add_argument('--validate', action='store_true',
+                        help="Only validate existing outputs")
+    
+    args = parser.parse_args()
+    
+    # Configure logging
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Validation mode
+    if args.validate:
+        success = validate_ranking_outputs(args.output)
+        sys.exit(0 if success else 1)
+    
+    # Run batch processing
+    try:
+        result = process_ranking_batch(
+            config_path=args.config,
+            output_base=args.output,
+            num_workers=args.workers,
+            weights_path=args.weights,
+            knife_config_path=args.knife_config
+        )
+        
+        # Validate outputs
+        print("\nValidating outputs...")
+        validate_ranking_outputs(args.output)
+        
+    except Exception as e:
+        logger.exception(f"Batch processing failed: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -49,7 +49,32 @@ pip install -r requirements.txt
 
 ## Running the Scripts
 
-### 1. Solver Comparison - Test Trajectory
+### 1. Combinatorial Search & Ranking
+
+Perform a full combinatorial search across robots, knife poses, and toolpaths to find the optimal knife placement.
+
+```bash
+# Basic usage
+python combinatorial_search.py --config config/batch_feasibility_config.yaml
+
+# Advanced usage with multiple workers and custom weights
+python combinatorial_search.py \
+    --config config/batch_feasibility_config.yaml \
+    --weights config/scoring_weights.yaml \
+    --workers 8 \
+    --output output/feasibility_ranking
+```
+
+**Algorithm Details:**
+- **Combinatorial Expansion**: Generates the full cross-product of (Robot x Knife Pose x Toolpath).
+- **Metric Extraction**: Processes each combination to extract `IK_failure_rate`, `singularity_rate`, and `manipulability` indices.
+- **Normalization**: Scales metrics to [0, 1] range (0=best, 1=worst) using per-robot min/max bounds to ensure fair comparison.
+- **Weighted Scoring**: Combines normalized metrics into a single `normalized_score` based on user-defined weights.
+- **Ranking**: Aggregates scores across all toolpaths to rank knife poses from most feasible to least.
+
+---
+
+### 2. Solver Comparison - Test Trajectory
 
 Compare Pinocchio FK/IK with RobotStudio test data containing both joint angles and task-space poses.
 
@@ -82,7 +107,7 @@ output_folder: "output/test_comparison"
 
 ---
 
-### 2. Solver Comparison - Toolpath Trajectory
+### 3. Solver Comparison - Toolpath Trajectory
 
 Transform toolpath poses (T_P_K) to base frame, run IK, compare with RobotStudio recorded joints.
 
@@ -107,7 +132,7 @@ output_folder: "output/toolpath_comparison"
 
 ---
 
-### 3. Feasibility Analysis - Single Toolpath
+### 4. Feasibility Analysis - Single Toolpath
 
 Analyze kinematic feasibility including reachability, manipulability, singularity proximity, and C1 continuity.
 
@@ -124,7 +149,7 @@ python feasibility_analysis.py \
 
 ---
 
-### 4. Feasibility Analysis - Batch
+### 5. Feasibility Analysis - Batch
 
 Analyze multiple toolpaths across multiple robots and knife poses.
 
@@ -143,6 +168,34 @@ knife_poses_to_use:
 toolpaths_folder: "Assests/Robot APCC/Toolpaths/Successful"
 output_folder: "output/feasibility_batch"
 ```
+
+---
+
+### 6. Generate Knife Poses
+
+Generate a grid of candidate knife poses (nominal grid + out-of-reach samples) to be evaluated by the combinatorial search.
+
+```bash
+# Basic usage (uses defaults: 5x5x3 grid, 2 orientations, 6 out-of-reach)
+python utils/generate_knife_poses.py
+
+# Custom grid density and output path
+python utils/generate_knife_poses.py \
+    --num_x 10 \
+    --num_y 10 \
+    --num_z 5 \
+    --num_ori 4 \
+    --num_out_of_reach 6 \
+    --output_path config/sparse_generated_knife_poses.yaml
+```
+
+**CLI Arguments:**
+- `--num_x`: Number of x-axis divisions (default: 5)
+- `--num_y`: Number of y-axis divisions (default: 5)
+- `--num_z`: Number of z-axis divisions (default: 3)
+- `--num_ori`: Number of orientation variations per grid point (default: 2)
+- `--num_out_of_reach`: Number of out-of-reach poses per robot (max 6, default: 6)
+- `--output_path`: Path to save the generated poses (default: `config/generated_knife_poses.yaml`)
 
 ---
 
@@ -168,11 +221,13 @@ Robotics-APCC/
 |
 |-- config/                            # Configuration files
 |   |-- robots_config.yaml             # CENTRAL robot definitions
-|   |-- knife_config.yaml              # Knife poses (T_B_K transforms)
+|   |-- knife_config.yaml              # Static knife poses
+|   |-- generated_knife_poses.yaml     # AUTO-GENERATED grid of knife poses
 |   |-- ik_config.yaml                 # IK solver parameters
+|   |-- scoring_weights.yaml           # Weights for combinatorial ranking
 |   |-- robostudio_test_config.yaml    # Test trajectory settings
 |   |-- toolpath_config.yaml           # Toolpath processing settings
-|   +-- batch_feasibility_config.yaml  # Batch feasibility settings
+|   +-- batch_feasibility_config.yaml  # Batch & Ranking settings
 |
 |-- Assests/Robot APCC/                # Robot assets
 |   |-- IRB-1300-*/urdf/               # URDF files
@@ -181,7 +236,8 @@ Robotics-APCC/
 |-- solver_comparison_test_trajectory.py
 |-- solver_comparison_toolpath_trajectory.py
 |-- feasibility_analysis.py
-+-- feasibility_analysis_batch.py
+|-- feasibility_analysis_batch.py
++-- combinatorial_search.py            # Main ranking & optimization entry point
 ```
 
 ---
@@ -233,6 +289,47 @@ ik_parameters:
   ee_frame_name: "ee_link"  # Must match URDF end-effector frame
 ```
 
+### 4. Batch & Ranking Config (`config/batch_feasibility_config.yaml`)
+
+Controls which robots, toolpaths, and knife poses are processed in batch or ranking modes.
+
+```yaml
+robots_to_use:
+  - "IRB 1300-7/1.4"
+toolpaths_folder: "input/toolpaths"
+output_folder: "output/feasibility_ranking"
+checks:
+  manipulability: true
+  singularity: true
+  reachability: true
+  continuity: true
+```
+
+### 5. Scoring Weights (`config/scoring_weights.yaml`)
+
+Defines how different kinematic heuristics are weighted to compute the final feasibility score.
+
+```yaml
+weights:
+  w_IK_failure_rate: 50.0       # Weight for reachability
+  w_singularity_rate: 25.0      # Weight for singularity avoidance
+  w_min_manipulability: 10.0    # Weight for worst-case dexterity
+  w_mean_manipulability: 10.0   # Weight for average dexterity
+  w_mean_min_singular_value: 5.0 # Weight for singularity proximity
+```
+
+### 6. Generated Knife Poses (`config/generated_knife_poses.yaml`)
+
+Contains the auto-generated grid of candidate knife poses to be evaluated.
+
+```yaml
+poses:
+  nominal_x-467.8_y-1015.8_z420.4_oriA:
+    description: "Nominal grid pose"
+    translation_mm: {x: -467.7, y: -1015.8, z: 420.4}
+    rotation: {w: 0.0019, x: 0.6982, y: -0.7147, z: 0.0392}
+```
+
 ---
 
 ## Coordinate Frames
@@ -253,7 +350,21 @@ T_B_P = T_B_K @ inv(T_P_K)
 
 ## Output Structure
 
-### Test Trajectory Comparison
+### 1. Combinatorial Search & Ranking
+```
+output/feasibility_ranking/
+├── per_robot/
+│   ├── IRB_1300-7_1.4_knifepose_ranking.csv
+│   ├── IRB_1300-7_1.4_detailed_results.json
+│   └── IRB_1300-7_1.4_ranking_plot.png
+├── robot_name__knife_name__toolpath_name/
+│   └── summary.json
+├── global_ranking.csv
+├── batch_ranking_summary.json
+└── feasibility_ranking_report.md
+```
+
+### 2. Test Trajectory Comparison
 ```
 output/test_comparison/
 |-- csv_file_1/

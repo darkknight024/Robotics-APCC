@@ -1,6 +1,8 @@
 import yaml
 import math
 import random
+import argparse
+import os
 
 def normalize_quaternion(q):
     """Normalize a quaternion to unit length."""
@@ -54,6 +56,16 @@ def linspace(start, stop, num):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Generate knife poses for feasibility analysis.')
+    parser.add_argument('--num_x', type=int, default=5, help='Number of x-axis divisions (default: 5)')
+    parser.add_argument('--num_y', type=int, default=5, help='Number of y-axis divisions (default: 5)')
+    parser.add_argument('--num_z', type=int, default=3, help='Number of z-axis divisions (default: 3)')
+    parser.add_argument('--num_ori', type=int, default=2, help='Number of orientation variations per grid point (default: 2)')
+    parser.add_argument('--num_out_of_reach', type=int, default=6, help='Number of out-of-reach poses per robot (max 6, default: 6)')
+    parser.add_argument('--output_path', type=str, default='config/generated_knife_poses.yaml', help='Path to save the generated poses (default: config/generated_knife_poses.yaml)')
+    
+    args = parser.parse_args()
+
     # Reference pose (from knife_config.yaml pose_1)
     ref_translation = (-367.773, -915.815, 520.4)
     ref_rotation = (0.00515984, 0.712632, -0.701518, 0.000396522)
@@ -61,10 +73,10 @@ def main():
     
     poses = {}
     
-    # 1. Generate nominal grid poses (150 total: 5x5x3x2)
-    x_values = linspace(ref_translation[0] - 100, ref_translation[0] + 100, 5)
-    y_values = linspace(ref_translation[1] - 100, ref_translation[1] + 100, 5)
-    z_values = linspace(ref_translation[2] - 100, ref_translation[2] + 100, 3)
+    # 1. Generate nominal grid poses
+    x_values = linspace(ref_translation[0] - 100, ref_translation[0] + 100, args.num_x)
+    y_values = linspace(ref_translation[1] - 100, ref_translation[1] + 100, args.num_y)
+    z_values = linspace(ref_translation[2] - 100, ref_translation[2] + 100, args.num_z)
     
     # Ensure all z values are positive
     z_values = [max(z, 1.0) for z in z_values]
@@ -74,15 +86,15 @@ def main():
     for x in x_values:
         for y in y_values:
             for z in z_values:
-                # Generate two orientations A and B
-                for ori_label in ['A', 'B']:
+                # Generate orientations
+                for i in range(args.num_ori):
+                    ori_label = chr(65 + i)
                     pose_name = f"nominal_x{x:.1f}_y{y:.1f}_z{z:.1f}_ori{ori_label}"
                     
                     # Small perturbation for orientation
-                    if ori_label == 'A':
-                        perturbed_quat = generate_perturbed_quaternion(ref_rotation, 5.0, seed_counter)
-                    else:
-                        perturbed_quat = generate_perturbed_quaternion(ref_rotation, 8.0, seed_counter)
+                    # Alternate between 5.0 and 8.0 as in original code
+                    perturb_angle = 5.0 if i % 2 == 0 else 8.0
+                    perturbed_quat = generate_perturbed_quaternion(ref_rotation, perturb_angle, seed_counter)
                     
                     seed_counter += 1
                     
@@ -110,7 +122,7 @@ def main():
     ]
     
     sqrt2 = math.sqrt(2)
-    directions = [
+    full_directions = [
         ('+X', lambda r: (r, 0, 0)),
         ('-X', lambda r: (-r, 0, 0)),
         ('+Y', lambda r: (0, r, 0)),
@@ -118,6 +130,10 @@ def main():
         ('diagonal', lambda r: (r/sqrt2, r/sqrt2, 0)),
         ('high_Z', lambda r: (0, 0, r))
     ]
+    
+    # Clip/cap the number of directions based on user input (max 6)
+    num_out = max(0, min(len(full_directions), args.num_out_of_reach))
+    directions = full_directions[:num_out]
     
     for reach_class, out_radius in robot_configs:
         for dir_name, pos_func in directions:
@@ -144,7 +160,15 @@ def main():
     # Write to YAML file
     output = {'poses': poses}
     
-    output_path = '../config/generated_knife_poses.yaml'
+    output_path = args.output_path
+    
+    # Delete existing file if it exists
+    if os.path.exists(output_path):
+        os.remove(output_path)
+        print(f"Removed existing file: {output_path}")
+
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     with open(output_path, 'w') as f:
         # Write the poses header

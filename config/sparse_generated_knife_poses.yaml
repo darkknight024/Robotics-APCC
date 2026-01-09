@@ -1,0 +1,100 @@
+poses:
+  nominal_x-467.8_y-1015.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.0019294565069464286
+      x: 0.6982476100674456
+      y: -0.7147762914073797
+      z: 0.03926073706135513
+
+
+  nominal_x-467.8_y-815.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: -0.015706977940689974
+      x: 0.7246276166310047
+      y: -0.6881491703700591
+      z: -0.03344887709086472
+
+
+  nominal_x-267.8_y-1015.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.04580654750723059
+      x: 0.7211871090761891
+      y: -0.6911678416385066
+      z: 0.008827717290728022
+
+
+  nominal_x-267.8_y-815.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.03367571258477728
+      x: 0.7292228295555334
+      y: -0.6831111401344495
+      z: -0.021428519807524863
+
+
+  out_of_reach_r900_dir+X:
+    category: out_of_reach
+    robot_reach_class: 900
+    intent: Intentionally unreachable knife pose for reachability validation for robot 900
+    translation_mm:
+      x: 950
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1150_dir+X:
+    category: out_of_reach
+    robot_reach_class: 1150
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1150
+    translation_mm:
+      x: 1200
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1400_dir+X:
+    category: out_of_reach
+    robot_reach_class: 1400
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1400
+    translation_mm:
+      x: 1450
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046

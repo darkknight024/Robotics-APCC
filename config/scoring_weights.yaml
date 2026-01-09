@@ -1,0 +1,60 @@
+# =============================================================================
+# Scoring Weights Configuration
+# =============================================================================
+# Weights for the feasibility ranking score computation.
+# Higher weight = more influence on the final score.
+# 
+# The final score is computed as:
+#   score = sum(w_i * normalized_metric_i) / sum(w_i)
+#
+# Where normalized metrics are scaled to [0,1] with 0=best, 1=worst.
+# Lower final score = better candidate.
+
+weights:
+  # IK failure rate weight (lower failure rate is better)
+  # This is the most critical metric - poses that can't be reached are unusable
+  w_IK_failure_rate: 50.0
+  
+  # Singularity rate weight (lower singularity proximity is better)
+  # Singularities cause control issues and should be avoided
+  w_singularity_rate: 25.0
+  
+  # Minimum manipulability weight (higher manipulability is better)
+  # Ensures worst-case dexterity along trajectory is acceptable
+  w_min_manipulability: 10.0
+  
+  # Mean manipulability weight (higher manipulability is better)
+  # Overall dexterity along trajectory
+  w_mean_manipulability: 10.0
+  
+  # Mean minimum singular value weight (higher is better)
+  # Additional singularity proximity indicator
+  w_mean_min_singular_value: 5.0
+
+# =============================================================================
+# Alternative weight configurations (commented out examples)
+# =============================================================================
+
+# Reachability-focused weights (prioritize IK success):
+# weights:
+#   w_IK_failure_rate: 70.0
+#   w_singularity_rate: 15.0
+#   w_min_manipulability: 5.0
+#   w_mean_manipulability: 5.0
+#   w_mean_min_singular_value: 5.0
+
+# Dexterity-focused weights (prioritize manipulability):
+# weights:
+#   w_IK_failure_rate: 30.0
+#   w_singularity_rate: 20.0
+#   w_min_manipulability: 20.0
+#   w_mean_manipulability: 20.0
+#   w_mean_min_singular_value: 10.0
+
+# Equal weights (balanced):
+# weights:
+#   w_IK_failure_rate: 20.0
+#   w_singularity_rate: 20.0
+#   w_min_manipulability: 20.0
+#   w_mean_manipulability: 20.0
+#   w_mean_min_singular_value: 20.0
