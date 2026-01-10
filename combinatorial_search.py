@@ -6,7 +6,7 @@ Performs combinatorial search across robots, knife poses, and toolpaths.
 Computes kinematic heuristics, normalizes metrics, and generates ranked reports.
 
 Output Structure:
-    output/feasibility_ranking/<HH_MM_SS>/
+    output/feasibility_ranking/<MM_DD_YY_HH_MM_SS>/
     ├── per_robot/
     │   ├── IRB_1300-7_1.4_knifepose_ranking.csv
     │   ├── IRB_1300-7_1.4_detailed_results.json
@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yaml
+from tqdm import tqdm
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -470,13 +471,43 @@ except ImportError:
     generate_ranking_plot = None
 
 
+def _compute_verdict(ik_failure_rate: float, final_score: float) -> str:
+    """
+    Compute verdict based on IK failure rate and final score.
+    
+    Rules (must implement exactly):
+    - If IK_failure_rate > 0 → ❌ Infeasible
+    - Else if final_score < 0.25 → ✅ Recommended
+    - Else if final_score < 0.50 → ⚠️ Borderline
+    - Else if final_score < 0.75 → ❗ Poor
+    - Else → ❌ Infeasible
+    
+    Args:
+        ik_failure_rate: IK failure rate (0 to 1)
+        final_score: Normalized score (0 to 1)
+        
+    Returns:
+        Verdict string with emoji
+    """
+    if ik_failure_rate > 0:
+        return "❌ Infeasible"
+    elif final_score < 0.25:
+        return "✅ Recommended"
+    elif final_score < 0.50:
+        return "⚠️ Borderline"
+    elif final_score < 0.75:
+        return "❗ Poor"
+    else:
+        return "❌ Infeasible"
+
+
 def save_per_robot_csv(
     results: List[AggregatedKnifePoseResult],
     output_path: str,
     robot_name: str
 ) -> None:
     """
-    Save per-robot ranking CSV.
+    Save per-robot ranking CSV with verdict column.
     
     Args:
         results: Sorted list of aggregated results
@@ -485,23 +516,209 @@ def save_per_robot_csv(
     """
     rows = []
     for r in results:
-        for toolpath_result in r.toolpath_results:
-            rows.append({
-                'knife_pose_id': r.knife_pose_id,
-                'toolpath_name': toolpath_result.toolpath_name,
-                'IK_failure_rate': toolpath_result.max_IK_failure_rate,
-                'singularity_rate': toolpath_result.max_singularity_rate,
-                'min_manipulability': toolpath_result.min_min_manipulability,
-                'mean_manipulability': toolpath_result.mean_mean_manipulability,
-                'mean_min_singular_value': toolpath_result.mean_mean_min_singular_value,
-                'normalized_score': r.normalized_score,
-                'raw_score': r.raw_score,
-                'rank': r.rank,
-            })
+        verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
+        rows.append({
+            'Rank': r.rank,
+            'Knife Pose ID': r.knife_pose_id,
+            'Score': f"{r.normalized_score:.3f}",
+            'IK Failure Rate': f"{r.max_IK_failure_rate:.2f}",
+            'Singularity Rate': f"{r.max_singularity_rate:.2f}",
+            'Min Manipulability': f"{r.min_min_manipulability:.3f}",
+            'Mean Manipulability': f"{r.mean_mean_manipulability:.3f}",
+            'Mean Min Singular Value': f"{r.mean_mean_min_singular_value:.3f}",
+            'Verdict': verdict,
+        })
     
     df = pd.DataFrame(rows)
     df.to_csv(output_path, index=False)
     logger.info(f"Saved ranking CSV: {output_path}")
+
+
+def save_per_robot_markdown(
+    results: List[AggregatedKnifePoseResult],
+    output_path: str,
+    robot_name: str
+) -> None:
+    """
+    Save per-robot ranking as Markdown table.
+    
+    Args:
+        results: Sorted list of aggregated results
+        output_path: Path to save Markdown
+        robot_name: Robot name
+    """
+    lines = []
+    lines.append(f"# Knife Pose Ranking for {robot_name}")
+    lines.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"\nTotal Knife Poses Evaluated: {len(results)}")
+    lines.append("")
+    lines.append("## Ranking Table")
+    lines.append("")
+    lines.append("| Rank | Knife Pose ID | Score | IK Failure Rate | Singularity Rate | Min Manip | Mean Manip | Mean Min SV | Verdict |")
+    lines.append("|------|---------------|-------|-----------------|------------------|-----------|------------|-------------|---------|")
+    
+    for r in results:
+        verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
+        lines.append(
+            f"| {r.rank} | {r.knife_pose_id[:40]} | {r.normalized_score:.3f} | "
+            f"{r.max_IK_failure_rate:.2f} | {r.max_singularity_rate:.2f} | "
+            f"{r.min_min_manipulability:.3f} | {r.mean_mean_manipulability:.3f} | "
+            f"{r.mean_mean_min_singular_value:.3f} | {verdict} |"
+        )
+    
+    lines.append("")
+    lines.append("## Legend")
+    lines.append("")
+    lines.append("- ✅ **Recommended**: IK feasible (0% failure) and score < 0.25")
+    lines.append("- ⚠️ **Borderline**: IK feasible (0% failure) and 0.25 ≤ score < 0.50")
+    lines.append("- ❗ **Poor**: IK feasible (0% failure) and 0.50 ≤ score < 0.75")
+    lines.append("- ❌ **Infeasible**: IK failure rate > 0% or score ≥ 0.75")
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    
+    logger.info(f"Saved ranking Markdown: {output_path}")
+
+
+def save_per_robot_metadata(
+    results: List[AggregatedKnifePoseResult],
+    output_path: str,
+    robot_name: str
+) -> None:
+    """
+    Save per-robot metadata JSON with summary statistics.
+    
+    Args:
+        results: List of aggregated results
+        output_path: Path to save JSON
+        robot_name: Robot name
+    """
+    # Count by verdict
+    recommended = sum(1 for r in results if _compute_verdict(r.max_IK_failure_rate, r.normalized_score) == "✅ Recommended")
+    borderline = sum(1 for r in results if _compute_verdict(r.max_IK_failure_rate, r.normalized_score) == "⚠️ Borderline")
+    poor = sum(1 for r in results if _compute_verdict(r.max_IK_failure_rate, r.normalized_score) == "❗ Poor")
+    infeasible = sum(1 for r in results if "Infeasible" in _compute_verdict(r.max_IK_failure_rate, r.normalized_score))
+    
+    # Count poses with all toolpaths reachable
+    fully_reachable = sum(1 for r in results if r.max_IK_failure_rate == 0.0)
+    
+    # Get toolpath count (assume all poses have same number of toolpaths)
+    n_toolpaths = results[0].n_toolpaths if results else 0
+    
+    metadata = {
+        'robot_name': robot_name,
+        'generated': datetime.now().isoformat(),
+        'total_knife_poses_evaluated': len(results),
+        'total_toolpaths': n_toolpaths,
+        'fully_reachable_poses': fully_reachable,
+        'verdict_breakdown': {
+            'recommended': recommended,
+            'borderline': borderline,
+            'poor': poor,
+            'infeasible': infeasible
+        },
+        'best_knife_pose': {
+            'id': results[0].knife_pose_id if results else None,
+            'score': float(results[0].normalized_score) if results else None,
+            'ik_failure_rate': float(results[0].max_IK_failure_rate) if results else None,
+            'verdict': _compute_verdict(results[0].max_IK_failure_rate, results[0].normalized_score) if results else None
+        } if results else None,
+        'worst_knife_pose': {
+            'id': results[-1].knife_pose_id if results else None,
+            'score': float(results[-1].normalized_score) if results else None,
+            'ik_failure_rate': float(results[-1].max_IK_failure_rate) if results else None,
+            'verdict': _compute_verdict(results[-1].max_IK_failure_rate, results[-1].normalized_score) if results else None
+        } if results else None
+    }
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2)
+    
+    logger.info(f"Saved metadata JSON: {output_path}")
+
+
+def save_knife_pose_details(
+    knife_pose_result: AggregatedKnifePoseResult,
+    output_dir: Path
+) -> None:
+    """
+    Save detailed report for a single knife pose across all toolpaths.
+    
+    Args:
+        knife_pose_result: Aggregated result for this knife pose
+        output_dir: Directory to save the detailed report
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # CSV with per-toolpath breakdown
+    rows = []
+    for toolpath_result in knife_pose_result.toolpath_results:
+        rows.append({
+            'Toolpath': toolpath_result.toolpath_name,
+            'Success': 'Yes' if toolpath_result.success else 'No',
+            'IK Failure Rate': f"{toolpath_result.max_IK_failure_rate:.2f}" if toolpath_result.success else 'N/A',
+            'Singularity Rate': f"{toolpath_result.max_singularity_rate:.2f}" if toolpath_result.success else 'N/A',
+            'Min Manipulability': f"{toolpath_result.min_min_manipulability:.3f}" if toolpath_result.success else 'N/A',
+            'Mean Manipulability': f"{toolpath_result.mean_mean_manipulability:.3f}" if toolpath_result.success else 'N/A',
+            'Error': toolpath_result.error if not toolpath_result.success else ''
+        })
+    
+    df = pd.DataFrame(rows)
+    df.to_csv(output_dir / "toolpath_details.csv", index=False)
+    
+    # JSON with full details
+    def convert_to_serializable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.int32, np.int64)):
+            return int(obj)
+        elif hasattr(obj, '__dict__'):
+            return {k: convert_to_serializable(v) for k, v in obj.__dict__.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(i) for i in obj]
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        return obj
+    
+    details = {
+        'knife_pose_id': knife_pose_result.knife_pose_id,
+        'robot_name': knife_pose_result.robot_name,
+        'rank': knife_pose_result.rank,
+        'normalized_score': float(knife_pose_result.normalized_score),
+        'verdict': _compute_verdict(knife_pose_result.max_IK_failure_rate, knife_pose_result.normalized_score),
+        'aggregated_metrics': {
+            'max_IK_failure_rate': float(knife_pose_result.max_IK_failure_rate),
+            'max_singularity_rate': float(knife_pose_result.max_singularity_rate),
+            'min_min_manipulability': float(knife_pose_result.min_min_manipulability),
+            'mean_mean_manipulability': float(knife_pose_result.mean_mean_manipulability),
+            'mean_mean_min_singular_value': float(knife_pose_result.mean_mean_min_singular_value)
+        },
+        'n_toolpaths': knife_pose_result.n_toolpaths,
+        'n_successful': knife_pose_result.n_successful,
+        'per_toolpath_results': [
+            {
+                'toolpath_name': tr.toolpath_name,
+                'success': tr.success,
+                'error': tr.error,
+                'n_trajectories': tr.n_trajectories if tr.success else None,
+                'metrics': {
+                    'max_IK_failure_rate': float(tr.max_IK_failure_rate) if tr.success else None,
+                    'max_singularity_rate': float(tr.max_singularity_rate) if tr.success else None,
+                    'min_min_manipulability': float(tr.min_min_manipulability) if tr.success else None,
+                    'mean_mean_manipulability': float(tr.mean_mean_manipulability) if tr.success else None,
+                    'mean_mean_min_singular_value': float(tr.mean_mean_min_singular_value) if tr.success else None
+                }
+            }
+            for tr in knife_pose_result.toolpath_results
+        ]
+    }
+    
+    with open(output_dir / "details.json", 'w', encoding='utf-8') as f:
+        json.dump(details, f, indent=2, default=str)
+    
+    logger.debug(f"Saved knife pose details: {output_dir}")
 
 
 def save_per_robot_json(
@@ -561,26 +778,36 @@ def save_global_ranking_csv(
     
     for robot_name, results in all_robot_results.items():
         for r in results:
+            verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
             rows.append({
-                'robot_name': robot_name,
-                'knife_pose_id': r.knife_pose_id,
-                'n_toolpaths': r.n_toolpaths,
-                'n_successful': r.n_successful,
-                'max_IK_failure_rate': r.max_IK_failure_rate,
-                'max_singularity_rate': r.max_singularity_rate,
-                'min_min_manipulability': r.min_min_manipulability,
-                'mean_mean_manipulability': r.mean_mean_manipulability,
-                'mean_mean_min_singular_value': r.mean_mean_min_singular_value,
-                'normalized_score': r.normalized_score,
-                'raw_score': r.raw_score,
-                'robot_rank': r.rank,
+                'Robot Name': robot_name,
+                'Knife Pose ID': r.knife_pose_id,
+                'Score': f"{r.normalized_score:.3f}",
+                'IK Failure Rate': f"{r.max_IK_failure_rate:.2f}",
+                'Singularity Rate': f"{r.max_singularity_rate:.2f}",
+                'Min Manipulability': f"{r.min_min_manipulability:.3f}",
+                'Mean Manipulability': f"{r.mean_mean_manipulability:.3f}",
+                'Mean Min Singular Value': f"{r.mean_mean_min_singular_value:.3f}",
+                'Robot Rank': r.rank,
+                'Verdict': verdict,
+                'N Toolpaths': r.n_toolpaths,
+                'N Successful': r.n_successful,
             })
     
     df = pd.DataFrame(rows)
     
-    # Add global rank
-    df = df.sort_values('normalized_score')
-    df['global_rank'] = range(1, len(df) + 1)
+    # Add global rank based on numeric score
+    df['_score_numeric'] = df['Score'].astype(float)
+    df = df.sort_values('_score_numeric')
+    df['Global Rank'] = range(1, len(df) + 1)
+    df = df.drop(columns=['_score_numeric'])
+    
+    # Reorder columns
+    cols = ['Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Score', 
+            'IK Failure Rate', 'Singularity Rate', 'Min Manipulability', 
+            'Mean Manipulability', 'Mean Min Singular Value', 'Verdict', 
+            'N Toolpaths', 'N Successful']
+    df = df[cols]
     
     df.to_csv(output_path, index=False)
     logger.info(f"Saved global ranking CSV: {output_path}")
@@ -868,7 +1095,7 @@ def _setup_output_directories(output_base: Optional[str], config: Dict) -> Tuple
     Returns:
         Tuple of (output_dir, per_robot_dir)
     """
-    timestamp = datetime.now().strftime("%H_%M_%S")
+    timestamp = datetime.now().strftime("%m_%d_%y_%H_%M_%S")
     output_dir = Path(output_base or config.get('output_folder', 'output/feasibility_ranking')) / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
     per_robot_dir = output_dir / "per_robot"
@@ -979,7 +1206,7 @@ def _build_task_list(
 
 def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[CombinationResult]:
     """
-    Execute all tasks sequentially or in parallel.
+    Execute all tasks sequentially or in parallel with a progress bar.
     
     Args:
         tasks: List of tasks to execute
@@ -991,15 +1218,22 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
     total_tasks = len(tasks)
     all_results: List[CombinationResult] = []
     
+    # Initialize the progress bar
+    pbar = tqdm(total=total_tasks, desc="Processing Combinations", unit="task")
+    
     if num_workers <= 1:
         # Sequential execution
         for i, task in enumerate(tasks):
-            logger.info(f"[{i+1}/{total_tasks}] {task.robot_name} / {task.knife_name} / {task.toolpath_name}")
+            # logger.info(f"[{i+1}/{total_tasks}] {task.robot_name} / {task.knife_name} / {task.toolpath_name}")
             result = run_single_analysis(task)
             all_results.append(result)
             
             # Save per-combination summary
             save_combination_summary(result, task.output_dir)
+            
+            # Update progress bar
+            pbar.set_postfix({"robot": task.robot_name, "knife": task.knife_name})
+            pbar.update(1)
             
             if result.success:
                 logger.debug(f"  Completed: {result.n_trajectories} trajectories")
@@ -1024,13 +1258,18 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
                     save_combination_summary(result, task.output_dir)
                     
                     if result.success:
-                        logger.info(f"[{completed}/{total_tasks}] Completed: {task.knife_name}/{task.toolpath_name}")
+                        logger.debug(f"[{completed}/{total_tasks}] Completed: {task.knife_name}/{task.toolpath_name}")
                     else:
                         logger.warning(f"[{completed}/{total_tasks}] FAILED: {task.knife_name} - {result.error}")
                         
                 except Exception as e:
                     logger.error(f"[{completed}/{total_tasks}] ERROR: {task.knife_name} - {e}")
+                
+                # Update progress bar as each future completes
+                pbar.set_postfix({"robot": task.robot_name, "knife": task.knife_name})
+                pbar.update(1)
     
+    pbar.close()
     return all_results
 
 
@@ -1141,27 +1380,52 @@ def _process_robot_results(
     for rank, agg in enumerate(aggregated_list, 1):
         agg.rank = rank
     
-    # Save per-robot outputs
+    # Save per-robot outputs - create robot-specific folder
     robot_name_clean = robot_name.replace(" ", "_").replace("/", "-")
+    robot_folder = per_robot_dir / robot_name_clean
+    robot_folder.mkdir(parents=True, exist_ok=True)
     
+    # Save ranking CSV
     save_per_robot_csv(
         aggregated_list,
-        str(per_robot_dir / f"{robot_name_clean}_knifepose_ranking.csv"),
+        str(robot_folder / "knife_pose_ranking.csv"),
         robot_name
     )
     
+    # Save ranking Markdown
+    save_per_robot_markdown(
+        aggregated_list,
+        str(robot_folder / "knife_pose_ranking.md"),
+        robot_name
+    )
+    
+    # Save metadata JSON
+    save_per_robot_metadata(
+        aggregated_list,
+        str(robot_folder / "metadata.json"),
+        robot_name
+    )
+    
+    # Save detailed JSON (full data dump)
     save_per_robot_json(
         aggregated_list,
-        str(per_robot_dir / f"{robot_name_clean}_detailed_results.json"),
+        str(robot_folder / "detailed_results.json"),
         robot_name
     )
     
+    # Save ranking plot
     if generate_ranking_plot:
         generate_ranking_plot(
             aggregated_list,
-            str(per_robot_dir / f"{robot_name_clean}_ranking_plot.png"),
+            str(robot_folder / "ranking_plot.png"),
             robot_name
         )
+    
+    # Save per-knife-pose details in subfolders
+    knife_poses_folder = robot_folder / "knife_poses"
+    for agg in aggregated_list:
+        knife_pose_folder = knife_poses_folder / agg.knife_pose_id
+        save_knife_pose_details(agg, knife_pose_folder)
     
     # Sanity check
     if aggregated_list:
@@ -1411,7 +1675,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Combinatorial search for feasibility ranking across robots, knives, and toolpaths"
     )
-    parser.add_argument('--config', '-c', default='config/batch_feasibility_config.yaml',
+    parser.add_argument('--config', '-c', default='config/combinatorial_search_config.yaml',
                         help="Path to batch feasibility config YAML")
     parser.add_argument('--output', '-o', default='output/feasibility_ranking',
                         help="Output directory")
