@@ -47,7 +47,12 @@ from utils import (
     plot_reachability_per_waypoint,
     plot_manipulability_per_waypoint,
     plot_reachability_summary,
-    plot_continuity_analysis
+    plot_continuity_analysis,
+    # Aggregated plotting functions
+    plot_reachability_rate_per_trajectory,
+    plot_manipulability_per_trajectory,
+    plot_singularity_per_trajectory,
+    plot_continuity_summary
 )
 
 
@@ -321,7 +326,8 @@ def process_toolpath(
     velocity_limits_rad_s: Optional[np.ndarray] = None,
     speed_mm_s: float = 100.0,
     run_continuity: bool = True,
-    save_analysis: bool = True
+    save_analysis: bool = True,
+    detailed_per_trajectory_report: bool = False
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -338,6 +344,8 @@ def process_toolpath(
         speed_mm_s: End-effector speed for timing
         run_continuity: Whether to run continuity analysis
         save_analysis: Whether to save text report
+        detailed_per_trajectory_report: Whether to generate detailed plots for each trajectory
+                                        (default: False, generates only 4 aggregated plots)
         
     Returns:
         Dictionary with analysis results
@@ -387,9 +395,12 @@ def process_toolpath(
         # Feasibility analysis
         traj_result = analyze_trajectory_feasibility(trajectory, analyzer, traj_name)
         
-        # Create trajectory output directory
-        traj_out = out_path / traj_name
-        traj_out.mkdir(parents=True, exist_ok=True)
+        # Create trajectory output directory only if detailed report is enabled
+        if detailed_per_trajectory_report:
+            traj_out = out_path / traj_name
+            traj_out.mkdir(parents=True, exist_ok=True)
+        else:
+            traj_out = out_path  # Use main output path for temporary file operations
         
         # Extract per-waypoint data
         per_wp = traj_result['per_waypoint_results']
@@ -410,36 +421,38 @@ def process_toolpath(
             status = "PASSED" if continuity_result.passed else "FAILED"
             print(f"    Continuity: {status} (duration: {continuity_result.total_duration_s:.2f}s)")
             
-            # Generate continuity plot
-            plot_continuity_analysis(
-                timestamps=continuity_result.timestamps,
-                trajectory_m=trajectory,
-                joint_angles_rad=joint_angles_rad,
-                output_path=str(traj_out / "continuity.png"),
-                title=f"C1 Continuity Analysis\n{toolpath_name} - {traj_name}",
-                speed_mm_s=speed_mm_s,
-                velocity_limits_rad_s=velocity_limits_rad_s
+            # Generate per-trajectory continuity plot (only if detailed report is enabled)
+            if detailed_per_trajectory_report:
+                plot_continuity_analysis(
+                    timestamps=continuity_result.timestamps,
+                    trajectory_m=trajectory,
+                    joint_angles_rad=joint_angles_rad,
+                    output_path=str(traj_out / "continuity.png"),
+                    title=f"C1 Continuity Analysis\n{toolpath_name} - {traj_name}",
+                    speed_mm_s=speed_mm_s,
+                    velocity_limits_rad_s=velocity_limits_rad_s
+                )
+        
+        # Generate per-trajectory plots (only if detailed report is enabled)
+        if detailed_per_trajectory_report:
+            plot_reachability_per_waypoint(
+                reachable,
+                str(traj_out / "reachability.png"),
+                title=f"Kinematic Reachability\n{toolpath_name} - {traj_name}"
             )
-        
-        # Generate plots
-        plot_reachability_per_waypoint(
-            reachable,
-            str(traj_out / "reachability.png"),
-            title=f"Kinematic Reachability\n{toolpath_name} - {traj_name}"
-        )
-        
-        plot_manipulability_per_waypoint(
-            manipulability,
-            str(traj_out / "manipulability.png"),
-            title=f"Manipulability Analysis\n{toolpath_name} - {traj_name}"
-        )
-        
-        plot_singularity_per_waypoint(
-            min_sv,
-            str(traj_out / "singularity.png"),
-            title=f"Singularity Proximity\n{toolpath_name} - {traj_name}",
-            threshold=singularity_threshold
-        )
+            
+            plot_manipulability_per_waypoint(
+                manipulability,
+                str(traj_out / "manipulability.png"),
+                title=f"Manipulability Analysis\n{toolpath_name} - {traj_name}"
+            )
+            
+            plot_singularity_per_waypoint(
+                min_sv,
+                str(traj_out / "singularity.png"),
+                title=f"Singularity Proximity\n{toolpath_name} - {traj_name}",
+                threshold=singularity_threshold
+            )
         
         # Store stats
         results['trajectory_stats'].append({
@@ -470,12 +483,50 @@ def process_toolpath(
         
         results['trajectory_results'].append(traj_data)
     
-    # Generate summary plot
-    plot_reachability_summary(
-        results['trajectory_stats'],
-        str(out_path / "reachability_summary.png"),
-        title=f"Reachability Summary\n{toolpath_name}"
+    # Generate aggregated plots (4 plots by default)
+    print(f"\n  Generating aggregated plots for toolpath...")
+    
+    # 1. Reachability rate per trajectory
+    plot_reachability_rate_per_trajectory(
+        results['trajectory_results'],
+        str(out_path / "aggregated_reachability_rate.png"),
+        title=f"Reachability Rate per Trajectory\n{toolpath_name}"
     )
+    
+    # 2. Manipulability per trajectory (avg and min)
+    plot_manipulability_per_trajectory(
+        results['trajectory_results'],
+        str(out_path / "aggregated_manipulability.png"),
+        title=f"Manipulability per Trajectory\n{toolpath_name}"
+    )
+    
+    # 3. Singularity per trajectory (avg and min singular values)
+    plot_singularity_per_trajectory(
+        results['trajectory_results'],
+        str(out_path / "aggregated_singularity.png"),
+        title=f"Singularity (Min Singular Value) per Trajectory\n{toolpath_name}",
+        threshold=singularity_threshold
+    )
+    
+    # 4. Continuity summary (if continuity analysis was run)
+    if run_continuity and any(t.get('continuity') is not None for t in results['trajectory_results']):
+        plot_continuity_summary(
+            results['trajectory_results'],
+            str(out_path / "aggregated_continuity.png"),
+            title=f"Continuity Summary\n{toolpath_name}",
+            speed_mm_s=speed_mm_s,
+            velocity_limits_rad_s=velocity_limits_rad_s
+        )
+    
+    print(f"  Aggregated plots saved to: {out_path}")
+    
+    # Generate legacy summary plot (kept for backward compatibility)
+    if detailed_per_trajectory_report:
+        plot_reachability_summary(
+            results['trajectory_stats'],
+            str(out_path / "reachability_summary.png"),
+            title=f"Reachability Summary\n{toolpath_name}"
+        )
     
     # Save analysis report as text file
     if save_analysis:

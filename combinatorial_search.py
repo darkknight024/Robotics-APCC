@@ -29,6 +29,7 @@ Command-line Arguments:
     --weights       Path to scoring weights YAML (optional)
     --knife-config  Path to knife poses YAML (default: config/sparse_generated_knife_poses.yaml)
     --debug         Enable debug logging
+    --detailed_per_trajectory_report  Generate detailed plots for each trajectory (default: only 4 aggregated plots)
 """
 
 import argparse
@@ -101,6 +102,7 @@ class FeasibilityTask:
     speed_mm_s: float
     run_continuity: bool
     save_analysis: bool = False
+    detailed_per_trajectory_report: bool = False
 
 
 @dataclass
@@ -422,7 +424,8 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             velocity_limits_rad_s=task.velocity_limits_rad_s,
             speed_mm_s=task.speed_mm_s,
             run_continuity=task.run_continuity,
-            save_analysis=task.save_analysis
+            save_analysis=task.save_analysis,
+            detailed_per_trajectory_report=task.detailed_per_trajectory_report
         )
         
         # Extract per-trajectory metrics
@@ -1135,7 +1138,8 @@ def _build_task_list(
     knife_poses: Dict[str, KnifePose],
     toolpath_files: List[Path],
     output_dir: Path,
-    feas_config: Dict
+    feas_config: Dict,
+    detailed_per_trajectory_report: bool = False
 ) -> List[FeasibilityTask]:
     """
     Build list of tasks for all combinations.
@@ -1146,6 +1150,7 @@ def _build_task_list(
         toolpath_files: List of toolpath files
         output_dir: Output directory
         feas_config: Feasibility configuration
+        detailed_per_trajectory_report: Whether to generate detailed per-trajectory plots
         
     Returns:
         List of FeasibilityTask objects
@@ -1198,7 +1203,8 @@ def _build_task_list(
                     singularity_threshold=singularity_threshold,
                     speed_mm_s=speed_mm_s,
                     run_continuity=run_continuity,
-                    save_analysis=False  # Don't save plots for each combo
+                    save_analysis=False,  # Don't save text reports for each combo
+                    detailed_per_trajectory_report=detailed_per_trajectory_report
                 ))
     
     return tasks
@@ -1520,7 +1526,8 @@ def process_ranking_batch(
     output_base: str = None,
     num_workers: int = 1,
     weights_path: str = None,
-    knife_config_path: str = None
+    knife_config_path: str = None,
+    detailed_per_trajectory_report: bool = False
 ) -> Dict[str, Any]:
     """
     Run feasibility ranking on all combinations.
@@ -1534,6 +1541,7 @@ def process_ranking_batch(
         num_workers: Number of parallel workers
         weights_path: Path to scoring weights YAML
         knife_config_path: Path to knife poses YAML
+        detailed_per_trajectory_report: Whether to generate detailed per-trajectory plots
         
     Returns:
         Dictionary with batch results
@@ -1550,7 +1558,7 @@ def process_ranking_batch(
     toolpath_files = _find_toolpath_files(config)
     
     # Step 4: Build task list
-    tasks = _build_task_list(config, knife_poses, toolpath_files, output_dir, feas_config)
+    tasks = _build_task_list(config, knife_poses, toolpath_files, output_dir, feas_config, detailed_per_trajectory_report)
     
     logger.info(f"Prepared {len(tasks)} analysis tasks")
     
@@ -1589,6 +1597,7 @@ def process_ranking_batch(
         'failed': failed_count,
         'results': all_results,
         'robot_results': all_robot_results,
+        'output_dir': str(output_dir),  # Return the actual output directory path
     }
 
 
@@ -1601,12 +1610,32 @@ def validate_ranking_outputs(output_dir: str) -> bool:
     Validate that ranking outputs are correctly formatted.
     
     Args:
-        output_dir: Path to output directory
+        output_dir: Path to output directory (can be base dir or timestamped subdir)
         
     Returns:
         True if all validations pass
     """
     output_path = Path(output_dir)
+    
+    # If base directory provided, find most recent timestamped subdirectory
+    if output_path.exists() and output_path.is_dir():
+        # Check if this is a base directory (no global_ranking.csv here)
+        if not (output_path / "global_ranking.csv").exists():
+            # Look for timestamped subdirectories
+            timestamped_dirs = [d for d in output_path.iterdir() 
+                               if d.is_dir() and (d / "global_ranking.csv").exists()]
+            if timestamped_dirs:
+                # Use the most recently modified one
+                output_path = max(timestamped_dirs, key=lambda p: p.stat().st_mtime)
+                logger.info(f"Found timestamped output directory: {output_path}")
+            else:
+                # Try to find any subdirectory with the expected structure
+                for subdir in output_path.iterdir():
+                    if subdir.is_dir() and (subdir / "global_ranking.csv").exists():
+                        output_path = subdir
+                        logger.info(f"Using output directory: {output_path}")
+                        break
+    
     errors = []
     
     # Check global ranking CSV exists
@@ -1616,13 +1645,22 @@ def validate_ranking_outputs(output_dir: str) -> bool:
     else:
         try:
             df = pd.read_csv(global_csv)
-            required_cols = [
-                'robot_name', 'knife_pose_id', 'normalized_score', 
-                'raw_score', 'robot_rank', 'global_rank'
-            ]
-            missing_cols = [c for c in required_cols if c not in df.columns]
+            # Check for actual column names used in save_global_ranking_csv
+            # Accept both capitalized (with spaces) and lowercase (with underscores) versions
+            required_cols_map = {
+                'robot_name': ['Robot Name', 'robot_name'],
+                'knife_pose_id': ['Knife Pose ID', 'knife_pose_id'],
+                'score': ['Score', 'normalized_score', 'raw_score', 'score'],
+                'robot_rank': ['Robot Rank', 'robot_rank'],
+                'global_rank': ['Global Rank', 'global_rank']
+            }
+            missing_cols = []
+            for key, possible_names in required_cols_map.items():
+                if not any(name in df.columns for name in possible_names):
+                    missing_cols.append(key)
+            
             if missing_cols:
-                errors.append(f"global_ranking.csv missing columns: {missing_cols}")
+                errors.append(f"global_ranking.csv missing required columns: {missing_cols}")
         except Exception as e:
             errors.append(f"Failed to read global_ranking.csv: {e}")
     
@@ -1644,15 +1682,26 @@ def validate_ranking_outputs(output_dir: str) -> bool:
     if not per_robot_dir.exists():
         errors.append("Missing per_robot/ directory")
     else:
-        csv_files = list(per_robot_dir.glob("*_knifepose_ranking.csv"))
+        # Look for knife_pose_ranking.csv files inside robot subdirectories
+        csv_files = []
+        for robot_dir in per_robot_dir.iterdir():
+            if robot_dir.is_dir():
+                csv_file = robot_dir / "knife_pose_ranking.csv"
+                if csv_file.exists():
+                    csv_files.append(csv_file)
+        
         if not csv_files:
-            errors.append("No per-robot CSV files found")
+            errors.append("No per-robot CSV files found (expected knife_pose_ranking.csv in robot subdirectories)")
         
         for csv_file in csv_files:
             try:
                 df = pd.read_csv(csv_file)
-                if 'knife_pose_id' not in df.columns or 'rank' not in df.columns:
-                    errors.append(f"{csv_file.name} missing required columns")
+                # Check for required columns - note: CSV uses 'Rank' (capitalized) and 'Knife Pose ID'
+                # Check for both lowercase and capitalized versions
+                has_knife_pose_id = 'knife_pose_id' in df.columns or 'Knife Pose ID' in df.columns
+                has_rank = 'rank' in df.columns or 'Rank' in df.columns
+                if not (has_knife_pose_id and has_rank):
+                    errors.append(f"{csv_file.name} missing required columns (need 'knife_pose_id'/'Knife Pose ID' and 'rank'/'Rank')")
             except Exception as e:
                 errors.append(f"Failed to read {csv_file.name}: {e}")
     
@@ -1689,6 +1738,8 @@ def main():
                         help="Enable debug logging")
     parser.add_argument('--validate', action='store_true',
                         help="Only validate existing outputs")
+    parser.add_argument('--detailed_per_trajectory_report', action='store_true',
+                        help="Generate detailed plots for each trajectory (default: only 4 aggregated plots)")
     
     args = parser.parse_args()
     
@@ -1712,12 +1763,15 @@ def main():
             output_base=args.output,
             num_workers=args.workers,
             weights_path=args.weights,
-            knife_config_path=args.knife_config
+            knife_config_path=args.knife_config,
+            detailed_per_trajectory_report=args.detailed_per_trajectory_report
         )
         
         # Validate outputs
         print("\nValidating outputs...")
-        validate_ranking_outputs(args.output)
+        # Use the actual output directory from the result
+        actual_output_dir = result.get('output_dir', args.output)
+        validate_ranking_outputs(actual_output_dir)
         
     except Exception as e:
         logger.exception(f"Batch processing failed: {e}")

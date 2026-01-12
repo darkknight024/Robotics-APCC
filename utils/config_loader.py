@@ -16,6 +16,25 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 
+# =============================================================================
+# IK Configuration Defaults - Single Source of Truth
+# =============================================================================
+# These defaults are used when config file is missing or incomplete.
+# To change IK solver defaults, modify this dictionary.
+# The config file (config/ik_config.yaml) should match these values.
+_DEFAULT_IK_CONFIG = {
+    'max_iterations': 50,
+    'tolerance': 1e-4,
+    'rot_weight': 0.2,
+    'trans_weight': 1.0,
+    'lambda0': 1e-3,
+    'lambda_max': 1e1,
+    'max_step': 0.2,
+    'backtrack': True,
+    'ee_frame_name': 'ee_link'
+}
+
+
 @dataclass
 class KnifePose:
     """Knife pose in robot base frame."""
@@ -66,7 +85,7 @@ def load_ik_config(config_path: str) -> Dict[str, Any]:
     
     Expected format:
         ik_parameters:
-          max_iterations: 1000
+          max_iterations: 50  # See _DEFAULT_IK_CONFIG for default values
           tolerance: 1e-4
           rot_weight: 0.2
           trans_weight: 1.0
@@ -299,18 +318,13 @@ def load_feasibility_config(config_path: str) -> Dict[str, Any]:
 
 
 def get_default_ik_config() -> Dict[str, Any]:
-    """Get default IK configuration parameters."""
-    return {
-        'max_iterations': 1000,
-        'tolerance': 1e-4,
-        'rot_weight': 0.2,
-        'trans_weight': 1.0,
-        'lambda0': 1e-3,
-        'lambda_max': 1e1,
-        'max_step': 0.2,
-        'backtrack': True,
-        'ee_frame_name': 'Link_6'
-    }
+    """
+    Get default IK configuration parameters.
+    
+    Returns a copy of the default IK config dictionary.
+    To change defaults, modify _DEFAULT_IK_CONFIG constant above.
+    """
+    return _DEFAULT_IK_CONFIG.copy()
 
 
 def load_ik_config_as_object(config_path: str = None):
@@ -332,22 +346,34 @@ def load_ik_config_as_object(config_path: str = None):
     
     try:
         params = load_ik_config(config_path)
+        # Use defaults from _DEFAULT_IK_CONFIG if values are missing
         # Explicitly convert to correct types (YAML may load scientific notation as strings)
         return IKConfig(
-            max_iterations=int(params.get('max_iterations', 1000)),
-            tolerance=float(params.get('tolerance', 1e-4)),
-            rot_weight=float(params.get('rot_weight', 0.2)),
-            trans_weight=float(params.get('trans_weight', 1.0)),
-            lambda0=float(params.get('lambda0', 1e-3)),
-            lambda_max=float(params.get('lambda_max', 1e1)),
-            max_step=float(params.get('max_step', 0.2)),
-            backtrack=bool(params.get('backtrack', True)),
-            ee_frame_name=str(params.get('ee_frame_name', 'ee_link'))
+            max_iterations=int(params.get('max_iterations', _DEFAULT_IK_CONFIG['max_iterations'])),
+            tolerance=float(params.get('tolerance', _DEFAULT_IK_CONFIG['tolerance'])),
+            rot_weight=float(params.get('rot_weight', _DEFAULT_IK_CONFIG['rot_weight'])),
+            trans_weight=float(params.get('trans_weight', _DEFAULT_IK_CONFIG['trans_weight'])),
+            lambda0=float(params.get('lambda0', _DEFAULT_IK_CONFIG['lambda0'])),
+            lambda_max=float(params.get('lambda_max', _DEFAULT_IK_CONFIG['lambda_max'])),
+            max_step=float(params.get('max_step', _DEFAULT_IK_CONFIG['max_step'])),
+            backtrack=bool(params.get('backtrack', _DEFAULT_IK_CONFIG['backtrack'])),
+            ee_frame_name=str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name']))
         )
     except Exception as e:
         print(f"Warning: Could not load IK config from {config_path}: {e}")
-        print("Using default IK parameters")
-        return IKConfig()
+        print("Using default IK parameters from _DEFAULT_IK_CONFIG")
+        # Create IKConfig using defaults from the constant
+        return IKConfig(
+            max_iterations=_DEFAULT_IK_CONFIG['max_iterations'],
+            tolerance=_DEFAULT_IK_CONFIG['tolerance'],
+            rot_weight=_DEFAULT_IK_CONFIG['rot_weight'],
+            trans_weight=_DEFAULT_IK_CONFIG['trans_weight'],
+            lambda0=_DEFAULT_IK_CONFIG['lambda0'],
+            lambda_max=_DEFAULT_IK_CONFIG['lambda_max'],
+            max_step=_DEFAULT_IK_CONFIG['max_step'],
+            backtrack=_DEFAULT_IK_CONFIG['backtrack'],
+            ee_frame_name=_DEFAULT_IK_CONFIG['ee_frame_name']
+        )
 
 
 def load_robostudio_test_config(config_path: str) -> Dict[str, Any]:

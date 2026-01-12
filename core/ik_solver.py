@@ -11,19 +11,48 @@ import pinocchio as pin
 from typing import Optional, Tuple, Dict, Any
 from dataclasses import dataclass
 
+# Import default config values from config_loader to ensure single source of truth
+try:
+    from utils.config_loader import _DEFAULT_IK_CONFIG
+    _DEFAULT_MAX_ITERATIONS = _DEFAULT_IK_CONFIG['max_iterations']
+    _DEFAULT_TOLERANCE = _DEFAULT_IK_CONFIG['tolerance']
+    _DEFAULT_ROT_WEIGHT = _DEFAULT_IK_CONFIG['rot_weight']
+    _DEFAULT_TRANS_WEIGHT = _DEFAULT_IK_CONFIG['trans_weight']
+    _DEFAULT_LAMBDA0 = _DEFAULT_IK_CONFIG['lambda0']
+    _DEFAULT_LAMBDA_MAX = _DEFAULT_IK_CONFIG['lambda_max']
+    _DEFAULT_MAX_STEP = _DEFAULT_IK_CONFIG['max_step']
+    _DEFAULT_BACKTRACK = _DEFAULT_IK_CONFIG['backtrack']
+    _DEFAULT_EE_FRAME_NAME = _DEFAULT_IK_CONFIG['ee_frame_name']
+except ImportError:
+    # Fallback if config_loader is not available (shouldn't happen in normal usage)
+    _DEFAULT_MAX_ITERATIONS = 50
+    _DEFAULT_TOLERANCE = 1e-4
+    _DEFAULT_ROT_WEIGHT = 0.2
+    _DEFAULT_TRANS_WEIGHT = 1.0
+    _DEFAULT_LAMBDA0 = 1e-3
+    _DEFAULT_LAMBDA_MAX = 1e1
+    _DEFAULT_MAX_STEP = 0.2
+    _DEFAULT_BACKTRACK = True
+    _DEFAULT_EE_FRAME_NAME = "ee_link"
+
 
 @dataclass
 class IKConfig:
-    """Configuration for IK solver."""
-    max_iterations: int = 200
-    tolerance: float = 1e-4
-    rot_weight: float = 0.2
-    trans_weight: float = 1.0
-    lambda0: float = 1e-3
-    lambda_max: float = 1e1
-    max_step: float = 0.2
-    backtrack: bool = True
-    ee_frame_name: str = "ee_link"
+    """Configuration for IK solver.
+    
+    Default values are imported from utils.config_loader._DEFAULT_IK_CONFIG
+    to ensure a single source of truth. To change defaults, modify _DEFAULT_IK_CONFIG
+    in utils/config_loader.py.
+    """
+    max_iterations: int = _DEFAULT_MAX_ITERATIONS
+    tolerance: float = _DEFAULT_TOLERANCE
+    rot_weight: float = _DEFAULT_ROT_WEIGHT
+    trans_weight: float = _DEFAULT_TRANS_WEIGHT
+    lambda0: float = _DEFAULT_LAMBDA0
+    lambda_max: float = _DEFAULT_LAMBDA_MAX
+    max_step: float = _DEFAULT_MAX_STEP
+    backtrack: bool = _DEFAULT_BACKTRACK
+    ee_frame_name: str = _DEFAULT_EE_FRAME_NAME
 
 
 class IKSolver:

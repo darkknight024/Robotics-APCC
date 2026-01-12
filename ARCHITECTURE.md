@@ -192,7 +192,7 @@ Robot Base Frame (T_B_K)
 **IK Solver Details:**
 - Algorithm: Damped Levenberg-Marquardt
 - Parameters:
-  - `max_iterations`: 2000 (configurable)
+  - `max_iterations`: 50 (configurable)
   - `tolerance`: 1e-4 m (translational error)
   - `lambda0`: 1e-3 (initial damping)
   - `lambda_max`: 10.0 (maximum damping)

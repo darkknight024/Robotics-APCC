@@ -63,6 +63,9 @@ python combinatorial_search.py \
     --weights config/scoring_weights.yaml \
     --workers 8 \
     --output output/feasibility_ranking
+
+# Generate plots and reports for every trajectory in the toolpath (slow to run)
+python combinatorial_search.py --config config/combinatorial_search_config.yaml --workers 8 --detailed_per_trajectory_report
 ```
 
 **Algorithm Details:**
