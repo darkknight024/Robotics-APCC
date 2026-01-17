@@ -301,10 +301,10 @@ def compute_weighted_score(
     weights: Dict[str, float]
 ) -> Tuple[float, float]:
     """
-    Compute weighted score from metrics.
+    Compute weighted score from metrics with STRICT feasibility penalty.
     
-    IMPORTANT: Uses RAW IK failure rate (not normalized) to ensure any IK failure
-    results in a poor score, even when all knife poses fail identically.
+    IMPORTANT: Any IK failure (even 0.01%) results in a FIXED PENALTY that ensures
+    ALL infeasible combinations rank below ALL feasible ones.
     
     Args:
         raw_IK_failure_rate: Raw IK failure rate [0, 1] (NOT normalized)
@@ -315,10 +315,11 @@ def compute_weighted_score(
         (normalized_score, raw_score)
         
     Scoring Logic:
-        - If any IK failure exists (raw_IK_failure_rate > 0), the normalized score
-          approaches 1.0 (worst), ensuring infeasible combinations rank low
-        - Other metrics contribute only when IK failure rate is 0
+        1. If IK failure > 0: Add fixed penalty of 1.0 to ensure infeasible combos rank last
+        2. Then add weighted contributions from all metrics
+        3. This guarantees: best_infeasible_score > worst_feasible_score
     """
+    # Calculate base score from all metrics
     raw_score = (
         weights['w_IK_failure_rate'] * raw_IK_failure_rate +  # Use RAW, not normalized!
         weights['w_singularity_rate'] * norm_singularity_rate +
@@ -330,8 +331,12 @@ def compute_weighted_score(
     total_weight = sum(weights.values())
     normalized_score = raw_score / total_weight if total_weight > 0 else raw_score
     
-    # Ensure any IK failure results in score >= 0.5 (default weight is 50.0, total is 100.0)
-    # This naturally makes infeasible combinations rank low
+    # CRITICAL FIX: Add fixed penalty for ANY IK failure
+    # This ensures all infeasible combinations rank below all feasible ones
+    if raw_IK_failure_rate > 0:
+        # Add 1.0 penalty - now infeasible combos will have scores >= 1.0
+        # while feasible combos max out at ~0.5 (worst case with all other metrics bad)
+        normalized_score += 1.0
     
     return normalized_score, raw_score
 
