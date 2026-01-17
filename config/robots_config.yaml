@@ -21,7 +21,7 @@ robots:
   # -------------------------------------------------------------------------
   - name: "IRB 1300-10/1.15"
     description: "ABB IRB 1300 with 10kg payload, 1.15m reach"
-    urdf_path: "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/IRB 1300-1150 URDF_ee.urdf"
+    urdf_path: "Assests/Robot APCC/IRB-1300-1150 URDF_v2/urdf/IRB-1300-1150-URDF_ee.urdf" 
     reach_m: 1.15
     payload_kg: 10
     velocity_limits_rad_s: [4.887, 3.979, 5.864, 8.727, 7.245, 12.566]
@@ -32,7 +32,7 @@ robots:
   # -------------------------------------------------------------------------
   - name: "IRB 1300-11/0.9"
     description: "ABB IRB 1300 with 11kg payload, 0.9m reach"
-    urdf_path: "Assests/Robot APCC/IRB-1300 900 URDF/urdf/IRB-1300 900 URDF_ee.urdf"
+    urdf_path: "Assests/Robot APCC/IRB-1300-900 URDF_v2/urdf/IRB-1300-900-URDF_ee.urdf"
     reach_m: 0.9
     payload_kg: 11
     velocity_limits_rad_s: [4.887, 3.979, 5.760, 8.727, 7.245, 12.566]
