@@ -541,7 +541,7 @@ def main():
         description="Analyze kinematic feasibility of toolpath trajectories"
     )
     parser.add_argument('--toolpath', '-t', required=True, help="Toolpath CSV file")
-    parser.add_argument('--urdf', '-u', default="Assests/Robot APCC/IRB-1300-1400-URDF-New/urdf/IRB-1300-1400-URDF_ee.urdf",
+    parser.add_argument('--urdf', '-u', default="Assests/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf",
                         help="Path to URDF file")
     parser.add_argument('--knife-config', '-k', default="config/knife_config.yaml",
                         help="Path to knife config YAML")

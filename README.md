@@ -254,7 +254,7 @@ All robots are defined here once. Other configs reference robots by name.
 ```yaml
 robots:
   - name: "IRB 1300-7/1.4"
-    urdf_path: "Assests/Robot APCC/IRB-1300-1400-URDF-New/urdf/IRB-1300-1400-URDF_ee.urdf"
+    urdf_path: "Assests/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"
     reach_m: 1.4
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
     
