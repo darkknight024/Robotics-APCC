@@ -230,6 +230,18 @@ def normalize_metric_lower_better(values: np.ndarray) -> np.ndarray:
     """
     Normalize metric where lower is better (0=best, 1=worst).
     
+    NORMALIZATION LOGIC:
+    - For metrics like IK failure rate, singularity rate: lower values are better
+    - Maps minimum value → 0.0 (best), maximum value → 1.0 (worst)
+    - Formula: normalized = (value - min) / (max - min)
+    
+    EXAMPLE:
+    - Raw values: [0.0, 0.5, 1.0]
+    - Normalized: [0.0, 0.5, 1.0]
+    
+    - Raw values: [0.1, 0.3, 0.8]  
+    - Normalized: [0.0, 0.286, 1.0]
+    
     Args:
         values: Array of metric values
         
@@ -238,21 +250,27 @@ def normalize_metric_lower_better(values: np.ndarray) -> np.ndarray:
     """
     values = np.array(values, dtype=float)
     
-    # Handle NaN values
+    # Handle NaN values - treat as invalid data
     valid_mask = ~np.isnan(values)
     if not np.any(valid_mask):
+        # All values are NaN - return worst score (1.0) for all
         return np.ones_like(values)
     
+    # Find min and max across all valid values
     min_val = np.nanmin(values)
     max_val = np.nanmax(values)
     
+    # Edge case: all values are identical
     if max_val - min_val < 1e-10:
-        # All values are the same
+        # All values are the same - return best score (0.0) for all
         return np.zeros_like(values)
     
+    # CRITICAL: Min-max normalization
+    # Lower raw values → closer to 0 (better)
+    # Higher raw values → closer to 1 (worse)
     normalized = (values - min_val) / (max_val - min_val)
     
-    # Replace NaN with worst case (1.0)
+    # Replace any remaining NaN with worst case (1.0)
     normalized = np.where(np.isnan(normalized), 1.0, normalized)
     
     return np.clip(normalized, 0.0, 1.0)
@@ -260,8 +278,21 @@ def normalize_metric_lower_better(values: np.ndarray) -> np.ndarray:
 
 def normalize_metric_higher_better(values: np.ndarray) -> np.ndarray:
     """
-    Normalize metric where higher is better (0=best, 1=worst).
-    Inverts the normalization so that 0=best, 1=worst.
+    Normalize metric where higher is better, INVERTED to 0=best, 1=worst.
+    
+    NORMALIZATION LOGIC (INVERTED):
+    - For metrics like manipulability, singular values: higher raw values are better
+    - BUT we invert so that 0=best, 1=worst (consistent with other metrics)
+    - Maps maximum value → 0.0 (best), minimum value → 1.0 (worst)
+    - Formula: normalized = (max - value) / (max - min)
+    
+    EXAMPLE:
+    - Raw manipulability: [0.01, 0.05, 0.10]  (higher is better)
+    - Normalized:         [1.0,  0.556, 0.0]   (0=best, so highest raw gets 0)
+    
+    WHY INVERT:
+    - Keeps all normalized metrics on same scale: 0=best, 1=worst
+    - Simplifies weighted scoring: just sum up all normalized metrics
     
     Args:
         values: Array of metric values
@@ -271,22 +302,28 @@ def normalize_metric_higher_better(values: np.ndarray) -> np.ndarray:
     """
     values = np.array(values, dtype=float)
     
-    # Handle NaN values
+    # Handle NaN values - treat as invalid data
     valid_mask = ~np.isnan(values)
     if not np.any(valid_mask):
+        # All values are NaN - return worst score (1.0) for all
         return np.ones_like(values)
     
+    # Find min and max across all valid values
     min_val = np.nanmin(values)
     max_val = np.nanmax(values)
     
+    # Edge case: all values are identical
     if max_val - min_val < 1e-10:
-        # All values are the same
+        # All values are the same - return best score (0.0) for all
         return np.zeros_like(values)
     
-    # Invert: (max - value) / (max - min)
+    # CRITICAL: INVERTED min-max normalization
+    # Higher raw values → closer to 0 (better)
+    # Lower raw values → closer to 1 (worse)
+    # This is the OPPOSITE of normalize_metric_lower_better
     normalized = (max_val - values) / (max_val - min_val)
     
-    # Replace NaN with worst case (1.0)
+    # Replace any remaining NaN with worst case (1.0)
     normalized = np.where(np.isnan(normalized), 1.0, normalized)
     
     return np.clip(normalized, 0.0, 1.0)
@@ -303,40 +340,73 @@ def compute_weighted_score(
     """
     Compute weighted score from metrics with STRICT feasibility penalty.
     
-    IMPORTANT: Any IK failure (even 0.01%) results in a FIXED PENALTY that ensures
-    ALL infeasible combinations rank below ALL feasible ones.
+    SCORING LOGIC (CRITICAL):
+    ========================
+    
+    1. BASE SCORE CALCULATION:
+       - Weighted sum of all metrics (all normalized to 0=best, 1=worst)
+       - EXCEPTION: IK failure rate uses RAW value (0-1), NOT normalized
+       - WHY: IK failure is binary feasibility check, not relative quality metric
+       
+    2. NORMALIZATION:
+       - Divide by total weight to get normalized_score in [0, 1] range
+       
+    3. FEASIBILITY PENALTY:
+       - If raw_IK_failure_rate > 0: Add +1.0 penalty
+       - EFFECT: All infeasible combos get score >= 1.0
+       - Feasible combos max out at ~0.5 even with worst other metrics
+       - GUARANTEES: best_infeasible_score > worst_feasible_score
+    
+    SCORE INTERPRETATION:
+    - Score < 0.25: ✅ Recommended (feasible + good quality)
+    - Score 0.25-0.50: ⚠️ Borderline (feasible but some issues)
+    - Score 0.50-0.75: ❗ Poor (feasible but bad quality)
+    - Score >= 1.0: ❌ Infeasible (has IK failures)
+    
+    EXAMPLE:
+    Given weights: {IK: 50, sing: 25, min_manip: 10, mean_manip: 10, sv: 5}
+    Total weight: 100
+    
+    Feasible combo (IK=0%, all normalized metrics at 0.5):
+      raw_score = 50*0 + 25*0.5 + 10*0.5 + 10*0.5 + 5*0.5 = 25
+      normalized = 25/100 = 0.25
+      final = 0.25 + 0 = 0.25 (no penalty)
+    
+    Infeasible combo (IK=10%, all normalized metrics at 0):
+      raw_score = 50*0.1 + 25*0 + 10*0 + 10*0 + 5*0 = 5
+      normalized = 5/100 = 0.05
+      final = 0.05 + 1.0 = 1.05 (penalty applied)
     
     Args:
         raw_IK_failure_rate: Raw IK failure rate [0, 1] (NOT normalized)
-        norm_*: Normalized metric values (0=best, 1=worst) 
+        norm_singularity_rate: Normalized singularity rate [0, 1] (0=best)
+        norm_min_manipulability: Normalized min manipulability [0, 1] (0=best, INVERTED)
+        norm_mean_manipulability: Normalized mean manipulability [0, 1] (0=best, INVERTED)
+        norm_mean_min_singular_value: Normalized mean min SV [0, 1] (0=best, INVERTED)
         weights: Weight dictionary
         
     Returns:
         (normalized_score, raw_score)
-        
-    Scoring Logic:
-        1. If IK failure > 0: Add fixed penalty of 1.0 to ensure infeasible combos rank last
-        2. Then add weighted contributions from all metrics
-        3. This guarantees: best_infeasible_score > worst_feasible_score
     """
-    # Calculate base score from all metrics
+    # CRITICAL: Calculate weighted sum of all metrics
+    # Note: IK failure rate uses RAW value, others use normalized [0,1]
     raw_score = (
-        weights['w_IK_failure_rate'] * raw_IK_failure_rate +  # Use RAW, not normalized!
-        weights['w_singularity_rate'] * norm_singularity_rate +
-        weights['w_min_manipulability'] * norm_min_manipulability +
-        weights['w_mean_manipulability'] * norm_mean_manipulability +
-        weights['w_mean_min_singular_value'] * norm_mean_min_singular_value
+        weights['w_IK_failure_rate'] * raw_IK_failure_rate +  # RAW IK failure [0,1]
+        weights['w_singularity_rate'] * norm_singularity_rate +  # Normalized [0,1]
+        weights['w_min_manipulability'] * norm_min_manipulability +  # Normalized INVERTED [0,1]
+        weights['w_mean_manipulability'] * norm_mean_manipulability +  # Normalized INVERTED [0,1]
+        weights['w_mean_min_singular_value'] * norm_mean_min_singular_value  # Normalized INVERTED [0,1]
     )
     
+    # Normalize by total weight to get score in [0, 1] range
     total_weight = sum(weights.values())
     normalized_score = raw_score / total_weight if total_weight > 0 else raw_score
     
-    # CRITICAL FIX: Add fixed penalty for ANY IK failure
-    # This ensures all infeasible combinations rank below all feasible ones
+    # CRITICAL: Add fixed +1.0 penalty for ANY IK failure
+    # This creates a hard separation between feasible and infeasible solutions
+    # Ensures all infeasible combinations rank below all feasible ones
     if raw_IK_failure_rate > 0:
-        # Add 1.0 penalty - now infeasible combos will have scores >= 1.0
-        # while feasible combos max out at ~0.5 (worst case with all other metrics bad)
-        normalized_score += 1.0
+        normalized_score += 1.0  # Jump to >= 1.0 range
     
     return normalized_score, raw_score
 
@@ -385,9 +455,37 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
 
 def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, float]:
     """
-    Aggregate metrics across multiple trajectories for scoring.
+    Aggregate metrics across multiple trajectories within a single toolpath.
     
-    Uses worst-case aggregation for failure-related metrics.
+    AGGREGATION STRATEGY (CRITICAL):
+    =================================
+    
+    For a TOOLPATH with N trajectories, we need a single score per (robot, knife, toolpath).
+    
+    1. FAILURE METRICS (worst-case):
+       - IK failure rate: MAX across trajectories
+         WHY: If ANY trajectory fails, the whole toolpath is problematic
+       - Singularity rate: MAX across trajectories
+         WHY: One trajectory near singularities makes execution risky
+    
+    2. QUALITY METRICS (conservative):
+       - Min manipulability: MIN across trajectories
+         WHY: Weakest link - bottleneck determines feasibility
+       - Mean manipulability: MEAN across trajectories
+         WHY: Overall average quality
+       - Mean min singular value: MEAN across trajectories
+         WHY: Overall average quality
+    
+    EXAMPLE:
+    Toolpath has 3 trajectories:
+      Traj 1: IK_fail=0%,   sing=5%,  min_manip=0.05
+      Traj 2: IK_fail=10%,  sing=2%,  min_manip=0.08
+      Traj 3: IK_fail=0%,   sing=3%,  min_manip=0.06
+    
+    Aggregated:
+      max_IK_failure_rate = 10% (worst is trajectory 2)
+      max_singularity_rate = 5% (worst is trajectory 1)
+      min_min_manipulability = 0.05 (bottleneck is trajectory 1)
     
     Args:
         metrics: List of per-trajectory metrics
@@ -396,6 +494,7 @@ def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, 
         Dictionary with aggregated metrics
     """
     if not metrics:
+        # No metrics available - return worst-case values
         return {
             'max_IK_failure_rate': 1.0,
             'max_singularity_rate': 1.0,
@@ -404,18 +503,50 @@ def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, 
             'mean_mean_min_singular_value': 0.0,
         }
     
+    # CRITICAL: Worst-case aggregation for failures and bottlenecks
     return {
-        'max_IK_failure_rate': max(m.IK_failure_rate for m in metrics),
-        'max_singularity_rate': max(m.singularity_rate for m in metrics),
-        'min_min_manipulability': min(m.min_manipulability for m in metrics),
-        'mean_mean_manipulability': mean(m.mean_manipulability for m in metrics),
-        'mean_mean_min_singular_value': mean(m.mean_min_singular_value for m in metrics),
+        'max_IK_failure_rate': max(m.IK_failure_rate for m in metrics),  # Worst IK failure
+        'max_singularity_rate': max(m.singularity_rate for m in metrics),  # Worst singularity
+        'min_min_manipulability': min(m.min_manipulability for m in metrics),  # Bottleneck
+        'mean_mean_manipulability': mean(m.mean_manipulability for m in metrics),  # Average quality
+        'mean_mean_min_singular_value': mean(m.mean_min_singular_value for m in metrics),  # Average quality
     }
 
 
 def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, float]:
     """
-    Aggregate metrics across multiple toolpaths for a (robot, knife_pose).
+    Aggregate metrics across multiple toolpaths for a single (robot, knife_pose) combination.
+    
+    AGGREGATION STRATEGY (CRITICAL):
+    =================================
+    
+    For a (ROBOT, KNIFE POSE) tested on M toolpaths, we need ONE score per knife pose.
+    
+    SAME STRATEGY as trajectory aggregation - worst-case for failures, conservative for quality:
+    
+    1. FAILURE METRICS (worst-case):
+       - IK failure rate: MAX across toolpaths
+         WHY: If this knife pose fails on ANY toolpath, it's not universally good
+       - Singularity rate: MAX across toolpaths
+         WHY: Any problematic toolpath makes this pose risky
+    
+    2. QUALITY METRICS (conservative):
+       - Min manipulability: MIN across toolpaths
+         WHY: Bottleneck across all toolpaths
+       - Mean manipulability: MEAN across toolpaths
+         WHY: Average quality across all toolpaths
+       - Mean min singular value: MEAN across toolpaths
+         WHY: Average quality across all toolpaths
+    
+    EXAMPLE:
+    Knife pose tested on 2 toolpaths:
+      Toolpath A: IK_fail=0%,  sing=5%,  min_manip=0.08
+      Toolpath B: IK_fail=2%,  sing=1%,  min_manip=0.10
+    
+    Aggregated for this knife pose:
+      max_IK_failure_rate = 2% (worst is toolpath B)
+      max_singularity_rate = 5% (worst is toolpath A)
+      min_min_manipulability = 0.08 (bottleneck is toolpath A)
     
     Args:
         results: List of CombinationResult for same (robot, knife_pose)
@@ -423,9 +554,11 @@ def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, fl
     Returns:
         Dictionary with aggregated metrics
     """
+    # Filter only successful analyses
     successful = [r for r in results if r.success]
     
     if not successful:
+        # All toolpaths failed for this knife pose - return worst-case values
         return {
             'max_IK_failure_rate': 1.0,
             'max_singularity_rate': 1.0,
@@ -434,12 +567,13 @@ def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, fl
             'mean_mean_min_singular_value': 0.0,
         }
     
+    # CRITICAL: Worst-case aggregation across all toolpaths for this knife pose
     return {
-        'max_IK_failure_rate': max(r.max_IK_failure_rate for r in successful),
-        'max_singularity_rate': max(r.max_singularity_rate for r in successful),
-        'min_min_manipulability': min(r.min_min_manipulability for r in successful),
-        'mean_mean_manipulability': mean(r.mean_mean_manipulability for r in successful),
-        'mean_mean_min_singular_value': mean(r.mean_mean_min_singular_value for r in successful),
+        'max_IK_failure_rate': max(r.max_IK_failure_rate for r in successful),  # Worst IK across toolpaths
+        'max_singularity_rate': max(r.max_singularity_rate for r in successful),  # Worst singularity
+        'min_min_manipulability': min(r.min_min_manipulability for r in successful),  # Bottleneck
+        'mean_mean_manipulability': mean(r.mean_mean_manipulability for r in successful),  # Average
+        'mean_mean_min_singular_value': mean(r.mean_mean_min_singular_value for r in successful),  # Average
     }
 
 
@@ -464,13 +598,16 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             knife_translation_m=task.knife_translation_m,
             knife_quaternion=task.knife_quaternion,
             output_dir=task.output_dir,
+            robot_model_name=task.robot_name,
+            knife_pose_name=task.knife_name,
             robot_reach_m=task.robot_reach_m,
             singularity_threshold=task.singularity_threshold,
             velocity_limits_rad_s=task.velocity_limits_rad_s,
             speed_mm_s=task.speed_mm_s,
             run_continuity=task.run_continuity,
             save_analysis=task.save_analysis,
-            detailed_per_trajectory_report=task.detailed_per_trajectory_report
+            detailed_per_trajectory_report=task.detailed_per_trajectory_report,
+            use_flat_output_structure=True  # CRITICAL FIX: Avoid Windows path length limit
         )
         
         # Extract per-trajectory metrics
@@ -555,7 +692,12 @@ def save_per_robot_csv(
     robot_name: str
 ) -> None:
     """
-    Save per-robot ranking CSV with verdict column.
+    Save per-robot ranking CSV with both raw and normalized metrics.
+    
+    CSV COLUMNS:
+    - Rank, Knife Pose ID, Score (final weighted score)
+    - RAW metrics: actual values from kinematic analysis
+    - NORMALIZED metrics: [0,1] values used in scoring (0=best, 1=worst)
     
     Args:
         results: Sorted list of aggregated results
@@ -566,15 +708,25 @@ def save_per_robot_csv(
     for r in results:
         verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
         rows.append({
+            # Basic info
             'Rank': r.rank,
             'Knife Pose ID': r.knife_pose_id,
-            'Score': f"{r.normalized_score:.3f}",
-            'IK Failure Rate': f"{r.max_IK_failure_rate:.2f}",
-            'Singularity Rate': f"{r.max_singularity_rate:.2f}",
-            'Min Manipulability': f"{r.min_min_manipulability:.3f}",
-            'Mean Manipulability': f"{r.mean_mean_manipulability:.3f}",
-            'Mean Min Singular Value': f"{r.mean_mean_min_singular_value:.3f}",
+            'Score': f"{r.normalized_score:.4f}",
             'Verdict': verdict,
+            
+            # RAW METRICS (actual measured values)
+            'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
+            'Singularity Rate (raw)': f"{r.max_singularity_rate:.4f}",
+            'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
+            'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
+            'Mean Min SV (raw)': f"{r.mean_mean_min_singular_value:.6f}",
+            
+            # NORMALIZED METRICS (0=best, 1=worst)
+            'IK Failure Rate (norm)': f"{r.norm_IK_failure_rate:.4f}",
+            'Singularity Rate (norm)': f"{r.norm_singularity_rate:.4f}",
+            'Min Manipulability (norm)': f"{r.norm_min_manipulability:.4f}",
+            'Mean Manipulability (norm)': f"{r.norm_mean_manipulability:.4f}",
+            'Mean Min SV (norm)': f"{r.norm_mean_min_singular_value:.4f}",
         })
     
     df = pd.DataFrame(rows)
@@ -817,14 +969,32 @@ def build_robot_ranking(
     """
     Build robot-level ranking from per-robot knife pose results.
     
-    Takes the best knife pose for each robot and ranks robots against each other.
+    RANKING STRATEGY (CRITICAL):
+    =============================
     
-    IMPORTANT: Uses raw metrics for ranking, not per-robot normalized scores!
-    Per-robot scores are normalized within each robot's knife set and cannot be
-    compared across robots. Instead, we rank by:
-    1. IK failure rate (lower is better) - primary criterion
-    2. Singularity rate (lower is better)
-    3. Manipulability metrics (higher is better)
+    1. TAKE BEST KNIFE POSE PER ROBOT:
+       - Each robot has N knife poses evaluated
+       - Take the rank-1 (best) knife pose for each robot
+       - This represents the "best case" performance for that robot
+    
+    2. CROSS-ROBOT COMPARISON:
+       - CANNOT use per-robot normalized scores! They are relative within each robot.
+       - MUST use RAW metrics for fair cross-robot comparison
+       - Ranking order: IK failure > singularity > manipulability
+    
+    3. SORT PRIORITY (lexicographic):
+       Primary:   IK failure rate (lower is better)
+       Secondary: Singularity rate (lower is better)
+       Tertiary:  Mean manipulability (higher is better)
+       Quaternary: Min manipulability (higher is better)
+       Quinary:   Mean min singular value (higher is better)
+    
+    EXAMPLE:
+    Robot A best pose: IK=0%, sing=5%, manip=0.08
+    Robot B best pose: IK=0%, sing=2%, manip=0.06
+    Robot C best pose: IK=1%, sing=0%, manip=0.10
+    
+    Ranking: B (0% IK, 2% sing), A (0% IK, 5% sing), C (1% IK) - IK dominates
     
     Args:
         all_robot_results: Dictionary mapping robot name to sorted knife pose results
@@ -834,11 +1004,12 @@ def build_robot_ranking(
     """
     robot_rankings = []
     
+    # For each robot, extract the best knife pose
     for robot_name, knife_results in all_robot_results.items():
         if not knife_results:
             continue
         
-        # Take the best knife pose (rank 1) from per-robot ranking
+        # CRITICAL: Take rank-1 knife pose (already sorted by per-robot scoring)
         best_knife = knife_results[0]
         
         verdict = _compute_verdict(best_knife.max_IK_failure_rate, best_knife.normalized_score)
@@ -846,10 +1017,11 @@ def build_robot_ranking(
         robot_rankings.append(RobotRankingResult(
             robot_name=robot_name,
             best_knife_pose_id=best_knife.knife_pose_id,
-            best_knife_pose_score=best_knife.normalized_score,  # Keep for reference only
+            best_knife_pose_score=best_knife.normalized_score,  # Keep for reference (per-robot score)
             best_knife_pose_rank=1,
             n_knife_poses_evaluated=len(knife_results),
             n_toolpaths=best_knife.n_toolpaths,
+            # RAW METRICS - used for cross-robot ranking
             max_IK_failure_rate=best_knife.max_IK_failure_rate,
             max_singularity_rate=best_knife.max_singularity_rate,
             min_min_manipulability=best_knife.min_min_manipulability,
@@ -858,17 +1030,20 @@ def build_robot_ranking(
             verdict=verdict
         ))
     
-    # Sort by raw metrics (NOT per-robot normalized scores!)
-    # Priority: IK failure → singularity → manipulability
+    # =========================================================================
+    # CRITICAL: CROSS-ROBOT RANKING BY RAW METRICS
+    # =========================================================================
+    # Sort by RAW metrics (NOT per-robot normalized scores!)
+    # Lexicographic sort: IK failure → singularity → manipulability (high to low)
     robot_rankings.sort(key=lambda x: (
-        x.max_IK_failure_rate,              # Lower is better (most important)
+        x.max_IK_failure_rate,              # Lower is better (MOST IMPORTANT)
         x.max_singularity_rate,             # Lower is better
         -x.mean_mean_manipulability,        # Higher is better (negate for ascending sort)
-        -x.min_min_manipulability,          # Higher is better
-        -x.mean_mean_min_singular_value     # Higher is better
+        -x.min_min_manipulability,          # Higher is better (negate)
+        -x.mean_mean_min_singular_value     # Higher is better (negate)
     ))
     
-    # Assign robot ranks
+    # Assign final robot ranks (1 = best robot overall)
     for rank, robot_result in enumerate(robot_rankings, 1):
         robot_result.robot_rank = rank
     
@@ -880,7 +1055,11 @@ def save_robot_ranking_csv(
     output_path: str
 ) -> None:
     """
-    Save robot ranking CSV.
+    Save robot ranking CSV with raw metrics.
+    
+    NOTE: Robot ranking uses RAW metrics only (not normalized per-robot).
+    Per-robot normalization is only valid within a single robot's knife pose set.
+    Cross-robot comparison must use raw absolute values.
     
     Args:
         robot_rankings: Sorted list of robot ranking results
@@ -890,16 +1069,21 @@ def save_robot_ranking_csv(
     
     for r in robot_rankings:
         rows.append({
+            # Ranking info
             'Robot Rank': r.robot_rank,
             'Robot Name': r.robot_name,
             'Best Knife Pose': r.best_knife_pose_id,
-            'Score': f"{r.best_knife_pose_score:.3f}",
-            'IK Failure Rate': f"{r.max_IK_failure_rate:.2f}",
-            'Singularity Rate': f"{r.max_singularity_rate:.2f}",
-            'Min Manipulability': f"{r.min_min_manipulability:.3f}",
-            'Mean Manipulability': f"{r.mean_mean_manipulability:.3f}",
-            'Mean Min Singular Value': f"{r.mean_mean_min_singular_value:.3f}",
+            'Score': f"{r.best_knife_pose_score:.4f}",
             'Verdict': r.verdict,
+            
+            # RAW METRICS from best knife pose (for cross-robot comparison)
+            'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
+            'Singularity Rate (raw)': f"{r.max_singularity_rate:.4f}",
+            'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
+            'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
+            'Mean Min SV (raw)': f"{r.mean_mean_min_singular_value:.6f}",
+            
+            # Metadata
             'N Knife Poses Evaluated': r.n_knife_poses_evaluated,
             'N Toolpaths': r.n_toolpaths,
         })
@@ -914,11 +1098,16 @@ def save_global_ranking_csv(
     output_path: str
 ) -> None:
     """
-    Save global ranking CSV across all robots.
+    Save global ranking CSV across all robots with both raw and normalized metrics.
+    
+    IMPORTANT: 
+    - Normalized metrics are per-robot (relative to other knife poses for SAME robot)
+    - Cross-robot comparison should use RAW metrics only
+    - Score is computed using per-robot normalized values (not comparable across robots)
     
     Ranks by score (lower is better). Score naturally reflects IK failures because
     compute_weighted_score uses raw IK failure rate, ensuring infeasible combinations
-    get poor scores (≥0.5) and rank low automatically.
+    get poor scores (≥1.0) and rank low automatically.
     
     Args:
         all_robot_results: Dictionary mapping robot name to results
@@ -930,16 +1119,28 @@ def save_global_ranking_csv(
         for r in results:
             verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
             rows.append({
+                # Basic info
                 'Robot Name': robot_name,
                 'Knife Pose ID': r.knife_pose_id,
-                'Score': f"{r.normalized_score:.3f}",
-                'IK Failure Rate': f"{r.max_IK_failure_rate:.2f}",
-                'Singularity Rate': f"{r.max_singularity_rate:.2f}",
-                'Min Manipulability': f"{r.min_min_manipulability:.3f}",
-                'Mean Manipulability': f"{r.mean_mean_manipulability:.3f}",
-                'Mean Min Singular Value': f"{r.mean_mean_min_singular_value:.3f}",
+                'Score': f"{r.normalized_score:.4f}",
                 'Robot Rank': r.rank,
                 'Verdict': verdict,
+                
+                # RAW METRICS (actual measured values - use for cross-robot comparison)
+                'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
+                'Singularity Rate (raw)': f"{r.max_singularity_rate:.4f}",
+                'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
+                'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
+                'Mean Min SV (raw)': f"{r.mean_mean_min_singular_value:.6f}",
+                
+                # NORMALIZED METRICS (per-robot, 0=best within robot, 1=worst within robot)
+                'IK Failure Rate (norm)': f"{r.norm_IK_failure_rate:.4f}",
+                'Singularity Rate (norm)': f"{r.norm_singularity_rate:.4f}",
+                'Min Manipulability (norm)': f"{r.norm_min_manipulability:.4f}",
+                'Mean Manipulability (norm)': f"{r.norm_mean_manipulability:.4f}",
+                'Mean Min SV (norm)': f"{r.norm_mean_min_singular_value:.4f}",
+                
+                # Metadata
                 'N Toolpaths': r.n_toolpaths,
                 'N Successful': r.n_successful,
             })
@@ -951,9 +1152,11 @@ def save_global_ranking_csv(
         logger.warning("No results to save in global ranking CSV")
         # Create empty CSV with headers
         df = pd.DataFrame(columns=[
-            'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Score', 
-            'IK Failure Rate', 'Singularity Rate', 'Min Manipulability', 
-            'Mean Manipulability', 'Mean Min Singular Value', 'Verdict', 
+            'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Score', 'Verdict',
+            'IK Failure Rate (raw)', 'Singularity Rate (raw)', 'Min Manipulability (raw)', 
+            'Mean Manipulability (raw)', 'Mean Min SV (raw)',
+            'IK Failure Rate (norm)', 'Singularity Rate (norm)', 'Min Manipulability (norm)', 
+            'Mean Manipulability (norm)', 'Mean Min SV (norm)',
             'N Toolpaths', 'N Successful'
         ])
         df.to_csv(output_path, index=False)
@@ -966,11 +1169,18 @@ def save_global_ranking_csv(
     df['Global Rank'] = range(1, len(df) + 1)
     df = df.drop(columns=['_score_numeric'])
     
-    # Reorder columns
-    cols = ['Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Score', 
-            'IK Failure Rate', 'Singularity Rate', 'Min Manipulability', 
-            'Mean Manipulability', 'Mean Min Singular Value', 'Verdict', 
-            'N Toolpaths', 'N Successful']
+    # Reorder columns - show basic info, raw metrics, then normalized metrics
+    cols = [
+        'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Score', 'Verdict',
+        # Raw metrics
+        'IK Failure Rate (raw)', 'Singularity Rate (raw)', 'Min Manipulability (raw)', 
+        'Mean Manipulability (raw)', 'Mean Min SV (raw)',
+        # Normalized metrics
+        'IK Failure Rate (norm)', 'Singularity Rate (norm)', 'Min Manipulability (norm)', 
+        'Mean Manipulability (norm)', 'Mean Min SV (norm)',
+        # Metadata
+        'N Toolpaths', 'N Successful'
+    ]
     df = df[cols]
     
     df.to_csv(output_path, index=False)
@@ -1632,34 +1842,50 @@ def _process_robot_results(
         logger.warning(f"No results for robot {robot_name}")
         return []
     
-    # Normalize metrics (per-robot normalization)
+    # =========================================================================
+    # CRITICAL: PER-ROBOT NORMALIZATION
+    # =========================================================================
+    # Extract raw metric arrays for all knife poses of this robot
     ik_rates = np.array([a.max_IK_failure_rate for a in aggregated_list])
     sing_rates = np.array([a.max_singularity_rate for a in aggregated_list])
     min_manips = np.array([a.min_min_manipulability for a in aggregated_list])
     mean_manips = np.array([a.mean_mean_manipulability for a in aggregated_list])
     mean_svs = np.array([a.mean_mean_min_singular_value for a in aggregated_list])
     
-    # Normalize: lower is better for rates, higher is better for manipulability/sv
+    # CRITICAL: Normalize each metric to [0, 1] where 0=best, 1=worst
+    # This normalization is RELATIVE to other knife poses for THIS robot only!
+    # Cannot be compared across different robots!
+    #
+    # Lower is better: IK failure, singularity (direct normalization)
     norm_ik = normalize_metric_lower_better(ik_rates)
     norm_sing = normalize_metric_lower_better(sing_rates)
+    
+    # Higher is better: manipulability, singular values (INVERTED normalization)
+    # These get inverted so 0=best (highest raw value), 1=worst (lowest raw value)
     norm_min_manip = normalize_metric_higher_better(min_manips)
     norm_mean_manip = normalize_metric_higher_better(mean_manips)
     norm_mean_sv = normalize_metric_higher_better(mean_svs)
     
-    # Compute scores and assign normalized values
+    # =========================================================================
+    # CRITICAL: SCORE COMPUTATION
+    # =========================================================================
+    # Compute final weighted score for each knife pose
     for i, agg in enumerate(aggregated_list):
+        # Store normalized values (for reporting)
         agg.norm_IK_failure_rate = float(norm_ik[i])
         agg.norm_singularity_rate = float(norm_sing[i])
         agg.norm_min_manipulability = float(norm_min_manip[i])
         agg.norm_mean_manipulability = float(norm_mean_manip[i])
         agg.norm_mean_min_singular_value = float(norm_mean_sv[i])
         
+        # CRITICAL: Compute weighted score
+        # Note: Uses RAW IK failure rate (not normalized), all others are normalized [0,1]
         agg.normalized_score, agg.raw_score = compute_weighted_score(
-            agg.max_IK_failure_rate,  # Use RAW IK failure rate, not normalized!
-            agg.norm_singularity_rate,
-            agg.norm_min_manipulability,
-            agg.norm_mean_manipulability,
-            agg.norm_mean_min_singular_value,
+            agg.max_IK_failure_rate,  # RAW value [0,1] - NOT normalized
+            agg.norm_singularity_rate,  # Normalized [0,1] - 0=best
+            agg.norm_min_manipulability,  # Normalized INVERTED [0,1] - 0=best (highest raw)
+            agg.norm_mean_manipulability,  # Normalized INVERTED [0,1] - 0=best (highest raw)
+            agg.norm_mean_min_singular_value,  # Normalized INVERTED [0,1] - 0=best (highest raw)
             weights
         )
     

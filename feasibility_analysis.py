@@ -362,7 +362,8 @@ def process_toolpath(
     speed_mm_s: float = 100.0,
     run_continuity: bool = True,
     save_analysis: bool = True,
-    detailed_per_trajectory_report: bool = False
+    detailed_per_trajectory_report: bool = False,
+    use_flat_output_structure: bool = False
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -383,6 +384,8 @@ def process_toolpath(
         save_analysis: Whether to save text report
         detailed_per_trajectory_report: Whether to generate detailed plots for each trajectory
                                         (default: False, generates only 4 aggregated plots)
+        use_flat_output_structure: If True, use output_dir directly without adding subdirectories
+                                    (used by combinatorial search to avoid path length issues)
         
     Returns:
         Dictionary with analysis results
@@ -413,8 +416,16 @@ def process_toolpath(
     n_trajectories = len(trajectories_t_b_p)
     print(f"  Loaded {n_trajectories} trajectories")
     
-    # Create output directory structure: output_dir/robot_model_name/toolpath_name/knife_pose_name/
-    out_path = Path(output_dir) / robot_model_name / toolpath_name / knife_pose_name
+    # Create output directory structure
+    if use_flat_output_structure:
+        # Flat structure: use output_dir as-is (for combinatorial search)
+        # Avoids Windows path length issues by not adding subdirectories
+        out_path = Path(output_dir)
+    else:
+        # Hierarchical structure: output_dir/robot_model_name/toolpath_name/knife_pose_name/
+        # Used for standalone analysis with organized subdirectories
+        out_path = Path(output_dir) / robot_model_name / toolpath_name / knife_pose_name
+    
     out_path.mkdir(parents=True, exist_ok=True)
     print(f"  Output directory: {out_path}")
     
