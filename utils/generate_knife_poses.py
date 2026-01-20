@@ -62,6 +62,7 @@ def main():
     parser.add_argument('--num_z', type=int, default=3, help='Number of z-axis divisions (default: 3)')
     parser.add_argument('--num_ori', type=int, default=2, help='Number of orientation variations per grid point (default: 2)')
     parser.add_argument('--num_out_of_reach', type=int, default=6, help='Number of out-of-reach poses per robot (max 6, default: 6)')
+    parser.add_argument('--grid_range', type=float, default=100.0, help='Grid range offset in mm (default: 100.0, creates range from -grid_range to +grid_range around reference)')
     parser.add_argument('--output_path', type=str, default='config/generated_knife_poses.yaml', help='Path to save the generated poses (default: config/generated_knife_poses.yaml)')
     
     args = parser.parse_args()
@@ -74,9 +75,9 @@ def main():
     poses = {}
     
     # 1. Generate nominal grid poses
-    x_values = linspace(ref_translation[0] - 100, ref_translation[0] + 100, args.num_x)
-    y_values = linspace(ref_translation[1] - 100, ref_translation[1] + 100, args.num_y)
-    z_values = linspace(ref_translation[2] - 100, ref_translation[2] + 100, args.num_z)
+    x_values = linspace(ref_translation[0] - args.grid_range, ref_translation[0] + args.grid_range, args.num_x)
+    y_values = linspace(ref_translation[1] - args.grid_range, ref_translation[1] + args.grid_range, args.num_y)
+    z_values = linspace(ref_translation[2] - args.grid_range, ref_translation[2] + args.grid_range, args.num_z)
     
     # Ensure all z values are positive
     z_values = [max(z, 1.0) for z in z_values]
