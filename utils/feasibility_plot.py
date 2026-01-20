@@ -11,7 +11,7 @@ Generates plots for trajectory feasibility analysis:
 
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 
@@ -1215,3 +1215,695 @@ def plot_joint_configurations_vs_limits(
     plt.close()
     
     print(f"    Generated joint configs vs limits plot: {Path(output_path).name}")
+
+
+# =============================================================================
+# 4-Level Feasibility Plotting Functions
+# =============================================================================
+
+def plot_feasibility_levels(
+    feasibility_flags: Dict[str, bool],
+    safety_tier: int,
+    smoothness_score: float,
+    dexterity_score: float,
+    output_path: str,
+    title: str = "4-Level Feasibility Analysis",
+    max_condition_number: Optional[float] = None,
+    safety_bin_size: float = 10.0
+) -> None:
+    """
+    Plot all 4 levels of feasibility analysis.
+    
+    Creates a 2x2 grid showing:
+    - Level 1: Feasibility Gate (boolean flags)
+    - Level 2: Safety Tier (discretized) with tier ranges
+    - Level 3: Smoothness Cost (energy) with quality ranges
+    - Level 4: Dexterity Score (manipulability)
+    
+    Args:
+        feasibility_flags: Dictionary with reachability_ok, c0_ok, c1_ok
+        safety_tier: Safety tier (integer, lower is better)
+        smoothness_score: Normalized joint energy (lower is better)
+        dexterity_score: Mean manipulability (higher is better)
+        output_path: Path to save the output image
+        title: Plot title
+        max_condition_number: Maximum condition number (for tier explanation)
+        safety_bin_size: Size of safety bins for tier computation
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(title, fontsize=16, fontweight='bold')
+    
+    # Level 1: Feasibility Gate
+    ax1 = axes[0, 0]
+    flags = ['Reachability', 'C0 Continuity', 'C1 Feasibility']
+    values = [
+        feasibility_flags.get('reachability_ok', False),
+        feasibility_flags.get('c0_ok', False),
+        feasibility_flags.get('c1_ok', False)
+    ]
+    colors = ['green' if v else 'red' for v in values]
+    bars = ax1.bar(flags, [1 if v else 0 for v in values], color=colors, alpha=0.7, edgecolor='black', linewidth=2)
+    ax1.set_ylim(-0.1, 1.1)
+    ax1.set_yticks([0, 1])
+    ax1.set_yticklabels(['FAIL', 'PASS'])
+    ax1.set_title('Level 1: Feasibility Gate', fontweight='bold', fontsize=12)
+    ax1.set_ylabel('Status', fontweight='bold')
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Add text labels
+    for i, (bar, val) in enumerate(zip(bars, values)):
+        status = 'PASS' if val else 'FAIL'
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
+                status, ha='center', fontweight='bold', fontsize=11,
+                color='green' if val else 'red')
+    
+    overall_valid = all(values)
+    ax1.text(0.5, -0.15, f'Overall: {"VALID" if overall_valid else "INVALID"}',
+            transform=ax1.transAxes, ha='center', fontweight='bold', fontsize=12,
+            bbox=dict(boxstyle='round', facecolor='lightgreen' if overall_valid else 'lightcoral', alpha=0.8))
+    
+    # Level 2: Safety Tier with tier ranges displayed
+    ax2 = axes[0, 1]
+    tier_colors = ['green', 'yellow', 'orange', 'red', 'darkred']
+    tier_color = tier_colors[min(safety_tier - 1, len(tier_colors) - 1)] if safety_tier <= len(tier_colors) else 'darkred'
+    
+    # Show all tiers up to current tier + 2 more for context
+    max_tier_to_show = max(safety_tier + 2, 5)
+    tier_ranges = []
+    tier_labels = []
+    tier_colors_list = []
+    
+    for tier in range(1, max_tier_to_show + 1):
+        tier_min = (tier - 1) * safety_bin_size
+        tier_max = tier * safety_bin_size
+        tier_ranges.append(tier)
+        if tier == 1:
+            tier_labels.append(f'Tier {tier}\n(0 < κ ≤ {tier_max:.0f})')
+        else:
+            tier_labels.append(f'Tier {tier}\n({tier_min:.0f} < κ ≤ {tier_max:.0f})')
+        tier_colors_list.append(tier_colors[min(tier - 1, len(tier_colors) - 1)])
+    
+    # Create horizontal bar chart showing all tiers
+    y_pos = np.arange(len(tier_ranges))
+    bar_heights = [1.0 if tier == safety_tier else 0.3 for tier in tier_ranges]
+    bar_colors = [tier_colors_list[i] if tier_ranges[i] == safety_tier else 'lightgray' for i in range(len(tier_ranges))]
+    
+    bars2 = ax2.barh(y_pos, bar_heights, color=bar_colors, alpha=0.7, edgecolor='black', linewidth=2)
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels(tier_labels, fontsize=9)
+    ax2.set_xlabel('Tier Assignment', fontweight='bold')
+    ax2.set_title(f'Level 2: Safety Tier\nCurrent: Tier {safety_tier} (Lower is Better)', fontweight='bold', fontsize=12)
+    ax2.set_xlim(0, 1.2)
+    ax2.grid(True, alpha=0.3, axis='x')
+    
+    # Add max condition number info if available
+    if max_condition_number is not None:
+        cond_info = f'Max Condition Number: {max_condition_number:.2f}\n'
+        cond_info += f'Tier Formula: ceil({max_condition_number:.2f} / {safety_bin_size:.0f}) = {safety_tier}'
+        ax2.text(0.5, -0.25, cond_info, transform=ax2.transAxes, ha='center', 
+                fontweight='bold', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    
+    # Highlight current tier
+    ax2.text(1.05, y_pos[safety_tier - 1], '← Current', ha='left', va='center',
+            fontweight='bold', fontsize=10, color='black')
+    
+    # Level 3: Smoothness Cost with quality ranges
+    ax3 = axes[1, 0]
+    
+    # Define smoothness quality ranges (empirical thresholds)
+    smoothness_ranges = [
+        (0.0, 0.01, 'Excellent', 'green'),
+        (0.01, 0.05, 'Good', 'lightgreen'),
+        (0.05, 0.1, 'Fair', 'yellow'),
+        (0.1, 0.2, 'Poor', 'orange'),
+        (0.2, float('inf'), 'Very Poor', 'red')
+    ]
+    
+    # Determine current quality
+    current_quality = 'Unknown'
+    current_color = 'gray'
+    for min_val, max_val, quality, color in smoothness_ranges:
+        if min_val <= smoothness_score < max_val:
+            current_quality = quality
+            current_color = color
+            break
+    
+    # Create horizontal bar chart showing quality ranges
+    y_pos_smooth = np.arange(len(smoothness_ranges))
+    bar_heights_smooth = []
+    bar_colors_smooth = []
+    bar_labels_smooth = []
+    
+    for i, (min_val, max_val, quality, color) in enumerate(smoothness_ranges):
+        if max_val == float('inf'):
+            label = f'{quality}\n(≥ {min_val:.2f})'
+        else:
+            label = f'{quality}\n({min_val:.2f} - {max_val:.2f})'
+        bar_labels_smooth.append(label)
+        
+        if quality == current_quality:
+            bar_heights_smooth.append(1.0)
+            bar_colors_smooth.append(color)
+        else:
+            bar_heights_smooth.append(0.3)
+            bar_colors_smooth.append('lightgray')
+    
+    bars3 = ax3.barh(y_pos_smooth, bar_heights_smooth, color=bar_colors_smooth, alpha=0.7, edgecolor='black', linewidth=2)
+    ax3.set_yticks(y_pos_smooth)
+    ax3.set_yticklabels(bar_labels_smooth, fontsize=9)
+    ax3.set_xlabel('Quality Assignment', fontweight='bold')
+    ax3.set_title(f'Level 3: Smoothness Cost\nCurrent: {smoothness_score:.4f} ({current_quality})', 
+                 fontweight='bold', fontsize=12)
+    ax3.set_xlim(0, 1.2)
+    ax3.grid(True, alpha=0.3, axis='x')
+    
+    # Add formula info
+    formula_info = f'Energy Score = mean(Σ((|dq/dt| / limit)²))\n'
+    formula_info += f'Current Score: {smoothness_score:.4f}'
+    ax3.text(0.5, -0.25, formula_info, transform=ax3.transAxes, ha='center',
+            fontweight='bold', fontsize=9,
+            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    
+    # Highlight current quality
+    current_idx = next(i for i, (_, _, q, _) in enumerate(smoothness_ranges) if q == current_quality)
+    ax3.text(1.05, y_pos_smooth[current_idx], '← Current', ha='left', va='center',
+            fontweight='bold', fontsize=10, color='black')
+    
+    # Level 4: Dexterity Score
+    ax4 = axes[1, 1]
+    ax4.bar(['Dexterity'], [dexterity_score], color='purple', alpha=0.7, edgecolor='black', linewidth=2)
+    ax4.set_ylabel('Mean Manipulability', fontweight='bold')
+    ax4.set_title('Level 4: Dexterity Score\n(Higher is Better)', fontweight='bold', fontsize=12)
+    ax4.grid(True, alpha=0.3, axis='y')
+    ax4.text(0, dexterity_score + max(dexterity_score * 0.1, 0.001),
+            f'{dexterity_score:.6f}', ha='center', fontweight='bold', fontsize=11)
+    
+    # Add context info
+    dexterity_info = f'Dexterity = mean(manipulability)\n'
+    dexterity_info += f'Range: 0.0 (singular) to ~1.0 (optimal)'
+    ax4.text(0.5, -0.15, dexterity_info, transform=ax4.transAxes, ha='center',
+            fontweight='bold', fontsize=9,
+            bbox=dict(boxstyle='round', facecolor='lavender', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_feasibility_levels_detailed(
+    per_waypoint_results: List,
+    condition_numbers: np.ndarray,
+    velocity_ratios: np.ndarray,
+    manipulability_values: np.ndarray,
+    timestamps: np.ndarray,
+    velocity_limits_rad_s: np.ndarray,
+    output_path: str,
+    title: str = "Detailed 4-Level Feasibility Analysis",
+    safety_bin_size: float = 10.0
+) -> None:
+    """
+    Plot detailed 4-level feasibility analysis with per-waypoint data.
+    
+    Creates a comprehensive multi-panel figure showing:
+    - Panel 1: Level 1 - Feasibility flags per waypoint
+    - Panel 2: Level 2 - Condition numbers and safety tiers
+    - Panel 3: Level 3 - Velocity ratios and smoothness
+    - Panel 4: Level 4 - Manipulability over trajectory
+    
+    Args:
+        per_waypoint_results: List of FeasibilityResult objects
+        condition_numbers: Condition numbers per waypoint (n_waypoints,)
+        velocity_ratios: Velocity ratios per segment (n_segments,)
+        manipulability_values: Manipulability per waypoint (n_waypoints,)
+        timestamps: Timestamps (n_waypoints,)
+        velocity_limits_rad_s: Per-joint velocity limits
+        output_path: Path to save the output image
+        title: Plot title
+        safety_bin_size: Size of safety bins for tier computation
+    """
+    n_waypoints = len(per_waypoint_results)
+    waypoints = np.arange(n_waypoints)
+    
+    fig = plt.figure(figsize=(16, 12))
+    fig.suptitle(title, fontsize=16, fontweight='bold')
+    
+    gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.3)
+    
+    # Panel 1: Level 1 - Feasibility Gate (per waypoint)
+    ax1 = fig.add_subplot(gs[0, :])
+    reachable = np.array([r.is_reachable for r in per_waypoint_results])
+    colors_reach = ['green' if r else 'red' for r in reachable]
+    ax1.bar(waypoints, reachable.astype(float), color=colors_reach, alpha=0.7, edgecolor='black')
+    ax1.set_xlabel('Waypoint Index', fontweight='bold')
+    ax1.set_ylabel('Reachable', fontweight='bold')
+    ax1.set_title('Level 1: Feasibility Gate - Reachability per Waypoint', fontweight='bold', fontsize=12)
+    ax1.set_ylim(-0.1, 1.1)
+    ax1.set_yticks([0, 1])
+    ax1.set_yticklabels(['Unreachable', 'Reachable'])
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Add C0 and C1 status if available
+    if len(velocity_ratios) > 0:
+        max_vel_ratio = np.max(velocity_ratios)
+        c1_status = "PASS" if max_vel_ratio <= 1.0 else "FAIL"
+        ax1.text(0.02, 0.95, f'C1 Feasibility: {c1_status} (max ratio: {max_vel_ratio:.3f})',
+                transform=ax1.transAxes, fontweight='bold', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+    
+    # Panel 2: Level 2 - Safety Tier (Condition Numbers)
+    ax2 = fig.add_subplot(gs[1, 0])
+    valid_cond = condition_numbers[np.isfinite(condition_numbers)]
+    if len(valid_cond) > 0:
+        ax2.plot(waypoints[:len(valid_cond)], valid_cond, 'r-o', linewidth=2, markersize=4, label='Condition Number')
+        max_cond = np.max(valid_cond)
+        min_cond = np.min(valid_cond)
+        mean_cond = np.mean(valid_cond)
+        safety_tier = int(np.ceil(max_cond / safety_bin_size))
+        
+        # Draw tier boundaries with detailed labels
+        max_tier_to_show = max(safety_tier + 2, 5)
+        tier_colors_map = {1: 'green', 2: 'yellow', 3: 'orange', 4: 'red', 5: 'darkred'}
+        
+        for tier in range(1, max_tier_to_show + 1):
+            tier_boundary = tier * safety_bin_size
+            tier_color = tier_colors_map.get(tier, 'gray')
+            
+            # Draw boundary line
+            if tier == safety_tier:
+                ax2.axhline(y=tier_boundary, color=tier_color, linestyle='--', alpha=0.7, linewidth=2, 
+                           label=f'Tier {tier} Boundary')
+            else:
+                ax2.axhline(y=tier_boundary, color='gray', linestyle='--', alpha=0.5, linewidth=1)
+            
+            # Add tier label with range
+            if tier == 1:
+                tier_label = f'Tier {tier}\n(0 < κ ≤ {tier_boundary:.0f})'
+            else:
+                tier_label = f'Tier {tier}\n({(tier-1)*safety_bin_size:.0f} < κ ≤ {tier_boundary:.0f})'
+            
+            ax2.text(len(valid_cond) * 0.98, tier_boundary + safety_bin_size * 0.05,
+                    tier_label, fontsize=8, color=tier_color, fontweight='bold' if tier == safety_tier else 'normal',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor=tier_color, linewidth=1.5 if tier == safety_tier else 0.5))
+        
+        # Highlight the region for current tier
+        tier_min_boundary = (safety_tier - 1) * safety_bin_size
+        tier_max_boundary = safety_tier * safety_bin_size
+        ax2.axhspan(tier_min_boundary, min(tier_max_boundary, max_cond + safety_bin_size * 0.5), 
+                   alpha=0.1, color=tier_colors_map.get(safety_tier, 'gray'), zorder=0)
+        
+        # Draw max condition line
+        ax2.axhline(y=max_cond, color='red', linestyle='-', linewidth=3, label=f'Max: {max_cond:.2f}')
+        
+        ax2.set_xlabel('Waypoint Index', fontweight='bold')
+        ax2.set_ylabel('Condition Number (κ)', fontweight='bold')
+        ax2.set_title(f'Level 2: Safety Tier\nMax Condition: {max_cond:.2f} → Tier {safety_tier} (bin_size={safety_bin_size:.0f})',
+                     fontweight='bold', fontsize=12)
+        ax2.legend(loc='upper left', fontsize=9)
+        ax2.grid(True, alpha=0.3)
+        
+        # Add detailed summary text
+        summary_text = f'Statistics:\n'
+        summary_text += f'  Min: {min_cond:.2f}\n'
+        summary_text += f'  Mean: {mean_cond:.2f}\n'
+        summary_text += f'  Max: {max_cond:.2f}\n'
+        summary_text += f'\nTier Calculation:\n'
+        summary_text += f'  ceil({max_cond:.2f} / {safety_bin_size:.0f}) = {safety_tier}'
+        ax2.text(0.02, 0.98, summary_text, transform=ax2.transAxes, fontsize=9,
+                verticalalignment='top', fontweight='bold',
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, edgecolor='orange', linewidth=2))
+    else:
+        ax2.text(0.5, 0.5, 'No valid condition numbers', ha='center', transform=ax2.transAxes)
+        ax2.set_title('Level 2: Safety Tier', fontweight='bold', fontsize=12)
+    
+    # Panel 3: Level 3 - Smoothness Cost (Velocity Ratios)
+    ax3 = fig.add_subplot(gs[1, 1])
+    if len(velocity_ratios) > 0:
+        segments = np.arange(len(velocity_ratios))
+        ax3.plot(segments, velocity_ratios, 'b-o', linewidth=2, markersize=4, label='Velocity Ratio')
+        ax3.axhline(y=1.0, color='red', linestyle='--', linewidth=2, label='Limit (1.0)')
+        
+        # Compute normalized joint energy
+        from utils.math import compute_normalized_joint_energy
+        energy = 0.0
+        if len(per_waypoint_results) > 1:
+            joint_angles = np.array([r.joint_positions_rad for r in per_waypoint_results if r.is_reachable])
+            if len(joint_angles) == len(per_waypoint_results) and len(timestamps) == len(per_waypoint_results):
+                energy = compute_normalized_joint_energy(joint_angles, timestamps, velocity_limits_rad_s)
+        
+        # Define smoothness quality ranges
+        smoothness_ranges = [
+            (0.0, 0.01, 'Excellent', 'green'),
+            (0.01, 0.05, 'Good', 'lightgreen'),
+            (0.05, 0.1, 'Fair', 'yellow'),
+            (0.1, 0.2, 'Poor', 'orange'),
+            (0.2, float('inf'), 'Very Poor', 'red')
+        ]
+        
+        # Determine current quality
+        current_quality = 'Unknown'
+        current_color = 'gray'
+        for min_val, max_val, quality, color in smoothness_ranges:
+            if min_val <= energy < max_val:
+                current_quality = quality
+                current_color = color
+                break
+        
+        # Draw quality region boundaries
+        for min_val, max_val, quality, color in smoothness_ranges:
+            if max_val <= 1.0:  # Only show boundaries within the plot range
+                ax3.axhline(y=np.sqrt(max_val), color=color, linestyle=':', alpha=0.3, linewidth=1)
+        
+        # Add quality indicator
+        quality_y_pos = min(np.max(velocity_ratios) * 1.1, 0.95)
+        ax3.axhline(y=quality_y_pos, color=current_color, linestyle='-', linewidth=3, alpha=0.3,
+                   label=f'Energy Quality: {current_quality}')
+        
+        # Statistics
+        max_ratio = np.max(velocity_ratios)
+        mean_ratio = np.mean(velocity_ratios)
+        std_ratio = np.std(velocity_ratios)
+        
+        # Detailed summary text
+        summary_text = f'Energy Score: {energy:.4f} ({current_quality})\n'
+        summary_text += f'\nVelocity Ratio Stats:\n'
+        summary_text += f'  Mean: {mean_ratio:.3f}\n'
+        summary_text += f'  Max: {max_ratio:.3f}\n'
+        summary_text += f'  Std: {std_ratio:.3f}\n'
+        summary_text += f'\nFormula:\n'
+        summary_text += f'  mean(Σ((|dq/dt|/limit)²))'
+        
+        ax3.text(0.02, 0.98, summary_text, transform=ax3.transAxes, fontsize=9,
+                verticalalignment='top', fontweight='bold',
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.9, edgecolor=current_color, linewidth=2))
+        
+        # Add quality legend
+        quality_legend = 'Quality Ranges:\n'
+        for min_val, max_val, quality, color in smoothness_ranges[:3]:  # Show first 3
+            if max_val == float('inf'):
+                quality_legend += f'  {quality}: ≥{min_val:.2f}\n'
+            else:
+                quality_legend += f'  {quality}: {min_val:.2f}-{max_val:.2f}\n'
+        
+        ax3.text(0.98, 0.02, quality_legend, transform=ax3.transAxes, fontsize=8,
+                verticalalignment='bottom', horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='blue', linewidth=1))
+        
+        ax3.set_xlabel('Segment Index', fontweight='bold')
+        ax3.set_ylabel('Velocity Ratio (|dq/dt| / limit)', fontweight='bold')
+        ax3.set_title(f'Level 3: Smoothness Cost\nEnergy: {energy:.4f} ({current_quality})', 
+                     fontweight='bold', fontsize=12)
+        ax3.legend(loc='upper right', fontsize=9)
+        ax3.grid(True, alpha=0.3)
+    else:
+        ax3.text(0.5, 0.5, 'No velocity ratio data', ha='center', transform=ax3.transAxes)
+        ax3.set_title('Level 3: Smoothness Cost', fontweight='bold', fontsize=12)
+    
+    # Panel 4: Level 4 - Dexterity Score (Manipulability)
+    ax4 = fig.add_subplot(gs[2, :])
+    if len(manipulability_values) > 0:
+        valid_manip = manipulability_values[manipulability_values > 0]
+        valid_waypoints = waypoints[manipulability_values > 0]
+        ax4.plot(valid_waypoints, valid_manip, 'g-o', linewidth=2, markersize=4, label='Manipulability')
+        
+        mean_manip = np.mean(valid_manip)
+        ax4.axhline(y=mean_manip, color='purple', linestyle='--', linewidth=2,
+                   label=f'Mean: {mean_manip:.6f}')
+        
+        ax4.set_xlabel('Waypoint Index', fontweight='bold')
+        ax4.set_ylabel('Manipulability Index', fontweight='bold')
+        ax4.set_title(f'Level 4: Dexterity Score\nMean Manipulability: {mean_manip:.6f}',
+                     fontweight='bold', fontsize=12)
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+    else:
+        ax4.text(0.5, 0.5, 'No manipulability data', ha='center', transform=ax4.transAxes)
+        ax4.set_title('Level 4: Dexterity Score', fontweight='bold', fontsize=12)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_combination_feasibility_levels(
+    trajectory_results: List[Dict[str, Any]],
+    output_path: str,
+    title: str = "4-Level Feasibility Analysis - All Trajectories",
+    safety_bin_size: float = 10.0,
+    toolpath_name: str = ""
+) -> None:
+    """
+    Plot comprehensive 4-level feasibility analysis for a combination (all trajectories).
+    
+    Creates a single comprehensive figure showing all 4 levels aggregated across all trajectories:
+    - Level 1: Feasibility Gate status per trajectory
+    - Level 2: Safety Tier distribution and worst-case
+    - Level 3: Smoothness Cost distribution and worst-case
+    - Level 4: Dexterity Score distribution and mean
+    
+    Args:
+        trajectory_results: List of trajectory result dictionaries with 4-level metrics
+        output_path: Path to save the output image
+        title: Plot title
+        safety_bin_size: Size of safety bins for tier computation
+        toolpath_name: Toolpath name for display
+    """
+    if not trajectory_results:
+        return
+    
+    n_trajectories = len(trajectory_results)
+    trajectory_indices = np.arange(1, n_trajectories + 1)
+    
+    # Extract 4-level metrics from all trajectories
+    is_valid_list = []
+    safety_tiers = []
+    smoothness_costs = []
+    dexterity_scores = []
+    max_condition_numbers = []
+    feasibility_flags_list = []
+    
+    for traj in trajectory_results:
+        is_valid_list.append(traj.get('level1_valid', False))
+        safety_tiers.append(traj.get('safety_tier', 999999))
+        smoothness_costs.append(traj.get('smoothness_cost', float('inf')))
+        dexterity_scores.append(traj.get('dexterity_score', 0.0))
+        feasibility_flags_list.append(traj.get('feasibility_flags', {}))
+        
+        # Extract max condition number for tier explanation
+        safety_score = traj.get('safety_score', np.inf)
+        max_condition_numbers.append(safety_score if not np.isinf(safety_score) else None)
+    
+    # Convert to numpy arrays
+    is_valid_array = np.array(is_valid_list)
+    safety_tiers_array = np.array(safety_tiers)
+    smoothness_costs_array = np.array(smoothness_costs)
+    dexterity_scores_array = np.array(dexterity_scores)
+    
+    # Compute aggregated metrics
+    overall_valid = all(is_valid_list)
+    worst_safety_tier = int(np.max(safety_tiers_array)) if len(safety_tiers_array) > 0 else 999999
+    worst_smoothness_cost = float(np.max(smoothness_costs_array[np.isfinite(smoothness_costs_array)])) if np.any(np.isfinite(smoothness_costs_array)) else float('inf')
+    mean_dexterity = float(np.mean(dexterity_scores_array)) if len(dexterity_scores_array) > 0 else 0.0
+    
+    # Create figure with comprehensive layout
+    fig = plt.figure(figsize=(18, 14))
+    fig.suptitle(title, fontsize=18, fontweight='bold')
+    
+    gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.3)
+    
+    # =========================================================================
+    # Level 1: Feasibility Gate - Per Trajectory Status
+    # =========================================================================
+    ax1 = fig.add_subplot(gs[0, :])
+    
+    # Plot validity status per trajectory
+    colors_valid = ['green' if v else 'red' for v in is_valid_list]
+    bars = ax1.bar(trajectory_indices, [1 if v else 0 for v in is_valid_list], 
+                   color=colors_valid, alpha=0.7, edgecolor='black', linewidth=2)
+    
+    # Add text labels
+    for i, (bar, val, flags) in enumerate(zip(bars, is_valid_list, feasibility_flags_list)):
+        status = 'VALID' if val else 'INVALID'
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.05,
+                status, ha='center', fontweight='bold', fontsize=10,
+                color='green' if val else 'red')
+        
+        # Add breakdown of flags
+        if not val:
+            reasons = []
+            if not flags.get('reachability_ok', True):
+                reasons.append('Reach')
+            if not flags.get('c0_ok', True):
+                reasons.append('C0')
+            if not flags.get('c1_ok', True):
+                reasons.append('C1')
+            if reasons:
+                ax1.text(bar.get_x() + bar.get_width()/2, -0.1,
+                        f"({', '.join(reasons)})", ha='center', fontsize=8, color='red')
+    
+    ax1.set_xlabel('Trajectory Index', fontweight='bold', fontsize=12)
+    ax1.set_ylabel('Validity Status', fontweight='bold', fontsize=12)
+    ax1.set_title(f'Level 1: Feasibility Gate\nOverall: {"VALID" if overall_valid else "INVALID"} ({sum(is_valid_list)}/{n_trajectories} valid)',
+                 fontweight='bold', fontsize=13)
+    ax1.set_ylim(-0.2, 1.2)
+    ax1.set_yticks([0, 1])
+    ax1.set_yticklabels(['INVALID', 'VALID'])
+    ax1.set_xticks(trajectory_indices)
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Add summary text
+    summary_text = f'Valid: {sum(is_valid_list)}/{n_trajectories} | '
+    summary_text += f'Invalid: {n_trajectories - sum(is_valid_list)}/{n_trajectories}'
+    ax1.text(0.02, 0.98, summary_text, transform=ax1.transAxes, fontsize=11,
+            verticalalignment='top', fontweight='bold',
+            bbox=dict(boxstyle='round', facecolor='lightgreen' if overall_valid else 'lightcoral', alpha=0.8))
+    
+    # =========================================================================
+    # Level 2: Safety Tier - Distribution and Worst Case
+    # =========================================================================
+    ax2 = fig.add_subplot(gs[1, 0])
+    
+    valid_tiers = safety_tiers_array[np.isfinite(safety_tiers_array) & (safety_tiers_array < 999999)]
+    if len(valid_tiers) > 0:
+        # Plot tier distribution
+        unique_tiers, counts = np.unique(valid_tiers, return_counts=True)
+        tier_colors = ['green', 'yellow', 'orange', 'red', 'darkred']
+        colors = [tier_colors[min(int(t) - 1, len(tier_colors) - 1)] if t <= len(tier_colors) else 'darkred' 
+                 for t in unique_tiers]
+        
+        bars = ax2.bar(unique_tiers.astype(int), counts, color=colors, alpha=0.7, edgecolor='black', linewidth=2)
+        
+        # Highlight worst tier
+        worst_tier_idx = np.where(unique_tiers == worst_safety_tier)[0]
+        if len(worst_tier_idx) > 0:
+            bars[worst_tier_idx[0]].set_edgecolor('red')
+            bars[worst_tier_idx[0]].set_linewidth(3)
+        
+        # Add tier labels with ranges
+        for tier, count in zip(unique_tiers, counts):
+            if tier == 1:
+                tier_label = f'Tier {int(tier)}\n(0 < κ ≤ {safety_bin_size:.0f})'
+            else:
+                tier_label = f'Tier {int(tier)}\n({(tier-1)*safety_bin_size:.0f} < κ ≤ {tier*safety_bin_size:.0f})'
+            ax2.text(tier, count + max(counts) * 0.05, tier_label, ha='center', fontsize=9, fontweight='bold')
+        
+        ax2.set_xlabel('Safety Tier', fontweight='bold', fontsize=12)
+        ax2.set_ylabel('Number of Trajectories', fontweight='bold', fontsize=12)
+        ax2.set_title(f'Level 2: Safety Tier Distribution\nWorst Case: Tier {worst_safety_tier}',
+                     fontweight='bold', fontsize=13)
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # Add max condition number info if available
+        valid_max_cond = [c for c in max_condition_numbers if c is not None]
+        if valid_max_cond:
+            max_cond = max(valid_max_cond)
+            info_text = f'Max Condition Number: {max_cond:.2f}\n'
+            info_text += f'Tier Formula: ceil({max_cond:.2f} / {safety_bin_size:.0f}) = {worst_safety_tier}'
+            ax2.text(0.02, 0.98, info_text, transform=ax2.transAxes, fontsize=9,
+                    verticalalignment='top', fontweight='bold',
+                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+    else:
+        ax2.text(0.5, 0.5, 'No valid safety tier data', ha='center', transform=ax2.transAxes, fontsize=12)
+        ax2.set_title('Level 2: Safety Tier', fontweight='bold', fontsize=13)
+    
+    # =========================================================================
+    # Level 3: Smoothness Cost - Distribution and Worst Case
+    # =========================================================================
+    ax3 = fig.add_subplot(gs[1, 1])
+    
+    valid_costs = smoothness_costs_array[np.isfinite(smoothness_costs_array)]
+    if len(valid_costs) > 0:
+        # Define quality ranges
+        smoothness_ranges = [
+            (0.0, 0.01, 'Excellent', 'green'),
+            (0.01, 0.05, 'Good', 'lightgreen'),
+            (0.05, 0.1, 'Fair', 'yellow'),
+            (0.1, 0.2, 'Poor', 'orange'),
+            (0.2, float('inf'), 'Very Poor', 'red')
+        ]
+        
+        # Categorize trajectories
+        quality_counts = {quality: 0 for _, _, quality, _ in smoothness_ranges}
+        quality_colors = {quality: color for _, _, quality, color in smoothness_ranges}
+        
+        for cost in valid_costs:
+            for min_val, max_val, quality, _ in smoothness_ranges:
+                if min_val <= cost < max_val:
+                    quality_counts[quality] += 1
+                    break
+        
+        # Plot quality distribution
+        qualities = list(quality_counts.keys())
+        counts = list(quality_counts.values())
+        colors = [quality_colors[q] for q in qualities]
+        
+        bars = ax3.bar(qualities, counts, color=colors, alpha=0.7, edgecolor='black', linewidth=2)
+        
+        # Add count labels
+        for bar, count in zip(bars, counts):
+            if count > 0:
+                ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                        str(count), ha='center', fontweight='bold', fontsize=10)
+        
+        ax3.set_xlabel('Quality Category', fontweight='bold', fontsize=12)
+        ax3.set_ylabel('Number of Trajectories', fontweight='bold', fontsize=12)
+        ax3.set_title(f'Level 3: Smoothness Cost Distribution\nWorst Case: {worst_smoothness_cost:.4f}',
+                     fontweight='bold', fontsize=13)
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # Add formula and worst case info
+        info_text = f'Energy Score = mean(Σ((|dq/dt| / limit)²))\n'
+        info_text += f'Worst Cost: {worst_smoothness_cost:.4f}\n'
+        info_text += f'Mean Cost: {np.mean(valid_costs):.4f}'
+        ax3.text(0.02, 0.98, info_text, transform=ax3.transAxes, fontsize=9,
+                verticalalignment='top', fontweight='bold',
+                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.9))
+    else:
+        ax3.text(0.5, 0.5, 'No valid smoothness cost data', ha='center', transform=ax3.transAxes, fontsize=12)
+        ax3.set_title('Level 3: Smoothness Cost', fontweight='bold', fontsize=13)
+    
+    # =========================================================================
+    # Level 4: Dexterity Score - Distribution and Mean
+    # =========================================================================
+    ax4 = fig.add_subplot(gs[2, :])
+    
+    valid_dexterity = dexterity_scores_array[dexterity_scores_array > 0]
+    if len(valid_dexterity) > 0:
+        # Plot dexterity scores per trajectory
+        ax4.plot(trajectory_indices[:len(valid_dexterity)], valid_dexterity, 'g-o', 
+                linewidth=2, markersize=6, label='Dexterity Score')
+        
+        # Add mean line
+        ax4.axhline(y=mean_dexterity, color='purple', linestyle='--', linewidth=3,
+                   label=f'Mean: {mean_dexterity:.6f}')
+        
+        # Add min/max lines
+        min_dex = np.min(valid_dexterity)
+        max_dex = np.max(valid_dexterity)
+        ax4.axhline(y=min_dex, color='red', linestyle=':', linewidth=2, alpha=0.5,
+                   label=f'Min: {min_dex:.6f}')
+        ax4.axhline(y=max_dex, color='blue', linestyle=':', linewidth=2, alpha=0.5,
+                   label=f'Max: {max_dex:.6f}')
+        
+        ax4.set_xlabel('Trajectory Index', fontweight='bold', fontsize=12)
+        ax4.set_ylabel('Dexterity Score (Mean Manipulability)', fontweight='bold', fontsize=12)
+        ax4.set_title(f'Level 4: Dexterity Score\nMean Across All Trajectories: {mean_dexterity:.6f}',
+                     fontweight='bold', fontsize=13)
+        ax4.legend(loc='best', fontsize=10)
+        ax4.grid(True, alpha=0.3)
+        
+        # Add statistics
+        stats_text = f'Mean: {mean_dexterity:.6f} | '
+        stats_text += f'Min: {min_dex:.6f} | '
+        stats_text += f'Max: {max_dex:.6f} | '
+        stats_text += f'Std: {np.std(valid_dexterity):.6f}'
+        ax4.text(0.02, 0.98, stats_text, transform=ax4.transAxes, fontsize=10,
+                verticalalignment='top', fontweight='bold',
+                bbox=dict(boxstyle='round', facecolor='lavender', alpha=0.8))
+    else:
+        ax4.text(0.5, 0.5, 'No valid dexterity data', ha='center', transform=ax4.transAxes, fontsize=12)
+        ax4.set_title('Level 4: Dexterity Score', fontweight='bold', fontsize=13)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()

@@ -4,9 +4,10 @@ Feasibility Checks Module
 
 Provides kinematic feasibility analysis functions:
 - Manipulability (Yoshikawa measure)
-- Singularity proximity (minimum singular value)
+- Singularity proximity (minimum and maximum singular values)
 - Condition number
 - Kinematic reachability
+- Trajectory-level statistics and ranking metrics
 """
 
 import numpy as np
@@ -14,20 +15,43 @@ import pinocchio as pin
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
+from utils.math import (
+    compute_joint_space_distance,
+    compute_distance_to_joint_limits,
+    compute_joint_velocity_ratio,
+    compute_joint_limit_violations
+)
+
 
 @dataclass
 class FeasibilityResult:
-    """Result of feasibility analysis for a single waypoint."""
+    """
+    Result of feasibility analysis for a single waypoint.
+    
+    Per-waypoint metrics as per Robot Trajectory Metrics specification:
+    - q: Joint solution (joint_positions_rad)
+    - is_ik_valid: Boolean flag (is_reachable)
+    - condition_number: Float (κ = σ_max / σ_min) - Critical for Safety
+    - manipulability_index: Float (Yoshikawa) - Critical for Dexterity
+    - min_singular_value: Float (σ_min) - Required for condition number
+    - joint_velocity_ratio: Float (max ratio of |dq/dt| / limit) - Critical for C1 Feasibility
+    """
     is_reachable: bool
-    manipulability: float
-    min_singular_value: float
-    condition_number: float
+    manipulability: float  # manipulability_index
+    min_singular_value: float  # CRITICAL: σ_min for condition number and safety checks
+    max_singular_value: float  # For completeness (redundant if condition_number available)
+    condition_number: float  # CRITICAL: κ = σ_max / σ_min for safety
     near_singularity: bool
-    joint_positions_rad: Optional[np.ndarray] = None
+    joint_positions_rad: Optional[np.ndarray] = None  # q: Joint solution
     # Debug information for failed IK
     ik_debug_info: Optional[Dict[str, Any]] = None
     target_position: Optional[np.ndarray] = None
     target_quaternion: Optional[np.ndarray] = None
+    # Critical metrics for ranking
+    joint_velocity_ratio: Optional[float] = None  # CRITICAL: Max ratio of |dq/dt| / limit for C1 feasibility
+    # Additional metrics (computed when previous waypoint available)
+    distance_to_joint_limits: Optional[float] = None  # Min distance across all joints
+    joint_space_distance: Optional[float] = None  # Distance from previous waypoint (for C0 check)
 
 
 def compute_manipulability(
@@ -90,6 +114,22 @@ def compute_condition_number(jacobian: np.ndarray) -> float:
     return np.max(singular_values) / min_sv
 
 
+def compute_max_singular_value(jacobian: np.ndarray) -> float:
+    """
+    Compute maximum singular value of the Jacobian.
+    
+    Args:
+        jacobian: 6xn Jacobian matrix
+        
+    Returns:
+        Maximum singular value
+    """
+    singular_values = np.linalg.svd(jacobian, compute_uv=False)
+    return float(np.max(singular_values))
+
+
+
+
 def check_reachability(
     ik_solver,
     target_position: np.ndarray,
@@ -135,7 +175,9 @@ class FeasibilityAnalyzer:
         ik_solver,
         fk_solver,
         characteristic_length_m: float = 1.0,
-        singularity_threshold: float = 0.01
+        singularity_threshold: float = 0.01,
+        velocity_limits_rad_s: Optional[np.ndarray] = None,
+        joint_jump_limit_rad: Optional[float] = None
     ):
         """
         Initialize feasibility analyzer.
@@ -147,6 +189,8 @@ class FeasibilityAnalyzer:
             fk_solver: FKSolver instance
             characteristic_length_m: Robot workspace reach for manipulability
             singularity_threshold: Threshold for singularity warning
+            velocity_limits_rad_s: Per-joint velocity limits for C1 checking (optional)
+            joint_jump_limit_rad: Maximum allowed joint jump for C0 checking (optional)
         """
         self.model = model
         self.data = data
@@ -154,6 +198,8 @@ class FeasibilityAnalyzer:
         self.fk_solver = fk_solver
         self.characteristic_length_m = characteristic_length_m
         self.singularity_threshold = singularity_threshold
+        self.velocity_limits_rad_s = velocity_limits_rad_s
+        self.joint_jump_limit_rad = joint_jump_limit_rad
     
     def analyze_waypoint(
         self,
@@ -216,6 +262,7 @@ class FeasibilityAnalyzer:
                 is_reachable=False,
                 manipulability=0.0,
                 min_singular_value=0.0,
+                max_singular_value=0.0,
                 condition_number=np.inf,
                 near_singularity=True,
                 joint_positions_rad=None,
@@ -230,31 +277,49 @@ class FeasibilityAnalyzer:
         # Compute metrics
         manipulability = compute_manipulability(jacobian, self.characteristic_length_m)
         min_sv = compute_singularity_proximity(jacobian)
+        max_sv = compute_max_singular_value(jacobian)
         cond_num = compute_condition_number(jacobian)
         near_singularity = min_sv < self.singularity_threshold
+        
+        # Compute distance to joint limits
+        distance_to_limits = compute_distance_to_joint_limits(
+            q, self.model.lowerPositionLimit, self.model.upperPositionLimit
+        )
         
         return FeasibilityResult(
             is_reachable=True,
             manipulability=manipulability,
             min_singular_value=min_sv,
+            max_singular_value=max_sv,
             condition_number=cond_num,
             near_singularity=near_singularity,
             joint_positions_rad=q,
             target_position=target_position,
-            target_quaternion=target_quaternion
+            target_quaternion=target_quaternion,
+            distance_to_joint_limits=distance_to_limits
         )
     
     def analyze_trajectory(
         self,
         positions: np.ndarray,
-        quaternions: np.ndarray
+        quaternions: np.ndarray,
+        timestamps: Optional[np.ndarray] = None,
+        speed_mm_s: float = 100.0
     ) -> Dict[str, Any]:
         """
         Analyze feasibility of an entire trajectory.
         
+        CRITICAL: Returns all metrics needed for ranking:
+        - feasibility_flags (reachability_ok, c0_ok, c1_ok)
+        - safety_score (max_condition_number)
+        - smoothness_score (mean_squared_velocity_ratio)
+        - dexterity_score (mean_manipulability)
+        
         Args:
             positions: Target positions (n_waypoints, 3) in meters
             quaternions: Target quaternions (n_waypoints, 4) [qw, qx, qy, qz]
+            timestamps: Optional timestamps (n_waypoints,) in seconds. If None, estimated from speed.
+            speed_mm_s: End-effector speed in mm/s (used if timestamps not provided)
             
         Returns:
             Dictionary with trajectory-level stats and per-waypoint results
@@ -267,27 +332,139 @@ class FeasibilityAnalyzer:
         singularity_count = 0
         manipulability_values = []
         min_sv_values = []
+        max_sv_values = []
+        condition_numbers = []
+        joint_limit_distances = []
+        joint_space_distances = []
+        velocity_ratios = []
+        
+        # Estimate timestamps if not provided (for velocity ratio computation)
+        if timestamps is None and self.velocity_limits_rad_s is not None:
+            # Simple estimation: assume uniform spacing based on Cartesian distances
+            estimated_times = np.zeros(n_waypoints)
+            for i in range(1, n_waypoints):
+                dist = np.linalg.norm(positions[i] - positions[i-1])
+                dt = dist / (speed_mm_s / 1000.0) if speed_mm_s > 0 else 0.001
+                estimated_times[i] = estimated_times[i-1] + dt
+            timestamps = estimated_times
         
         for i in range(n_waypoints):
             result = self.analyze_waypoint(positions[i], quaternions[i], q_prev)
+            
+            # Compute distances from previous waypoint if available
+            if q_prev is not None and result.is_reachable:
+                joint_dist = compute_joint_space_distance(q_prev, result.joint_positions_rad)
+                result.joint_space_distance = joint_dist
+                joint_space_distances.append(joint_dist)
+                
+                # CRITICAL: Compute joint velocity ratio for C1 feasibility
+                if self.velocity_limits_rad_s is not None and timestamps is not None and i > 0:
+                    dt = timestamps[i] - timestamps[i-1]
+                    if dt > 1e-10:
+                        vel_ratio = compute_joint_velocity_ratio(
+                            q_prev, result.joint_positions_rad, dt, self.velocity_limits_rad_s
+                        )
+                        result.joint_velocity_ratio = vel_ratio
+                        velocity_ratios.append(vel_ratio)
+            
             results.append(result)
             
             if result.is_reachable:
                 reachable_count += 1
                 manipulability_values.append(result.manipulability)
                 min_sv_values.append(result.min_singular_value)
+                max_sv_values.append(result.max_singular_value)
+                condition_numbers.append(result.condition_number)
+                if result.distance_to_joint_limits is not None:
+                    joint_limit_distances.append(result.distance_to_joint_limits)
                 q_prev = result.joint_positions_rad
             
             if result.near_singularity:
                 singularity_count += 1
         
-        return {
+        # Compute joint limit violations
+        joint_angles_all = np.array([r.joint_positions_rad for r in results if r.is_reachable])
+        joint_limit_stats = {}
+        if len(joint_angles_all) > 0:
+            joint_limit_stats = compute_joint_limit_violations(
+                joint_angles_all,
+                self.model.lowerPositionLimit,
+                self.model.upperPositionLimit
+            )
+        
+        # CRITICAL: Compute feasibility flags for ranking
+        reachability_ok = (reachable_count == n_waypoints)
+        
+        # C0 check: max joint jump < limit
+        c0_ok = True
+        if self.joint_jump_limit_rad is not None and joint_space_distances:
+            max_jump = np.max(joint_space_distances) if joint_space_distances else 0.0
+            c0_ok = max_jump < self.joint_jump_limit_rad
+        
+        # C1 check: max velocity ratio <= 1.0
+        c1_ok = True
+        if velocity_ratios:
+            max_vel_ratio = np.max(velocity_ratios)
+            c1_ok = max_vel_ratio <= 1.0
+        
+        # CRITICAL: Compute ranking scores
+        safety_score = float(np.max(condition_numbers)) if condition_numbers else np.inf
+        dexterity_score = float(np.mean(manipulability_values)) if manipulability_values else 0.0  # CRITICAL: Mean manipulability
+        
+        # CRITICAL: Smoothness score = mean of squared velocity ratios
+        smoothness_score = float(np.mean(np.array(velocity_ratios)**2)) if velocity_ratios else 0.0
+        
+        # Compute trajectory-level statistics
+        stats = {
             'n_waypoints': n_waypoints,
             'reachable_count': reachable_count,
             'reachability_percent': 100.0 * reachable_count / n_waypoints,
             'singularity_count': singularity_count,
-            'mean_manipulability': np.mean(manipulability_values) if manipulability_values else 0.0,
+            
+            # CRITICAL: Ranking scores
+            'feasibility_flags': {
+                'reachability_ok': reachability_ok,
+                'c0_ok': c0_ok,
+                'c1_ok': c1_ok
+            },
+            'safety_score': safety_score,  # max_condition_number
+            'smoothness_score': smoothness_score,  # mean_squared_velocity_ratio
+            'dexterity_score': dexterity_score,  # mean_manipulability
+            
+            # Manipulability statistics
+            'mean_manipulability': dexterity_score,  # CRITICAL: For ranking
             'min_manipulability': np.min(manipulability_values) if manipulability_values else 0.0,
+            'max_manipulability': np.max(manipulability_values) if manipulability_values else 0.0,
+            'std_manipulability': np.std(manipulability_values) if manipulability_values else 0.0,
+            
+            # Singular value statistics
             'mean_min_singular_value': np.mean(min_sv_values) if min_sv_values else 0.0,
+            'min_min_singular_value': np.min(min_sv_values) if min_sv_values else 0.0,
+            'max_min_singular_value': np.max(min_sv_values) if min_sv_values else 0.0,
+            'mean_max_singular_value': np.mean(max_sv_values) if max_sv_values else 0.0,
+            'min_max_singular_value': np.min(max_sv_values) if max_sv_values else 0.0,
+            'max_max_singular_value': np.max(max_sv_values) if max_sv_values else 0.0,
+            'std_min_singular_value': np.std(min_sv_values) if min_sv_values else 0.0,
+            
+            # Condition number statistics
+            'mean_condition_number': np.mean(condition_numbers) if condition_numbers else np.inf,
+            'min_condition_number': np.min(condition_numbers) if condition_numbers else np.inf,
+            'max_condition_number': safety_score,  # Same as safety_score
+            'std_condition_number': float(np.nan_to_num(np.std(condition_numbers), nan=0.0)) if condition_numbers else 0.0,
+            
+            # Joint limit statistics
+            'mean_distance_to_joint_limits': np.mean(joint_limit_distances) if joint_limit_distances else 0.0,
+            'min_distance_to_joint_limits': np.min(joint_limit_distances) if joint_limit_distances else 0.0,
+            'max_velocity_ratio': float(np.max(velocity_ratios)) if velocity_ratios else 0.0,
+            
+            # Path length metrics
+            'total_joint_space_path_length': np.sum(joint_space_distances) if joint_space_distances else 0.0,
+            'mean_joint_space_segment_length': np.mean(joint_space_distances) if joint_space_distances else 0.0,
+            
             'per_waypoint_results': results
         }
+        
+        # Add joint limit violation stats
+        stats.update(joint_limit_stats)
+        
+        return stats

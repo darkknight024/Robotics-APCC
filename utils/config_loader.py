@@ -55,6 +55,7 @@ class RobotConfig:
     reach_m: float
     velocity_limits_rad_s: Optional[List[float]] = None
     acceleration_limits_rad_s2: Optional[List[float]] = None
+    joint_jump_limit_rad: Optional[float] = None  # From constants section
 
 
 def load_yaml(config_path: str) -> Dict[str, Any]:
@@ -175,6 +176,10 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
     
     config = load_yaml(config_path)
     
+    # Load constants (e.g., joint_jump_limit_rad)
+    constants = config.get('constants', {})
+    joint_jump_limit_rad = constants.get('joint_jump_limit_rad', 0.5)  # Default: 0.5 rad
+    
     result = {}
     for robot_data in config.get('robots', []):
         name = robot_data.get('name', 'Unknown')
@@ -183,7 +188,8 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
             urdf_path=robot_data.get('urdf_path', ''),
             reach_m=float(robot_data.get('reach_m', 1.0)),
             velocity_limits_rad_s=robot_data.get('velocity_limits_rad_s'),
-            acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2')
+            acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2'),
+            joint_jump_limit_rad=joint_jump_limit_rad
         )
     
     return result

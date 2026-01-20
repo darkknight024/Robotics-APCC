@@ -15,6 +15,7 @@ from .feasibility_checks import (
     FeasibilityResult,
     compute_manipulability,
     compute_singularity_proximity,
+    compute_max_singular_value,
     compute_condition_number,
     check_reachability
 )
@@ -29,6 +30,7 @@ __all__ = [
     'load_robot_model',
     'compute_manipulability',
     'compute_singularity_proximity',
+    'compute_max_singular_value',
     'compute_condition_number',
     'check_reachability'
 ]

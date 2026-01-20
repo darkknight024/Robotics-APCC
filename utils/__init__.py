@@ -63,7 +63,11 @@ from .feasibility_plot import (
     plot_ik_failure_analysis,
     plot_joint_limit_analysis,
     plot_per_waypoint_ik_debug,
-    plot_joint_configurations_vs_limits
+    plot_joint_configurations_vs_limits,
+    # 4-Level feasibility plots
+    plot_feasibility_levels,
+    plot_feasibility_levels_detailed,
+    plot_combination_feasibility_levels
 )
 
 from .generate_combinatorial_plots import (
@@ -88,6 +92,16 @@ from .config_loader import (
 from .urdf_loader import (
     load_robot_model,
     resolve_urdf_path
+)
+
+from .math import (
+    compute_joint_space_distance,
+    compute_distance_to_joint_limits,
+    compute_joint_velocity_ratio,
+    compute_joint_velocity_metrics,
+    compute_joint_limit_violations,
+    compute_normalized_joint_energy,
+    compute_safety_tier
 )
 
 __all__ = [
@@ -135,6 +149,9 @@ __all__ = [
     'plot_reachability_summary',
     'plot_continuity_analysis',
     'generate_ranking_plot',
+    'plot_feasibility_levels',
+    'plot_feasibility_levels_detailed',
+    'plot_combination_feasibility_levels',
     # Config
     'load_ik_config',
     'load_knife_config',
@@ -147,5 +164,13 @@ __all__ = [
     'RobotConfig',
     # URDF Loading
     'load_robot_model',
-    'resolve_urdf_path'
+    'resolve_urdf_path',
+    # Math utilities
+    'compute_joint_space_distance',
+    'compute_distance_to_joint_limits',
+    'compute_joint_velocity_ratio',
+    'compute_joint_velocity_metrics',
+    'compute_joint_limit_violations',
+    'compute_normalized_joint_energy',
+    'compute_safety_tier'
 ]

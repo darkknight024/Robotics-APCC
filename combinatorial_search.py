@@ -126,6 +126,11 @@ class TrajectoryMetrics:
     min_manipulability: float
     mean_min_singular_value: float
     continuity_passed: Optional[bool] = None
+    # 4-Level Feasibility Metrics (for lexicographical sorting)
+    is_valid: bool = False  # Level 1: Feasibility Gate
+    safety_tier: int = 999999  # Level 2: Safety Tier (lower is better)
+    smoothness_cost: float = float('inf')  # Level 3: Normalized Joint Energy (lower is better)
+    dexterity_score: float = 0.0  # Level 4: Mean Manipulability (higher is better)
 
 
 @dataclass
@@ -138,12 +143,17 @@ class CombinationResult:
     error: Optional[str] = None
     n_trajectories: int = 0
     trajectory_metrics: List[TrajectoryMetrics] = field(default_factory=list)
-    # Aggregated metrics across trajectories
+    # Aggregated metrics across trajectories (legacy, kept for compatibility)
     max_IK_failure_rate: float = 1.0
     max_singularity_rate: float = 1.0
     min_min_manipulability: float = 0.0
     mean_mean_manipulability: float = 0.0
     mean_mean_min_singular_value: float = 0.0
+    # 4-Level Feasibility Metrics (aggregated across trajectories)
+    is_valid: bool = False  # Level 1: All trajectories must be valid
+    safety_tier: int = 999999  # Level 2: Worst (max) safety tier across trajectories
+    smoothness_cost: float = float('inf')  # Level 3: Worst (max) smoothness cost
+    dexterity_score: float = 0.0  # Level 4: Mean dexterity across trajectories
 
 
 @dataclass
@@ -153,22 +163,27 @@ class AggregatedKnifePoseResult:
     knife_pose_id: str
     n_toolpaths: int
     n_successful: int
-    # Aggregated metrics (worst-case across toolpaths)
+    # Aggregated metrics (worst-case across toolpaths) - legacy, kept for compatibility
     max_IK_failure_rate: float = 1.0
     max_singularity_rate: float = 1.0
     min_min_manipulability: float = 0.0
     mean_mean_manipulability: float = 0.0
     mean_mean_min_singular_value: float = 0.0
-    # Normalized metrics
+    # Normalized metrics - legacy, kept for compatibility
     norm_IK_failure_rate: float = 1.0
     norm_singularity_rate: float = 1.0
     norm_min_manipulability: float = 1.0
     norm_mean_manipulability: float = 1.0
     norm_mean_min_singular_value: float = 1.0
-    # Score
+    # Score - legacy, kept for compatibility
     normalized_score: float = 1.0
     raw_score: float = 0.0
     rank: int = 0
+    # 4-Level Feasibility Metrics (aggregated across toolpaths)
+    is_valid: bool = False  # Level 1: All toolpaths must be valid
+    safety_tier: int = 999999  # Level 2: Worst (max) safety tier across toolpaths
+    smoothness_cost: float = float('inf')  # Level 3: Worst (max) smoothness cost
+    dexterity_score: float = 0.0  # Level 4: Mean dexterity across toolpaths
     # Per-toolpath results
     toolpath_results: List[CombinationResult] = field(default_factory=list)
 
@@ -194,7 +209,75 @@ class RobotRankingResult:
 
 
 # =============================================================================
-# Scoring and Normalization Functions
+# Lexicographical Sorting Functions (4-Level Feasibility)
+# =============================================================================
+
+def get_sort_key(
+    is_valid: bool,
+    safety_tier: int,
+    smoothness_cost: float,
+    dexterity_score: float
+) -> Tuple[int, int, float, float]:
+    """
+    Generate sort key for lexicographical sorting (tuple sort).
+    
+    LEXICOGRAPHICAL SORT LOGIC (CRITICAL):
+    ======================================
+    
+    Python compares tuples element-by-element. If index 0 is equal, it moves to index 1, etc.
+    We use DESCENDING sort (reverse=True), meaning "Higher Values" appear first.
+    
+    Key Structure:
+    (Is_Valid, -Safety_Tier, -Energy_Score, Dexterity_Score)
+    
+    Why the negatives?
+    - Safety_Tier: Lower tiers (1) are better. In descending sort, 5 comes before 1.
+      By negating (-1 vs -5), -1 is mathematically larger, so it comes first.
+    - Energy_Score: Lower energy is better. By negating, smaller magnitude becomes larger value.
+    
+    Edge Case Handling:
+    - If is_valid is False, force subsequent metrics to "Worst Case" values:
+      safety_tier = infinity, energy = infinity, dexterity = -infinity
+      This ensures invalid trajectories sink to the absolute bottom.
+    
+    Args:
+        is_valid: Boolean validity flag (Level 1)
+        safety_tier: Safety tier integer (Level 2, lower is better)
+        smoothness_cost: Normalized joint energy (Level 3, lower is better)
+        dexterity_score: Mean manipulability (Level 4, higher is better)
+        
+    Returns:
+        Tuple for lexicographical sorting: (is_valid_int, -safety_tier, -smoothness_cost, dexterity_score)
+    """
+    # Handle invalid data: force worst-case values
+    if not is_valid:
+        safety_tier = 999999
+        smoothness_cost = float('inf')
+        dexterity_score = -float('inf')
+    
+    # Handle NaN/Inf edge cases
+    if math.isnan(safety_tier) or math.isinf(safety_tier):
+        safety_tier = 999999 if not is_valid else safety_tier
+    if math.isnan(smoothness_cost) or math.isinf(smoothness_cost):
+        smoothness_cost = float('inf')
+    if math.isnan(dexterity_score) or math.isinf(dexterity_score):
+        dexterity_score = -float('inf') if not is_valid else 0.0
+    
+    # Convert boolean to int (True=1, False=0) for tuple comparison
+    is_valid_int = int(is_valid)
+    
+    # Return tuple: (is_valid, -safety_tier, -smoothness_cost, dexterity_score)
+    # Using negatives for safety_tier and smoothness_cost because lower is better
+    return (
+        is_valid_int,           # Primary: True (1) > False (0)
+        -int(safety_tier),      # Secondary: Tier 1 > Tier 5 (so -1 > -5)
+        -float(smoothness_cost),  # Tertiary: Energy 0.1 > Energy 0.9 (so -0.1 > -0.9)
+        float(dexterity_score)   # Quaternary: Manip 0.5 > Manip 0.1 (higher is naturally better)
+    )
+
+
+# =============================================================================
+# Scoring and Normalization Functions (Legacy - kept for compatibility)
 # =============================================================================
 
 def load_weights(weights_path: Optional[str]) -> Dict[str, float]:
@@ -423,7 +506,7 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
         trajectory_result: Dictionary from process_toolpath trajectory_results
         
     Returns:
-        TrajectoryMetrics with computed IK_failure_rate and singularity_rate
+        TrajectoryMetrics with computed IK_failure_rate, singularity_rate, and 4-level metrics
     """
     n_waypoints = trajectory_result.get('n_waypoints', 0)
     reachable_count = trajectory_result.get('reachable_count', 0)
@@ -439,6 +522,29 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
     if continuity_info is not None:
         continuity_passed = continuity_info.get('passed')
     
+    # Extract 4-Level Feasibility Metrics
+    feasibility_flags = trajectory_result.get('feasibility_flags', {})
+    is_valid = trajectory_result.get('level1_valid', False)
+    safety_tier = trajectory_result.get('safety_tier', 999999)
+    smoothness_cost = trajectory_result.get('smoothness_cost', float('inf'))
+    dexterity_score = trajectory_result.get('dexterity_score', 0.0)
+    
+    # Handle edge cases: NaN, Infinity, empty trajectories
+    if n_waypoints == 0:
+        is_valid = False
+        safety_tier = 999999
+        smoothness_cost = float('inf')
+        dexterity_score = 0.0
+    else:
+        # Check for NaN/Inf in metrics
+        if math.isnan(safety_tier) or math.isinf(safety_tier):
+            is_valid = False
+            safety_tier = 999999
+        if math.isnan(smoothness_cost) or math.isinf(smoothness_cost):
+            smoothness_cost = float('inf')
+        if math.isnan(dexterity_score) or math.isinf(dexterity_score):
+            dexterity_score = 0.0
+    
     return TrajectoryMetrics(
         trajectory_index=trajectory_result.get('trajectory_index', 0),
         n_waypoints=n_waypoints,
@@ -449,7 +555,12 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
         mean_manipulability=trajectory_result.get('mean_manipulability', 0.0),
         min_manipulability=trajectory_result.get('min_manipulability', 0.0),
         mean_min_singular_value=trajectory_result.get('mean_min_singular_value', 0.0),
-        continuity_passed=continuity_passed
+        continuity_passed=continuity_passed,
+        # 4-Level Feasibility Metrics
+        is_valid=is_valid,
+        safety_tier=int(safety_tier) if not math.isnan(safety_tier) and not math.isinf(safety_tier) else 999999,
+        smoothness_cost=float(smoothness_cost) if not math.isnan(smoothness_cost) else float('inf'),
+        dexterity_score=float(dexterity_score) if not math.isnan(dexterity_score) else 0.0
     )
 
 
@@ -476,16 +587,26 @@ def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, 
        - Mean min singular value: MEAN across trajectories
          WHY: Overall average quality
     
+    3. 4-LEVEL FEASIBILITY METRICS:
+       - is_valid: ALL trajectories must be valid (AND logic)
+       - safety_tier: MAX (worst) tier across trajectories
+       - smoothness_cost: MAX (worst) cost across trajectories
+       - dexterity_score: MEAN dexterity across trajectories
+    
     EXAMPLE:
     Toolpath has 3 trajectories:
-      Traj 1: IK_fail=0%,   sing=5%,  min_manip=0.05
-      Traj 2: IK_fail=10%,  sing=2%,  min_manip=0.08
-      Traj 3: IK_fail=0%,   sing=3%,  min_manip=0.06
+      Traj 1: IK_fail=0%,   sing=5%,  min_manip=0.05, valid=True, tier=1, energy=0.01, dexterity=0.1
+      Traj 2: IK_fail=10%,  sing=2%,  min_manip=0.08, valid=False, tier=2, energy=0.02, dexterity=0.12
+      Traj 3: IK_fail=0%,   sing=3%,  min_manip=0.06, valid=True, tier=1, energy=0.015, dexterity=0.11
     
     Aggregated:
       max_IK_failure_rate = 10% (worst is trajectory 2)
       max_singularity_rate = 5% (worst is trajectory 1)
       min_min_manipulability = 0.05 (bottleneck is trajectory 1)
+      is_valid = False (trajectory 2 is invalid)
+      safety_tier = 2 (worst is trajectory 2)
+      smoothness_cost = 0.02 (worst is trajectory 2)
+      dexterity_score = 0.11 (mean of 0.1, 0.12, 0.11)
     
     Args:
         metrics: List of per-trajectory metrics
@@ -501,15 +622,28 @@ def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, 
             'min_min_manipulability': 0.0,
             'mean_mean_manipulability': 0.0,
             'mean_mean_min_singular_value': 0.0,
+            # 4-Level metrics
+            'is_valid': False,
+            'safety_tier': 999999,
+            'smoothness_cost': float('inf'),
+            'dexterity_score': 0.0,
         }
     
     # CRITICAL: Worst-case aggregation for failures and bottlenecks
+    # For 4-level metrics: is_valid requires ALL valid, others use worst-case
+    valid_metrics = [m for m in metrics if m.is_valid]
+    
     return {
         'max_IK_failure_rate': max(m.IK_failure_rate for m in metrics),  # Worst IK failure
         'max_singularity_rate': max(m.singularity_rate for m in metrics),  # Worst singularity
         'min_min_manipulability': min(m.min_manipulability for m in metrics),  # Bottleneck
         'mean_mean_manipulability': mean(m.mean_manipulability for m in metrics),  # Average quality
         'mean_mean_min_singular_value': mean(m.mean_min_singular_value for m in metrics),  # Average quality
+        # 4-Level Feasibility Metrics
+        'is_valid': all(m.is_valid for m in metrics),  # ALL must be valid
+        'safety_tier': max(m.safety_tier for m in metrics) if metrics else 999999,  # Worst tier
+        'smoothness_cost': max(m.smoothness_cost for m in metrics) if metrics else float('inf'),  # Worst cost
+        'dexterity_score': mean(m.dexterity_score for m in metrics) if metrics else 0.0,  # Mean dexterity
     }
 
 
@@ -538,15 +672,25 @@ def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, fl
        - Mean min singular value: MEAN across toolpaths
          WHY: Average quality across all toolpaths
     
+    3. 4-LEVEL FEASIBILITY METRICS:
+       - is_valid: ALL toolpaths must be valid (AND logic)
+       - safety_tier: MAX (worst) tier across toolpaths
+       - smoothness_cost: MAX (worst) cost across toolpaths
+       - dexterity_score: MEAN dexterity across toolpaths
+    
     EXAMPLE:
     Knife pose tested on 2 toolpaths:
-      Toolpath A: IK_fail=0%,  sing=5%,  min_manip=0.08
-      Toolpath B: IK_fail=2%,  sing=1%,  min_manip=0.10
+      Toolpath A: IK_fail=0%,  sing=5%,  min_manip=0.08, valid=True, tier=1, energy=0.01, dexterity=0.1
+      Toolpath B: IK_fail=2%,  sing=1%,  min_manip=0.10, valid=False, tier=2, energy=0.02, dexterity=0.12
     
     Aggregated for this knife pose:
       max_IK_failure_rate = 2% (worst is toolpath B)
       max_singularity_rate = 5% (worst is toolpath A)
       min_min_manipulability = 0.08 (bottleneck is toolpath A)
+      is_valid = False (toolpath B is invalid)
+      safety_tier = 2 (worst is toolpath B)
+      smoothness_cost = 0.02 (worst is toolpath B)
+      dexterity_score = 0.11 (mean of 0.1, 0.12)
     
     Args:
         results: List of CombinationResult for same (robot, knife_pose)
@@ -565,6 +709,11 @@ def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, fl
             'min_min_manipulability': 0.0,
             'mean_mean_manipulability': 0.0,
             'mean_mean_min_singular_value': 0.0,
+            # 4-Level metrics
+            'is_valid': False,
+            'safety_tier': 999999,
+            'smoothness_cost': float('inf'),
+            'dexterity_score': 0.0,
         }
     
     # CRITICAL: Worst-case aggregation across all toolpaths for this knife pose
@@ -574,6 +723,11 @@ def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, fl
         'min_min_manipulability': min(r.min_min_manipulability for r in successful),  # Bottleneck
         'mean_mean_manipulability': mean(r.mean_mean_manipulability for r in successful),  # Average
         'mean_mean_min_singular_value': mean(r.mean_mean_min_singular_value for r in successful),  # Average
+        # 4-Level Feasibility Metrics
+        'is_valid': all(r.is_valid for r in successful),  # ALL toolpaths must be valid
+        'safety_tier': max(r.safety_tier for r in successful) if successful else 999999,  # Worst tier
+        'smoothness_cost': max(r.smoothness_cost for r in successful) if successful else float('inf'),  # Worst cost
+        'dexterity_score': mean(r.dexterity_score for r in successful) if successful else 0.0,  # Mean dexterity
     }
 
 
@@ -626,11 +780,17 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             success=True,
             n_trajectories=result.get('n_trajectories', 0),
             trajectory_metrics=trajectory_metrics,
+            # Legacy metrics (kept for compatibility)
             max_IK_failure_rate=aggregated['max_IK_failure_rate'],
             max_singularity_rate=aggregated['max_singularity_rate'],
             min_min_manipulability=aggregated['min_min_manipulability'],
             mean_mean_manipulability=aggregated['mean_mean_manipulability'],
             mean_mean_min_singular_value=aggregated['mean_mean_min_singular_value'],
+            # 4-Level Feasibility Metrics
+            is_valid=aggregated['is_valid'],
+            safety_tier=int(aggregated['safety_tier']),
+            smoothness_cost=float(aggregated['smoothness_cost']),
+            dexterity_score=float(aggregated['dexterity_score']),
         )
         
     except Exception as e:
@@ -1009,7 +1169,7 @@ def build_robot_ranking(
         if not knife_results:
             continue
         
-        # CRITICAL: Take rank-1 knife pose (already sorted by per-robot scoring)
+        # CRITICAL: Take rank-1 knife pose (already sorted by lexicographical sort)
         best_knife = knife_results[0]
         
         verdict = _compute_verdict(best_knife.max_IK_failure_rate, best_knife.normalized_score)
@@ -1017,11 +1177,11 @@ def build_robot_ranking(
         robot_rankings.append(RobotRankingResult(
             robot_name=robot_name,
             best_knife_pose_id=best_knife.knife_pose_id,
-            best_knife_pose_score=best_knife.normalized_score,  # Keep for reference (per-robot score)
+            best_knife_pose_score=best_knife.normalized_score,  # Keep for reference (legacy score)
             best_knife_pose_rank=1,
             n_knife_poses_evaluated=len(knife_results),
             n_toolpaths=best_knife.n_toolpaths,
-            # RAW METRICS - used for cross-robot ranking
+            # RAW METRICS - used for cross-robot ranking (legacy)
             max_IK_failure_rate=best_knife.max_IK_failure_rate,
             max_singularity_rate=best_knife.max_singularity_rate,
             min_min_manipulability=best_knife.min_min_manipulability,
@@ -1031,17 +1191,27 @@ def build_robot_ranking(
         ))
     
     # =========================================================================
-    # CRITICAL: CROSS-ROBOT RANKING BY RAW METRICS
+    # CRITICAL: CROSS-ROBOT RANKING BY 4-LEVEL FEASIBILITY METRICS
     # =========================================================================
-    # Sort by RAW metrics (NOT per-robot normalized scores!)
-    # Lexicographic sort: IK failure → singularity → manipulability (high to low)
-    robot_rankings.sort(key=lambda x: (
-        x.max_IK_failure_rate,              # Lower is better (MOST IMPORTANT)
-        x.max_singularity_rate,             # Lower is better
-        -x.mean_mean_manipulability,        # Higher is better (negate for ascending sort)
-        -x.min_min_manipulability,          # Higher is better (negate)
-        -x.mean_mean_min_singular_value     # Higher is better (negate)
-    ))
+    # Sort using lexicographical tuple sort based on 4-level feasibility metrics
+    # We need to extract the 4-level metrics from the best knife pose for each robot
+    # Since RobotRankingResult doesn't store these, we'll use the best_knife from all_robot_results
+    # Create a mapping from robot_name to best knife's 4-level metrics
+    robot_to_best_knife = {}
+    for robot_name, knife_results in all_robot_results.items():
+        if knife_results:
+            robot_to_best_knife[robot_name] = knife_results[0]  # Rank 1 is best
+    
+    # Sort using lexicographical sort with 4-level metrics from best knife pose
+    robot_rankings.sort(
+        key=lambda x: get_sort_key(
+            robot_to_best_knife.get(x.robot_name, None).is_valid if robot_to_best_knife.get(x.robot_name) else False,
+            robot_to_best_knife.get(x.robot_name, None).safety_tier if robot_to_best_knife.get(x.robot_name) else 999999,
+            robot_to_best_knife.get(x.robot_name, None).smoothness_cost if robot_to_best_knife.get(x.robot_name) else float('inf'),
+            robot_to_best_knife.get(x.robot_name, None).dexterity_score if robot_to_best_knife.get(x.robot_name) else 0.0
+        ),
+        reverse=True  # Descending: best first
+    )
     
     # Assign final robot ranks (1 = best robot overall)
     for rank, robot_result in enumerate(robot_rankings, 1):
@@ -1829,11 +1999,17 @@ def _process_robot_results(
             knife_pose_id=knife_id,
             n_toolpaths=len(combo_results),
             n_successful=len(successful),
+            # Legacy metrics (kept for compatibility)
             max_IK_failure_rate=aggregated_metrics['max_IK_failure_rate'],
             max_singularity_rate=aggregated_metrics['max_singularity_rate'],
             min_min_manipulability=aggregated_metrics['min_min_manipulability'],
             mean_mean_manipulability=aggregated_metrics['mean_mean_manipulability'],
             mean_mean_min_singular_value=aggregated_metrics['mean_mean_min_singular_value'],
+            # 4-Level Feasibility Metrics
+            is_valid=aggregated_metrics['is_valid'],
+            safety_tier=int(aggregated_metrics['safety_tier']),
+            smoothness_cost=float(aggregated_metrics['smoothness_cost']),
+            dexterity_score=float(aggregated_metrics['dexterity_score']),
             toolpath_results=combo_results,
         )
         aggregated_list.append(agg)
@@ -1843,7 +2019,29 @@ def _process_robot_results(
         return []
     
     # =========================================================================
-    # CRITICAL: PER-ROBOT NORMALIZATION
+    # CRITICAL: LEXICOGRAPHICAL SORTING (4-Level Feasibility)
+    # =========================================================================
+    # Sort using lexicographical tuple sort based on 4-level feasibility metrics
+    # Sort key: (is_valid, -safety_tier, -smoothness_cost, dexterity_score)
+    # Using reverse=True so best (highest tuple values) appear first
+    
+    # Compute sort keys and sort
+    aggregated_list.sort(
+        key=lambda x: get_sort_key(
+            x.is_valid,
+            x.safety_tier,
+            x.smoothness_cost,
+            x.dexterity_score
+        ),
+        reverse=True  # Descending: best (highest tuple) first
+    )
+    
+    # Assign ranks (1 = best)
+    for rank, agg in enumerate(aggregated_list, 1):
+        agg.rank = rank
+    
+    # =========================================================================
+    # LEGACY: PER-ROBOT NORMALIZATION (kept for compatibility/reporting)
     # =========================================================================
     # Extract raw metric arrays for all knife poses of this robot
     ik_rates = np.array([a.max_IK_failure_rate for a in aggregated_list])
@@ -1852,47 +2050,30 @@ def _process_robot_results(
     mean_manips = np.array([a.mean_mean_manipulability for a in aggregated_list])
     mean_svs = np.array([a.mean_mean_min_singular_value for a in aggregated_list])
     
-    # CRITICAL: Normalize each metric to [0, 1] where 0=best, 1=worst
-    # This normalization is RELATIVE to other knife poses for THIS robot only!
-    # Cannot be compared across different robots!
-    #
-    # Lower is better: IK failure, singularity (direct normalization)
+    # Normalize each metric to [0, 1] where 0=best, 1=worst (for reporting only)
     norm_ik = normalize_metric_lower_better(ik_rates)
     norm_sing = normalize_metric_lower_better(sing_rates)
-    
-    # Higher is better: manipulability, singular values (INVERTED normalization)
-    # These get inverted so 0=best (highest raw value), 1=worst (lowest raw value)
     norm_min_manip = normalize_metric_higher_better(min_manips)
     norm_mean_manip = normalize_metric_higher_better(mean_manips)
     norm_mean_sv = normalize_metric_higher_better(mean_svs)
     
-    # =========================================================================
-    # CRITICAL: SCORE COMPUTATION
-    # =========================================================================
-    # Compute final weighted score for each knife pose
+    # Store normalized values (for reporting) and compute legacy scores
     for i, agg in enumerate(aggregated_list):
-        # Store normalized values (for reporting)
         agg.norm_IK_failure_rate = float(norm_ik[i])
         agg.norm_singularity_rate = float(norm_sing[i])
         agg.norm_min_manipulability = float(norm_min_manip[i])
         agg.norm_mean_manipulability = float(norm_mean_manip[i])
         agg.norm_mean_min_singular_value = float(norm_mean_sv[i])
         
-        # CRITICAL: Compute weighted score
-        # Note: Uses RAW IK failure rate (not normalized), all others are normalized [0,1]
+        # Compute legacy weighted score (for reporting/compatibility)
         agg.normalized_score, agg.raw_score = compute_weighted_score(
-            agg.max_IK_failure_rate,  # RAW value [0,1] - NOT normalized
-            agg.norm_singularity_rate,  # Normalized [0,1] - 0=best
-            agg.norm_min_manipulability,  # Normalized INVERTED [0,1] - 0=best (highest raw)
-            agg.norm_mean_manipulability,  # Normalized INVERTED [0,1] - 0=best (highest raw)
-            agg.norm_mean_min_singular_value,  # Normalized INVERTED [0,1] - 0=best (highest raw)
+            agg.max_IK_failure_rate,
+            agg.norm_singularity_rate,
+            agg.norm_min_manipulability,
+            agg.norm_mean_manipulability,
+            agg.norm_mean_min_singular_value,
             weights
         )
-    
-    # Sort by score (lower is better) and assign ranks
-    aggregated_list.sort(key=lambda x: x.normalized_score)
-    for rank, agg in enumerate(aggregated_list, 1):
-        agg.rank = rank
     
     # Save per-robot outputs - create robot-specific folder
     robot_name_clean = robot_name.replace(" ", "_").replace("/", "-")

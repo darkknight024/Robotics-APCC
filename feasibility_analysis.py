@@ -44,6 +44,7 @@ from utils import (
     load_knife_config,
     load_feasibility_config,
     load_ik_config_as_object,
+    get_robot_by_name,
     plot_singularity_per_waypoint,
     plot_reachability_per_waypoint,
     plot_manipulability_per_waypoint,
@@ -59,6 +60,14 @@ from utils import (
     plot_joint_limit_analysis,
     plot_per_waypoint_ik_debug,
     plot_joint_configurations_vs_limits
+    # 4-Level feasibility plots
+    plot_feasibility_levels,
+    plot_feasibility_levels_detailed,
+    plot_combination_feasibility_levels
+)
+from utils.math import (
+    compute_normalized_joint_energy,
+    compute_safety_tier
 )
 
 
@@ -826,7 +835,9 @@ def analyze_trajectory_feasibility(
     analyzer: FeasibilityAnalyzer,
     trajectory_name: str = "Trajectory",
     verbose: bool = True,
-    waypoint_idx: Optional[int] = None
+    waypoint_idx: Optional[int] = None,
+    timestamps: Optional[np.ndarray] = None,
+    speed_mm_s: float = 100.0
 ) -> dict:
     """Analyze feasibility of a single trajectory."""
     positions = trajectory_t_b_p[:, :3]
@@ -855,7 +866,7 @@ def analyze_trajectory_feasibility(
             'per_waypoint_results': [result_single]
         }
     else:
-        result = analyzer.analyze_trajectory(positions, quaternions)
+        result = analyzer.analyze_trajectory(positions, quaternions, timestamps=timestamps, speed_mm_s=speed_mm_s)
     
     if verbose:
         print(f"  {trajectory_name}:")
@@ -923,11 +934,31 @@ def process_toolpath(
     ik_solver = IKSolver(model, data, config=ik_config)
     fk_solver = FKSolver(model, data, ee_frame_name=ik_config.ee_frame_name)
     
+    # Try to load robot config for velocity limits and joint jump limit
+    robot_config = None
+    try:
+        robot_config = get_robot_by_name(robot_model_name)
+    except (ValueError, Exception):
+        # Robot not found in config, use provided parameters
+        pass
+    
+    # Use robot config parameters if available, otherwise use provided parameters
+    final_velocity_limits = velocity_limits_rad_s
+    final_joint_jump_limit = None
+    
+    if robot_config:
+        if robot_config.velocity_limits_rad_s:
+            final_velocity_limits = np.array(robot_config.velocity_limits_rad_s)
+        if robot_config.joint_jump_limit_rad:
+            final_joint_jump_limit = robot_config.joint_jump_limit_rad
+    
     # Create analyzer
     analyzer = FeasibilityAnalyzer(
         model, data, ik_solver, fk_solver,
         characteristic_length_m=robot_reach_m,
-        singularity_threshold=singularity_threshold
+        singularity_threshold=singularity_threshold,
+        velocity_limits_rad_s=final_velocity_limits,
+        joint_jump_limit_rad=final_joint_jump_limit
     )
     
     # Load and transform trajectories
@@ -990,7 +1021,8 @@ def process_toolpath(
         
         # Feasibility analysis
         traj_result = analyze_trajectory_feasibility(
-            trajectory, analyzer, traj_name, verbose=verbose, waypoint_idx=waypoint_idx
+            trajectory, analyzer, traj_name, verbose=verbose, waypoint_idx=waypoint_idx,
+            timestamps=None, speed_mm_s=speed_mm_s
         )
         
         # Update progress bar after analysis
@@ -1002,6 +1034,7 @@ def process_toolpath(
         reachable = np.array([r.is_reachable for r in per_wp])
         manipulability = np.array([r.manipulability for r in per_wp])
         min_sv = np.array([r.min_singular_value for r in per_wp])
+        condition_numbers = np.array([r.condition_number for r in per_wp])
         
         # Adjust waypoint indices if analyzing a specific waypoint
         if waypoint_idx is not None:
@@ -1114,13 +1147,53 @@ def process_toolpath(
         # Extract joint angles from IK solutions
         joint_angles_rad = np.array([r.joint_positions_rad for r in per_wp if r.joint_positions_rad is not None])
         
+        # Extract velocity ratios from per-waypoint results (only for reachable waypoints with previous)
+        velocity_ratios = np.array([r.joint_velocity_ratio for r in per_wp 
+                                    if r.joint_velocity_ratio is not None])
+        
+        # Compute 4-Level Feasibility Metrics
+        feasibility_flags = traj_result['feasibility_flags']
+        
+        # Level 1: Feasibility Gate (already computed in traj_result)
+        level1_valid = all(feasibility_flags.values())
+        
+        # Level 2: Safety Tier
+        max_condition_number = traj_result.get('safety_score', np.inf)
+        safety_bin_size = 10.0  # Configurable bin size
+        safety_tier = compute_safety_tier(max_condition_number, safety_bin_size)
+        
+        # Level 3: Smoothness Cost (Normalized Joint Energy)
+        # Need timestamps for energy computation
+        timestamps_for_energy = None
+        if len(joint_angles_rad) == n_waypoints:
+            # Estimate timestamps if not available
+            timestamps_for_energy = np.zeros(n_waypoints)
+            for i in range(1, n_waypoints):
+                dist = np.linalg.norm(trajectory[i, :3] - trajectory[i-1, :3])
+                dt = dist / (speed_mm_s / 1000.0) if speed_mm_s > 0 else 0.001
+                timestamps_for_energy[i] = timestamps_for_energy[i-1] + dt
+        
+        smoothness_cost = 0.0
+        if timestamps_for_energy is not None and len(joint_angles_rad) == n_waypoints and final_velocity_limits is not None:
+            smoothness_cost = compute_normalized_joint_energy(
+                joint_angles_rad, timestamps_for_energy, final_velocity_limits
+            )
+        
+        # Level 4: Dexterity Score (already computed as dexterity_score)
+        dexterity_score = traj_result.get('dexterity_score', 0.0)
+        
+        print(f"    Level 1 (Feasibility Gate): {'VALID' if level1_valid else 'INVALID'}")
+        print(f"    Level 2 (Safety Tier): Tier {safety_tier}")
+        print(f"    Level 3 (Smoothness Cost): {smoothness_cost:.4f}")
+        print(f"    Level 4 (Dexterity Score): {dexterity_score:.6f}")
+        
         # Continuity analysis (skip if analyzing single waypoint)
         continuity_result = None
         if run_continuity and waypoint_idx is None and len(joint_angles_rad) == n_waypoints:
             if verbose:
                 print(f"    Running continuity analysis...")
             continuity_result = analyze_continuity(
-                trajectory, joint_angles_rad, speed_mm_s, velocity_limits_rad_s
+                trajectory, joint_angles_rad, speed_mm_s, final_velocity_limits
             )
             status = "PASSED" if continuity_result.passed else "FAILED"
             # Always print continuity status (even in non-verbose mode)
@@ -1140,8 +1213,11 @@ def process_toolpath(
                     output_path=str(traj_out / "continuity.png"),
                     title=f"C1 Continuity Analysis\n{toolpath_name} - {traj_name}",
                     speed_mm_s=speed_mm_s,
-                    velocity_limits_rad_s=velocity_limits_rad_s
+                    velocity_limits_rad_s=final_velocity_limits
                 )
+        
+        # Store 4-level metrics for later aggregation (don't generate plots here)
+        # Plots will be generated once per combination after all trajectories are processed
         
         # Generate per-trajectory plots (only if detailed report is enabled)
         if detailed_per_trajectory_report:
@@ -1203,6 +1279,13 @@ def process_toolpath(
             'mean_manipulability': traj_result['mean_manipulability'],
             'min_manipulability': traj_result['min_manipulability'],
             'mean_min_singular_value': traj_result['mean_min_singular_value'],
+            # 4-Level Feasibility Metrics
+            'feasibility_flags': feasibility_flags,
+            'level1_valid': level1_valid,
+            'safety_tier': safety_tier,
+            'smoothness_cost': smoothness_cost,
+            'dexterity_score': dexterity_score,
+            'safety_score': max_condition_number,  # Store for tier explanation
             'continuity': None,
             'failed_waypoints': failed_indices,
             'failure_details': failure_details
@@ -1221,6 +1304,18 @@ def process_toolpath(
     # Close progress bar if used
     if use_progress_bar:
         pbar.close()
+    
+    # Generate single comprehensive 4-level feasibility plot for the entire combination
+    if not (traj_id is not None and waypoint_idx is not None):
+        print(f"\n  Generating comprehensive 4-level feasibility plot for combination...")
+        safety_bin_size = 10.0  # Configurable bin size
+        plot_combination_feasibility_levels(
+            trajectory_results=results['trajectory_results'],
+            output_path=str(out_path / "feasibility_levels_comprehensive.png"),
+            title=f"4-Level Feasibility Analysis - All Trajectories\n{toolpath_name}",
+            safety_bin_size=safety_bin_size,
+            toolpath_name=toolpath_name
+        )
     
     # Generate aggregated plots (4 plots by default) - skip if analyzing single trajectory/waypoint
     if not (traj_id is not None and waypoint_idx is not None):
