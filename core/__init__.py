@@ -7,7 +7,8 @@ This module provides:
 - FeasibilityAnalyzer: Trajectory feasibility analysis
 """
 
-from .ik_solver import IKSolver, IKConfig, load_robot_model
+from .ik_solver import IKSolver, IKConfig
+from utils.urdf_loader import load_robot_model
 from .fk_solver import FKSolver, FKResult
 from .feasibility_checks import (
     FeasibilityAnalyzer,

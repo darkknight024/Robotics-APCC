@@ -305,17 +305,5 @@ class IKSolver:
         return R
 
 
-def load_robot_model(urdf_path: str) -> Tuple[pin.Model, pin.Data]:
-    """
-    Load robot model from URDF file.
-    
-    Args:
-        urdf_path: Path to URDF file
-        
-    Returns:
-        model: Pinocchio model
-        data: Pinocchio data
-    """
-    model = pin.buildModelFromUrdf(urdf_path)
-    data = model.createData()
-    return model, data
+# Import URDF loading from utils (file handling separated from IK solving)
+from utils.urdf_loader import load_robot_model

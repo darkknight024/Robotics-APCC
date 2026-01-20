@@ -295,6 +295,39 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
 # Main Processing
 # =============================================================================
 
+def extract_robot_model_name(urdf_path: str) -> str:
+    """
+    Extract robot model name from URDF path.
+    
+    Args:
+        urdf_path: Path to URDF file
+        
+    Returns:
+        Robot model name (e.g., "IRB-1300-1.4")
+    """
+    urdf_file = Path(urdf_path).stem
+    
+    # Try to extract model name from URDF filename
+    # Examples: "IRB-1300-1400-URDF_ee" -> "IRB-1300-1.4"
+    # Or "IRB-1300-7-1.4" -> "IRB-1300-1.4"
+    
+    # Check for common patterns
+    if "IRB-1300" in urdf_file:
+        # Extract reach from path or filename
+        # Default to 1.4 if not found
+        if "1400" in urdf_file or "1.4" in urdf_file:
+            return "IRB-1300-1.4"
+        elif "1200" in urdf_file or "1.2" in urdf_file:
+            return "IRB-1300-1.2"
+        elif "1100" in urdf_file or "1.1" in urdf_file:
+            return "IRB-1300-1.1"
+        else:
+            return "IRB-1300-1.4"  # Default
+    
+    # Fallback: use URDF filename without extension
+    return urdf_file.replace("_ee", "").replace("-URDF", "")
+
+
 def analyze_trajectory_feasibility(
     trajectory_t_b_p: np.ndarray,
     analyzer: FeasibilityAnalyzer,
@@ -321,6 +354,8 @@ def process_toolpath(
     knife_translation_m: np.ndarray,
     knife_quaternion: np.ndarray,
     output_dir: str,
+    robot_model_name: str,
+    knife_pose_name: str,
     robot_reach_m: float = 1.0,
     singularity_threshold: float = 0.01,
     velocity_limits_rad_s: Optional[np.ndarray] = None,
@@ -337,7 +372,9 @@ def process_toolpath(
         urdf_path: Path to robot URDF
         knife_translation_m: Knife position in meters
         knife_quaternion: Knife quaternion [qw, qx, qy, qz]
-        output_dir: Output directory
+        output_dir: Base output directory
+        robot_model_name: Robot model name (e.g., "IRB-1300-1.4")
+        knife_pose_name: Knife pose name (e.g., "pose_1")
         robot_reach_m: Robot workspace reach in meters
         singularity_threshold: Threshold for singularity warning
         velocity_limits_rad_s: Per-joint velocity limits for continuity
@@ -376,9 +413,10 @@ def process_toolpath(
     n_trajectories = len(trajectories_t_b_p)
     print(f"  Loaded {n_trajectories} trajectories")
     
-    # Create output directory
-    out_path = Path(output_dir)
+    # Create output directory structure: output_dir/robot_model_name/toolpath_name/knife_pose_name/
+    out_path = Path(output_dir) / robot_model_name / toolpath_name / knife_pose_name
     out_path.mkdir(parents=True, exist_ok=True)
+    print(f"  Output directory: {out_path}")
     
     results = {
         'toolpath_name': toolpath_name,
@@ -567,6 +605,11 @@ def main():
     
     knife = knife_poses[args.knife_pose]
     
+    # Extract robot model name from URDF path
+    robot_model_name = extract_robot_model_name(args.urdf)
+    print(f"Robot model: {robot_model_name}")
+    print(f"Knife pose: {args.knife_pose}")
+    
     # Default velocity limits for IRB 1300-7/1.4
     velocity_limits = np.array([4.443, 3.142, 4.312, 8.727, 7.245, 12.566])
     
@@ -577,6 +620,8 @@ def main():
         knife.translation_m,
         knife.quaternion,
         args.output,
+        robot_model_name=robot_model_name,
+        knife_pose_name=args.knife_pose,
         robot_reach_m=args.reach,
         singularity_threshold=args.singularity_threshold,
         velocity_limits_rad_s=velocity_limits,

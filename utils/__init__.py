@@ -80,6 +80,11 @@ from .config_loader import (
     RobotConfig
 )
 
+from .urdf_loader import (
+    load_robot_model,
+    resolve_urdf_path
+)
+
 __all__ = [
     # Transform
     'transform_trajectory_to_base_frame',
@@ -130,5 +135,8 @@ __all__ = [
     'get_default_ik_config',
     'load_ik_config_as_object',
     'KnifePose',
-    'RobotConfig'
+    'RobotConfig',
+    # URDF Loading
+    'load_robot_model',
+    'resolve_urdf_path'
 ]
