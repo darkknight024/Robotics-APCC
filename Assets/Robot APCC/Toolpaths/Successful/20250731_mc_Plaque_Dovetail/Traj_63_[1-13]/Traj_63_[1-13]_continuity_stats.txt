@@ -1,0 +1,30 @@
+Continuity Statistics Report: Traj_63_[1-13]
+================================================================================
+
+Commanded Speed: 100.0 mm/s
+Number of Poses: 13
+
+CONTINUITY LEVELS:
+--------------------------------------------------------------------------------
+C0 Pass: NO
+C1 Pass: NO
+C2 Pass: NO
+
+STATISTICS:
+--------------------------------------------------------------------------------
+C0 Continuity:
+  Max Joint Step (rad): 9.004631137249653
+  Max Joint Step (deg): 515.9273602364918
+  IK Failures: 3
+  Step Violations: 3
+
+C1 Continuity:
+  Max Joint Velocity (rad/s): 788.1691180819047
+  Max Velocity Ratio to Limit: 109.47x
+  Velocity Violations: 15
+  Speed Consistency (RMS Error): 4.006172263299091e-18
+
+C2 Continuity:
+  Max Joint Acceleration (rad/s²): 122628.42902128221
+  Max Acceleration Ratio to Limit: 82973.40x
+  Acceleration Violations: 66

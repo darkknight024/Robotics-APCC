@@ -1,0 +1,34 @@
+Continuity Violations Report: Traj_3_[1-92]
+================================================================================
+
+Commanded Speed: 100.0 mm/s
+Number of Poses: 92
+
+C0 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C1 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C2 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 5: Magnitude=2.1798, Ratio=3.47x limit
+  Segment 5: Magnitude=2.3618, Ratio=1.63x limit
+  Segment 6: Magnitude=2.1731, Ratio=3.46x limit
+  Segment 6: Magnitude=2.3844, Ratio=1.65x limit
+  Segment 7: Magnitude=1.8046, Ratio=2.09x limit
+  Segment 7: Magnitude=1.6335, Ratio=1.13x limit
+  Segment 8: Magnitude=1.7993, Ratio=2.09x limit
+  Segment 8: Magnitude=1.6011, Ratio=1.11x limit
+  Segment 9: Magnitude=1.6793, Ratio=2.67x limit
+  Segment 9: Magnitude=0.9287, Ratio=1.08x limit
+  Segment 9: Magnitude=2.5969, Ratio=1.79x limit
+  Segment 10: Magnitude=0.9591, Ratio=1.53x limit
+  Segment 10: Magnitude=1.5565, Ratio=1.07x limit
+  Segment 11: Magnitude=0.7191, Ratio=1.14x limit
+  Segment 57: Magnitude=0.7707, Ratio=1.23x limit
+  Segment 82: Magnitude=0.6269, Ratio=1.00x limit
+  Segment 84: Magnitude=1.6330, Ratio=2.60x limit
+  Segment 84: Magnitude=1.9617, Ratio=1.35x limit

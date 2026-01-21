@@ -1,0 +1,69 @@
+Continuity Violations Report: Traj_32_[1-310]
+================================================================================
+
+Commanded Speed: 100.0 mm/s
+Number of Poses: 310
+
+C0 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C1 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C2 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 3: Magnitude=0.8186, Ratio=0.92x limit
+  Segment 3: Magnitude=1.9741, Ratio=3.14x limit
+  Segment 3: Magnitude=6.5042, Ratio=7.54x limit
+  Segment 3: Magnitude=1.9085, Ratio=1.32x limit
+  Segment 3: Magnitude=8.4152, Ratio=3.51x limit
+  Segment 4: Magnitude=5.1739, Ratio=6.00x limit
+  Segment 4: Magnitude=1.6561, Ratio=1.14x limit
+  Segment 4: Magnitude=5.6340, Ratio=2.35x limit
+  Segment 231: Magnitude=1.4729, Ratio=1.02x limit
+  Segment 232: Magnitude=0.6333, Ratio=1.01x limit
+  Segment 232: Magnitude=0.7480, Ratio=0.87x limit
+  Segment 232: Magnitude=1.4903, Ratio=1.03x limit
+  Segment 233: Magnitude=1.4585, Ratio=1.01x limit
+  Segment 234: Magnitude=1.2986, Ratio=0.90x limit
+  Segment 235: Magnitude=0.7935, Ratio=0.92x limit
+  Segment 235: Magnitude=1.5414, Ratio=1.06x limit
+  Segment 236: Magnitude=1.2447, Ratio=0.86x limit
+  Segment 237: Magnitude=0.6043, Ratio=0.96x limit
+  Segment 237: Magnitude=1.3740, Ratio=0.95x limit
+  Segment 239: Magnitude=1.3005, Ratio=0.90x limit
+  Segment 241: Magnitude=1.2550, Ratio=0.87x limit
+  Segment 298: Magnitude=0.6266, Ratio=1.00x limit
+  Segment 299: Magnitude=0.7334, Ratio=1.17x limit
+  Segment 300: Magnitude=1.0167, Ratio=1.18x limit
+  Segment 300: Magnitude=2.0233, Ratio=1.16x limit
+  Segment 300: Magnitude=2.1136, Ratio=1.46x limit
+  Segment 301: Magnitude=0.6899, Ratio=1.10x limit
+  Segment 301: Magnitude=1.4929, Ratio=1.73x limit
+  Segment 301: Magnitude=2.6540, Ratio=1.52x limit
+  Segment 301: Magnitude=2.7682, Ratio=1.91x limit
+  Segment 302: Magnitude=0.7646, Ratio=1.22x limit
+  Segment 302: Magnitude=1.7103, Ratio=1.98x limit
+  Segment 302: Magnitude=3.0090, Ratio=1.72x limit
+  Segment 302: Magnitude=3.1501, Ratio=2.17x limit
+  Segment 303: Magnitude=1.3916, Ratio=2.21x limit
+  Segment 303: Magnitude=1.7979, Ratio=1.03x limit
+  Segment 303: Magnitude=2.8023, Ratio=1.93x limit
+  Segment 304: Magnitude=0.8361, Ratio=1.33x limit
+  Segment 304: Magnitude=0.8344, Ratio=0.97x limit
+  Segment 305: Magnitude=1.4461, Ratio=1.62x limit
+  Segment 305: Magnitude=6.8589, Ratio=7.96x limit
+  Segment 305: Magnitude=12.6851, Ratio=7.27x limit
+  Segment 305: Magnitude=15.6792, Ratio=10.82x limit
+  Segment 306: Magnitude=2.4556, Ratio=3.91x limit
+  Segment 306: Magnitude=3.6131, Ratio=4.19x limit
+  Segment 306: Magnitude=5.2684, Ratio=3.02x limit
+  Segment 306: Magnitude=5.0468, Ratio=3.48x limit
+  Segment 307: Magnitude=1.5640, Ratio=1.76x limit
+  Segment 307: Magnitude=23.0998, Ratio=36.76x limit
+  Segment 307: Magnitude=33.7926, Ratio=39.19x limit
+  Segment 307: Magnitude=51.7329, Ratio=29.64x limit
+  Segment 307: Magnitude=52.9161, Ratio=36.53x limit
+  Segment 307: Magnitude=10.2883, Ratio=4.29x limit

@@ -1,0 +1,42 @@
+Continuity Violations Report: Traj_34_[1-297]
+================================================================================
+
+Commanded Speed: 100.0 mm/s
+Number of Poses: 297
+
+C0 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C1 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C2 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 0: Magnitude=2.0158, Ratio=3.21x limit
+  Segment 0: Magnitude=2.8551, Ratio=3.31x limit
+  Segment 0: Magnitude=1.5147, Ratio=0.87x limit
+  Segment 0: Magnitude=3.5531, Ratio=2.45x limit
+  Segment 1: Magnitude=0.7767, Ratio=1.24x limit
+  Segment 1: Magnitude=1.2393, Ratio=1.44x limit
+  Segment 1: Magnitude=1.5218, Ratio=0.87x limit
+  Segment 1: Magnitude=2.6002, Ratio=1.79x limit
+  Segment 2: Magnitude=0.6117, Ratio=0.97x limit
+  Segment 2: Magnitude=0.9602, Ratio=1.11x limit
+  Segment 2: Magnitude=1.8086, Ratio=1.25x limit
+  Segment 89: Magnitude=1.2374, Ratio=0.85x limit
+  Segment 92: Magnitude=1.2659, Ratio=0.87x limit
+  Segment 95: Magnitude=1.2865, Ratio=0.89x limit
+  Segment 231: Magnitude=1.3785, Ratio=0.95x limit
+  Segment 233: Magnitude=1.2367, Ratio=0.85x limit
+  Segment 285: Magnitude=0.5478, Ratio=0.87x limit
+  Segment 286: Magnitude=0.8347, Ratio=1.33x limit
+  Segment 287: Magnitude=0.8732, Ratio=1.39x limit
+  Segment 288: Magnitude=0.8694, Ratio=1.38x limit
+  Segment 289: Magnitude=0.7282, Ratio=1.16x limit
+  Segment 293: Magnitude=2.0793, Ratio=1.19x limit
+  Segment 293: Magnitude=2.1776, Ratio=1.50x limit
+  Segment 294: Magnitude=0.7621, Ratio=0.86x limit
+  Segment 294: Magnitude=4.3639, Ratio=2.50x limit
+  Segment 294: Magnitude=4.2660, Ratio=2.94x limit

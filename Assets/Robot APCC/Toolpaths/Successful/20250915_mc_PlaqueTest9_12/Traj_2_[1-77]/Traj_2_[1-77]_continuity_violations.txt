@@ -1,0 +1,952 @@
+Continuity Violations Report: Traj_2_[1-77]
+================================================================================
+
+Commanded Speed: 100.0 mm/s
+Number of Poses: 77
+
+C0 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 0: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 0
+  Segment 1: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 1
+  Segment 2: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 2
+  Segment 3: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 3
+  Segment 4: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 4
+  Segment 5: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 5
+  Segment 6: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 6
+  Segment 7: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 7
+  Segment 8: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 8
+  Segment 9: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 9
+  Segment 10: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 10
+  Segment 11: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 11
+  Segment 12: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 12
+  Segment 13: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 13
+  Segment 14: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 14
+  Segment 15: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 15
+  Segment 16: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 16
+  Segment 17: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 17
+  Segment 18: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 18
+  Segment 19: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 19
+  Segment 20: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 20
+  Segment 21: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 21
+  Segment 22: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 22
+  Segment 23: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 23
+  Segment 24: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 24
+  Segment 25: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 25
+  Segment 26: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 26
+  Segment 27: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 27
+  Segment 28: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 28
+  Segment 29: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 29
+  Segment 30: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 30
+  Segment 31: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 31
+  Segment 32: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 32
+  Segment 33: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 33
+  Segment 34: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 34
+  Segment 35: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 35
+  Segment 36: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 36
+  Segment 37: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 37
+  Segment 38: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 38
+  Segment 39: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 39
+  Segment 40: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 40
+  Segment 41: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 41
+  Segment 42: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 42
+  Segment 43: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 43
+  Segment 44: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 44
+  Segment 45: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 45
+  Segment 46: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 46
+  Segment 47: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 47
+  Segment 48: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 48
+  Segment 49: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 49
+  Segment 50: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 50
+  Segment 51: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 51
+  Segment 52: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 52
+  Segment 53: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 53
+  Segment 54: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 54
+  Segment 55: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 55
+  Segment 56: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 56
+  Segment 57: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 57
+  Segment 58: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 58
+  Segment 59: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 59
+  Segment 60: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 60
+  Segment 61: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 61
+  Segment 62: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 62
+  Segment 63: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 63
+  Segment 64: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 64
+  Segment 65: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 65
+  Segment 66: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 66
+  Segment 67: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 67
+  Segment 68: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 68
+  Segment 69: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 69
+  Segment 70: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 70
+  Segment 71: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 71
+  Segment 72: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 72
+  Segment 73: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 73
+  Segment 74: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 74
+  Segment 75: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 75
+  Segment 76: Magnitude=0.0000, Type=ik_failure, Details=IK failed at pose 76
+  Segment 0: Magnitude=9.2560, Type=large_step, Details=Step norm 530.3° exceeds limit 30.0°
+  Segment 1: Magnitude=11.4500, Type=large_step, Details=Step norm 656.0° exceeds limit 30.0°
+  Segment 2: Magnitude=13.5688, Type=large_step, Details=Step norm 777.4° exceeds limit 30.0°
+  Segment 3: Magnitude=6.2838, Type=large_step, Details=Step norm 360.0° exceeds limit 30.0°
+  Segment 4: Magnitude=8.3915, Type=large_step, Details=Step norm 480.8° exceeds limit 30.0°
+  Segment 5: Magnitude=14.0245, Type=large_step, Details=Step norm 803.5° exceeds limit 30.0°
+  Segment 6: Magnitude=10.3522, Type=large_step, Details=Step norm 593.1° exceeds limit 30.0°
+  Segment 7: Magnitude=6.3490, Type=large_step, Details=Step norm 363.8° exceeds limit 30.0°
+  Segment 8: Magnitude=14.2549, Type=large_step, Details=Step norm 816.7° exceeds limit 30.0°
+  Segment 9: Magnitude=11.3347, Type=large_step, Details=Step norm 649.4° exceeds limit 30.0°
+  Segment 10: Magnitude=7.9948, Type=large_step, Details=Step norm 458.1° exceeds limit 30.0°
+  Segment 11: Magnitude=8.7879, Type=large_step, Details=Step norm 503.5° exceeds limit 30.0°
+  Segment 12: Magnitude=11.7885, Type=large_step, Details=Step norm 675.4° exceeds limit 30.0°
+  Segment 13: Magnitude=8.5710, Type=large_step, Details=Step norm 491.1° exceeds limit 30.0°
+  Segment 14: Magnitude=8.5523, Type=large_step, Details=Step norm 490.0° exceeds limit 30.0°
+  Segment 15: Magnitude=6.3539, Type=large_step, Details=Step norm 364.1° exceeds limit 30.0°
+  Segment 16: Magnitude=6.3438, Type=large_step, Details=Step norm 363.5° exceeds limit 30.0°
+  Segment 17: Magnitude=8.6686, Type=large_step, Details=Step norm 496.7° exceeds limit 30.0°
+  Segment 18: Magnitude=9.6613, Type=large_step, Details=Step norm 553.5° exceeds limit 30.0°
+  Segment 19: Magnitude=6.2722, Type=large_step, Details=Step norm 359.4° exceeds limit 30.0°
+  Segment 20: Magnitude=5.1347, Type=large_step, Details=Step norm 294.2° exceeds limit 30.0°
+  Segment 21: Magnitude=11.9633, Type=large_step, Details=Step norm 685.4° exceeds limit 30.0°
+  Segment 22: Magnitude=11.4491, Type=large_step, Details=Step norm 656.0° exceeds limit 30.0°
+  Segment 23: Magnitude=7.5406, Type=large_step, Details=Step norm 432.0° exceeds limit 30.0°
+  Segment 24: Magnitude=12.1786, Type=large_step, Details=Step norm 697.8° exceeds limit 30.0°
+  Segment 25: Magnitude=13.4336, Type=large_step, Details=Step norm 769.7° exceeds limit 30.0°
+  Segment 26: Magnitude=12.5693, Type=large_step, Details=Step norm 720.2° exceeds limit 30.0°
+  Segment 27: Magnitude=5.8020, Type=large_step, Details=Step norm 332.4° exceeds limit 30.0°
+  Segment 28: Magnitude=10.8400, Type=large_step, Details=Step norm 621.1° exceeds limit 30.0°
+  Segment 29: Magnitude=10.8952, Type=large_step, Details=Step norm 624.3° exceeds limit 30.0°
+  Segment 30: Magnitude=6.3599, Type=large_step, Details=Step norm 364.4° exceeds limit 30.0°
+  Segment 31: Magnitude=8.5293, Type=large_step, Details=Step norm 488.7° exceeds limit 30.0°
+  Segment 32: Magnitude=12.1523, Type=large_step, Details=Step norm 696.3° exceeds limit 30.0°
+  Segment 33: Magnitude=7.3747, Type=large_step, Details=Step norm 422.5° exceeds limit 30.0°
+  Segment 34: Magnitude=8.6700, Type=large_step, Details=Step norm 496.8° exceeds limit 30.0°
+  Segment 35: Magnitude=6.4662, Type=large_step, Details=Step norm 370.5° exceeds limit 30.0°
+  Segment 36: Magnitude=14.7545, Type=large_step, Details=Step norm 845.4° exceeds limit 30.0°
+  Segment 37: Magnitude=6.3477, Type=large_step, Details=Step norm 363.7° exceeds limit 30.0°
+  Segment 38: Magnitude=4.7755, Type=large_step, Details=Step norm 273.6° exceeds limit 30.0°
+  Segment 39: Magnitude=9.1137, Type=large_step, Details=Step norm 522.2° exceeds limit 30.0°
+  Segment 40: Magnitude=7.1393, Type=large_step, Details=Step norm 409.0° exceeds limit 30.0°
+  Segment 41: Magnitude=7.3701, Type=large_step, Details=Step norm 422.3° exceeds limit 30.0°
+  Segment 43: Magnitude=5.5898, Type=large_step, Details=Step norm 320.3° exceeds limit 30.0°
+  Segment 44: Magnitude=3.2550, Type=large_step, Details=Step norm 186.5° exceeds limit 30.0°
+  Segment 45: Magnitude=7.3901, Type=large_step, Details=Step norm 423.4° exceeds limit 30.0°
+  Segment 46: Magnitude=10.9301, Type=large_step, Details=Step norm 626.3° exceeds limit 30.0°
+  Segment 47: Magnitude=13.8948, Type=large_step, Details=Step norm 796.1° exceeds limit 30.0°
+  Segment 48: Magnitude=9.0641, Type=large_step, Details=Step norm 519.3° exceeds limit 30.0°
+  Segment 49: Magnitude=6.6148, Type=large_step, Details=Step norm 379.0° exceeds limit 30.0°
+  Segment 50: Magnitude=6.2921, Type=large_step, Details=Step norm 360.5° exceeds limit 30.0°
+  Segment 51: Magnitude=4.2345, Type=large_step, Details=Step norm 242.6° exceeds limit 30.0°
+  Segment 52: Magnitude=8.6662, Type=large_step, Details=Step norm 496.5° exceeds limit 30.0°
+  Segment 53: Magnitude=10.0274, Type=large_step, Details=Step norm 574.5° exceeds limit 30.0°
+  Segment 54: Magnitude=14.6176, Type=large_step, Details=Step norm 837.5° exceeds limit 30.0°
+  Segment 55: Magnitude=2.9951, Type=large_step, Details=Step norm 171.6° exceeds limit 30.0°
+  Segment 56: Magnitude=10.6930, Type=large_step, Details=Step norm 612.7° exceeds limit 30.0°
+  Segment 57: Magnitude=5.2123, Type=large_step, Details=Step norm 298.6° exceeds limit 30.0°
+  Segment 58: Magnitude=5.6209, Type=large_step, Details=Step norm 322.1° exceeds limit 30.0°
+  Segment 59: Magnitude=4.6414, Type=large_step, Details=Step norm 265.9° exceeds limit 30.0°
+  Segment 60: Magnitude=4.6406, Type=large_step, Details=Step norm 265.9° exceeds limit 30.0°
+  Segment 61: Magnitude=6.2780, Type=large_step, Details=Step norm 359.7° exceeds limit 30.0°
+  Segment 62: Magnitude=5.9426, Type=large_step, Details=Step norm 340.5° exceeds limit 30.0°
+  Segment 63: Magnitude=8.4276, Type=large_step, Details=Step norm 482.9° exceeds limit 30.0°
+  Segment 64: Magnitude=7.2055, Type=large_step, Details=Step norm 412.8° exceeds limit 30.0°
+  Segment 65: Magnitude=4.0614, Type=large_step, Details=Step norm 232.7° exceeds limit 30.0°
+  Segment 66: Magnitude=8.2432, Type=large_step, Details=Step norm 472.3° exceeds limit 30.0°
+  Segment 67: Magnitude=5.6055, Type=large_step, Details=Step norm 321.2° exceeds limit 30.0°
+  Segment 68: Magnitude=9.8285, Type=large_step, Details=Step norm 563.1° exceeds limit 30.0°
+  Segment 69: Magnitude=8.2451, Type=large_step, Details=Step norm 472.4° exceeds limit 30.0°
+  Segment 70: Magnitude=9.7819, Type=large_step, Details=Step norm 560.5° exceeds limit 30.0°
+  Segment 71: Magnitude=9.7876, Type=large_step, Details=Step norm 560.8° exceeds limit 30.0°
+  Segment 72: Magnitude=13.9247, Type=large_step, Details=Step norm 797.8° exceeds limit 30.0°
+  Segment 73: Magnitude=14.8075, Type=large_step, Details=Step norm 848.4° exceeds limit 30.0°
+  Segment 74: Magnitude=13.9778, Type=large_step, Details=Step norm 800.9° exceeds limit 30.0°
+  Segment 75: Magnitude=10.0742, Type=large_step, Details=Step norm 577.2° exceeds limit 30.0°
+
+C1 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 0: Magnitude=356.5269, Type=velocity_limit, Ratio=80.11x limit
+  Segment 0: Magnitude=409.7521, Type=velocity_limit, Ratio=130.43x limit
+  Segment 0: Magnitude=151.3720, Type=velocity_limit, Ratio=35.11x limit
+  Segment 0: Magnitude=652.5461, Type=velocity_limit, Ratio=74.78x limit
+  Segment 0: Magnitude=513.1505, Type=velocity_limit, Ratio=70.85x limit
+  Segment 0: Magnitude=297.5331, Type=velocity_limit, Ratio=24.81x limit
+  Segment 1: Magnitude=140.2124, Type=velocity_limit, Ratio=44.63x limit
+  Segment 1: Magnitude=256.1443, Type=velocity_limit, Ratio=59.42x limit
+  Segment 1: Magnitude=138.6838, Type=velocity_limit, Ratio=15.89x limit
+  Segment 1: Magnitude=445.7251, Type=velocity_limit, Ratio=61.54x limit
+  Segment 1: Magnitude=980.6728, Type=velocity_limit, Ratio=81.79x limit
+  Segment 2: Magnitude=153.8225, Type=velocity_limit, Ratio=48.96x limit
+  Segment 2: Magnitude=281.1189, Type=velocity_limit, Ratio=65.21x limit
+  Segment 2: Magnitude=186.1578, Type=velocity_limit, Ratio=21.33x limit
+  Segment 2: Magnitude=1412.0901, Type=velocity_limit, Ratio=117.77x limit
+  Segment 3: Magnitude=661.8992, Type=velocity_limit, Ratio=55.20x limit
+  Segment 4: Magnitude=289.7344, Type=velocity_limit, Ratio=65.10x limit
+  Segment 4: Magnitude=324.8221, Type=velocity_limit, Ratio=103.39x limit
+  Segment 4: Magnitude=107.7959, Type=velocity_limit, Ratio=25.01x limit
+  Segment 4: Magnitude=328.7314, Type=velocity_limit, Ratio=37.67x limit
+  Segment 4: Magnitude=535.7306, Type=velocity_limit, Ratio=44.68x limit
+  Segment 5: Magnitude=4.3309, Type=velocity_limit, Ratio=1.00x limit
+  Segment 5: Magnitude=759.7383, Type=velocity_limit, Ratio=87.06x limit
+  Segment 5: Magnitude=446.5760, Type=velocity_limit, Ratio=61.66x limit
+  Segment 5: Magnitude=1062.1957, Type=velocity_limit, Ratio=88.59x limit
+  Segment 6: Magnitude=288.8484, Type=velocity_limit, Ratio=64.90x limit
+  Segment 6: Magnitude=191.7198, Type=velocity_limit, Ratio=61.03x limit
+  Segment 6: Magnitude=129.3703, Type=velocity_limit, Ratio=30.01x limit
+  Segment 6: Magnitude=64.9565, Type=velocity_limit, Ratio=7.44x limit
+  Segment 6: Magnitude=415.3305, Type=velocity_limit, Ratio=57.34x limit
+  Segment 6: Magnitude=764.2788, Type=velocity_limit, Ratio=63.74x limit
+  Segment 7: Magnitude=285.6707, Type=velocity_limit, Ratio=32.74x limit
+  Segment 7: Magnitude=412.6432, Type=velocity_limit, Ratio=56.97x limit
+  Segment 7: Magnitude=285.3768, Type=velocity_limit, Ratio=23.80x limit
+  Segment 8: Magnitude=193.8447, Type=velocity_limit, Ratio=22.21x limit
+  Segment 8: Magnitude=430.9954, Type=velocity_limit, Ratio=59.50x limit
+  Segment 8: Magnitude=1268.7578, Type=velocity_limit, Ratio=105.81x limit
+  Segment 9: Magnitude=470.3347, Type=velocity_limit, Ratio=105.68x limit
+  Segment 9: Magnitude=7.8320, Type=velocity_limit, Ratio=1.82x limit
+  Segment 9: Magnitude=100.8186, Type=velocity_limit, Ratio=11.55x limit
+  Segment 9: Magnitude=919.7543, Type=velocity_limit, Ratio=76.71x limit
+  Segment 10: Magnitude=477.1599, Type=velocity_limit, Ratio=107.21x limit
+  Segment 10: Magnitude=7.3745, Type=velocity_limit, Ratio=1.71x limit
+  Segment 10: Magnitude=569.2216, Type=velocity_limit, Ratio=47.47x limit
+  Segment 11: Magnitude=216.1672, Type=velocity_limit, Ratio=48.57x limit
+  Segment 11: Magnitude=174.4917, Type=velocity_limit, Ratio=55.54x limit
+  Segment 11: Magnitude=113.2786, Type=velocity_limit, Ratio=26.28x limit
+  Segment 11: Magnitude=299.2287, Type=velocity_limit, Ratio=34.29x limit
+  Segment 11: Magnitude=404.5506, Type=velocity_limit, Ratio=55.85x limit
+  Segment 11: Magnitude=542.0697, Type=velocity_limit, Ratio=45.21x limit
+  Segment 12: Magnitude=204.9061, Type=velocity_limit, Ratio=46.04x limit
+  Segment 12: Magnitude=39.7655, Type=velocity_limit, Ratio=12.66x limit
+  Segment 12: Magnitude=122.3007, Type=velocity_limit, Ratio=28.37x limit
+  Segment 12: Magnitude=318.8825, Type=velocity_limit, Ratio=36.54x limit
+  Segment 12: Magnitude=383.5810, Type=velocity_limit, Ratio=52.96x limit
+  Segment 12: Magnitude=850.4447, Type=velocity_limit, Ratio=70.93x limit
+  Segment 13: Magnitude=124.0313, Type=velocity_limit, Ratio=39.48x limit
+  Segment 13: Magnitude=226.3337, Type=velocity_limit, Ratio=52.50x limit
+  Segment 13: Magnitude=591.9939, Type=velocity_limit, Ratio=67.84x limit
+  Segment 13: Magnitude=328.7917, Type=velocity_limit, Ratio=27.42x limit
+  Segment 14: Magnitude=258.8600, Type=velocity_limit, Ratio=58.16x limit
+  Segment 14: Magnitude=178.1414, Type=velocity_limit, Ratio=56.70x limit
+  Segment 14: Magnitude=106.1322, Type=velocity_limit, Ratio=24.62x limit
+  Segment 14: Magnitude=193.7607, Type=velocity_limit, Ratio=22.20x limit
+  Segment 14: Magnitude=373.0596, Type=velocity_limit, Ratio=51.51x limit
+  Segment 14: Magnitude=455.6581, Type=velocity_limit, Ratio=38.00x limit
+  Segment 15: Magnitude=279.9676, Type=velocity_limit, Ratio=32.08x limit
+  Segment 15: Magnitude=402.4960, Type=velocity_limit, Ratio=55.57x limit
+  Segment 15: Magnitude=277.9209, Type=velocity_limit, Ratio=23.18x limit
+  Segment 16: Magnitude=9.8014, Type=velocity_limit, Ratio=3.12x limit
+  Segment 16: Magnitude=18.0102, Type=velocity_limit, Ratio=4.18x limit
+  Segment 16: Magnitude=261.9144, Type=velocity_limit, Ratio=30.01x limit
+  Segment 16: Magnitude=363.6552, Type=velocity_limit, Ratio=50.21x limit
+  Segment 16: Magnitude=239.1563, Type=velocity_limit, Ratio=19.95x limit
+  Segment 17: Magnitude=266.4707, Type=velocity_limit, Ratio=59.87x limit
+  Segment 17: Magnitude=297.9042, Type=velocity_limit, Ratio=94.83x limit
+  Segment 17: Magnitude=100.1871, Type=velocity_limit, Ratio=23.24x limit
+  Segment 17: Magnitude=276.9674, Type=velocity_limit, Ratio=31.74x limit
+  Segment 17: Magnitude=384.1144, Type=velocity_limit, Ratio=53.03x limit
+  Segment 17: Magnitude=379.9777, Type=velocity_limit, Ratio=31.69x limit
+  Segment 18: Magnitude=112.2566, Type=velocity_limit, Ratio=35.73x limit
+  Segment 18: Magnitude=204.7661, Type=velocity_limit, Ratio=47.50x limit
+  Segment 18: Magnitude=314.8214, Type=velocity_limit, Ratio=36.08x limit
+  Segment 18: Magnitude=342.9891, Type=velocity_limit, Ratio=47.35x limit
+  Segment 18: Magnitude=511.8323, Type=velocity_limit, Ratio=42.69x limit
+  Segment 19: Magnitude=597.7824, Type=velocity_limit, Ratio=49.86x limit
+  Segment 20: Magnitude=366.9870, Type=velocity_limit, Ratio=82.46x limit
+  Segment 20: Magnitude=5.4005, Type=velocity_limit, Ratio=1.25x limit
+  Segment 20: Magnitude=10.5376, Type=velocity_limit, Ratio=0.88x limit
+  Segment 21: Magnitude=457.1530, Type=velocity_limit, Ratio=102.72x limit
+  Segment 21: Magnitude=6.1721, Type=velocity_limit, Ratio=1.43x limit
+  Segment 21: Magnitude=280.8413, Type=velocity_limit, Ratio=32.18x limit
+  Segment 21: Magnitude=404.3168, Type=velocity_limit, Ratio=55.82x limit
+  Segment 21: Magnitude=827.5387, Type=velocity_limit, Ratio=69.02x limit
+  Segment 22: Magnitude=489.1639, Type=velocity_limit, Ratio=109.91x limit
+  Segment 22: Magnitude=139.6655, Type=velocity_limit, Ratio=44.46x limit
+  Segment 22: Magnitude=261.6566, Type=velocity_limit, Ratio=60.70x limit
+  Segment 22: Magnitude=274.8485, Type=velocity_limit, Ratio=31.50x limit
+  Segment 22: Magnitude=888.0693, Type=velocity_limit, Ratio=74.06x limit
+  Segment 23: Magnitude=348.4351, Type=velocity_limit, Ratio=78.29x limit
+  Segment 23: Magnitude=99.8409, Type=velocity_limit, Ratio=31.78x limit
+  Segment 23: Magnitude=186.8435, Type=velocity_limit, Ratio=43.34x limit
+  Segment 23: Magnitude=231.0001, Type=velocity_limit, Ratio=26.47x limit
+  Segment 23: Magnitude=206.6320, Type=velocity_limit, Ratio=17.23x limit
+  Segment 24: Magnitude=451.6076, Type=velocity_limit, Ratio=101.47x limit
+  Segment 24: Magnitude=6.3615, Type=velocity_limit, Ratio=1.48x limit
+  Segment 24: Magnitude=275.9225, Type=velocity_limit, Ratio=31.62x limit
+  Segment 24: Magnitude=399.4973, Type=velocity_limit, Ratio=55.16x limit
+  Segment 24: Magnitude=842.5210, Type=velocity_limit, Ratio=70.27x limit
+  Segment 25: Magnitude=198.0061, Type=velocity_limit, Ratio=44.49x limit
+  Segment 25: Magnitude=200.6815, Type=velocity_limit, Ratio=63.88x limit
+  Segment 25: Magnitude=161.8784, Type=velocity_limit, Ratio=37.55x limit
+  Segment 25: Magnitude=239.6108, Type=velocity_limit, Ratio=27.46x limit
+  Segment 25: Magnitude=452.6117, Type=velocity_limit, Ratio=62.49x limit
+  Segment 25: Magnitude=1194.7255, Type=velocity_limit, Ratio=99.64x limit
+  Segment 26: Magnitude=207.0960, Type=velocity_limit, Ratio=46.53x limit
+  Segment 26: Magnitude=231.6582, Type=velocity_limit, Ratio=73.74x limit
+  Segment 26: Magnitude=79.2376, Type=velocity_limit, Ratio=18.38x limit
+  Segment 26: Magnitude=383.9666, Type=velocity_limit, Ratio=44.00x limit
+  Segment 26: Magnitude=298.9847, Type=velocity_limit, Ratio=41.28x limit
+  Segment 26: Magnitude=588.3840, Type=velocity_limit, Ratio=49.07x limit
+  Segment 27: Magnitude=363.1094, Type=velocity_limit, Ratio=81.59x limit
+  Segment 27: Magnitude=427.8011, Type=velocity_limit, Ratio=136.17x limit
+  Segment 27: Magnitude=179.2853, Type=velocity_limit, Ratio=41.59x limit
+  Segment 27: Magnitude=316.0235, Type=velocity_limit, Ratio=36.21x limit
+  Segment 27: Magnitude=47.1378, Type=velocity_limit, Ratio=3.93x limit
+  Segment 28: Magnitude=237.7188, Type=velocity_limit, Ratio=53.41x limit
+  Segment 28: Magnitude=165.2045, Type=velocity_limit, Ratio=52.59x limit
+  Segment 28: Magnitude=91.9802, Type=velocity_limit, Ratio=21.34x limit
+  Segment 28: Magnitude=51.2522, Type=velocity_limit, Ratio=5.87x limit
+  Segment 28: Magnitude=759.6787, Type=velocity_limit, Ratio=63.36x limit
+  Segment 29: Magnitude=244.4518, Type=velocity_limit, Ratio=54.93x limit
+  Segment 29: Magnitude=161.3163, Type=velocity_limit, Ratio=51.35x limit
+  Segment 29: Magnitude=110.1741, Type=velocity_limit, Ratio=25.56x limit
+  Segment 29: Magnitude=54.0111, Type=velocity_limit, Ratio=6.19x limit
+  Segment 29: Magnitude=785.3601, Type=velocity_limit, Ratio=65.50x limit
+  Segment 30: Magnitude=402.9436, Type=velocity_limit, Ratio=46.17x limit
+  Segment 30: Magnitude=579.9806, Type=velocity_limit, Ratio=80.07x limit
+  Segment 30: Magnitude=402.4892, Type=velocity_limit, Ratio=33.57x limit
+  Segment 31: Magnitude=121.5200, Type=velocity_limit, Ratio=27.30x limit
+  Segment 31: Magnitude=218.7190, Type=velocity_limit, Ratio=69.62x limit
+  Segment 31: Magnitude=84.8971, Type=velocity_limit, Ratio=19.69x limit
+  Segment 31: Magnitude=166.5981, Type=velocity_limit, Ratio=19.09x limit
+  Segment 31: Magnitude=418.4861, Type=velocity_limit, Ratio=34.90x limit
+  Segment 32: Magnitude=703.3979, Type=velocity_limit, Ratio=158.05x limit
+  Segment 32: Magnitude=4.5915, Type=velocity_limit, Ratio=1.46x limit
+  Segment 32: Magnitude=430.3567, Type=velocity_limit, Ratio=49.32x limit
+  Segment 32: Magnitude=622.4775, Type=velocity_limit, Ratio=85.94x limit
+  Segment 32: Magnitude=1308.2211, Type=velocity_limit, Ratio=109.11x limit
+  Segment 33: Magnitude=483.4322, Type=velocity_limit, Ratio=108.62x limit
+  Segment 33: Magnitude=144.1616, Type=velocity_limit, Ratio=45.89x limit
+  Segment 33: Magnitude=269.8953, Type=velocity_limit, Ratio=62.61x limit
+  Segment 33: Magnitude=270.1214, Type=velocity_limit, Ratio=30.95x limit
+  Segment 33: Magnitude=288.2785, Type=velocity_limit, Ratio=24.04x limit
+  Segment 34: Magnitude=485.7775, Type=velocity_limit, Ratio=109.15x limit
+  Segment 34: Magnitude=145.0666, Type=velocity_limit, Ratio=46.18x limit
+  Segment 34: Magnitude=271.6777, Type=velocity_limit, Ratio=63.02x limit
+  Segment 34: Magnitude=394.6044, Type=velocity_limit, Ratio=45.22x limit
+  Segment 34: Magnitude=429.8869, Type=velocity_limit, Ratio=59.35x limit
+  Segment 34: Magnitude=57.1546, Type=velocity_limit, Ratio=4.77x limit
+  Segment 35: Magnitude=425.5544, Type=velocity_limit, Ratio=95.62x limit
+  Segment 35: Magnitude=323.3267, Type=velocity_limit, Ratio=37.05x limit
+  Segment 35: Magnitude=48.2607, Type=velocity_limit, Ratio=4.02x limit
+  Segment 36: Magnitude=737.0200, Type=velocity_limit, Ratio=165.60x limit
+  Segment 36: Magnitude=217.2803, Type=velocity_limit, Ratio=69.16x limit
+  Segment 36: Magnitude=405.7006, Type=velocity_limit, Ratio=94.11x limit
+  Segment 36: Magnitude=36.9117, Type=velocity_limit, Ratio=4.23x limit
+  Segment 36: Magnitude=652.1363, Type=velocity_limit, Ratio=90.04x limit
+  Segment 36: Magnitude=1820.5679, Type=velocity_limit, Ratio=151.84x limit
+  Segment 37: Magnitude=270.6677, Type=velocity_limit, Ratio=31.02x limit
+  Segment 37: Magnitude=391.3681, Type=velocity_limit, Ratio=54.03x limit
+  Segment 37: Magnitude=270.7152, Type=velocity_limit, Ratio=22.58x limit
+  Segment 38: Magnitude=279.9658, Type=velocity_limit, Ratio=62.91x limit
+  Segment 38: Magnitude=186.9075, Type=velocity_limit, Ratio=59.49x limit
+  Segment 38: Magnitude=121.1940, Type=velocity_limit, Ratio=28.11x limit
+  Segment 38: Magnitude=60.1907, Type=velocity_limit, Ratio=6.90x limit
+  Segment 38: Magnitude=222.5133, Type=velocity_limit, Ratio=18.56x limit
+  Segment 39: Magnitude=316.1650, Type=velocity_limit, Ratio=71.04x limit
+  Segment 39: Magnitude=210.7578, Type=velocity_limit, Ratio=67.09x limit
+  Segment 39: Magnitude=137.2545, Type=velocity_limit, Ratio=31.84x limit
+  Segment 39: Magnitude=384.4007, Type=velocity_limit, Ratio=44.05x limit
+  Segment 39: Magnitude=456.6024, Type=velocity_limit, Ratio=63.04x limit
+  Segment 39: Magnitude=567.0013, Type=velocity_limit, Ratio=47.29x limit
+  Segment 40: Magnitude=352.4022, Type=velocity_limit, Ratio=79.18x limit
+  Segment 40: Magnitude=238.8709, Type=velocity_limit, Ratio=76.03x limit
+  Segment 40: Magnitude=145.8860, Type=velocity_limit, Ratio=33.84x limit
+  Segment 40: Magnitude=419.4043, Type=velocity_limit, Ratio=48.06x limit
+  Segment 40: Magnitude=509.1400, Type=velocity_limit, Ratio=70.29x limit
+  Segment 40: Magnitude=63.1370, Type=velocity_limit, Ratio=5.27x limit
+  Segment 41: Magnitude=265.2569, Type=velocity_limit, Ratio=59.60x limit
+  Segment 41: Magnitude=310.9916, Type=velocity_limit, Ratio=98.99x limit
+  Segment 41: Magnitude=129.4108, Type=velocity_limit, Ratio=30.02x limit
+  Segment 41: Magnitude=26.9041, Type=velocity_limit, Ratio=3.08x limit
+  Segment 41: Magnitude=383.0817, Type=velocity_limit, Ratio=52.89x limit
+  Segment 41: Magnitude=236.2429, Type=velocity_limit, Ratio=19.70x limit
+  Segment 43: Magnitude=118.0552, Type=velocity_limit, Ratio=37.58x limit
+  Segment 43: Magnitude=215.0878, Type=velocity_limit, Ratio=49.89x limit
+  Segment 43: Magnitude=22.4310, Type=velocity_limit, Ratio=2.57x limit
+  Segment 43: Magnitude=343.4570, Type=velocity_limit, Ratio=47.42x limit
+  Segment 43: Magnitude=18.1595, Type=velocity_limit, Ratio=1.51x limit
+  Segment 44: Magnitude=156.2918, Type=velocity_limit, Ratio=35.12x limit
+  Segment 44: Magnitude=242.8232, Type=velocity_limit, Ratio=77.29x limit
+  Segment 44: Magnitude=190.1465, Type=velocity_limit, Ratio=44.11x limit
+  Segment 44: Magnitude=77.8311, Type=velocity_limit, Ratio=8.92x limit
+  Segment 44: Magnitude=8.5915, Type=velocity_limit, Ratio=1.19x limit
+  Segment 44: Magnitude=263.5443, Type=velocity_limit, Ratio=21.98x limit
+  Segment 45: Magnitude=490.0891, Type=velocity_limit, Ratio=110.12x limit
+  Segment 45: Magnitude=43.0256, Type=velocity_limit, Ratio=13.70x limit
+  Segment 45: Magnitude=19.2904, Type=velocity_limit, Ratio=4.47x limit
+  Segment 45: Magnitude=361.0009, Type=velocity_limit, Ratio=41.37x limit
+  Segment 45: Magnitude=511.0603, Type=velocity_limit, Ratio=70.56x limit
+  Segment 45: Magnitude=280.2543, Type=velocity_limit, Ratio=23.37x limit
+  Segment 46: Magnitude=295.2460, Type=velocity_limit, Ratio=33.83x limit
+  Segment 46: Magnitude=427.6022, Type=velocity_limit, Ratio=59.04x limit
+  Segment 46: Magnitude=889.2711, Type=velocity_limit, Ratio=74.17x limit
+  Segment 47: Magnitude=179.4205, Type=velocity_limit, Ratio=40.31x limit
+  Segment 47: Magnitude=195.5783, Type=velocity_limit, Ratio=62.25x limit
+  Segment 47: Magnitude=116.2329, Type=velocity_limit, Ratio=26.96x limit
+  Segment 47: Magnitude=332.2694, Type=velocity_limit, Ratio=38.08x limit
+  Segment 47: Magnitude=408.4449, Type=velocity_limit, Ratio=56.39x limit
+  Segment 47: Magnitude=1096.7992, Type=velocity_limit, Ratio=91.47x limit
+  Segment 48: Magnitude=643.1099, Type=velocity_limit, Ratio=144.50x limit
+  Segment 48: Magnitude=233.4005, Type=velocity_limit, Ratio=74.29x limit
+  Segment 48: Magnitude=413.3246, Type=velocity_limit, Ratio=47.36x limit
+  Segment 48: Magnitude=464.4614, Type=velocity_limit, Ratio=64.12x limit
+  Segment 48: Magnitude=77.9469, Type=velocity_limit, Ratio=6.50x limit
+  Segment 49: Magnitude=78.0917, Type=velocity_limit, Ratio=17.55x limit
+  Segment 49: Magnitude=155.1515, Type=velocity_limit, Ratio=49.39x limit
+  Segment 49: Magnitude=6.3186, Type=velocity_limit, Ratio=1.47x limit
+  Segment 49: Magnitude=275.2040, Type=velocity_limit, Ratio=31.54x limit
+  Segment 49: Magnitude=309.4653, Type=velocity_limit, Ratio=42.73x limit
+  Segment 49: Magnitude=42.2594, Type=velocity_limit, Ratio=3.52x limit
+  Segment 50: Magnitude=463.3411, Type=velocity_limit, Ratio=38.64x limit
+  Segment 51: Magnitude=468.1461, Type=velocity_limit, Ratio=53.65x limit
+  Segment 51: Magnitude=76.4117, Type=velocity_limit, Ratio=6.37x limit
+  Segment 52: Magnitude=196.4007, Type=velocity_limit, Ratio=44.13x limit
+  Segment 52: Magnitude=120.5341, Type=velocity_limit, Ratio=38.37x limit
+  Segment 52: Magnitude=105.0067, Type=velocity_limit, Ratio=24.36x limit
+  Segment 52: Magnitude=360.8969, Type=velocity_limit, Ratio=41.36x limit
+  Segment 52: Magnitude=283.7636, Type=velocity_limit, Ratio=39.18x limit
+  Segment 52: Magnitude=137.0748, Type=velocity_limit, Ratio=11.43x limit
+  Segment 53: Magnitude=321.5772, Type=velocity_limit, Ratio=72.25x limit
+  Segment 53: Magnitude=197.1480, Type=velocity_limit, Ratio=62.75x limit
+  Segment 53: Magnitude=172.0491, Type=velocity_limit, Ratio=39.91x limit
+  Segment 53: Magnitude=162.5998, Type=velocity_limit, Ratio=18.63x limit
+  Segment 53: Magnitude=464.2705, Type=velocity_limit, Ratio=64.10x limit
+  Segment 53: Magnitude=799.1557, Type=velocity_limit, Ratio=66.65x limit
+  Segment 54: Magnitude=309.7772, Type=velocity_limit, Ratio=69.60x limit
+  Segment 54: Magnitude=217.1377, Type=velocity_limit, Ratio=69.12x limit
+  Segment 54: Magnitude=115.9938, Type=velocity_limit, Ratio=26.91x limit
+  Segment 54: Magnitude=258.2627, Type=velocity_limit, Ratio=29.59x limit
+  Segment 54: Magnitude=447.6649, Type=velocity_limit, Ratio=61.81x limit
+  Segment 54: Magnitude=1286.8058, Type=velocity_limit, Ratio=107.32x limit
+  Segment 55: Magnitude=167.4344, Type=velocity_limit, Ratio=37.62x limit
+  Segment 55: Magnitude=44.2677, Type=velocity_limit, Ratio=14.09x limit
+  Segment 55: Magnitude=147.3939, Type=velocity_limit, Ratio=34.19x limit
+  Segment 55: Magnitude=102.7126, Type=velocity_limit, Ratio=11.77x limit
+  Segment 55: Magnitude=20.4863, Type=velocity_limit, Ratio=1.71x limit
+  Segment 56: Magnitude=395.5037, Type=velocity_limit, Ratio=88.87x limit
+  Segment 56: Magnitude=128.3705, Type=velocity_limit, Ratio=40.86x limit
+  Segment 56: Magnitude=44.8358, Type=velocity_limit, Ratio=10.40x limit
+  Segment 56: Magnitude=295.2868, Type=velocity_limit, Ratio=33.84x limit
+  Segment 56: Magnitude=348.6893, Type=velocity_limit, Ratio=48.14x limit
+  Segment 56: Magnitude=539.8478, Type=velocity_limit, Ratio=45.02x limit
+  Segment 57: Magnitude=148.0603, Type=velocity_limit, Ratio=47.13x limit
+  Segment 57: Magnitude=269.5187, Type=velocity_limit, Ratio=62.52x limit
+  Segment 57: Magnitude=264.0648, Type=velocity_limit, Ratio=30.26x limit
+  Segment 57: Magnitude=270.6291, Type=velocity_limit, Ratio=22.57x limit
+  Segment 58: Magnitude=126.9900, Type=velocity_limit, Ratio=40.42x limit
+  Segment 58: Magnitude=231.2937, Type=velocity_limit, Ratio=53.65x limit
+  Segment 58: Magnitude=25.6467, Type=velocity_limit, Ratio=2.94x limit
+  Segment 58: Magnitude=363.7948, Type=velocity_limit, Ratio=50.23x limit
+  Segment 58: Magnitude=20.8833, Type=velocity_limit, Ratio=1.74x limit
+  Segment 59: Magnitude=274.8643, Type=velocity_limit, Ratio=61.76x limit
+  Segment 59: Magnitude=166.6235, Type=velocity_limit, Ratio=53.04x limit
+  Segment 59: Magnitude=151.6974, Type=velocity_limit, Ratio=35.19x limit
+  Segment 59: Magnitude=144.4409, Type=velocity_limit, Ratio=16.55x limit
+  Segment 59: Magnitude=133.6247, Type=velocity_limit, Ratio=11.14x limit
+  Segment 60: Magnitude=279.4852, Type=velocity_limit, Ratio=62.80x limit
+  Segment 60: Magnitude=169.2249, Type=velocity_limit, Ratio=53.87x limit
+  Segment 60: Magnitude=154.3597, Type=velocity_limit, Ratio=35.81x limit
+  Segment 60: Magnitude=146.9183, Type=velocity_limit, Ratio=16.84x limit
+  Segment 60: Magnitude=134.6493, Type=velocity_limit, Ratio=11.23x limit
+  Segment 61: Magnitude=454.9429, Type=velocity_limit, Ratio=52.13x limit
+  Segment 62: Magnitude=453.2945, Type=velocity_limit, Ratio=101.85x limit
+  Segment 62: Magnitude=203.2310, Type=velocity_limit, Ratio=64.69x limit
+  Segment 62: Magnitude=139.0620, Type=velocity_limit, Ratio=32.26x limit
+  Segment 62: Magnitude=70.9967, Type=velocity_limit, Ratio=8.14x limit
+  Segment 62: Magnitude=7.4109, Type=velocity_limit, Ratio=1.02x limit
+  Segment 62: Magnitude=308.5611, Type=velocity_limit, Ratio=25.73x limit
+  Segment 63: Magnitude=69.5261, Type=velocity_limit, Ratio=15.62x limit
+  Segment 63: Magnitude=339.9550, Type=velocity_limit, Ratio=108.21x limit
+  Segment 63: Magnitude=203.8093, Type=velocity_limit, Ratio=47.28x limit
+  Segment 63: Magnitude=170.7264, Type=velocity_limit, Ratio=19.56x limit
+  Segment 63: Magnitude=7.1904, Type=velocity_limit, Ratio=0.99x limit
+  Segment 63: Magnitude=708.9560, Type=velocity_limit, Ratio=59.13x limit
+  Segment 64: Magnitude=160.7271, Type=velocity_limit, Ratio=36.11x limit
+  Segment 64: Magnitude=35.4415, Type=velocity_limit, Ratio=11.28x limit
+  Segment 64: Magnitude=196.3898, Type=velocity_limit, Ratio=45.56x limit
+  Segment 64: Magnitude=282.1791, Type=velocity_limit, Ratio=32.34x limit
+  Segment 64: Magnitude=429.9217, Type=velocity_limit, Ratio=35.86x limit
+  Segment 65: Magnitude=171.2436, Type=velocity_limit, Ratio=38.48x limit
+  Segment 65: Magnitude=160.2416, Type=velocity_limit, Ratio=51.01x limit
+  Segment 65: Magnitude=156.3095, Type=velocity_limit, Ratio=36.26x limit
+  Segment 65: Magnitude=146.0701, Type=velocity_limit, Ratio=16.74x limit
+  Segment 65: Magnitude=135.2086, Type=velocity_limit, Ratio=11.28x limit
+  Segment 66: Magnitude=524.8560, Type=velocity_limit, Ratio=117.93x limit
+  Segment 66: Magnitude=6.7506, Type=velocity_limit, Ratio=1.57x limit
+  Segment 66: Magnitude=653.9610, Type=velocity_limit, Ratio=54.54x limit
+  Segment 67: Magnitude=135.5223, Type=velocity_limit, Ratio=43.14x limit
+  Segment 67: Magnitude=246.6148, Type=velocity_limit, Ratio=57.21x limit
+  Segment 67: Magnitude=295.1518, Type=velocity_limit, Ratio=33.82x limit
+  Segment 67: Magnitude=243.5856, Type=velocity_limit, Ratio=20.32x limit
+  Segment 68: Magnitude=478.5529, Type=velocity_limit, Ratio=107.53x limit
+  Segment 68: Magnitude=148.6046, Type=velocity_limit, Ratio=47.30x limit
+  Segment 68: Magnitude=276.5216, Type=velocity_limit, Ratio=64.14x limit
+  Segment 68: Magnitude=32.0925, Type=velocity_limit, Ratio=3.68x limit
+  Segment 68: Magnitude=420.8212, Type=velocity_limit, Ratio=58.10x limit
+  Segment 68: Magnitude=570.1584, Type=velocity_limit, Ratio=47.55x limit
+  Segment 69: Magnitude=542.0309, Type=velocity_limit, Ratio=121.79x limit
+  Segment 69: Magnitude=6.9979, Type=velocity_limit, Ratio=1.62x limit
+  Segment 69: Magnitude=675.0127, Type=velocity_limit, Ratio=56.30x limit
+  Segment 70: Magnitude=284.3364, Type=velocity_limit, Ratio=63.89x limit
+  Segment 70: Magnitude=203.8382, Type=velocity_limit, Ratio=64.88x limit
+  Segment 70: Magnitude=99.8345, Type=velocity_limit, Ratio=23.16x limit
+  Segment 70: Magnitude=331.2372, Type=velocity_limit, Ratio=37.96x limit
+  Segment 70: Magnitude=410.7990, Type=velocity_limit, Ratio=56.72x limit
+  Segment 70: Magnitude=611.0125, Type=velocity_limit, Ratio=50.96x limit
+  Segment 71: Magnitude=330.2535, Type=velocity_limit, Ratio=74.20x limit
+  Segment 71: Magnitude=236.4588, Type=velocity_limit, Ratio=75.27x limit
+  Segment 71: Magnitude=116.2786, Type=velocity_limit, Ratio=26.97x limit
+  Segment 71: Magnitude=384.7855, Type=velocity_limit, Ratio=44.09x limit
+  Segment 71: Magnitude=476.9050, Type=velocity_limit, Ratio=65.84x limit
+  Segment 71: Magnitude=709.9913, Type=velocity_limit, Ratio=59.21x limit
+  Segment 72: Magnitude=404.7871, Type=velocity_limit, Ratio=46.39x limit
+  Segment 72: Magnitude=1418.2300, Type=velocity_limit, Ratio=118.28x limit
+  Segment 73: Magnitude=178.9768, Type=velocity_limit, Ratio=20.51x limit
+  Segment 73: Magnitude=421.3500, Type=velocity_limit, Ratio=58.17x limit
+  Segment 73: Magnitude=1296.4745, Type=velocity_limit, Ratio=108.13x limit
+  Segment 74: Magnitude=450.9889, Type=velocity_limit, Ratio=101.33x limit
+  Segment 74: Magnitude=130.1277, Type=velocity_limit, Ratio=41.42x limit
+  Segment 74: Magnitude=316.1179, Type=velocity_limit, Ratio=73.33x limit
+  Segment 74: Magnitude=168.3040, Type=velocity_limit, Ratio=19.29x limit
+  Segment 74: Magnitude=46.9415, Type=velocity_limit, Ratio=6.48x limit
+  Segment 74: Magnitude=1067.1463, Type=velocity_limit, Ratio=89.00x limit
+  Segment 75: Magnitude=516.4859, Type=velocity_limit, Ratio=116.05x limit
+  Segment 75: Magnitude=149.2343, Type=velocity_limit, Ratio=47.50x limit
+  Segment 75: Magnitude=362.3580, Type=velocity_limit, Ratio=84.05x limit
+  Segment 75: Magnitude=381.5090, Type=velocity_limit, Ratio=43.72x limit
+  Segment 75: Magnitude=399.9445, Type=velocity_limit, Ratio=55.22x limit
+  Segment 75: Magnitude=537.2907, Type=velocity_limit, Ratio=44.81x limit
+
+C2 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 0: Magnitude=37479.8554, Ratio=42106.62x limit
+  Segment 0: Magnitude=57818.7642, Ratio=92021.42x limit
+  Segment 0: Magnitude=42842.9345, Ratio=49690.67x limit
+  Segment 0: Magnitude=83183.4525, Ratio=47660.61x limit
+  Segment 0: Magnitude=100808.3478, Ratio=69589.07x limit
+  Segment 0: Magnitude=71819.7314, Ratio=29948.82x limit
+  Segment 1: Magnitude=1.1462, Ratio=1.29x limit
+  Segment 1: Magnitude=30196.2137, Ratio=48058.77x limit
+  Segment 1: Magnitude=55174.7913, Ratio=63993.58x limit
+  Segment 1: Magnitude=4875.3922, Ratio=2793.39x limit
+  Segment 1: Magnitude=45774.1915, Ratio=31598.41x limit
+  Segment 1: Magnitude=245727.2313, Ratio=102468.22x limit
+  Segment 2: Magnitude=0.9343, Ratio=1.05x limit
+  Segment 2: Magnitude=16361.6737, Ratio=26040.41x limit
+  Segment 2: Magnitude=29894.9851, Ratio=34673.21x limit
+  Segment 2: Magnitude=19803.4962, Ratio=11346.57x limit
+  Segment 2: Magnitude=220780.3872, Ratio=92065.39x limit
+  Segment 3: Magnitude=28460.9835, Ratio=31974.40x limit
+  Segment 3: Magnitude=31916.8826, Ratio=50797.30x limit
+  Segment 3: Magnitude=10616.3047, Ratio=12313.15x limit
+  Segment 3: Magnitude=32301.1764, Ratio=18507.21x limit
+  Segment 3: Magnitude=117634.2064, Ratio=49053.45x limit
+  Segment 4: Magnitude=27488.7223, Ratio=30882.11x limit
+  Segment 4: Magnitude=30845.4233, Ratio=49092.02x limit
+  Segment 4: Magnitude=9839.9046, Ratio=11412.65x limit
+  Segment 4: Magnitude=103517.4869, Ratio=59311.15x limit
+  Segment 4: Magnitude=42471.0267, Ratio=29318.20x limit
+  Segment 4: Magnitude=151968.6779, Ratio=63370.92x limit
+  Segment 5: Magnitude=27461.6870, Ratio=30851.74x limit
+  Segment 5: Magnitude=18229.8679, Ratio=29013.74x limit
+  Segment 5: Magnitude=11859.3471, Ratio=13754.87x limit
+  Segment 5: Magnitude=78218.0493, Ratio=44815.64x limit
+  Segment 5: Magnitude=81747.3864, Ratio=56431.09x limit
+  Segment 5: Magnitude=173231.6759, Ratio=72237.58x limit
+  Segment 6: Magnitude=26353.0728, Ratio=29606.27x limit
+  Segment 6: Magnitude=17508.6427, Ratio=27865.87x limit
+  Segment 6: Magnitude=11778.7767, Ratio=13661.42x limit
+  Segment 6: Magnitude=20135.7101, Ratio=11536.91x limit
+  Segment 6: Magnitude=75535.8489, Ratio=52143.20x limit
+  Segment 6: Magnitude=43690.1222, Ratio=18218.77x limit
+  Segment 7: Magnitude=1.9648, Ratio=3.13x limit
+  Segment 7: Magnitude=2.1803, Ratio=2.53x limit
+  Segment 7: Magnitude=8531.8104, Ratio=4888.37x limit
+  Segment 7: Magnitude=78384.8055, Ratio=54109.86x limit
+  Segment 7: Magnitude=144398.9769, Ratio=60214.35x limit
+  Segment 8: Magnitude=43855.7362, Ratio=49269.58x limit
+  Segment 8: Magnitude=23.5283, Ratio=37.45x limit
+  Segment 8: Magnitude=703.9387, Ratio=816.45x limit
+  Segment 8: Magnitude=8674.2994, Ratio=4970.01x limit
+  Segment 8: Magnitude=40188.5118, Ratio=27742.56x limit
+  Segment 8: Magnitude=204069.5929, Ratio=85096.99x limit
+  Segment 9: Magnitude=87394.8820, Ratio=98183.49x limit
+  Segment 9: Magnitude=46.9936, Ratio=74.79x limit
+  Segment 9: Magnitude=1402.6126, Ratio=1626.80x limit
+  Segment 9: Magnitude=9261.0112, Ratio=5306.17x limit
+  Segment 9: Magnitude=137339.9623, Ratio=57270.74x limit
+  Segment 10: Magnitude=63685.8955, Ratio=71547.71x limit
+  Segment 10: Magnitude=16071.7918, Ratio=25579.05x limit
+  Segment 10: Magnitude=9727.8678, Ratio=11282.71x limit
+  Segment 10: Magnitude=27523.9131, Ratio=15770.04x limit
+  Segment 10: Magnitude=37160.1878, Ratio=25652.07x limit
+  Segment 10: Magnitude=102078.1913, Ratio=42566.59x limit
+  Segment 11: Magnitude=37226.0507, Ratio=41821.48x limit
+  Segment 11: Magnitude=18941.9477, Ratio=30147.05x limit
+  Segment 11: Magnitude=797.6277, Ratio=925.12x limit
+  Segment 11: Magnitude=1737.5419, Ratio=995.54x limit
+  Segment 11: Magnitude=69676.7715, Ratio=48098.61x limit
+  Segment 11: Magnitude=123108.7663, Ratio=51336.34x limit
+  Segment 12: Magnitude=17486.7849, Ratio=19645.47x limit
+  Segment 12: Magnitude=7190.1161, Ratio=11443.43x limit
+  Segment 12: Magnitude=29747.7693, Ratio=34502.46x limit
+  Segment 12: Magnitude=77721.9332, Ratio=44531.39x limit
+  Segment 12: Magnitude=32729.6449, Ratio=22593.62x limit
+  Segment 12: Magnitude=100620.1785, Ratio=41958.60x limit
+  Segment 13: Magnitude=21577.0600, Ratio=24240.68x limit
+  Segment 13: Magnitude=4510.8860, Ratio=7179.30x limit
+  Segment 13: Magnitude=27715.9981, Ratio=32145.95x limit
+  Segment 13: Magnitude=65504.3932, Ratio=37531.25x limit
+  Segment 13: Magnitude=31100.0925, Ratio=21468.72x limit
+  Segment 13: Magnitude=10576.2081, Ratio=4410.28x limit
+  Segment 14: Magnitude=22090.2845, Ratio=24817.26x limit
+  Segment 14: Magnitude=15182.7111, Ratio=24164.04x limit
+  Segment 14: Magnitude=9103.4125, Ratio=10558.44x limit
+  Segment 14: Magnitude=7356.1943, Ratio=4214.79x limit
+  Segment 14: Magnitude=66179.6329, Ratio=45684.50x limit
+  Segment 14: Magnitude=62597.6962, Ratio=26103.23x limit
+  Segment 15: Magnitude=9.6932, Ratio=10.89x limit
+  Segment 15: Magnitude=843.4901, Ratio=1342.46x limit
+  Segment 15: Magnitude=1562.8219, Ratio=1812.61x limit
+  Segment 15: Magnitude=45627.4519, Ratio=26142.60x limit
+  Segment 15: Magnitude=64511.3341, Ratio=44532.86x limit
+  Segment 15: Magnitude=43538.8480, Ratio=18155.69x limit
+  Segment 16: Magnitude=21947.2466, Ratio=24656.56x limit
+  Segment 16: Magnitude=23720.0025, Ratio=37751.56x limit
+  Segment 16: Magnitude=6765.7628, Ratio=7847.16x limit
+  Segment 16: Magnitude=1239.3430, Ratio=710.09x limit
+  Segment 16: Magnitude=61565.1687, Ratio=42499.09x limit
+  Segment 16: Magnitude=11594.0734, Ratio=4834.73x limit
+  Segment 17: Magnitude=21284.6254, Ratio=23912.14x limit
+  Segment 17: Magnitude=32755.4451, Ratio=52131.91x limit
+  Segment 17: Magnitude=24353.5580, Ratio=28246.07x limit
+  Segment 17: Magnitude=47260.2568, Ratio=27078.13x limit
+  Segment 17: Magnitude=58066.4815, Ratio=40083.91x limit
+  Segment 17: Magnitude=71219.9441, Ratio=29698.71x limit
+  Segment 18: Magnitude=3.4671, Ratio=3.90x limit
+  Segment 18: Magnitude=9441.7832, Ratio=15027.06x limit
+  Segment 18: Magnitude=17235.0117, Ratio=19989.75x limit
+  Segment 18: Magnitude=26592.0048, Ratio=15236.10x limit
+  Segment 18: Magnitude=28916.6906, Ratio=19961.50x limit
+  Segment 18: Magnitude=93549.2930, Ratio=39010.04x limit
+  Segment 19: Magnitude=29985.7868, Ratio=33687.43x limit
+  Segment 19: Magnitude=38.5197, Ratio=61.31x limit
+  Segment 19: Magnitude=413.7615, Ratio=479.89x limit
+  Segment 19: Magnitude=115.0628, Ratio=65.93x limit
+  Segment 19: Magnitude=49706.3118, Ratio=20727.52x limit
+  Segment 20: Magnitude=65388.3732, Ratio=73460.35x limit
+  Segment 20: Magnitude=72.1534, Ratio=114.84x limit
+  Segment 20: Magnitude=918.1793, Ratio=1064.94x limit
+  Segment 20: Magnitude=22346.9306, Ratio=12803.85x limit
+  Segment 20: Magnitude=32079.0335, Ratio=22144.50x limit
+  Segment 20: Magnitude=64821.9647, Ratio=27030.75x limit
+  Segment 21: Magnitude=87168.7359, Ratio=97929.42x limit
+  Segment 21: Magnitude=12929.8596, Ratio=20578.51x limit
+  Segment 21: Magnitude=23533.6273, Ratio=27295.09x limit
+  Segment 21: Magnitude=51186.6365, Ratio=29327.78x limit
+  Segment 21: Magnitude=37243.1080, Ratio=25709.31x limit
+  Segment 21: Magnitude=158030.9846, Ratio=65898.90x limit
+  Segment 22: Magnitude=66446.9433, Ratio=74649.60x limit
+  Segment 22: Magnitude=19000.1100, Ratio=30239.61x limit
+  Segment 22: Magnitude=35579.6361, Ratio=41266.46x limit
+  Segment 22: Magnitude=3478.5044, Ratio=1993.04x limit
+  Segment 22: Magnitude=86842.9413, Ratio=36213.49x limit
+  Segment 23: Magnitude=61350.8146, Ratio=68924.37x limit
+  Segment 23: Magnitude=7680.5211, Ratio=12223.93x limit
+  Segment 23: Magnitude=13840.1647, Ratio=16052.29x limit
+  Segment 23: Magnitude=38873.0728, Ratio=22272.63x limit
+  Segment 23: Magnitude=30635.2210, Ratio=21147.82x limit
+  Segment 23: Magnitude=48762.7862, Ratio=20334.07x limit
+  Segment 24: Magnitude=60755.3180, Ratio=68255.36x limit
+  Segment 24: Magnitude=18798.4061, Ratio=29918.59x limit
+  Segment 24: Magnitude=15734.6853, Ratio=18249.62x limit
+  Segment 24: Magnitude=48215.4108, Ratio=27625.40x limit
+  Segment 24: Magnitude=79693.7566, Ratio=55013.44x limit
+  Segment 24: Magnitude=190534.0962, Ratio=79452.69x limit
+  Segment 25: Magnitude=721.3359, Ratio=810.38x limit
+  Segment 25: Magnitude=34308.3488, Ratio=54603.43x limit
+  Segment 25: Magnitude=6557.9701, Ratio=7606.15x limit
+  Segment 25: Magnitude=49484.0291, Ratio=28352.26x limit
+  Segment 25: Magnitude=59642.9962, Ratio=41172.19x limit
+  Segment 25: Magnitude=141498.7968, Ratio=59004.98x limit
+  Segment 26: Magnitude=47845.6940, Ratio=53752.09x limit
+  Segment 26: Magnitude=55334.9453, Ratio=88068.30x limit
+  Segment 26: Magnitude=21692.5421, Ratio=25159.74x limit
+  Segment 26: Magnitude=58735.8622, Ratio=33653.17x limit
+  Segment 26: Magnitude=25087.6794, Ratio=17318.29x limit
+  Segment 26: Magnitude=45415.7437, Ratio=18938.36x limit
+  Segment 27: Magnitude=54917.1495, Ratio=61696.49x limit
+  Segment 27: Magnitude=54202.1464, Ratio=86265.40x limit
+  Segment 27: Magnitude=7979.8934, Ratio=9255.35x limit
+  Segment 27: Magnitude=24200.7340, Ratio=13866.00x limit
+  Segment 27: Magnitude=73744.9709, Ratio=30751.64x limit
+  Segment 28: Magnitude=36969.4326, Ratio=41533.19x limit
+  Segment 28: Magnitude=25035.3079, Ratio=39844.93x limit
+  Segment 28: Magnitude=15499.7648, Ratio=17977.15x limit
+  Segment 28: Magnitude=8070.8430, Ratio=4624.25x limit
+  Segment 28: Magnitude=118462.6479, Ratio=49398.91x limit
+  Segment 29: Magnitude=23644.2274, Ratio=26563.03x limit
+  Segment 29: Magnitude=15533.9387, Ratio=24723.03x limit
+  Segment 29: Magnitude=10788.7856, Ratio=12513.20x limit
+  Segment 29: Magnitude=44181.2859, Ratio=25314.01x limit
+  Segment 29: Magnitude=56076.2169, Ratio=38710.01x limit
+  Segment 29: Magnitude=114848.8328, Ratio=47891.95x limit
+  Segment 30: Magnitude=10068.4947, Ratio=11311.42x limit
+  Segment 30: Magnitude=18161.9744, Ratio=28905.68x limit
+  Segment 30: Magnitude=7145.5350, Ratio=8287.63x limit
+  Segment 30: Magnitude=47152.7638, Ratio=27016.54x limit
+  Segment 30: Magnitude=48017.0125, Ratio=33146.65x limit
+  Segment 30: Magnitude=1324.3952, Ratio=552.27x limit
+  Segment 31: Magnitude=69839.8026, Ratio=78461.29x limit
+  Segment 31: Magnitude=18128.6218, Ratio=28852.60x limit
+  Segment 31: Magnitude=7267.3692, Ratio=8428.94x limit
+  Segment 31: Magnitude=50539.8268, Ratio=28957.19x limit
+  Segment 31: Magnitude=52700.6481, Ratio=36379.82x limit
+  Segment 31: Magnitude=146187.7595, Ratio=60960.27x limit
+  Segment 32: Magnitude=132630.6282, Ratio=149003.44x limit
+  Segment 32: Magnitude=16623.4585, Ratio=26457.06x limit
+  Segment 32: Magnitude=30056.0731, Ratio=34860.04x limit
+  Segment 32: Magnitude=78279.8343, Ratio=44851.04x limit
+  Segment 32: Magnitude=69563.1035, Ratio=48020.15x limit
+  Segment 32: Magnitude=113980.6181, Ratio=47529.90x limit
+  Segment 33: Magnitude=91596.1672, Ratio=102903.41x limit
+  Segment 33: Magnitude=27333.8173, Ratio=43503.12x limit
+  Segment 33: Magnitude=51181.9195, Ratio=59362.51x limit
+  Segment 33: Magnitude=11764.3933, Ratio=6740.50x limit
+  Segment 33: Magnitude=40626.9110, Ratio=28045.19x limit
+  Segment 33: Magnitude=32645.5203, Ratio=13613.18x limit
+  Segment 34: Magnitude=80629.5043, Ratio=90582.95x limit
+  Segment 34: Magnitude=13064.8495, Ratio=20793.35x limit
+  Segment 34: Magnitude=23954.5650, Ratio=27783.31x limit
+  Segment 34: Magnitude=63518.4876, Ratio=36393.41x limit
+  Segment 34: Magnitude=38033.9682, Ratio=26255.25x limit
+  Segment 34: Magnitude=9326.5538, Ratio=3889.17x limit
+  Segment 35: Magnitude=122324.8592, Ratio=137425.45x limit
+  Segment 35: Magnitude=22588.2634, Ratio=35950.34x limit
+  Segment 35: Magnitude=42784.8472, Ratio=49623.30x limit
+  Segment 35: Magnitude=30136.2796, Ratio=17266.82x limit
+  Segment 35: Magnitude=68617.0996, Ratio=47367.11x limit
+  Segment 35: Magnitude=196636.1842, Ratio=81997.26x limit
+  Segment 36: Magnitude=79448.0103, Ratio=89255.60x limit
+  Segment 36: Magnitude=23410.0732, Ratio=37258.29x limit
+  Segment 36: Magnitude=43714.6546, Ratio=50701.72x limit
+  Segment 36: Magnitude=33156.7114, Ratio=18997.40x limit
+  Segment 36: Magnitude=112488.5779, Ratio=77652.06x limit
+  Segment 36: Magnitude=225437.9211, Ratio=94007.58x limit
+  Segment 37: Magnitude=24543.5238, Ratio=27573.34x limit
+  Segment 37: Magnitude=16374.2797, Ratio=26060.48x limit
+  Segment 37: Magnitude=10639.7262, Ratio=12340.31x limit
+  Segment 37: Magnitude=18450.5539, Ratio=10571.39x limit
+  Segment 37: Magnitude=34307.5789, Ratio=23682.89x limit
+  Segment 37: Magnitude=43236.7335, Ratio=18029.71x limit
+  Segment 38: Magnitude=56348.4433, Ratio=63304.47x limit
+  Segment 38: Magnitude=37588.7706, Ratio=59824.39x limit
+  Segment 38: Magnitude=24429.4957, Ratio=28334.15x limit
+  Segment 38: Magnitude=42024.3910, Ratio=24078.20x limit
+  Segment 38: Magnitude=43159.7198, Ratio=29793.61x limit
+  Segment 38: Magnitude=74627.7932, Ratio=31119.78x limit
+  Segment 39: Magnitude=70932.2579, Ratio=79688.61x limit
+  Segment 39: Magnitude=47703.7711, Ratio=75922.91x limit
+  Segment 39: Magnitude=30040.0632, Ratio=34841.47x limit
+  Segment 39: Magnitude=85280.4456, Ratio=48862.10x limit
+  Segment 39: Magnitude=102461.3496, Ratio=70730.16x limit
+  Segment 39: Magnitude=53457.9571, Ratio=22291.96x limit
+  Segment 40: Magnitude=59509.9088, Ratio=66856.21x limit
+  Segment 40: Magnitude=52977.8760, Ratio=84316.91x limit
+  Segment 40: Magnitude=1587.3446, Ratio=1841.06x limit
+  Segment 40: Magnitude=43000.6986, Ratio=24637.59x limit
+  Segment 40: Magnitude=85963.3351, Ratio=59341.40x limit
+  Segment 40: Magnitude=16678.3232, Ratio=6954.86x limit
+  Segment 41: Magnitude=21166.6895, Ratio=23779.65x limit
+  Segment 41: Magnitude=24813.5316, Ratio=39491.96x limit
+  Segment 41: Magnitude=10318.2949, Ratio=11967.51x limit
+  Segment 41: Magnitude=2176.9535, Ratio=1247.30x limit
+  Segment 41: Magnitude=30572.5950, Ratio=21104.59x limit
+  Segment 41: Magnitude=18844.7899, Ratio=7858.27x limit
+  Segment 42: Magnitude=8939.8871, Ratio=14228.27x limit
+  Segment 42: Magnitude=16286.9311, Ratio=18890.13x limit
+  Segment 42: Magnitude=1725.8571, Ratio=988.84x limit
+  Segment 42: Magnitude=25992.8094, Ratio=17943.11x limit
+  Segment 42: Magnitude=1382.8896, Ratio=576.66x limit
+  Segment 43: Magnitude=15184.7767, Ratio=17059.29x limit
+  Segment 43: Magnitude=12124.7809, Ratio=19297.19x limit
+  Segment 43: Magnitude=39380.1281, Ratio=45674.40x limit
+  Segment 43: Magnitude=9743.3347, Ratio=5582.52x limit
+  Segment 43: Magnitude=34211.6060, Ratio=23616.63x limit
+  Segment 43: Magnitude=23846.1656, Ratio=9943.85x limit
+  Segment 44: Magnitude=80177.0811, Ratio=90074.67x limit
+  Segment 44: Magnitude=24782.8871, Ratio=39443.19x limit
+  Segment 44: Magnitude=25978.5574, Ratio=30130.80x limit
+  Segment 44: Magnitude=54432.7233, Ratio=31187.65x limit
+  Segment 44: Magnitude=62326.2335, Ratio=43024.46x limit
+  Segment 44: Magnitude=67452.7847, Ratio=28127.80x limit
+  Segment 45: Magnitude=50619.4694, Ratio=56868.27x limit
+  Segment 45: Magnitude=4385.4017, Ratio=6979.58x limit
+  Segment 45: Magnitude=1888.5475, Ratio=2190.40x limit
+  Segment 45: Magnitude=67767.8074, Ratio=38828.09x limit
+  Segment 45: Magnitude=96931.6521, Ratio=66912.95x limit
+  Segment 45: Magnitude=120771.8697, Ratio=50361.85x limit
+  Segment 46: Magnitude=16528.5768, Ratio=18568.97x limit
+  Segment 46: Magnitude=18058.6926, Ratio=28741.30x limit
+  Segment 46: Magnitude=10609.5196, Ratio=12305.28x limit
+  Segment 46: Magnitude=57776.5708, Ratio=33103.54x limit
+  Segment 46: Magnitude=76976.4894, Ratio=53137.69x limit
+  Segment 46: Magnitude=182861.3536, Ratio=76253.16x limit
+  Segment 47: Magnitude=78786.5470, Ratio=88512.48x limit
+  Segment 47: Magnitude=41089.9784, Ratio=65396.73x limit
+  Segment 47: Magnitude=10814.1108, Ratio=12542.57x limit
+  Segment 47: Magnitude=71417.1607, Ratio=40919.02x limit
+  Segment 47: Magnitude=83611.8381, Ratio=57718.14x limit
+  Segment 47: Magnitude=112523.7335, Ratio=46922.38x limit
+  Segment 48: Magnitude=59034.1139, Ratio=66321.68x limit
+  Segment 48: Magnitude=31805.0073, Ratio=50619.24x limit
+  Segment 48: Magnitude=790.0978, Ratio=916.38x limit
+  Segment 48: Magnitude=56359.6620, Ratio=32291.71x limit
+  Segment 48: Magnitude=63349.9380, Ratio=43731.13x limit
+  Segment 48: Magnitude=9839.5160, Ratio=4103.08x limit
+  Segment 49: Magnitude=5534.9601, Ratio=6218.23x limit
+  Segment 49: Magnitude=10988.5520, Ratio=17488.82x limit
+  Segment 49: Magnitude=453.5347, Ratio=526.02x limit
+  Segment 49: Magnitude=19461.6813, Ratio=11150.72x limit
+  Segment 49: Magnitude=21914.2568, Ratio=15127.64x limit
+  Segment 49: Magnitude=35803.2444, Ratio=14929.95x limit
+  Segment 50: Magnitude=8.9990, Ratio=10.11x limit
+  Segment 50: Magnitude=4.2524, Ratio=6.77x limit
+  Segment 50: Magnitude=9.0213, Ratio=10.46x limit
+  Segment 50: Magnitude=41633.0185, Ratio=23853.96x limit
+  Segment 50: Magnitude=34382.8858, Ratio=14337.66x limit
+  Segment 51: Magnitude=15777.1792, Ratio=17724.82x limit
+  Segment 51: Magnitude=9668.3688, Ratio=15387.69x limit
+  Segment 51: Magnitude=8443.0171, Ratio=9792.49x limit
+  Segment 51: Magnitude=66539.9522, Ratio=38124.58x limit
+  Segment 51: Magnitude=22775.1996, Ratio=15721.96x limit
+  Segment 51: Magnitude=17134.6771, Ratio=7145.16x limit
+  Segment 52: Magnitude=40207.0612, Ratio=45170.49x limit
+  Segment 52: Magnitude=24659.4742, Ratio=39246.77x limit
+  Segment 52: Magnitude=21505.9333, Ratio=24943.30x limit
+  Segment 52: Magnitude=40635.4411, Ratio=23282.39x limit
+  Segment 52: Magnitude=58064.7370, Ratio=40082.70x limit
+  Segment 52: Magnitude=72673.1313, Ratio=30304.68x limit
+  Segment 53: Magnitude=63418.7880, Ratio=71247.63x limit
+  Segment 53: Magnitude=41614.4955, Ratio=66231.53x limit
+  Segment 53: Magnitude=28933.5567, Ratio=33558.11x limit
+  Segment 53: Magnitude=42275.1234, Ratio=24221.86x limit
+  Segment 53: Magnitude=91602.7995, Ratio=63234.38x limit
+  Segment 53: Magnitude=209532.2974, Ratio=87374.94x limit
+  Segment 54: Magnitude=12882.3541, Ratio=14472.64x limit
+  Segment 54: Magnitude=23657.7908, Ratio=37652.54x limit
+  Segment 54: Magnitude=23837.1930, Ratio=27647.18x limit
+  Segment 54: Magnitude=14077.6349, Ratio=8065.89x limit
+  Segment 54: Magnitude=40514.6979, Ratio=27967.73x limit
+  Segment 54: Magnitude=114604.8141, Ratio=47790.19x limit
+  Segment 55: Magnitude=45078.0266, Ratio=50642.76x limit
+  Segment 55: Magnitude=6734.6395, Ratio=10718.51x limit
+  Segment 55: Magnitude=15393.0555, Ratio=17853.38x limit
+  Segment 55: Magnitude=31870.3414, Ratio=18260.36x limit
+  Segment 55: Magnitude=27921.7675, Ratio=19274.69x limit
+  Segment 55: Magnitude=44869.5086, Ratio=18710.58x limit
+  Segment 56: Magnitude=33352.3393, Ratio=37469.57x limit
+  Segment 56: Magnitude=1660.9845, Ratio=2643.54x limit
+  Segment 56: Magnitude=18953.6600, Ratio=21983.09x limit
+  Segment 56: Magnitude=47185.4354, Ratio=27035.26x limit
+  Segment 56: Magnitude=29414.5143, Ratio=20305.15x limit
+  Segment 56: Magnitude=22710.5823, Ratio=9470.31x limit
+  Segment 57: Magnitude=2.7377, Ratio=3.08x limit
+  Segment 57: Magnitude=23743.6854, Ratio=37789.25x limit
+  Segment 57: Magnitude=43232.5652, Ratio=50142.58x limit
+  Segment 57: Magnitude=20581.4159, Ratio=11792.28x limit
+  Segment 57: Magnitude=31404.5412, Ratio=21678.89x limit
+  Segment 57: Magnitude=21559.2666, Ratio=8990.21x limit
+  Segment 58: Magnitude=23011.4230, Ratio=25852.11x limit
+  Segment 58: Magnitude=3316.8458, Ratio=5278.92x limit
+  Segment 58: Magnitude=32051.7704, Ratio=37174.72x limit
+  Segment 58: Magnitude=14234.2946, Ratio=8155.65x limit
+  Segment 58: Magnitude=30445.2744, Ratio=21016.70x limit
+  Segment 58: Magnitude=9435.1012, Ratio=3934.44x limit
+  Segment 59: Magnitude=48905.5513, Ratio=54942.78x limit
+  Segment 59: Magnitude=29629.0560, Ratio=47156.11x limit
+  Segment 59: Magnitude=27000.8244, Ratio=31316.46x limit
+  Segment 59: Magnitude=25704.1461, Ratio=14727.39x limit
+  Segment 59: Magnitude=23667.5329, Ratio=9869.36x limit
+  Segment 60: Magnitude=22312.3272, Ratio=25066.71x limit
+  Segment 60: Magnitude=13514.1175, Ratio=21508.39x limit
+  Segment 60: Magnitude=12320.7228, Ratio=14289.99x limit
+  Segment 60: Magnitude=48062.5028, Ratio=27537.79x limit
+  Segment 60: Magnitude=10808.8181, Ratio=4507.28x limit
+  Segment 61: Magnitude=38394.4977, Ratio=43134.17x limit
+  Segment 61: Magnitude=17211.2845, Ratio=27392.61x limit
+  Segment 61: Magnitude=11782.8740, Ratio=13666.17x limit
+  Segment 61: Magnitude=32514.9075, Ratio=18629.67x limit
+  Segment 61: Magnitude=627.5981, Ratio=433.24x limit
+  Segment 61: Magnitude=26190.4448, Ratio=10921.41x limit
+  Segment 62: Magnitude=38501.5254, Ratio=43254.41x limit
+  Segment 62: Magnitude=54495.0865, Ratio=86731.62x limit
+  Segment 62: Magnitude=34398.5311, Ratio=39896.57x limit
+  Segment 62: Magnitude=24250.8483, Ratio=13894.71x limit
+  Segment 62: Magnitude=1464.8748, Ratio=1011.22x limit
+  Segment 62: Magnitude=40169.5818, Ratio=16750.71x limit
+  Segment 63: Magnitude=20323.2974, Ratio=22832.14x limit
+  Segment 63: Magnitude=26877.8716, Ratio=42777.46x limit
+  Segment 63: Magnitude=35323.5709, Ratio=40969.46x limit
+  Segment 63: Magnitude=9837.3706, Ratio=5636.40x limit
+  Segment 63: Magnitude=634.6634, Ratio=438.11x limit
+  Segment 63: Magnitude=100523.0239, Ratio=41918.09x limit
+  Segment 64: Magnitude=27309.5290, Ratio=30680.80x limit
+  Segment 64: Magnitude=16097.8476, Ratio=25620.52x limit
+  Segment 64: Magnitude=29014.7628, Ratio=33652.30x limit
+  Segment 64: Magnitude=11196.9870, Ratio=6415.40x limit
+  Segment 64: Magnitude=46490.3726, Ratio=19386.48x limit
+  Segment 65: Magnitude=64450.7504, Ratio=72406.98x limit
+  Segment 65: Magnitude=14831.1789, Ratio=23604.55x limit
+  Segment 65: Magnitude=15097.4749, Ratio=17510.56x limit
+  Segment 65: Magnitude=13533.1105, Ratio=7753.90x limit
+  Segment 65: Magnitude=73067.9551, Ratio=30469.33x limit
+  Segment 66: Magnitude=48520.9846, Ratio=54510.74x limit
+  Segment 66: Magnitude=12525.0093, Ratio=19934.17x limit
+  Segment 66: Magnitude=22177.7333, Ratio=25722.48x limit
+  Segment 66: Magnitude=27280.9043, Ratio=15630.81x limit
+  Segment 66: Magnitude=37943.1366, Ratio=15822.28x limit
+  Segment 67: Magnitude=42386.3618, Ratio=47618.82x limit
+  Segment 67: Magnitude=25161.7053, Ratio=40046.10x limit
+  Segment 67: Magnitude=46327.9018, Ratio=53732.66x limit
+  Segment 67: Magnitude=28980.0985, Ratio=16604.37x limit
+  Segment 67: Magnitude=37267.0817, Ratio=25725.86x limit
+  Segment 67: Magnitude=72063.5285, Ratio=30050.48x limit
+  Segment 68: Magnitude=100515.2932, Ratio=112923.57x limit
+  Segment 68: Magnitude=14648.2466, Ratio=23313.41x limit
+  Segment 68: Magnitude=27923.2776, Ratio=32386.36x limit
+  Segment 68: Magnitude=3159.9106, Ratio=1810.50x limit
+  Segment 68: Magnitude=41445.8544, Ratio=28610.51x limit
+  Segment 68: Magnitude=122634.4499, Ratio=51138.55x limit
+  Segment 69: Magnitude=80346.4078, Ratio=90264.90x limit
+  Segment 69: Magnitude=19831.1847, Ratio=31562.31x limit
+  Segment 69: Magnitude=9026.3592, Ratio=10469.07x limit
+  Segment 69: Magnitude=32206.4799, Ratio=18452.95x limit
+  Segment 69: Magnitude=39941.3439, Ratio=27571.93x limit
+  Segment 69: Magnitude=125038.2215, Ratio=52140.92x limit
+  Segment 70: Magnitude=59780.9940, Ratio=67160.76x limit
+  Segment 70: Magnitude=42827.5718, Ratio=68162.20x limit
+  Segment 70: Magnitude=21021.2694, Ratio=24381.17x limit
+  Segment 70: Magnitude=69647.3336, Ratio=39904.98x limit
+  Segment 70: Magnitude=86346.7267, Ratio=59606.06x limit
+  Segment 70: Magnitude=128493.6871, Ratio=53581.85x limit
+  Segment 71: Magnitude=34835.3895, Ratio=39135.70x limit
+  Segment 71: Magnitude=24959.5642, Ratio=39724.38x limit
+  Segment 71: Magnitude=12245.2625, Ratio=14202.47x limit
+  Segment 71: Magnitude=2110.2635, Ratio=1209.09x limit
+  Segment 71: Magnitude=50315.8397, Ratio=34733.56x limit
+  Segment 71: Magnitude=224537.8991, Ratio=93632.27x limit
+  Segment 72: Magnitude=2.5529, Ratio=2.87x limit
+  Segment 72: Magnitude=2.3423, Ratio=3.73x limit
+  Segment 72: Magnitude=4.4569, Ratio=5.17x limit
+  Segment 72: Magnitude=57766.8848, Ratio=33097.99x limit
+  Segment 72: Magnitude=41695.0758, Ratio=28782.55x limit
+  Segment 72: Magnitude=268636.0577, Ratio=112021.20x limit
+  Segment 73: Magnitude=40593.3883, Ratio=45604.51x limit
+  Segment 73: Magnitude=11719.5515, Ratio=18652.25x limit
+  Segment 73: Magnitude=28465.8509, Ratio=33015.65x limit
+  Segment 73: Magnitude=31255.1885, Ratio=17907.90x limit
+  Segment 73: Magnitude=42146.1277, Ratio=29093.92x limit
+  Segment 73: Magnitude=212725.3162, Ratio=88706.43x limit
+  Segment 74: Magnitude=90188.5506, Ratio=101322.03x limit
+  Segment 74: Magnitude=26042.2815, Ratio=41447.58x limit
+  Segment 74: Magnitude=63247.9025, Ratio=73357.04x limit
+  Segment 74: Magnitude=51253.8779, Ratio=29366.31x limit
+  Segment 74: Magnitude=32907.1401, Ratio=22716.15x limit
+  Segment 74: Magnitude=149566.5285, Ratio=62369.22x limit

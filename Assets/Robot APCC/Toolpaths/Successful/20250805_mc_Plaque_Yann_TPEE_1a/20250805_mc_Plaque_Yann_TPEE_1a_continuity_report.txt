@@ -1,0 +1,46 @@
+Continuity Analysis Report: 20250805_mc_Plaque_Yann_TPEE_1a
+====================================================================================================
+
+SUMMARY:
+----------------------------------------------------------------------------------------------------
+Total Trajectories: 2
+Trajectories Analyzed: 2
+C0 Pass: 2/2
+C1 Pass: 1/2
+C2 Pass: 0/2
+All Levels Pass: 0/2
+
+DETAILED RESULTS BY TRAJECTORY:
+====================================================================================================
+
+Trajectory 1 [1-84]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: FAIL
+  C2 Continuity: FAIL
+  C1 Violations: 3
+  C2 Violations: 235
+  C0 Max Joint Step: 0.8515738447630976°
+  C1 Max Velocity Ratio: 1.24x limit
+  C2 Max Acceleration Ratio: 1397.81x limit
+
+Trajectory 2 [1-84]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 247
+  C0 Max Joint Step: 0.5630691552312725°
+  C1 Max Velocity Ratio: 0.08x limit
+  C2 Max Acceleration Ratio: 29.87x limit
+
+====================================================================================================
+INTERPRETATION:
+----------------------------------------------------------------------------------------------------
+C0 Continuity: Joint configuration smoothness (no IK failures, step magnitudes within limits)
+C1 Continuity: Velocity smoothness (joint velocities within limits, consistent with commanded speed)
+C2 Continuity: Acceleration smoothness (acceleration magnitudes within acceptable ranges)
+
+Note: A trajectory can be kinematically feasible (all IK solutions found) but not C0/C1/C2 continuous.

@@ -1,0 +1,479 @@
+Continuity Analysis Report: 20250731_mc_Kids_Cosmic_Todddler_Left
+====================================================================================================
+
+SUMMARY:
+----------------------------------------------------------------------------------------------------
+Total Trajectories: 41
+Trajectories Analyzed: 41
+C0 Pass: 39/41
+C1 Pass: 38/41
+C2 Pass: 0/41
+All Levels Pass: 0/41
+
+DETAILED RESULTS BY TRAJECTORY:
+====================================================================================================
+
+Trajectory 1 [1-55]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: FAIL
+  C1 Continuity: FAIL
+  C2 Continuity: FAIL
+  C0 Violations: 1
+  C1 Violations: 3
+  C2 Violations: 277
+  C0 Max Joint Step: 261.0698597491674°
+  C1 Max Velocity Ratio: 27.97x limit
+  C2 Max Acceleration Ratio: 11264.93x limit
+
+Trajectory 2 [1-62]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: FAIL
+  C1 Continuity: FAIL
+  C2 Continuity: FAIL
+  C0 Violations: 1
+  C1 Violations: 3
+  C2 Violations: 224
+  C0 Max Joint Step: 253.7752202954198°
+  C1 Max Velocity Ratio: 16.27x limit
+  C2 Max Acceleration Ratio: 4041.29x limit
+
+Trajectory 3 [1-69]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 185
+  C0 Max Joint Step: 1.8470050440537118°
+  C1 Max Velocity Ratio: 0.29x limit
+  C2 Max Acceleration Ratio: 38.21x limit
+
+Trajectory 4 [1-72]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 227
+  C0 Max Joint Step: 3.150964313671642°
+  C1 Max Velocity Ratio: 0.26x limit
+  C2 Max Acceleration Ratio: 16.31x limit
+
+Trajectory 5 [1-75]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 252
+  C0 Max Joint Step: 3.3774978592874567°
+  C1 Max Velocity Ratio: 0.25x limit
+  C2 Max Acceleration Ratio: 23.34x limit
+
+Trajectory 6 [1-76]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 180
+  C0 Max Joint Step: 2.849733736365075°
+  C1 Max Velocity Ratio: 0.22x limit
+  C2 Max Acceleration Ratio: 20.27x limit
+
+Trajectory 7 [1-79]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 223
+  C0 Max Joint Step: 2.9875549353323874°
+  C1 Max Velocity Ratio: 0.21x limit
+  C2 Max Acceleration Ratio: 28.61x limit
+
+Trajectory 8 [1-80]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 214
+  C0 Max Joint Step: 2.653493638601397°
+  C1 Max Velocity Ratio: 0.26x limit
+  C2 Max Acceleration Ratio: 46.86x limit
+
+Trajectory 9 [1-80]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 158
+  C0 Max Joint Step: 2.638284912277958°
+  C1 Max Velocity Ratio: 0.18x limit
+  C2 Max Acceleration Ratio: 28.39x limit
+
+Trajectory 10 [1-82]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 153
+  C0 Max Joint Step: 2.3215270386342146°
+  C1 Max Velocity Ratio: 0.18x limit
+  C2 Max Acceleration Ratio: 28.53x limit
+
+Trajectory 11 [1-81]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 163
+  C0 Max Joint Step: 2.0610951770270836°
+  C1 Max Velocity Ratio: 0.18x limit
+  C2 Max Acceleration Ratio: 25.20x limit
+
+Trajectory 12 [1-80]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 184
+  C0 Max Joint Step: 2.4858799154380544°
+  C1 Max Velocity Ratio: 0.21x limit
+  C2 Max Acceleration Ratio: 68.39x limit
+
+Trajectory 13 [1-79]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 148
+  C0 Max Joint Step: 2.391534439136557°
+  C1 Max Velocity Ratio: 0.20x limit
+  C2 Max Acceleration Ratio: 33.19x limit
+
+Trajectory 14 [1-77]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 143
+  C0 Max Joint Step: 2.368072056789026°
+  C1 Max Velocity Ratio: 0.18x limit
+  C2 Max Acceleration Ratio: 28.98x limit
+
+Trajectory 15 [1-74]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 122
+  C0 Max Joint Step: 2.2127749828662204°
+  C1 Max Velocity Ratio: 0.13x limit
+  C2 Max Acceleration Ratio: 15.51x limit
+
+Trajectory 16 [1-72]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 129
+  C0 Max Joint Step: 2.077914947889871°
+  C1 Max Velocity Ratio: 0.13x limit
+  C2 Max Acceleration Ratio: 8.37x limit
+
+Trajectory 17 [1-69]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 156
+  C0 Max Joint Step: 2.5245802990567463°
+  C1 Max Velocity Ratio: 0.13x limit
+  C2 Max Acceleration Ratio: 7.15x limit
+
+Trajectory 18 [1-65]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 157
+  C0 Max Joint Step: 2.408129611038326°
+  C1 Max Velocity Ratio: 0.13x limit
+  C2 Max Acceleration Ratio: 10.09x limit
+
+Trajectory 19 [1-62]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 162
+  C0 Max Joint Step: 2.689817294373969°
+  C1 Max Velocity Ratio: 0.13x limit
+  C2 Max Acceleration Ratio: 18.47x limit
+
+Trajectory 20 [1-61]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 183
+  C0 Max Joint Step: 2.5124180480288354°
+  C1 Max Velocity Ratio: 0.24x limit
+  C2 Max Acceleration Ratio: 43.05x limit
+
+Trajectory 21 [1-60]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 193
+  C0 Max Joint Step: 2.378214143630661°
+  C1 Max Velocity Ratio: 0.30x limit
+  C2 Max Acceleration Ratio: 73.97x limit
+
+Trajectory 22 [1-59]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 195
+  C0 Max Joint Step: 2.521359748019731°
+  C1 Max Velocity Ratio: 0.34x limit
+  C2 Max Acceleration Ratio: 123.82x limit
+
+Trajectory 23 [1-58]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 190
+  C0 Max Joint Step: 2.553922410482478°
+  C1 Max Velocity Ratio: 0.37x limit
+  C2 Max Acceleration Ratio: 177.76x limit
+
+Trajectory 24 [1-59]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 186
+  C0 Max Joint Step: 2.688730240290777°
+  C1 Max Velocity Ratio: 0.39x limit
+  C2 Max Acceleration Ratio: 249.12x limit
+
+Trajectory 25 [1-59]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 187
+  C0 Max Joint Step: 2.8691209114445226°
+  C1 Max Velocity Ratio: 0.41x limit
+  C2 Max Acceleration Ratio: 330.74x limit
+
+Trajectory 26 [1-59]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 179
+  C0 Max Joint Step: 2.95784598861567°
+  C1 Max Velocity Ratio: 0.46x limit
+  C2 Max Acceleration Ratio: 424.63x limit
+
+Trajectory 27 [1-60]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 169
+  C0 Max Joint Step: 3.120811551860138°
+  C1 Max Velocity Ratio: 0.54x limit
+  C2 Max Acceleration Ratio: 502.14x limit
+
+Trajectory 28 [1-60]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 148
+  C0 Max Joint Step: 3.267432490248581°
+  C1 Max Velocity Ratio: 0.64x limit
+  C2 Max Acceleration Ratio: 736.40x limit
+
+Trajectory 29 [1-62]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 155
+  C0 Max Joint Step: 2.9572644231152165°
+  C1 Max Velocity Ratio: 0.46x limit
+  C2 Max Acceleration Ratio: 301.37x limit
+
+Trajectory 30 [1-63]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 144
+  C0 Max Joint Step: 2.8412337934528056°
+  C1 Max Velocity Ratio: 0.57x limit
+  C2 Max Acceleration Ratio: 636.74x limit
+
+Trajectory 31 [1-63]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 135
+  C0 Max Joint Step: 2.9456962847483563°
+  C1 Max Velocity Ratio: 0.62x limit
+  C2 Max Acceleration Ratio: 702.80x limit
+
+Trajectory 32 [1-63]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: FAIL
+  C2 Continuity: FAIL
+  C1 Violations: 1
+  C2 Violations: 131
+  C0 Max Joint Step: 2.8745564658794303°
+  C1 Max Velocity Ratio: 0.97x limit
+  C2 Max Acceleration Ratio: 1454.32x limit
+
+Trajectory 33 [1-64]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 122
+  C0 Max Joint Step: 3.0550766760940617°
+  C1 Max Velocity Ratio: 0.35x limit
+  C2 Max Acceleration Ratio: 249.64x limit
+
+Trajectory 34 [1-63]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 118
+  C0 Max Joint Step: 3.3550103903955257°
+  C1 Max Velocity Ratio: 0.45x limit
+  C2 Max Acceleration Ratio: 469.88x limit
+
+Trajectory 35 [1-62]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 122
+  C0 Max Joint Step: 3.562530844479736°
+  C1 Max Velocity Ratio: 0.35x limit
+  C2 Max Acceleration Ratio: 293.87x limit
+
+Trajectory 36 [1-59]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 111
+  C0 Max Joint Step: 3.3366165132391123°
+  C1 Max Velocity Ratio: 0.33x limit
+  C2 Max Acceleration Ratio: 266.83x limit
+
+Trajectory 37 [1-58]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 99
+  C0 Max Joint Step: 3.494020050393861°
+  C1 Max Velocity Ratio: 0.32x limit
+  C2 Max Acceleration Ratio: 289.53x limit
+
+Trajectory 38 [1-54]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 112
+  C0 Max Joint Step: 3.797079502276761°
+  C1 Max Velocity Ratio: 0.21x limit
+  C2 Max Acceleration Ratio: 93.26x limit
+
+Trajectory 39 [1-50]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 98
+  C0 Max Joint Step: 3.6805659642530872°
+  C1 Max Velocity Ratio: 0.20x limit
+  C2 Max Acceleration Ratio: 72.92x limit
+
+Trajectory 40 [1-184]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 312
+  C0 Max Joint Step: 1.178237748457975°
+  C1 Max Velocity Ratio: 0.30x limit
+  C2 Max Acceleration Ratio: 52.89x limit
+
+Trajectory 41 [1-145]:
+----------------------------------------------------------------------------------------------------
+  Commanded Speed: 100.0 mm/s
+  C0 Continuity: PASS
+  C1 Continuity: PASS
+  C2 Continuity: FAIL
+  C2 Violations: 102
+  C0 Max Joint Step: 1.3796241592829048°
+  C1 Max Velocity Ratio: 0.07x limit
+  C2 Max Acceleration Ratio: 5.16x limit
+
+====================================================================================================
+INTERPRETATION:
+----------------------------------------------------------------------------------------------------
+C0 Continuity: Joint configuration smoothness (no IK failures, step magnitudes within limits)
+C1 Continuity: Velocity smoothness (joint velocities within limits, consistent with commanded speed)
+C2 Continuity: Acceleration smoothness (acceleration magnitudes within acceptable ranges)
+
+Note: A trajectory can be kinematically feasible (all IK solutions found) but not C0/C1/C2 continuous.

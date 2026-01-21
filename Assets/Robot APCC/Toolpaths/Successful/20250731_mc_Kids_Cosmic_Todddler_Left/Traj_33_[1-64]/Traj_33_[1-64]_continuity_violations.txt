@@ -1,0 +1,138 @@
+Continuity Violations Report: Traj_33_[1-64]
+================================================================================
+
+Commanded Speed: 100.0 mm/s
+Number of Poses: 64
+
+C0 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C1 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C2 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 0: Magnitude=1.2073, Ratio=1.92x limit
+  Segment 0: Magnitude=4.7848, Ratio=2.74x limit
+  Segment 0: Magnitude=3.4000, Ratio=1.42x limit
+  Segment 1: Magnitude=0.7862, Ratio=1.25x limit
+  Segment 1: Magnitude=2.7411, Ratio=1.57x limit
+  Segment 11: Magnitude=1.6679, Ratio=0.96x limit
+  Segment 12: Magnitude=3.0278, Ratio=1.73x limit
+  Segment 12: Magnitude=2.2513, Ratio=0.94x limit
+  Segment 13: Magnitude=0.7953, Ratio=0.89x limit
+  Segment 13: Magnitude=1.1462, Ratio=1.82x limit
+  Segment 13: Magnitude=1.6524, Ratio=1.92x limit
+  Segment 13: Magnitude=7.0501, Ratio=4.04x limit
+  Segment 13: Magnitude=1.5219, Ratio=1.05x limit
+  Segment 13: Magnitude=4.9869, Ratio=2.08x limit
+  Segment 14: Magnitude=2.5833, Ratio=2.90x limit
+  Segment 14: Magnitude=3.8123, Ratio=6.07x limit
+  Segment 14: Magnitude=5.6510, Ratio=6.55x limit
+  Segment 14: Magnitude=23.2342, Ratio=13.31x limit
+  Segment 14: Magnitude=5.3793, Ratio=3.71x limit
+  Segment 14: Magnitude=16.2600, Ratio=6.78x limit
+  Segment 15: Magnitude=23.8566, Ratio=26.80x limit
+  Segment 15: Magnitude=33.5738, Ratio=53.43x limit
+  Segment 15: Magnitude=48.4786, Ratio=56.23x limit
+  Segment 15: Magnitude=206.4451, Ratio=118.28x limit
+  Segment 15: Magnitude=49.8489, Ratio=34.41x limit
+  Segment 15: Magnitude=143.8040, Ratio=59.97x limit
+  Segment 16: Magnitude=32.0511, Ratio=36.01x limit
+  Segment 16: Magnitude=13.9700, Ratio=22.23x limit
+  Segment 16: Magnitude=16.7227, Ratio=19.40x limit
+  Segment 16: Magnitude=435.7080, Ratio=249.64x limit
+  Segment 16: Magnitude=132.8306, Ratio=91.69x limit
+  Segment 16: Magnitude=292.7575, Ratio=122.08x limit
+  Segment 17: Magnitude=25.9565, Ratio=29.16x limit
+  Segment 17: Magnitude=37.0795, Ratio=59.01x limit
+  Segment 17: Magnitude=54.8830, Ratio=63.66x limit
+  Segment 17: Magnitude=219.8865, Ratio=125.99x limit
+  Segment 17: Magnitude=52.1523, Ratio=36.00x limit
+  Segment 17: Magnitude=153.4410, Ratio=63.98x limit
+  Segment 18: Magnitude=2.7796, Ratio=3.12x limit
+  Segment 18: Magnitude=4.3780, Ratio=6.97x limit
+  Segment 18: Magnitude=6.4047, Ratio=7.43x limit
+  Segment 18: Magnitude=23.7148, Ratio=13.59x limit
+  Segment 18: Magnitude=6.9897, Ratio=4.83x limit
+  Segment 18: Magnitude=16.2264, Ratio=6.77x limit
+  Segment 19: Magnitude=0.8248, Ratio=0.93x limit
+  Segment 19: Magnitude=1.1339, Ratio=1.80x limit
+  Segment 19: Magnitude=1.6875, Ratio=1.96x limit
+  Segment 19: Magnitude=6.4643, Ratio=3.70x limit
+  Segment 19: Magnitude=1.9358, Ratio=1.34x limit
+  Segment 19: Magnitude=4.4234, Ratio=1.84x limit
+  Segment 20: Magnitude=0.5572, Ratio=0.89x limit
+  Segment 20: Magnitude=0.8324, Ratio=0.97x limit
+  Segment 20: Magnitude=2.4586, Ratio=1.41x limit
+  Segment 34: Magnitude=1.5745, Ratio=0.90x limit
+  Segment 35: Magnitude=1.7924, Ratio=1.03x limit
+  Segment 36: Magnitude=0.5345, Ratio=0.85x limit
+  Segment 36: Magnitude=2.9782, Ratio=1.71x limit
+  Segment 36: Magnitude=2.2048, Ratio=0.92x limit
+  Segment 37: Magnitude=0.8288, Ratio=1.32x limit
+  Segment 37: Magnitude=3.9925, Ratio=2.29x limit
+  Segment 37: Magnitude=2.9788, Ratio=1.24x limit
+  Segment 38: Magnitude=0.7826, Ratio=0.88x limit
+  Segment 38: Magnitude=1.3681, Ratio=2.18x limit
+  Segment 38: Magnitude=6.1596, Ratio=3.53x limit
+  Segment 38: Magnitude=4.6435, Ratio=1.94x limit
+  Segment 39: Magnitude=1.4915, Ratio=1.68x limit
+  Segment 39: Magnitude=2.4592, Ratio=3.91x limit
+  Segment 39: Magnitude=1.5678, Ratio=1.82x limit
+  Segment 39: Magnitude=11.7030, Ratio=6.71x limit
+  Segment 39: Magnitude=8.8538, Ratio=3.69x limit
+  Segment 40: Magnitude=2.7645, Ratio=3.11x limit
+  Segment 40: Magnitude=4.5729, Ratio=7.28x limit
+  Segment 40: Magnitude=3.4832, Ratio=4.04x limit
+  Segment 40: Magnitude=20.2399, Ratio=11.60x limit
+  Segment 40: Magnitude=3.1724, Ratio=2.19x limit
+  Segment 40: Magnitude=14.9931, Ratio=6.25x limit
+  Segment 41: Magnitude=5.5795, Ratio=6.27x limit
+  Segment 41: Magnitude=11.1025, Ratio=17.67x limit
+  Segment 41: Magnitude=10.0889, Ratio=11.70x limit
+  Segment 41: Magnitude=37.0268, Ratio=21.21x limit
+  Segment 41: Magnitude=2.8731, Ratio=1.98x limit
+  Segment 41: Magnitude=27.6078, Ratio=11.51x limit
+  Segment 42: Magnitude=3.6938, Ratio=4.15x limit
+  Segment 42: Magnitude=16.2614, Ratio=25.88x limit
+  Segment 42: Magnitude=18.6071, Ratio=21.58x limit
+  Segment 42: Magnitude=15.7373, Ratio=9.02x limit
+  Segment 42: Magnitude=3.7121, Ratio=2.56x limit
+  Segment 42: Magnitude=11.0825, Ratio=4.62x limit
+  Segment 43: Magnitude=22.1106, Ratio=24.84x limit
+  Segment 43: Magnitude=13.5337, Ratio=21.54x limit
+  Segment 43: Magnitude=5.9584, Ratio=6.91x limit
+  Segment 43: Magnitude=234.7312, Ratio=134.49x limit
+  Segment 43: Magnitude=24.2417, Ratio=16.73x limit
+  Segment 43: Magnitude=171.7464, Ratio=71.62x limit
+  Segment 44: Magnitude=10.7596, Ratio=12.09x limit
+  Segment 44: Magnitude=10.7153, Ratio=17.05x limit
+  Segment 44: Magnitude=7.7251, Ratio=8.96x limit
+  Segment 44: Magnitude=102.6330, Ratio=58.80x limit
+  Segment 44: Magnitude=9.8258, Ratio=6.78x limit
+  Segment 44: Magnitude=75.3295, Ratio=31.41x limit
+  Segment 45: Magnitude=3.6608, Ratio=4.11x limit
+  Segment 45: Magnitude=3.8201, Ratio=6.08x limit
+  Segment 45: Magnitude=3.0401, Ratio=3.53x limit
+  Segment 45: Magnitude=32.9948, Ratio=18.90x limit
+  Segment 45: Magnitude=3.0744, Ratio=2.12x limit
+  Segment 45: Magnitude=24.2168, Ratio=10.10x limit
+  Segment 46: Magnitude=1.4556, Ratio=1.64x limit
+  Segment 46: Magnitude=1.5491, Ratio=2.47x limit
+  Segment 46: Magnitude=1.2471, Ratio=1.45x limit
+  Segment 46: Magnitude=12.7755, Ratio=7.32x limit
+  Segment 46: Magnitude=9.3994, Ratio=3.92x limit
+  Segment 47: Magnitude=0.7706, Ratio=1.23x limit
+  Segment 47: Magnitude=6.2786, Ratio=3.60x limit
+  Segment 47: Magnitude=4.5945, Ratio=1.92x limit
+  Segment 48: Magnitude=3.2928, Ratio=1.89x limit
+  Segment 48: Magnitude=2.4013, Ratio=1.00x limit
+  Segment 49: Magnitude=1.9948, Ratio=1.14x limit
+  Segment 60: Magnitude=3.2788, Ratio=1.88x limit
+  Segment 60: Magnitude=2.3689, Ratio=0.99x limit
+  Segment 61: Magnitude=0.7644, Ratio=0.86x limit
+  Segment 61: Magnitude=6.0635, Ratio=3.47x limit
+  Segment 61: Magnitude=4.4127, Ratio=1.84x limit

@@ -1,0 +1,19 @@
+Continuity Violations Report: Traj_3_[1-77]
+================================================================================
+
+Commanded Speed: 100.0 mm/s
+Number of Poses: 77
+
+C0 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C1 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  None
+
+C2 CONTINUITY VIOLATIONS:
+--------------------------------------------------------------------------------
+  Segment 38: Magnitude=0.5788, Ratio=0.92x limit
+  Segment 39: Magnitude=0.5804, Ratio=0.92x limit
+  Segment 74: Magnitude=0.7675, Ratio=1.22x limit
