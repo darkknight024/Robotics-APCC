@@ -126,9 +126,9 @@ def _get_search_directories(requested_path: Path) -> List[Path]:
     search_dirs = []
     cwd = Path.cwd()
     
-    # Search from project root - look for "Assests" or "Assets" folder
+    # Search from project root - look for "Assets" or "Assets" folder
     try:
-        for root_name in ["Assests", "Assets", "assets"]:
+        for root_name in ["Assets", "Assets", "assets"]:
             root_dir = cwd / root_name / "Robot APCC"
             if root_dir.exists():
                 # Search all subdirectories for urdf folders

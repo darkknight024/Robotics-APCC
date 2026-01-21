@@ -168,7 +168,7 @@ robots_to_use:
 knife_poses_to_use:
   - "pose_1"
 
-toolpaths_folder: "Assests/Robot APCC/Toolpaths/Successful"
+toolpaths_folder: "Assets/Robot APCC/Toolpaths/Successful"
 output_folder: "output/feasibility_batch"
 ```
 
@@ -232,7 +232,7 @@ Robotics-APCC/
 |   |-- toolpath_config.yaml           # Toolpath processing settings
 |   +-- batch_feasibility_config.yaml  # Batch & Ranking settings
 |
-|-- Assests/Robot APCC/                # Robot assets
+|-- Assets/Robot APCC/                # Robot assets
 |   |-- IRB-1300-*/urdf/               # URDF files
 |   +-- Toolpaths/                     # Toolpath CSVs
 |
@@ -254,12 +254,12 @@ All robots are defined here once. Other configs reference robots by name.
 ```yaml
 robots:
   - name: "IRB 1300-7/1.4"
-    urdf_path: "Assests/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"
+    urdf_path: "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"
     reach_m: 1.4
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
     
   - name: "IRB 1300-10/1.15"
-    urdf_path: "Assests/Robot APCC/IRB-1300 1150 URDF/urdf/..."
+    urdf_path: "Assets/Robot APCC/IRB-1300 1150 URDF/urdf/..."
     reach_m: 1.15
     velocity_limits_rad_s: [4.887, 3.979, 5.864, 8.727, 7.245, 12.566]
 ```
