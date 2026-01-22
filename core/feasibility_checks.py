@@ -24,6 +24,10 @@ class FeasibilityResult:
     condition_number: float
     near_singularity: bool
     joint_positions_rad: Optional[np.ndarray] = None
+    # Debug information for failed IK
+    ik_debug_info: Optional[Dict[str, Any]] = None
+    target_position: Optional[np.ndarray] = None
+    target_quaternion: Optional[np.ndarray] = None
 
 
 def compute_manipulability(
@@ -110,7 +114,9 @@ def check_reachability(
         target_position, target_quaternion, q_init
     )
     
-    return success, q if success else None, info
+    # Always return q (even on failure) so we can analyze the final configuration
+    # The IK solver returns the best configuration found, which is useful for debugging
+    return success, q, info
 
 
 class FeasibilityAnalyzer:
@@ -172,13 +178,50 @@ class FeasibilityAnalyzer:
         )
         
         if not is_reachable:
+            # Compute additional debug information for failed waypoints
+            distance_from_origin = float(np.linalg.norm(target_position))
+            
+            # Compute distance from previous configuration if available
+            distance_from_prev = None
+            if q_init is not None and q is not None:
+                distance_from_prev = float(np.linalg.norm(q - q_init))
+            
+            # Check if the final q (even if not converged) violates joint limits
+            joint_limit_violations = None
+            joint_limit_distances = None
+            if q is not None:
+                lower_violations = self.model.lowerPositionLimit - q
+                upper_violations = q - self.model.upperPositionLimit
+                joint_limit_violations = {
+                    'lower': [float(v) for v in np.maximum(0, lower_violations)],
+                    'upper': [float(v) for v in np.maximum(0, upper_violations)],
+                    'any_violation': bool(np.any(lower_violations > 0) or np.any(upper_violations > 0))
+                }
+                
+                # Distance to joint limits (0 = at limit, 1 = at opposite limit)
+                joint_ranges = self.model.upperPositionLimit - self.model.lowerPositionLimit
+                normalized_pos = (q - self.model.lowerPositionLimit) / joint_ranges
+                joint_limit_distances = [float(min(p, 1-p)) for p in normalized_pos]
+            
+            debug_info = {
+                'ik_solver_info': ik_info,
+                'distance_from_origin_m': distance_from_origin,
+                'distance_from_prev_config_rad': distance_from_prev,
+                'joint_limit_violations': joint_limit_violations,
+                'joint_limit_distances': joint_limit_distances,
+                'final_q_rad': q.tolist() if q is not None else None
+            }
+            
             return FeasibilityResult(
                 is_reachable=False,
                 manipulability=0.0,
                 min_singular_value=0.0,
                 condition_number=np.inf,
                 near_singularity=True,
-                joint_positions_rad=None
+                joint_positions_rad=None,
+                ik_debug_info=debug_info,
+                target_position=target_position,
+                target_quaternion=target_quaternion
             )
         
         # Compute Jacobian
@@ -196,7 +239,9 @@ class FeasibilityAnalyzer:
             min_singular_value=min_sv,
             condition_number=cond_num,
             near_singularity=near_singularity,
-            joint_positions_rad=q
+            joint_positions_rad=q,
+            target_position=target_position,
+            target_quaternion=target_quaternion
         )
     
     def analyze_trajectory(

@@ -58,7 +58,12 @@ from .feasibility_plot import (
     plot_reachability_rate_per_trajectory,
     plot_manipulability_per_trajectory,
     plot_singularity_per_trajectory,
-    plot_continuity_summary
+    plot_continuity_summary,
+    # Debug plotting functions
+    plot_ik_failure_analysis,
+    plot_joint_limit_analysis,
+    plot_per_waypoint_ik_debug,
+    plot_joint_configurations_vs_limits
 )
 
 from .generate_combinatorial_plots import (
@@ -116,6 +121,10 @@ __all__ = [
     'plot_manipulability_per_trajectory',
     'plot_singularity_per_trajectory',
     'plot_continuity_summary',
+    'plot_ik_failure_analysis',
+    'plot_joint_limit_analysis',
+    'plot_per_waypoint_ik_debug',
+    'plot_joint_configurations_vs_limits',
     'plot_position_comparison',
     'plot_position_deltas',
     'plot_quaternion_comparison',
