@@ -23,6 +23,8 @@ try:
     _DEFAULT_MAX_STEP = _DEFAULT_IK_CONFIG['max_step']
     _DEFAULT_BACKTRACK = _DEFAULT_IK_CONFIG['backtrack']
     _DEFAULT_EE_FRAME_NAME = _DEFAULT_IK_CONFIG['ee_frame_name']
+    _DEFAULT_USE_ADAPTIVE_TOLERANCE = _DEFAULT_IK_CONFIG.get('use_adaptive_tolerance', False)
+    _DEFAULT_ADAPTIVE_TOLERANCE_MULTIPLIER = _DEFAULT_IK_CONFIG.get('adaptive_tolerance_multiplier', 2.0)
 except ImportError:
     # Fallback if config_loader is not available (shouldn't happen in normal usage)
     _DEFAULT_MAX_ITERATIONS = 50
@@ -34,6 +36,8 @@ except ImportError:
     _DEFAULT_MAX_STEP = 0.2
     _DEFAULT_BACKTRACK = True
     _DEFAULT_EE_FRAME_NAME = "ee_link"
+    _DEFAULT_USE_ADAPTIVE_TOLERANCE = False
+    _DEFAULT_ADAPTIVE_TOLERANCE_MULTIPLIER = 2.0
 
 
 @dataclass
@@ -167,20 +171,25 @@ class IKSolver:
     def _solve_damped(
         self,
         target_pose: pin.SE3,
-        q_init: Optional[np.ndarray] = None
+        q_init: Optional[np.ndarray] = None,
+        use_adaptive_tolerance_override: Optional[bool] = None
     ) -> Tuple[bool, np.ndarray, Dict[str, Any]]:
         """
-        Core damped least-squares IK solver.
+        Core damped least-squares IK solver with improved convergence strategies.
         
         Args:
             target_pose: Target pose as pin.SE3
             q_init: Initial joint configuration
+            use_adaptive_tolerance_override: Override config adaptive tolerance setting
             
         Returns:
             success, q, info
         """
         cfg = self.config
         nv = self.model.nv
+        
+        # Use override if provided, otherwise use config setting
+        adaptive_tol_enabled = use_adaptive_tolerance_override if use_adaptive_tolerance_override is not None else cfg.use_adaptive_tolerance
         
         if q_init is None:
             q = pin.neutral(self.model)
@@ -380,6 +389,73 @@ class IKSolver:
             else:
                 info['iteration_history']['residual_after_clip'].append(None)
         
+        # Final attempt: if we're very close but didn't converge, try a few more iterations
+        # with reduced damping and smaller steps
+        if 'best_residual' in info and info['best_residual'] < cfg.tolerance * 10.0:
+            # Use best configuration as starting point
+            q = info['best_configuration'].copy()
+            final_attempt_lam = cfg.lambda0  # Use minimal damping
+            final_attempt_max_step = cfg.max_step * 0.5  # Smaller steps
+            
+            for final_k in range(min(10, cfg.max_iterations - k)):  # Up to 10 more iterations
+                pin.forwardKinematics(self.model, self.data, q)
+                pin.updateFramePlacements(self.model, self.data)
+                current_pose = self.data.oMf[self.ee_frame_id]
+                
+                err_se3 = pin.log(current_pose.inverse() * target_pose)
+                e = err_se3.vector.reshape(6)
+                res_norm = np.linalg.norm((W**0.5) @ e)
+                
+                if res_norm < cfg.tolerance:
+                    info['converged'] = True
+                    info['reason'] = 'converged_final_attempt'
+                    info['iterations'] = k + final_k + 1
+                    return True, q, info
+                
+                J = pin.computeFrameJacobian(self.model, self.data, q, self.ee_frame_id, pin.LOCAL)
+                JW = J.T @ W
+                H = JW @ J + (final_attempt_lam**2) * np.eye(nv)
+                g = JW @ e
+                
+                try:
+                    dq = np.linalg.solve(H, g)
+                except np.linalg.LinAlgError:
+                    dq = 0.01 * g / (np.linalg.norm(g) + 1e-12)
+                
+                # Project to limits
+                q_lower = self.model.lowerPositionLimit
+                q_upper = self.model.upperPositionLimit
+                at_lower = (q <= q_lower + 1e-6) & (dq < 0)
+                at_upper = (q >= q_upper - 1e-6) & (dq > 0)
+                dq[at_lower] = 0.0
+                dq[at_upper] = 0.0
+                
+                max_step_norm = np.max(np.abs(dq))
+                if max_step_norm > final_attempt_max_step:
+                    dq = dq * (final_attempt_max_step / max_step_norm)
+                
+                q_new = pin.integrate(self.model, q, dq)
+                q_new = np.clip(q_new, q_lower, q_upper)
+                
+                pin.forwardKinematics(self.model, self.data, q_new)
+                pin.updateFramePlacements(self.model, self.data)
+                new_err = pin.log(self.data.oMf[self.ee_frame_id].inverse() * target_pose).vector
+                new_res_norm = np.linalg.norm((W**0.5) @ new_err)
+                
+                if new_res_norm < res_norm:
+                    q = q_new
+                else:
+                    # Try smaller step
+                    dq_small = dq * 0.5
+                    q_try = pin.integrate(self.model, q, dq_small)
+                    q_try = np.clip(q_try, q_lower, q_upper)
+                    pin.forwardKinematics(self.model, self.data, q_try)
+                    pin.updateFramePlacements(self.model, self.data)
+                    try_err = pin.log(self.data.oMf[self.ee_frame_id].inverse() * target_pose).vector
+                    try_res_norm = np.linalg.norm((W**0.5) @ try_err)
+                    if try_res_norm < res_norm:
+                        q = q_try
+            
         # If we didn't converge but got very close, use best configuration found
         # This is especially useful when waypoints are known to be reachable
         if 'best_residual' in info and info['best_residual'] < cfg.tolerance * 5.0:
