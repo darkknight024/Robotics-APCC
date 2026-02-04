@@ -22,7 +22,7 @@ def generate_ranking_plot(
     top_n: int = 10
 ) -> None:
     """
-    Generate bar chart showing top-N best and worst knife poses.
+    Generate bar chart showing top-N best and worst knife poses by rank.
     
     Args:
         results: Sorted list of aggregated results (best first)
@@ -55,16 +55,16 @@ def generate_ranking_plot(
             r.knife_pose_id[:25] + '...' if len(r.knife_pose_id) > 25 else r.knife_pose_id 
             for r in best
         ]
-        scores_best = [r.normalized_score for r in best]
+        scores_best = [r.rank for r in best]
         colors_best = plt.cm.Greens(np.linspace(0.4, 0.8, len(best)))
         
         ax1.barh(range(len(best)), scores_best, color=colors_best)
         ax1.set_yticks(range(len(best)))
         ax1.set_yticklabels(names_best)
-        ax1.set_xlabel('Normalized Score (lower=better)')
+        ax1.set_xlabel('Feasibility Rank (lower=better)')
         ax1.set_title(f'Top {n_show} Best Knife Poses')
         ax1.invert_yaxis()
-        ax1.set_xlim(0, 1)
+        ax1.set_xlim(0, max(scores_best) + 1)
         
         # Worst poses
         ax2 = axes[1]
@@ -72,16 +72,16 @@ def generate_ranking_plot(
             r.knife_pose_id[:25] + '...' if len(r.knife_pose_id) > 25 else r.knife_pose_id 
             for r in worst
         ]
-        scores_worst = [r.normalized_score for r in worst]
+        scores_worst = [r.rank for r in worst]
         colors_worst = plt.cm.Reds(np.linspace(0.4, 0.8, len(worst)))
         
         ax2.barh(range(len(worst)), scores_worst, color=colors_worst)
         ax2.set_yticks(range(len(worst)))
         ax2.set_yticklabels(names_worst)
-        ax2.set_xlabel('Normalized Score (lower=better)')
+        ax2.set_xlabel('Feasibility Rank (lower=better)')
         ax2.set_title(f'Top {n_show} Worst Knife Poses')
         ax2.invert_yaxis()
-        ax2.set_xlim(0, 1)
+        ax2.set_xlim(0, max(scores_worst) + 1)
         
         plt.suptitle(f'Knife Pose Ranking for {robot_name}', fontsize=14, fontweight='bold')
         plt.tight_layout()

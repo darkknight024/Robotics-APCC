@@ -1706,10 +1706,10 @@ def plot_combination_feasibility_levels(
     mean_dexterity = float(np.mean(dexterity_scores_array)) if len(dexterity_scores_array) > 0 else 0.0
     
     # Create figure with comprehensive layout
-    fig = plt.figure(figsize=(18, 14))
-    fig.suptitle(title, fontsize=18, fontweight='bold')
+    fig = plt.figure(figsize=(20, 16))
+    fig.suptitle(title, fontsize=16, fontweight='bold', y=0.98)
     
-    gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.3)
+    gs = fig.add_gridspec(3, 2, hspace=0.45, wspace=0.35)
     
     # =========================================================================
     # Level 1: Feasibility Gate - Per Trajectory Status
@@ -1743,8 +1743,11 @@ def plot_combination_feasibility_levels(
     
     ax1.set_xlabel('Trajectory Index', fontweight='bold', fontsize=12)
     ax1.set_ylabel('Validity Status', fontweight='bold', fontsize=12)
-    ax1.set_title(f'Level 1: Feasibility Gate\nOverall: {"VALID" if overall_valid else "INVALID"} ({sum(is_valid_list)}/{n_trajectories} valid)',
-                 fontweight='bold', fontsize=13)
+    ax1.set_title(
+        f'Level 1: Feasibility Gate\nOverall: {"VALID" if overall_valid else "INVALID"} ({sum(is_valid_list)}/{n_trajectories} valid)',
+        fontweight='bold',
+        fontsize=12
+    )
     ax1.set_ylim(-0.2, 1.2)
     ax1.set_yticks([0, 1])
     ax1.set_yticklabels(['INVALID', 'VALID'])
@@ -1754,7 +1757,7 @@ def plot_combination_feasibility_levels(
     # Add summary text
     summary_text = f'Valid: {sum(is_valid_list)}/{n_trajectories} | '
     summary_text += f'Invalid: {n_trajectories - sum(is_valid_list)}/{n_trajectories}'
-    ax1.text(0.02, 0.98, summary_text, transform=ax1.transAxes, fontsize=11,
+    ax1.text(0.02, 0.95, summary_text, transform=ax1.transAxes, fontsize=9,
             verticalalignment='top', fontweight='bold',
             bbox=dict(boxstyle='round', facecolor='lightgreen' if overall_valid else 'lightcoral', alpha=0.8))
     
@@ -1785,12 +1788,15 @@ def plot_combination_feasibility_levels(
                 tier_label = f'Tier {int(tier)}\n(0 < κ ≤ {safety_bin_size:.0f})'
             else:
                 tier_label = f'Tier {int(tier)}\n({(tier-1)*safety_bin_size:.0f} < κ ≤ {tier*safety_bin_size:.0f})'
-            ax2.text(tier, count + max(counts) * 0.05, tier_label, ha='center', fontsize=9, fontweight='bold')
+            ax2.text(tier, count + max(counts) * 0.05, tier_label, ha='center', fontsize=8, fontweight='bold')
         
         ax2.set_xlabel('Safety Tier', fontweight='bold', fontsize=12)
         ax2.set_ylabel('Number of Trajectories', fontweight='bold', fontsize=12)
-        ax2.set_title(f'Level 2: Safety Tier Distribution\nWorst Case: Tier {worst_safety_tier}',
-                     fontweight='bold', fontsize=13)
+        ax2.set_title(
+            f'Level 2: Safety Tier Distribution\nWorst Case: Tier {worst_safety_tier}',
+            fontweight='bold',
+            fontsize=12
+        )
         ax2.grid(True, alpha=0.3, axis='y')
         
         # Add max condition number info if available
@@ -1799,7 +1805,7 @@ def plot_combination_feasibility_levels(
             max_cond = max(valid_max_cond)
             info_text = f'Max Condition Number: {max_cond:.2f}\n'
             info_text += f'Tier Formula: ceil({max_cond:.2f} / {safety_bin_size:.0f}) = {worst_safety_tier}'
-            ax2.text(0.02, 0.98, info_text, transform=ax2.transAxes, fontsize=9,
+            ax2.text(0.02, 0.95, info_text, transform=ax2.transAxes, fontsize=8,
                     verticalalignment='top', fontweight='bold',
                     bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
     else:
@@ -1847,15 +1853,18 @@ def plot_combination_feasibility_levels(
         
         ax3.set_xlabel('Quality Category', fontweight='bold', fontsize=12)
         ax3.set_ylabel('Number of Trajectories', fontweight='bold', fontsize=12)
-        ax3.set_title(f'Level 3: Smoothness Cost Distribution\nWorst Case: {worst_smoothness_cost:.4f}',
-                     fontweight='bold', fontsize=13)
+        ax3.set_title(
+            f'Level 3: Smoothness Cost Distribution\nWorst Case: {worst_smoothness_cost:.4f}',
+            fontweight='bold',
+            fontsize=12
+        )
         ax3.grid(True, alpha=0.3, axis='y')
         
         # Add formula and worst case info
         info_text = f'Energy Score = mean(Σ((|dq/dt| / limit)²))\n'
         info_text += f'Worst Cost: {worst_smoothness_cost:.4f}\n'
         info_text += f'Mean Cost: {np.mean(valid_costs):.4f}'
-        ax3.text(0.02, 0.98, info_text, transform=ax3.transAxes, fontsize=9,
+        ax3.text(0.02, 0.95, info_text, transform=ax3.transAxes, fontsize=8,
                 verticalalignment='top', fontweight='bold',
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.9))
     else:
@@ -1887,8 +1896,11 @@ def plot_combination_feasibility_levels(
         
         ax4.set_xlabel('Trajectory Index', fontweight='bold', fontsize=12)
         ax4.set_ylabel('Dexterity Score (Mean Manipulability)', fontweight='bold', fontsize=12)
-        ax4.set_title(f'Level 4: Dexterity Score\nMean Across All Trajectories: {mean_dexterity:.6f}',
-                     fontweight='bold', fontsize=13)
+        ax4.set_title(
+            f'Level 4: Dexterity Score\nMean Across All Trajectories: {mean_dexterity:.6f}',
+            fontweight='bold',
+            fontsize=12
+        )
         ax4.legend(loc='best', fontsize=10)
         ax4.grid(True, alpha=0.3)
         
@@ -1897,13 +1909,13 @@ def plot_combination_feasibility_levels(
         stats_text += f'Min: {min_dex:.6f} | '
         stats_text += f'Max: {max_dex:.6f} | '
         stats_text += f'Std: {np.std(valid_dexterity):.6f}'
-        ax4.text(0.02, 0.98, stats_text, transform=ax4.transAxes, fontsize=10,
+        ax4.text(0.02, 0.95, stats_text, transform=ax4.transAxes, fontsize=9,
                 verticalalignment='top', fontweight='bold',
                 bbox=dict(boxstyle='round', facecolor='lavender', alpha=0.8))
     else:
         ax4.text(0.5, 0.5, 'No valid dexterity data', ha='center', transform=ax4.transAxes, fontsize=12)
         ax4.set_title('Level 4: Dexterity Score', fontweight='bold', fontsize=13)
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()

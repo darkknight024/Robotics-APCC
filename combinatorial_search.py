@@ -3,7 +3,7 @@
 Combinatorial Search - Feasibility Ranking Batch Processor
 
 Performs combinatorial search across robots, knife poses, and toolpaths.
-Computes kinematic heuristics, normalizes metrics, and generates ranked reports.
+Computes kinematic heuristics and generates ranked reports.
 
 Output Structure:
     output/feasibility_ranking/<MM_DD_YY_HH_MM_SS>/
@@ -28,13 +28,11 @@ Output Structure:
 Usage:
     python combinatorial_search.py --config config/batch_feasibility_config.yaml
     python combinatorial_search.py --config config/batch_feasibility_config.yaml --output output/ranking --workers 8
-    python combinatorial_search.py --config config/batch_feasibility_config.yaml --weights config/scoring_weights.yaml
 
 Command-line Arguments:
     --config, -c    Path to batch feasibility config YAML (required)
     --output, -o    Base output directory (overrides config)
     --workers, -w   Number of parallel workers (default: 1)
-    --weights       Path to scoring weights YAML (optional)
     --knife-config  Path to knife poses YAML (default: config/sparse_generated_knife_poses.yaml)
     --debug         Enable debug logging
     --detailed_per_trajectory_report  Generate detailed plots for each trajectory (default: only 4 aggregated plots)
@@ -54,7 +52,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import yaml
 from tqdm import tqdm
 
 # Add project root to path
@@ -64,7 +61,6 @@ from utils import (
     load_knife_config,
     load_toolpath_config,
     load_feasibility_config,
-    load_yaml,
     KnifePose,
     RobotConfig
 )
@@ -74,19 +70,6 @@ from feasibility_analysis import process_toolpath
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# Default Scoring Weights
-# =============================================================================
-
-DEFAULT_WEIGHTS = {
-    'w_IK_failure_rate': 50.0,
-    'w_singularity_rate': 25.0,
-    'w_min_manipulability': 10.0,
-    'w_mean_manipulability': 10.0,
-    'w_mean_min_singular_value': 5.0,
-}
 
 
 # =============================================================================
@@ -169,21 +152,13 @@ class AggregatedKnifePoseResult:
     min_min_manipulability: float = 0.0
     mean_mean_manipulability: float = 0.0
     mean_mean_min_singular_value: float = 0.0
-    # Normalized metrics - legacy, kept for compatibility
-    norm_IK_failure_rate: float = 1.0
-    norm_singularity_rate: float = 1.0
-    norm_min_manipulability: float = 1.0
-    norm_mean_manipulability: float = 1.0
-    norm_mean_min_singular_value: float = 1.0
-    # Score - legacy, kept for compatibility
-    normalized_score: float = 1.0
-    raw_score: float = 0.0
     rank: int = 0
     # 4-Level Feasibility Metrics (aggregated across toolpaths)
     is_valid: bool = False  # Level 1: All toolpaths must be valid
     safety_tier: int = 999999  # Level 2: Worst (max) safety tier across toolpaths
     smoothness_cost: float = float('inf')  # Level 3: Worst (max) smoothness cost
     dexterity_score: float = 0.0  # Level 4: Mean dexterity across toolpaths
+    feasibility_sort_key: Tuple[int, int, float, float] = field(default_factory=tuple)
     # Per-toolpath results
     toolpath_results: List[CombinationResult] = field(default_factory=list)
 
@@ -193,7 +168,6 @@ class RobotRankingResult:
     """Robot-level ranking result using the best knife pose."""
     robot_name: str
     best_knife_pose_id: str
-    best_knife_pose_score: float
     best_knife_pose_rank: int
     n_knife_poses_evaluated: int
     n_toolpaths: int
@@ -203,6 +177,12 @@ class RobotRankingResult:
     min_min_manipulability: float = 0.0
     mean_mean_manipulability: float = 0.0
     mean_mean_min_singular_value: float = 0.0
+    # 4-Level Feasibility Metrics from best knife pose
+    is_valid: bool = False
+    safety_tier: int = 999999
+    smoothness_cost: float = float('inf')
+    dexterity_score: float = 0.0
+    feasibility_sort_key: Tuple[int, int, float, float] = field(default_factory=tuple)
     # Global robot rank
     robot_rank: int = 0
     verdict: str = ""
@@ -224,21 +204,17 @@ def get_sort_key(
     LEXICOGRAPHICAL SORT LOGIC (CRITICAL):
     ======================================
     
-    Python compares tuples element-by-element. If index 0 is equal, it moves to index 1, etc.
-    We use DESCENDING sort (reverse=True), meaning "Higher Values" appear first.
+    Python compares tuples element-by-element. We use ASCENDING sort so "Lower Values"
+    appear first. The tuple is ordered by severity:
     
-    Key Structure:
-    (Is_Valid, -Safety_Tier, -Energy_Score, Dexterity_Score)
+    Key Structure (ascending):
+    (Invalid_Flag, Safety_Tier, Smoothness_Cost, -Dexterity_Score)
     
-    Why the negatives?
-    - Safety_Tier: Lower tiers (1) are better. In descending sort, 5 comes before 1.
-      By negating (-1 vs -5), -1 is mathematically larger, so it comes first.
-    - Energy_Score: Lower energy is better. By negating, smaller magnitude becomes larger value.
-    
-    Edge Case Handling:
-    - If is_valid is False, force subsequent metrics to "Worst Case" values:
-      safety_tier = infinity, energy = infinity, dexterity = -infinity
-      This ensures invalid trajectories sink to the absolute bottom.
+    Why this order?
+    - Invalid_Flag: 0 for valid, 1 for invalid → valid always ranks first
+    - Safety_Tier: Lower tiers are better
+    - Smoothness_Cost: Lower cost is better
+    - Dexterity_Score: Higher is better → use negative to sort descending
     
     Args:
         is_valid: Boolean validity flag (Level 1)
@@ -247,251 +223,46 @@ def get_sort_key(
         dexterity_score: Mean manipulability (Level 4, higher is better)
         
     Returns:
-        Tuple for lexicographical sorting: (is_valid_int, -safety_tier, -smoothness_cost, dexterity_score)
+        Tuple for lexicographical sorting:
+        (invalid_flag, safety_tier, smoothness_cost, -dexterity_score)
     """
-    # Handle invalid data: force worst-case values
-    if not is_valid:
-        safety_tier = 999999
-        smoothness_cost = float('inf')
-        dexterity_score = -float('inf')
-    
-    # Handle NaN/Inf edge cases
+    # Sanitize inputs for stable sorting
+    invalid_flag = 0 if is_valid else 1
+
     if math.isnan(safety_tier) or math.isinf(safety_tier):
-        safety_tier = 999999 if not is_valid else safety_tier
+        safety_tier = 999999
     if math.isnan(smoothness_cost) or math.isinf(smoothness_cost):
         smoothness_cost = float('inf')
     if math.isnan(dexterity_score) or math.isinf(dexterity_score):
-        dexterity_score = -float('inf') if not is_valid else 0.0
-    
-    # Convert boolean to int (True=1, False=0) for tuple comparison
-    is_valid_int = int(is_valid)
-    
-    # Return tuple: (is_valid, -safety_tier, -smoothness_cost, dexterity_score)
-    # Using negatives for safety_tier and smoothness_cost because lower is better
+        dexterity_score = 0.0
+
     return (
-        is_valid_int,           # Primary: True (1) > False (0)
-        -int(safety_tier),      # Secondary: Tier 1 > Tier 5 (so -1 > -5)
-        -float(smoothness_cost),  # Tertiary: Energy 0.1 > Energy 0.9 (so -0.1 > -0.9)
-        float(dexterity_score)   # Quaternary: Manip 0.5 > Manip 0.1 (higher is naturally better)
+        int(invalid_flag),           # Primary: valid (0) before invalid (1)
+        int(safety_tier),            # Secondary: lower tier is better
+        float(smoothness_cost),      # Tertiary: lower cost is better
+        -float(dexterity_score)      # Quaternary: higher dexterity is better
     )
 
 
-# =============================================================================
-# Scoring and Normalization Functions (Legacy - kept for compatibility)
-# =============================================================================
-
-def load_weights(weights_path: Optional[str]) -> Dict[str, float]:
-    """
-    Load scoring weights from YAML file or return defaults.
-    
-    Args:
-        weights_path: Path to weights YAML file (optional)
-        
-    Returns:
-        Dictionary of weight name to weight value
-    """
-    if weights_path is None:
-        logger.info("Using default scoring weights")
-        return DEFAULT_WEIGHTS.copy()
-    
-    try:
-        config = load_yaml(weights_path)
-        weights = config.get('weights', config)
-        
-        # Merge with defaults for any missing keys
-        result = DEFAULT_WEIGHTS.copy()
-        result.update(weights)
-        
-        logger.info(f"Loaded weights from {weights_path}")
-        return result
-    except Exception as e:
-        logger.warning(f"Failed to load weights from {weights_path}: {e}. Using defaults.")
-        return DEFAULT_WEIGHTS.copy()
-
-
-def normalize_metric_lower_better(values: np.ndarray) -> np.ndarray:
-    """
-    Normalize metric where lower is better (0=best, 1=worst).
-    
-    NORMALIZATION LOGIC:
-    - For metrics like IK failure rate, singularity rate: lower values are better
-    - Maps minimum value → 0.0 (best), maximum value → 1.0 (worst)
-    - Formula: normalized = (value - min) / (max - min)
-    
-    EXAMPLE:
-    - Raw values: [0.0, 0.5, 1.0]
-    - Normalized: [0.0, 0.5, 1.0]
-    
-    - Raw values: [0.1, 0.3, 0.8]  
-    - Normalized: [0.0, 0.286, 1.0]
-    
-    Args:
-        values: Array of metric values
-        
-    Returns:
-        Normalized values in [0, 1]
-    """
-    values = np.array(values, dtype=float)
-    
-    # Handle NaN values - treat as invalid data
-    valid_mask = ~np.isnan(values)
-    if not np.any(valid_mask):
-        # All values are NaN - return worst score (1.0) for all
-        return np.ones_like(values)
-    
-    # Find min and max across all valid values
-    min_val = np.nanmin(values)
-    max_val = np.nanmax(values)
-    
-    # Edge case: all values are identical
-    if max_val - min_val < 1e-10:
-        # All values are the same - return best score (0.0) for all
-        return np.zeros_like(values)
-    
-    # CRITICAL: Min-max normalization
-    # Lower raw values → closer to 0 (better)
-    # Higher raw values → closer to 1 (worse)
-    normalized = (values - min_val) / (max_val - min_val)
-    
-    # Replace any remaining NaN with worst case (1.0)
-    normalized = np.where(np.isnan(normalized), 1.0, normalized)
-    
-    return np.clip(normalized, 0.0, 1.0)
-
-
-def normalize_metric_higher_better(values: np.ndarray) -> np.ndarray:
-    """
-    Normalize metric where higher is better, INVERTED to 0=best, 1=worst.
-    
-    NORMALIZATION LOGIC (INVERTED):
-    - For metrics like manipulability, singular values: higher raw values are better
-    - BUT we invert so that 0=best, 1=worst (consistent with other metrics)
-    - Maps maximum value → 0.0 (best), minimum value → 1.0 (worst)
-    - Formula: normalized = (max - value) / (max - min)
-    
-    EXAMPLE:
-    - Raw manipulability: [0.01, 0.05, 0.10]  (higher is better)
-    - Normalized:         [1.0,  0.556, 0.0]   (0=best, so highest raw gets 0)
-    
-    WHY INVERT:
-    - Keeps all normalized metrics on same scale: 0=best, 1=worst
-    - Simplifies weighted scoring: just sum up all normalized metrics
-    
-    Args:
-        values: Array of metric values
-        
-    Returns:
-        Normalized values in [0, 1] (0=best, 1=worst)
-    """
-    values = np.array(values, dtype=float)
-    
-    # Handle NaN values - treat as invalid data
-    valid_mask = ~np.isnan(values)
-    if not np.any(valid_mask):
-        # All values are NaN - return worst score (1.0) for all
-        return np.ones_like(values)
-    
-    # Find min and max across all valid values
-    min_val = np.nanmin(values)
-    max_val = np.nanmax(values)
-    
-    # Edge case: all values are identical
-    if max_val - min_val < 1e-10:
-        # All values are the same - return best score (0.0) for all
-        return np.zeros_like(values)
-    
-    # CRITICAL: INVERTED min-max normalization
-    # Higher raw values → closer to 0 (better)
-    # Lower raw values → closer to 1 (worse)
-    # This is the OPPOSITE of normalize_metric_lower_better
-    normalized = (max_val - values) / (max_val - min_val)
-    
-    # Replace any remaining NaN with worst case (1.0)
-    normalized = np.where(np.isnan(normalized), 1.0, normalized)
-    
-    return np.clip(normalized, 0.0, 1.0)
-
-
-def compute_weighted_score(
-    raw_IK_failure_rate: float,
-    norm_singularity_rate: float,
-    norm_min_manipulability: float,
-    norm_mean_manipulability: float,
-    norm_mean_min_singular_value: float,
-    weights: Dict[str, float]
-) -> Tuple[float, float]:
-    """
-    Compute weighted score from metrics with STRICT feasibility penalty.
-    
-    SCORING LOGIC (CRITICAL):
-    ========================
-    
-    1. BASE SCORE CALCULATION:
-       - Weighted sum of all metrics (all normalized to 0=best, 1=worst)
-       - EXCEPTION: IK failure rate uses RAW value (0-1), NOT normalized
-       - WHY: IK failure is binary feasibility check, not relative quality metric
-       
-    2. NORMALIZATION:
-       - Divide by total weight to get normalized_score in [0, 1] range
-       
-    3. FEASIBILITY PENALTY:
-       - If raw_IK_failure_rate > 0: Add +1.0 penalty
-       - EFFECT: All infeasible combos get score >= 1.0
-       - Feasible combos max out at ~0.5 even with worst other metrics
-       - GUARANTEES: best_infeasible_score > worst_feasible_score
-    
-    SCORE INTERPRETATION:
-    - Score < 0.25: ✅ Recommended (feasible + good quality)
-    - Score 0.25-0.50: ⚠️ Borderline (feasible but some issues)
-    - Score 0.50-0.75: ❗ Poor (feasible but bad quality)
-    - Score >= 1.0: ❌ Infeasible (has IK failures)
-    
-    EXAMPLE:
-    Given weights: {IK: 50, sing: 25, min_manip: 10, mean_manip: 10, sv: 5}
-    Total weight: 100
-    
-    Feasible combo (IK=0%, all normalized metrics at 0.5):
-      raw_score = 50*0 + 25*0.5 + 10*0.5 + 10*0.5 + 5*0.5 = 25
-      normalized = 25/100 = 0.25
-      final = 0.25 + 0 = 0.25 (no penalty)
-    
-    Infeasible combo (IK=10%, all normalized metrics at 0):
-      raw_score = 50*0.1 + 25*0 + 10*0 + 10*0 + 5*0 = 5
-      normalized = 5/100 = 0.05
-      final = 0.05 + 1.0 = 1.05 (penalty applied)
-    
-    Args:
-        raw_IK_failure_rate: Raw IK failure rate [0, 1] (NOT normalized)
-        norm_singularity_rate: Normalized singularity rate [0, 1] (0=best)
-        norm_min_manipulability: Normalized min manipulability [0, 1] (0=best, INVERTED)
-        norm_mean_manipulability: Normalized mean manipulability [0, 1] (0=best, INVERTED)
-        norm_mean_min_singular_value: Normalized mean min SV [0, 1] (0=best, INVERTED)
-        weights: Weight dictionary
-        
-    Returns:
-        (normalized_score, raw_score)
-    """
-    # CRITICAL: Calculate weighted sum of all metrics
-    # Note: IK failure rate uses RAW value, others use normalized [0,1]
-    raw_score = (
-        weights['w_IK_failure_rate'] * raw_IK_failure_rate +  # RAW IK failure [0,1]
-        weights['w_singularity_rate'] * norm_singularity_rate +  # Normalized [0,1]
-        weights['w_min_manipulability'] * norm_min_manipulability +  # Normalized INVERTED [0,1]
-        weights['w_mean_manipulability'] * norm_mean_manipulability +  # Normalized INVERTED [0,1]
-        weights['w_mean_min_singular_value'] * norm_mean_min_singular_value  # Normalized INVERTED [0,1]
+def format_feasibility_tuple(
+    is_valid: bool,
+    safety_tier: int,
+    smoothness_cost: float,
+    dexterity_score: float
+) -> str:
+    """Format 4-level feasibility metrics as a sortable tuple string."""
+    if math.isnan(safety_tier) or math.isinf(safety_tier):
+        safety_tier = 999999
+    if math.isnan(smoothness_cost) or math.isinf(smoothness_cost):
+        smoothness_cost = float('inf')
+    if math.isnan(dexterity_score) or math.isinf(dexterity_score):
+        dexterity_score = 0.0
+    return (
+        f"({int(is_valid)}, "
+        f"{int(safety_tier)}, "
+        f"{smoothness_cost:.6f}, "
+        f"{dexterity_score:.6f})"
     )
-    
-    # Normalize by total weight to get score in [0, 1] range
-    total_weight = sum(weights.values())
-    normalized_score = raw_score / total_weight if total_weight > 0 else raw_score
-    
-    # CRITICAL: Add fixed +1.0 penalty for ANY IK failure
-    # This creates a hard separation between feasible and infeasible solutions
-    # Ensures all infeasible combinations rank below all feasible ones
-    if raw_IK_failure_rate > 0:
-        normalized_score += 1.0  # Jump to >= 1.0 range
-    
-    return normalized_score, raw_score
 
 
 # =============================================================================
@@ -816,34 +587,17 @@ except ImportError:
     generate_ranking_plot = None
 
 
-def _compute_verdict(ik_failure_rate: float, final_score: float) -> str:
+def _compute_verdict(is_valid: bool) -> str:
     """
-    Compute verdict based on IK failure rate and final score.
-    
-    Rules (must implement exactly):
-    - If IK_failure_rate > 0 → ❌ Infeasible
-    - Else if final_score < 0.25 → ✅ Recommended
-    - Else if final_score < 0.50 → ⚠️ Borderline
-    - Else if final_score < 0.75 → ❗ Poor
-    - Else → ❌ Infeasible
+    Compute verdict based on 4-level feasibility validity.
     
     Args:
-        ik_failure_rate: IK failure rate (0 to 1)
-        final_score: Normalized score (0 to 1)
+        is_valid: Level-1 feasibility gate (True if reachable + C0 + C1)
         
     Returns:
         Verdict string with emoji
     """
-    if ik_failure_rate > 0:
-        return "❌ Infeasible"
-    elif final_score < 0.25:
-        return "✅ Recommended"
-    elif final_score < 0.50:
-        return "⚠️ Borderline"
-    elif final_score < 0.75:
-        return "❗ Poor"
-    else:
-        return "❌ Infeasible"
+    return "✅ Feasible" if is_valid else "❌ Infeasible"
 
 
 def save_per_robot_csv(
@@ -852,12 +606,11 @@ def save_per_robot_csv(
     robot_name: str
 ) -> None:
     """
-    Save per-robot ranking CSV with both raw and normalized metrics.
+    Save per-robot ranking CSV with feasibility and raw metrics.
     
     CSV COLUMNS:
-    - Rank, Knife Pose ID, Score (final weighted score)
-    - RAW metrics: actual values from kinematic analysis
-    - NORMALIZED metrics: [0,1] values used in scoring (0=best, 1=worst)
+    - Rank, Knife Pose ID, Feasibility Tuple
+    - 4-level feasibility metrics and raw kinematic metrics
     
     Args:
         results: Sorted list of aggregated results
@@ -866,27 +619,28 @@ def save_per_robot_csv(
     """
     rows = []
     for r in results:
-        verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
+        verdict = _compute_verdict(r.is_valid)
         rows.append({
             # Basic info
             'Rank': r.rank,
             'Knife Pose ID': r.knife_pose_id,
-            'Score': f"{r.normalized_score:.4f}",
+            'Feasibility Tuple': format_feasibility_tuple(
+                r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
+            ),
             'Verdict': verdict,
             
+            # 4-Level Feasibility Metrics
+            'Is Valid': bool(r.is_valid),
+            'Safety Tier': int(r.safety_tier),
+            'Smoothness Cost': f"{r.smoothness_cost:.6f}",
+            'Dexterity Score': f"{r.dexterity_score:.6f}",
+
             # RAW METRICS (actual measured values)
             'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
             'Singularity Rate (raw)': f"{r.max_singularity_rate:.4f}",
             'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
             'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
             'Mean Min SV (raw)': f"{r.mean_mean_min_singular_value:.6f}",
-            
-            # NORMALIZED METRICS (0=best, 1=worst)
-            'IK Failure Rate (norm)': f"{r.norm_IK_failure_rate:.4f}",
-            'Singularity Rate (norm)': f"{r.norm_singularity_rate:.4f}",
-            'Min Manipulability (norm)': f"{r.norm_min_manipulability:.4f}",
-            'Mean Manipulability (norm)': f"{r.norm_mean_manipulability:.4f}",
-            'Mean Min SV (norm)': f"{r.norm_mean_min_singular_value:.4f}",
         })
     
     df = pd.DataFrame(rows)
@@ -914,25 +668,22 @@ def save_per_robot_markdown(
     lines.append("")
     lines.append("## Ranking Table")
     lines.append("")
-    lines.append("| Rank | Knife Pose ID | Score | IK Failure Rate | Singularity Rate | Min Manip | Mean Manip | Mean Min SV | Verdict |")
-    lines.append("|------|---------------|-------|-----------------|------------------|-----------|------------|-------------|---------|")
+    lines.append("| Rank | Knife Pose ID | Feasibility Tuple | Safety Tier | Smoothness | Dexterity | Verdict |")
+    lines.append("|------|---------------|-------------------|-------------|------------|-----------|---------|")
     
     for r in results:
-        verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
+        verdict = _compute_verdict(r.is_valid)
         lines.append(
-            f"| {r.rank} | {r.knife_pose_id[:40]} | {r.normalized_score:.3f} | "
-            f"{r.max_IK_failure_rate:.2f} | {r.max_singularity_rate:.2f} | "
-            f"{r.min_min_manipulability:.3f} | {r.mean_mean_manipulability:.3f} | "
-            f"{r.mean_mean_min_singular_value:.3f} | {verdict} |"
+            f"| {r.rank} | {r.knife_pose_id[:40]} | "
+            f"{format_feasibility_tuple(r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score)} | "
+            f"{r.safety_tier} | {r.smoothness_cost:.4f} | {r.dexterity_score:.4f} | {verdict} |"
         )
     
     lines.append("")
     lines.append("## Legend")
     lines.append("")
-    lines.append("- ✅ **Recommended**: IK feasible (0% failure) and score < 0.25")
-    lines.append("- ⚠️ **Borderline**: IK feasible (0% failure) and 0.25 ≤ score < 0.50")
-    lines.append("- ❗ **Poor**: IK feasible (0% failure) and 0.50 ≤ score < 0.75")
-    lines.append("- ❌ **Infeasible**: IK failure rate > 0% or score ≥ 0.75")
+    lines.append("- ✅ **Feasible**: Level-1 gate passed (reachable + C0 + C1)")
+    lines.append("- ❌ **Infeasible**: Level-1 gate failed")
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
@@ -954,10 +705,8 @@ def save_per_robot_metadata(
         robot_name: Robot name
     """
     # Count by verdict
-    recommended = sum(1 for r in results if _compute_verdict(r.max_IK_failure_rate, r.normalized_score) == "✅ Recommended")
-    borderline = sum(1 for r in results if _compute_verdict(r.max_IK_failure_rate, r.normalized_score) == "⚠️ Borderline")
-    poor = sum(1 for r in results if _compute_verdict(r.max_IK_failure_rate, r.normalized_score) == "❗ Poor")
-    infeasible = sum(1 for r in results if "Infeasible" in _compute_verdict(r.max_IK_failure_rate, r.normalized_score))
+    feasible = sum(1 for r in results if _compute_verdict(r.is_valid) == "✅ Feasible")
+    infeasible = sum(1 for r in results if _compute_verdict(r.is_valid) == "❌ Infeasible")
     
     # Count poses with all toolpaths reachable
     fully_reachable = sum(1 for r in results if r.max_IK_failure_rate == 0.0)
@@ -972,22 +721,30 @@ def save_per_robot_metadata(
         'total_toolpaths': n_toolpaths,
         'fully_reachable_poses': fully_reachable,
         'verdict_breakdown': {
-            'recommended': recommended,
-            'borderline': borderline,
-            'poor': poor,
+            'feasible': feasible,
             'infeasible': infeasible
         },
         'best_knife_pose': {
             'id': results[0].knife_pose_id if results else None,
-            'score': float(results[0].normalized_score) if results else None,
+            'feasibility_tuple': format_feasibility_tuple(
+                results[0].is_valid,
+                results[0].safety_tier,
+                results[0].smoothness_cost,
+                results[0].dexterity_score
+            ) if results else None,
             'ik_failure_rate': float(results[0].max_IK_failure_rate) if results else None,
-            'verdict': _compute_verdict(results[0].max_IK_failure_rate, results[0].normalized_score) if results else None
+            'verdict': _compute_verdict(results[0].is_valid) if results else None
         } if results else None,
         'worst_knife_pose': {
             'id': results[-1].knife_pose_id if results else None,
-            'score': float(results[-1].normalized_score) if results else None,
+            'feasibility_tuple': format_feasibility_tuple(
+                results[-1].is_valid,
+                results[-1].safety_tier,
+                results[-1].smoothness_cost,
+                results[-1].dexterity_score
+            ) if results else None,
             'ik_failure_rate': float(results[-1].max_IK_failure_rate) if results else None,
-            'verdict': _compute_verdict(results[-1].max_IK_failure_rate, results[-1].normalized_score) if results else None
+            'verdict': _compute_verdict(results[-1].is_valid) if results else None
         } if results else None
     }
     
@@ -1038,6 +795,8 @@ def save_knife_pose_details(
             return {k: convert_to_serializable(v) for k, v in obj.__dict__.items()}
         elif isinstance(obj, list):
             return [convert_to_serializable(i) for i in obj]
+        elif isinstance(obj, tuple):
+            return [convert_to_serializable(i) for i in obj]
         elif isinstance(obj, dict):
             return {k: convert_to_serializable(v) for k, v in obj.items()}
         return obj
@@ -1046,14 +805,23 @@ def save_knife_pose_details(
         'knife_pose_id': knife_pose_result.knife_pose_id,
         'robot_name': knife_pose_result.robot_name,
         'rank': knife_pose_result.rank,
-        'normalized_score': float(knife_pose_result.normalized_score),
-        'verdict': _compute_verdict(knife_pose_result.max_IK_failure_rate, knife_pose_result.normalized_score),
+        'feasibility_tuple': format_feasibility_tuple(
+            knife_pose_result.is_valid,
+            knife_pose_result.safety_tier,
+            knife_pose_result.smoothness_cost,
+            knife_pose_result.dexterity_score
+        ),
+        'verdict': _compute_verdict(knife_pose_result.is_valid),
         'aggregated_metrics': {
             'max_IK_failure_rate': float(knife_pose_result.max_IK_failure_rate),
             'max_singularity_rate': float(knife_pose_result.max_singularity_rate),
             'min_min_manipulability': float(knife_pose_result.min_min_manipulability),
             'mean_mean_manipulability': float(knife_pose_result.mean_mean_manipulability),
-            'mean_mean_min_singular_value': float(knife_pose_result.mean_mean_min_singular_value)
+            'mean_mean_min_singular_value': float(knife_pose_result.mean_mean_min_singular_value),
+            'is_valid': bool(knife_pose_result.is_valid),
+            'safety_tier': int(knife_pose_result.safety_tier),
+            'smoothness_cost': float(knife_pose_result.smoothness_cost),
+            'dexterity_score': float(knife_pose_result.dexterity_score)
         },
         'n_toolpaths': knife_pose_result.n_toolpaths,
         'n_successful': knife_pose_result.n_successful,
@@ -1106,6 +874,8 @@ def save_per_robot_json(
             return {k: convert_to_serializable(v) for k, v in obj.__dict__.items()}
         elif isinstance(obj, list):
             return [convert_to_serializable(i) for i in obj]
+        elif isinstance(obj, tuple):
+            return [convert_to_serializable(i) for i in obj]
         elif isinstance(obj, dict):
             return {k: convert_to_serializable(v) for k, v in obj.items()}
         return obj
@@ -1138,16 +908,8 @@ def build_robot_ranking(
        - This represents the "best case" performance for that robot
     
     2. CROSS-ROBOT COMPARISON:
-       - CANNOT use per-robot normalized scores! They are relative within each robot.
-       - MUST use RAW metrics for fair cross-robot comparison
-       - Ranking order: IK failure > singularity > manipulability
-    
-    3. SORT PRIORITY (lexicographic):
-       Primary:   IK failure rate (lower is better)
-       Secondary: Singularity rate (lower is better)
-       Tertiary:  Mean manipulability (higher is better)
-       Quaternary: Min manipulability (higher is better)
-       Quinary:   Mean min singular value (higher is better)
+       - Use 4-level feasibility metrics from each robot's best knife pose
+       - Ranking is lexicographic: validity → safety tier → smoothness → dexterity
     
     EXAMPLE:
     Robot A best pose: IK=0%, sing=5%, manip=0.08
@@ -1172,12 +934,11 @@ def build_robot_ranking(
         # CRITICAL: Take rank-1 knife pose (already sorted by lexicographical sort)
         best_knife = knife_results[0]
         
-        verdict = _compute_verdict(best_knife.max_IK_failure_rate, best_knife.normalized_score)
+        verdict = _compute_verdict(best_knife.is_valid)
         
         robot_rankings.append(RobotRankingResult(
             robot_name=robot_name,
             best_knife_pose_id=best_knife.knife_pose_id,
-            best_knife_pose_score=best_knife.normalized_score,  # Keep for reference (legacy score)
             best_knife_pose_rank=1,
             n_knife_poses_evaluated=len(knife_results),
             n_toolpaths=best_knife.n_toolpaths,
@@ -1187,6 +948,11 @@ def build_robot_ranking(
             min_min_manipulability=best_knife.min_min_manipulability,
             mean_mean_manipulability=best_knife.mean_mean_manipulability,
             mean_mean_min_singular_value=best_knife.mean_mean_min_singular_value,
+            is_valid=best_knife.is_valid,
+            safety_tier=best_knife.safety_tier,
+            smoothness_cost=best_knife.smoothness_cost,
+            dexterity_score=best_knife.dexterity_score,
+            feasibility_sort_key=best_knife.feasibility_sort_key,
             verdict=verdict
         ))
     
@@ -1209,8 +975,7 @@ def build_robot_ranking(
             robot_to_best_knife.get(x.robot_name, None).safety_tier if robot_to_best_knife.get(x.robot_name) else 999999,
             robot_to_best_knife.get(x.robot_name, None).smoothness_cost if robot_to_best_knife.get(x.robot_name) else float('inf'),
             robot_to_best_knife.get(x.robot_name, None).dexterity_score if robot_to_best_knife.get(x.robot_name) else 0.0
-        ),
-        reverse=True  # Descending: best first
+        )
     )
     
     # Assign final robot ranks (1 = best robot overall)
@@ -1225,11 +990,7 @@ def save_robot_ranking_csv(
     output_path: str
 ) -> None:
     """
-    Save robot ranking CSV with raw metrics.
-    
-    NOTE: Robot ranking uses RAW metrics only (not normalized per-robot).
-    Per-robot normalization is only valid within a single robot's knife pose set.
-    Cross-robot comparison must use raw absolute values.
+    Save robot ranking CSV with feasibility and raw metrics.
     
     Args:
         robot_rankings: Sorted list of robot ranking results
@@ -1243,8 +1004,16 @@ def save_robot_ranking_csv(
             'Robot Rank': r.robot_rank,
             'Robot Name': r.robot_name,
             'Best Knife Pose': r.best_knife_pose_id,
-            'Score': f"{r.best_knife_pose_score:.4f}",
             'Verdict': r.verdict,
+            'Feasibility Tuple': format_feasibility_tuple(
+                r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
+            ),
+            
+            # 4-Level Feasibility Metrics
+            'Is Valid': bool(r.is_valid),
+            'Safety Tier': int(r.safety_tier),
+            'Smoothness Cost': f"{r.smoothness_cost:.6f}",
+            'Dexterity Score': f"{r.dexterity_score:.6f}",
             
             # RAW METRICS from best knife pose (for cross-robot comparison)
             'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
@@ -1268,16 +1037,11 @@ def save_global_ranking_csv(
     output_path: str
 ) -> None:
     """
-    Save global ranking CSV across all robots with both raw and normalized metrics.
+    Save global ranking CSV across all robots using lexicographic feasibility keys.
     
-    IMPORTANT: 
-    - Normalized metrics are per-robot (relative to other knife poses for SAME robot)
-    - Cross-robot comparison should use RAW metrics only
-    - Score is computed using per-robot normalized values (not comparable across robots)
-    
-    Ranks by score (lower is better). Score naturally reflects IK failures because
-    compute_weighted_score uses raw IK failure rate, ensuring infeasible combinations
-    get poor scores (≥1.0) and rank low automatically.
+    IMPORTANT:
+    - Ranking uses 4-level feasibility metrics only (lexicographic tuple)
+    - Cross-robot comparison uses the same absolute metrics (no per-robot normalization)
     
     Args:
         all_robot_results: Dictionary mapping robot name to results
@@ -1287,14 +1051,22 @@ def save_global_ranking_csv(
     
     for robot_name, results in all_robot_results.items():
         for r in results:
-            verdict = _compute_verdict(r.max_IK_failure_rate, r.normalized_score)
+            verdict = _compute_verdict(r.is_valid)
             rows.append({
                 # Basic info
                 'Robot Name': robot_name,
                 'Knife Pose ID': r.knife_pose_id,
-                'Score': f"{r.normalized_score:.4f}",
                 'Robot Rank': r.rank,
                 'Verdict': verdict,
+                'Feasibility Tuple': format_feasibility_tuple(
+                    r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
+                ),
+                
+                # 4-Level Feasibility Metrics
+                'Is Valid': bool(r.is_valid),
+                'Safety Tier': int(r.safety_tier),
+                'Smoothness Cost': f"{r.smoothness_cost:.6f}",
+                'Dexterity Score': f"{r.dexterity_score:.6f}",
                 
                 # RAW METRICS (actual measured values - use for cross-robot comparison)
                 'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
@@ -1302,52 +1074,45 @@ def save_global_ranking_csv(
                 'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
                 'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
                 'Mean Min SV (raw)': f"{r.mean_mean_min_singular_value:.6f}",
-                
-                # NORMALIZED METRICS (per-robot, 0=best within robot, 1=worst within robot)
-                'IK Failure Rate (norm)': f"{r.norm_IK_failure_rate:.4f}",
-                'Singularity Rate (norm)': f"{r.norm_singularity_rate:.4f}",
-                'Min Manipulability (norm)': f"{r.norm_min_manipulability:.4f}",
-                'Mean Manipulability (norm)': f"{r.norm_mean_manipulability:.4f}",
-                'Mean Min SV (norm)': f"{r.norm_mean_min_singular_value:.4f}",
-                
+
                 # Metadata
                 'N Toolpaths': r.n_toolpaths,
                 'N Successful': r.n_successful,
+                '_sort_key': get_sort_key(
+                    r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
+                ),
             })
     
-    df = pd.DataFrame(rows)
-    
-    # Check if DataFrame is empty
-    if df.empty:
+    # Check if rows are empty
+    if not rows:
         logger.warning("No results to save in global ranking CSV")
         # Create empty CSV with headers
         df = pd.DataFrame(columns=[
-            'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Score', 'Verdict',
-            'IK Failure Rate (raw)', 'Singularity Rate (raw)', 'Min Manipulability (raw)', 
+            'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Verdict',
+            'Feasibility Tuple', 'Is Valid', 'Safety Tier', 'Smoothness Cost', 'Dexterity Score',
+            'IK Failure Rate (raw)', 'Singularity Rate (raw)', 'Min Manipulability (raw)',
             'Mean Manipulability (raw)', 'Mean Min SV (raw)',
-            'IK Failure Rate (norm)', 'Singularity Rate (norm)', 'Min Manipulability (norm)', 
-            'Mean Manipulability (norm)', 'Mean Min SV (norm)',
             'N Toolpaths', 'N Successful'
         ])
         df.to_csv(output_path, index=False)
         return
     
-    # Add global rank based on score (lower is better)
-    # Score naturally penalizes IK failures due to raw IK failure rate in scoring
-    df['_score_numeric'] = df['Score'].astype(float)
-    df = df.sort_values('_score_numeric')
-    df['Global Rank'] = range(1, len(df) + 1)
-    df = df.drop(columns=['_score_numeric'])
+    # Add global rank based on lexicographic feasibility key
+    rows.sort(key=lambda r: r['_sort_key'])
+    for i, row in enumerate(rows, 1):
+        row['Global Rank'] = i
+        row.pop('_sort_key', None)
     
-    # Reorder columns - show basic info, raw metrics, then normalized metrics
+    df = pd.DataFrame(rows)
+    
+    # Reorder columns - show basic info, feasibility metrics, then raw metrics
     cols = [
-        'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Score', 'Verdict',
+        'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Verdict',
+        # Feasibility metrics
+        'Feasibility Tuple', 'Is Valid', 'Safety Tier', 'Smoothness Cost', 'Dexterity Score',
         # Raw metrics
-        'IK Failure Rate (raw)', 'Singularity Rate (raw)', 'Min Manipulability (raw)', 
+        'IK Failure Rate (raw)', 'Singularity Rate (raw)', 'Min Manipulability (raw)',
         'Mean Manipulability (raw)', 'Mean Min SV (raw)',
-        # Normalized metrics
-        'IK Failure Rate (norm)', 'Singularity Rate (norm)', 'Min Manipulability (norm)', 
-        'Mean Manipulability (norm)', 'Mean Min SV (norm)',
         # Metadata
         'N Toolpaths', 'N Successful'
     ]
@@ -1361,8 +1126,7 @@ def generate_markdown_report(
     all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
     all_combination_results: List[CombinationResult],
     robot_rankings: List[RobotRankingResult],
-    output_path: str,
-    weights: Dict[str, float]
+    output_path: str
 ) -> None:
     """
     Generate markdown summary report.
@@ -1372,7 +1136,6 @@ def generate_markdown_report(
         all_combination_results: All combination results
         robot_rankings: Robot-level ranking results
         output_path: Path to save markdown
-        weights: Scoring weights used
     """
     lines = []
     lines.append("# Feasibility Ranking Report")
@@ -1402,14 +1165,19 @@ def generate_markdown_report(
     lines.append(f"- **Successful analyses**: {successful_combos}")
     lines.append(f"- **Failed analyses**: {failed_combos}")
     lines.append("")
+
+    lines.append("### Ranking Logic")
+    lines.append("- **Lexicographic key**: (invalid_flag, safety_tier, smoothness_cost, -dexterity_score)")
+    lines.append("- **Ordering**: lower tuple values are better; valid combinations always rank first")
+    lines.append("")
     
     # Robot Ranking - HIGHLIGHT THE BEST ROBOT
     if robot_rankings:
         best_robot = robot_rankings[0]
-        if best_robot.max_IK_failure_rate > 0:
+        if not best_robot.is_valid:
             lines.append("## ❌ Warning: No Feasible Combination Found")
             lines.append("")
-            lines.append("**All robot + knife pose combinations have IK failures.**")
+            lines.append("**All robot + knife pose combinations failed the Level-1 feasibility gate.**")
             lines.append("")
             lines.append("### Least Infeasible Option")
             lines.append("")
@@ -1423,14 +1191,19 @@ def generate_markdown_report(
         lines.append("")
         lines.append("### Performance Metrics")
         lines.append("")
-        lines.append(f"- **Overall Score**: {best_robot.best_knife_pose_score:.4f} (lower is better)")
+        lines.append(
+            f"- **Feasibility Tuple**: {format_feasibility_tuple(best_robot.is_valid, best_robot.safety_tier, best_robot.smoothness_cost, best_robot.dexterity_score)}"
+        )
+        lines.append(f"- **Safety Tier**: {best_robot.safety_tier}")
+        lines.append(f"- **Smoothness Cost**: {best_robot.smoothness_cost:.4f}")
+        lines.append(f"- **Dexterity Score**: {best_robot.dexterity_score:.4f}")
         lines.append(f"- **IK Failure Rate**: {best_robot.max_IK_failure_rate:.2%}")
         lines.append(f"- **Singularity Rate**: {best_robot.max_singularity_rate:.2%}")
         lines.append(f"- **Min Manipulability**: {best_robot.min_min_manipulability:.4f}")
         lines.append(f"- **Mean Manipulability**: {best_robot.mean_mean_manipulability:.4f}")
         lines.append(f"- **Verdict**: {best_robot.verdict}")
         lines.append("")
-        if best_robot.max_IK_failure_rate > 0:
+        if not best_robot.is_valid:
             lines.append("> ⚠️ **Action Required**: All combinations failed IK validation. Check URDF files, toolpath positions, knife poses, or workspace setup.")
             lines.append("")
         
@@ -1438,25 +1211,16 @@ def generate_markdown_report(
         lines.append("")
         lines.append("Ranking of robot models by their best knife pose performance:")
         lines.append("")
-        lines.append("| Rank | Robot Name | Best Knife Pose | Score | IK Fail | Singularity | Min Manip | Verdict |")
-        lines.append("|------|------------|-----------------|-------|---------|-------------|-----------|---------|")
+        lines.append("| Rank | Robot Name | Best Knife Pose | Feasibility Tuple | Safety Tier | Smoothness | Dexterity | Verdict |")
+        lines.append("|------|------------|-----------------|-------------------|-------------|------------|-----------|---------|")
         
         for r in robot_rankings:
             lines.append(
                 f"| {r.robot_rank} | {r.robot_name} | {r.best_knife_pose_id[:30]} | "
-                f"{r.best_knife_pose_score:.4f} | {r.max_IK_failure_rate:.2%} | "
-                f"{r.max_singularity_rate:.2%} | {r.min_min_manipulability:.4f} | {r.verdict} |"
+                f"{format_feasibility_tuple(r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score)} | "
+                f"{r.safety_tier} | {r.smoothness_cost:.4f} | {r.dexterity_score:.4f} | {r.verdict} |"
             )
         lines.append("")
-    
-    # Scoring weights
-    lines.append("## Scoring Weights")
-    lines.append("")
-    lines.append("| Metric | Weight |")
-    lines.append("|--------|--------|")
-    for name, weight in weights.items():
-        lines.append(f"| {name} | {weight} |")
-    lines.append("")
     
     # Per-robot results
     for robot_name, results in all_robot_results.items():
@@ -1471,21 +1235,22 @@ def generate_markdown_report(
         # Top 5 best
         lines.append("### Top 5 Best Knife Poses")
         lines.append("")
-        lines.append("| Rank | Knife Pose | Score | IK Fail Rate | Singularity Rate | Min Manipulability |")
-        lines.append("|------|------------|-------|--------------|------------------|-------------------|")
+        lines.append("| Rank | Knife Pose | Feasibility Tuple | Safety Tier | Smoothness | Dexterity |")
+        lines.append("|------|------------|-------------------|-------------|------------|-----------|")
         
         for r in results[:5]:
             lines.append(
-                f"| {r.rank} | {r.knife_pose_id[:40]} | {r.normalized_score:.4f} | "
-                f"{r.max_IK_failure_rate:.3f} | {r.max_singularity_rate:.3f} | {r.min_min_manipulability:.4f} |"
+                f"| {r.rank} | {r.knife_pose_id[:40]} | "
+                f"{format_feasibility_tuple(r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score)} | "
+                f"{r.safety_tier} | {r.smoothness_cost:.4f} | {r.dexterity_score:.4f} |"
             )
         lines.append("")
         
         # Bottom 5 worst
         lines.append("### Top 5 Worst Knife Poses")
         lines.append("")
-        lines.append("| Rank | Knife Pose | Score | IK Fail Rate | Singularity Rate | Failure Reason |")
-        lines.append("|------|------------|-------|--------------|------------------|----------------|")
+        lines.append("| Rank | Knife Pose | Feasibility Tuple | IK Fail Rate | Singularity Rate | Failure Reason |")
+        lines.append("|------|------------|-------------------|--------------|------------------|----------------|")
         
         for r in results[-5:]:
             # Determine failure reason
@@ -1496,26 +1261,22 @@ def generate_markdown_report(
                 reasons.append(f"Singularity rate high")
             if r.min_min_manipulability < 0.001:
                 reasons.append(f"Low manipulability")
-            reason_str = "; ".join(reasons) if reasons else "Low overall score"
+            reason_str = "; ".join(reasons) if reasons else "Low overall feasibility"
             
             lines.append(
-                f"| {r.rank} | {r.knife_pose_id[:40]} | {r.normalized_score:.4f} | "
+                f"| {r.rank} | {r.knife_pose_id[:40]} | "
+                f"{format_feasibility_tuple(r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score)} | "
                 f"{r.max_IK_failure_rate:.3f} | {r.max_singularity_rate:.3f} | {reason_str} |"
             )
         lines.append("")
         
-        # Sanity check - consider both IK failure rate and score
+        # Sanity check - consider feasibility gate for best knife
         best_knife = results[0] if results else None
         if best_knife:
-            best_score = best_knife.normalized_score
-            best_ik_fail = best_knife.max_IK_failure_rate
-            
-            if best_ik_fail > 0:
-                lines.append(f"❌ Sanity check FAILED: Best knife has IK failure rate {best_ik_fail:.1%} - all poses infeasible")
-            elif best_score < 0.2:
-                lines.append(f"✅ Sanity check passed: Best score ({best_score:.4f}) < 0.2")
+            if not best_knife.is_valid:
+                lines.append("❌ Sanity check FAILED: Best knife pose is infeasible at Level 1")
             else:
-                lines.append(f"⚠️ Warning: Best score ({best_score:.4f}) >= 0.2 - no ideal candidate found")
+                lines.append("✅ Sanity check passed: Best knife pose passes Level-1 feasibility")
         lines.append("")
     
     # Failed combinations
@@ -1570,7 +1331,12 @@ def save_batch_summary_json(
         if results:
             top_per_robot[robot_name] = {
                 'best_knife': results[0].knife_pose_id,
-                'best_score': float(results[0].normalized_score),
+                'best_feasibility_tuple': format_feasibility_tuple(
+                    results[0].is_valid,
+                    results[0].safety_tier,
+                    results[0].smoothness_cost,
+                    results[0].dexterity_score
+                ),
                 'total_knife_poses': len(results),
             }
     
@@ -1581,7 +1347,9 @@ def save_batch_summary_json(
             'rank': r.robot_rank,
             'robot_name': r.robot_name,
             'best_knife_pose': r.best_knife_pose_id,
-            'score': float(r.best_knife_pose_score),
+            'feasibility_tuple': format_feasibility_tuple(
+                r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
+            ),
             'ik_failure_rate': float(r.max_IK_failure_rate),
             'singularity_rate': float(r.max_singularity_rate),
             'min_manipulability': float(r.min_min_manipulability),
@@ -1595,7 +1363,9 @@ def save_batch_summary_json(
         best_overall = {
             'robot_name': best.robot_name,
             'knife_pose_id': best.best_knife_pose_id,
-            'score': float(best.best_knife_pose_score),
+            'feasibility_tuple': format_feasibility_tuple(
+                best.is_valid, best.safety_tier, best.smoothness_cost, best.dexterity_score
+            ),
             'ik_failure_rate': float(best.max_IK_failure_rate),
             'verdict': best.verdict
         }
@@ -1647,11 +1417,30 @@ def save_combination_summary(result: CombinationResult, output_dir: str) -> None
             return {k: convert_to_serializable(v) for k, v in obj.__dict__.items()}
         elif isinstance(obj, list):
             return [convert_to_serializable(i) for i in obj]
+        elif isinstance(obj, tuple):
+            return [convert_to_serializable(i) for i in obj]
         elif isinstance(obj, dict):
             return {k: convert_to_serializable(v) for k, v in obj.items()}
         return obj
     
     summary = convert_to_serializable(asdict(result))
+
+    # Add 4-level feasibility tuple with brief comments
+    summary['feasibility_tuple'] = {
+        'order': ['is_valid', 'safety_tier', 'smoothness_cost', 'dexterity_score'],
+        'values': {
+            'is_valid': bool(result.is_valid),
+            'safety_tier': int(result.safety_tier),
+            'smoothness_cost': float(result.smoothness_cost),
+            'dexterity_score': float(result.dexterity_score)
+        },
+        'comments': {
+            'is_valid': 'Level 1 gate: reachable + C0 + C1 must all pass',
+            'safety_tier': 'Level 2: ceil(max condition number / bin_size); lower is safer',
+            'smoothness_cost': 'Level 3: normalized joint energy; lower is smoother',
+            'dexterity_score': 'Level 4: mean manipulability; higher is better'
+        }
+    }
     
     output_path = Path(output_dir) / "summary.json"
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -1689,19 +1478,16 @@ def validate_knife_ids(knife_poses: Dict[str, KnifePose]) -> bool:
 
 def _load_configs(
     config_path: str,
-    knife_config_path: Optional[str],
-    weights_path: Optional[str]
-) -> Tuple[Dict, Dict, Dict, Dict]:
+    knife_config_path: Optional[str]
+) -> Tuple[Dict, Dict, Dict]:
     """
     Load all configuration files.
     
     Args:
         config_path: Path to batch config YAML
         knife_config_path: Path to knife poses YAML (optional)
-        weights_path: Path to scoring weights YAML (optional)
-        
     Returns:
-        Tuple of (config, knife_poses, feas_config, weights)
+        Tuple of (config, knife_poses, feas_config)
     """
     # Load main config
     config = load_toolpath_config(config_path)
@@ -1731,10 +1517,7 @@ def _load_configs(
             'continuity': {'enabled': True}
         }
     
-    # Load scoring weights
-    weights = load_weights(weights_path)
-    
-    return config, knife_poses, feas_config, weights
+    return config, knife_poses, feas_config
 
 
 def _setup_output_directories(output_base: Optional[str], config: Dict) -> Tuple[Path, Path]:
@@ -1970,16 +1753,14 @@ def _organize_results_by_robot(
 def _process_robot_results(
     robot_name: str,
     knife_results: Dict[str, List[CombinationResult]],
-    weights: Dict[str, float],
     per_robot_dir: Path
 ) -> List[AggregatedKnifePoseResult]:
     """
-    Process results for a single robot: aggregate, normalize, score, and save.
+    Process results for a single robot: aggregate, rank, and save.
     
     Args:
         robot_name: Name of the robot
         knife_results: Dictionary mapping knife_pose_id to list of results
-        weights: Scoring weights
         per_robot_dir: Directory to save per-robot outputs
         
     Returns:
@@ -2012,6 +1793,12 @@ def _process_robot_results(
             dexterity_score=float(aggregated_metrics['dexterity_score']),
             toolpath_results=combo_results,
         )
+        agg.feasibility_sort_key = get_sort_key(
+            agg.is_valid,
+            agg.safety_tier,
+            agg.smoothness_cost,
+            agg.dexterity_score
+        )
         aggregated_list.append(agg)
     
     if not aggregated_list:
@@ -2022,58 +1809,17 @@ def _process_robot_results(
     # CRITICAL: LEXICOGRAPHICAL SORTING (4-Level Feasibility)
     # =========================================================================
     # Sort using lexicographical tuple sort based on 4-level feasibility metrics
-    # Sort key: (is_valid, -safety_tier, -smoothness_cost, dexterity_score)
-    # Using reverse=True so best (highest tuple values) appear first
+    # Sort key: (invalid_flag, safety_tier, smoothness_cost, -dexterity_score)
+    # Using ascending sort so best (lowest tuple values) appear first
     
     # Compute sort keys and sort
     aggregated_list.sort(
-        key=lambda x: get_sort_key(
-            x.is_valid,
-            x.safety_tier,
-            x.smoothness_cost,
-            x.dexterity_score
-        ),
-        reverse=True  # Descending: best (highest tuple) first
+        key=lambda x: x.feasibility_sort_key
     )
     
     # Assign ranks (1 = best)
     for rank, agg in enumerate(aggregated_list, 1):
         agg.rank = rank
-    
-    # =========================================================================
-    # LEGACY: PER-ROBOT NORMALIZATION (kept for compatibility/reporting)
-    # =========================================================================
-    # Extract raw metric arrays for all knife poses of this robot
-    ik_rates = np.array([a.max_IK_failure_rate for a in aggregated_list])
-    sing_rates = np.array([a.max_singularity_rate for a in aggregated_list])
-    min_manips = np.array([a.min_min_manipulability for a in aggregated_list])
-    mean_manips = np.array([a.mean_mean_manipulability for a in aggregated_list])
-    mean_svs = np.array([a.mean_mean_min_singular_value for a in aggregated_list])
-    
-    # Normalize each metric to [0, 1] where 0=best, 1=worst (for reporting only)
-    norm_ik = normalize_metric_lower_better(ik_rates)
-    norm_sing = normalize_metric_lower_better(sing_rates)
-    norm_min_manip = normalize_metric_higher_better(min_manips)
-    norm_mean_manip = normalize_metric_higher_better(mean_manips)
-    norm_mean_sv = normalize_metric_higher_better(mean_svs)
-    
-    # Store normalized values (for reporting) and compute legacy scores
-    for i, agg in enumerate(aggregated_list):
-        agg.norm_IK_failure_rate = float(norm_ik[i])
-        agg.norm_singularity_rate = float(norm_sing[i])
-        agg.norm_min_manipulability = float(norm_min_manip[i])
-        agg.norm_mean_manipulability = float(norm_mean_manip[i])
-        agg.norm_mean_min_singular_value = float(norm_mean_sv[i])
-        
-        # Compute legacy weighted score (for reporting/compatibility)
-        agg.normalized_score, agg.raw_score = compute_weighted_score(
-            agg.max_IK_failure_rate,
-            agg.norm_singularity_rate,
-            agg.norm_min_manipulability,
-            agg.norm_mean_manipulability,
-            agg.norm_mean_min_singular_value,
-            weights
-        )
     
     # Save per-robot outputs - create robot-specific folder
     robot_name_clean = robot_name.replace(" ", "_").replace("/", "-")
@@ -2122,26 +1868,18 @@ def _process_robot_results(
         knife_pose_folder = knife_poses_folder / agg.knife_pose_id
         save_knife_pose_details(agg, knife_pose_folder)
     
-    # Sanity check - consider both IK failure rate and score
+    # Sanity check - validity gate on best knife
     if aggregated_list:
         best_knife = aggregated_list[0]
-        best_score = best_knife.normalized_score
-        best_ik_fail = best_knife.max_IK_failure_rate
-        
-        if best_ik_fail > 0:
+        if not best_knife.is_valid:
             logger.error(
-                f"Robot {robot_name}: Best knife has IK failure rate {best_ik_fail:.1%}. "
+                f"Robot {robot_name}: Best knife pose is not valid. "
                 f"All knife poses are infeasible for this robot."
-            )
-        elif best_score >= 0.2:
-            logger.warning(
-                f"Robot {robot_name}: Best score ({best_score:.4f}) >= 0.2. "
-                "No ideal candidate found."
             )
         else:
             logger.info(
                 f"Robot {robot_name}: Best knife pose '{best_knife.knife_pose_id}' "
-                f"with score {best_score:.4f}"
+                f"with feasibility key {best_knife.feasibility_sort_key}"
             )
     
     return aggregated_list
@@ -2150,8 +1888,7 @@ def _process_robot_results(
 def _save_all_outputs(
     all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
     all_results: List[CombinationResult],
-    output_dir: Path,
-    weights: Dict[str, float]
+    output_dir: Path
 ) -> List[RobotRankingResult]:
     """
     Save all global output files.
@@ -2160,8 +1897,6 @@ def _save_all_outputs(
         all_robot_results: Dictionary mapping robot name to aggregated results
         all_results: List of all combination results
         output_dir: Output directory
-        weights: Scoring weights
-        
     Returns:
         List of RobotRankingResult (sorted by rank)
     """
@@ -2179,8 +1914,7 @@ def _save_all_outputs(
         all_robot_results,
         all_results,
         robot_rankings,
-        str(output_dir / "feasibility_ranking_report.md"),
-        weights
+        str(output_dir / "feasibility_ranking_report.md")
     )
     
     # Save batch summary JSON
@@ -2252,18 +1986,18 @@ def _print_summary(
     # Highlight best robot
     if robot_rankings:
         best_robot = robot_rankings[0]
-        if best_robot.max_IK_failure_rate > 0:
+        if not best_robot.is_valid:
             print("[X] WARNING: NO FEASIBLE COMBINATION FOUND!")
-            print("   All robot+knife combinations have IK failures.")
+            print("   All robot+knife combinations failed the Level-1 feasibility gate.")
             print("   Best available (least infeasible):")
         else:
             print("[*] RECOMMENDED SOLUTION:")
         print(f"  + Robot Model: {best_robot.robot_name}")
         print(f"  + Best Knife Pose: {best_robot.best_knife_pose_id}")
-        print(f"  + Performance Score: {best_robot.best_knife_pose_score:.4f} (lower is better)")
+        print(f"  + Feasibility Tuple: {format_feasibility_tuple(best_robot.is_valid, best_robot.safety_tier, best_robot.smoothness_cost, best_robot.dexterity_score)}")
         print(f"  + IK Failure Rate: {best_robot.max_IK_failure_rate:.2%}")
         print(f"  + Verdict: {best_robot.verdict}")
-        if best_robot.max_IK_failure_rate > 0:
+        if not best_robot.is_valid:
             print("")
             print("   [!] ACTION REQUIRED: Check URDF files, toolpath positions, or workspace setup.")
         print("")
@@ -2273,7 +2007,7 @@ def _print_summary(
     for i, robot_result in enumerate(robot_rankings, 1):
         print(f"  {i}. {robot_result.robot_name}")
         print(f"     Best Knife: {robot_result.best_knife_pose_id}")
-        print(f"     Score: {robot_result.best_knife_pose_score:.4f} | "
+        print(f"     Feasibility: {format_feasibility_tuple(robot_result.is_valid, robot_result.safety_tier, robot_result.smoothness_cost, robot_result.dexterity_score)} | "
               f"IK Fail: {robot_result.max_IK_failure_rate:.2%} | "
               f"Verdict: {robot_result.verdict}")
         print("")
@@ -2289,7 +2023,6 @@ def process_ranking_batch(
     config_path: str,
     output_base: str = None,
     num_workers: int = 1,
-    weights_path: str = None,
     knife_config_path: str = None,
     detailed_per_trajectory_report: bool = False
 ) -> Dict[str, Any]:
@@ -2303,7 +2036,6 @@ def process_ranking_batch(
         config_path: Path to batch config YAML
         output_base: Base output directory
         num_workers: Number of parallel workers
-        weights_path: Path to scoring weights YAML
         knife_config_path: Path to knife poses YAML
         detailed_per_trajectory_report: Whether to generate detailed per-trajectory plots
         
@@ -2311,8 +2043,8 @@ def process_ranking_batch(
         Dictionary with batch results
     """
     # Step 1: Load all configuration files
-    config, knife_poses, feas_config, weights = _load_configs(
-        config_path, knife_config_path, weights_path
+    config, knife_poses, feas_config = _load_configs(
+        config_path, knife_config_path
     )
     
     # Step 2: Setup output directories
@@ -2336,17 +2068,17 @@ def process_ranking_batch(
     # Step 6: Organize results by robot
     results_by_robot = _organize_results_by_robot(all_results)
     
-    # Step 7: Process each robot (aggregate, normalize, score, save)
+    # Step 7: Process each robot (aggregate, rank, save)
     all_robot_results: Dict[str, List[AggregatedKnifePoseResult]] = {}
     
     for robot_name, knife_results in results_by_robot.items():
         aggregated_list = _process_robot_results(
-            robot_name, knife_results, weights, per_robot_dir
+            robot_name, knife_results, per_robot_dir
         )
         all_robot_results[robot_name] = aggregated_list
     
     # Step 8: Save global outputs and get robot rankings
-    robot_rankings = _save_all_outputs(all_robot_results, all_results, output_dir, weights)
+    robot_rankings = _save_all_outputs(all_robot_results, all_results, output_dir)
     
     # Step 9: Print summary
     _print_summary(all_results, all_robot_results, robot_rankings, output_dir)
@@ -2415,7 +2147,7 @@ def validate_ranking_outputs(output_dir: str) -> bool:
             required_cols_map = {
                 'robot_name': ['Robot Name', 'robot_name'],
                 'knife_pose_id': ['Knife Pose ID', 'knife_pose_id'],
-                'score': ['Score', 'normalized_score', 'raw_score', 'score'],
+                'feasibility_tuple': ['Feasibility Tuple', 'feasibility_tuple'],
                 'robot_rank': ['Robot Rank', 'robot_rank'],
                 'global_rank': ['Global Rank', 'global_rank']
             }
@@ -2495,8 +2227,6 @@ def main():
                         help="Output directory")
     parser.add_argument('--workers', '-w', type=int, default=1,
                         help="Number of parallel workers (1 = sequential, recommended: 4-8 for stability)")
-    parser.add_argument('--weights', 
-                        help="Path to scoring weights YAML (optional)")
     parser.add_argument('--knife-config',
                         help="Path to knife poses YAML (default: config/sparse_generated_knife_poses.yaml)")
     parser.add_argument('--debug', action='store_true',
@@ -2527,7 +2257,6 @@ def main():
             config_path=args.config,
             output_base=args.output,
             num_workers=args.workers,
-            weights_path=args.weights,
             knife_config_path=args.knife_config,
             detailed_per_trajectory_report=args.detailed_per_trajectory_report
         )

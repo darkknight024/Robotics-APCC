@@ -1151,7 +1151,25 @@ def process_toolpath(
         velocity_ratios = np.array([r.joint_velocity_ratio for r in per_wp 
                                     if r.joint_velocity_ratio is not None])
         
+        # ---------------------------------------------------------------------
+        # CRITICAL: Compute Timestamps for Consistent Metrics
+        # ---------------------------------------------------------------------
+        # We must use the same timing logic for Smoothness Cost (Level 3) and 
+        # Continuity (Level 1) to ensure consistency.
+        # compute_segment_times accounts for linear/angular distance AND joint velocity limits.
+        
+        timestamps = None
+        if len(joint_angles_rad) == n_waypoints:
+            timestamps, _ = compute_segment_times(
+                trajectory, 
+                joint_angles_rad, 
+                speed_mm_s=speed_mm_s, 
+                velocity_limits_rad_s=final_velocity_limits
+            )
+        
+        # ---------------------------------------------------------------------
         # Compute 4-Level Feasibility Metrics
+        # ---------------------------------------------------------------------
         feasibility_flags = traj_result['feasibility_flags']
         
         # Level 1: Feasibility Gate (already computed in traj_result)
@@ -1163,20 +1181,10 @@ def process_toolpath(
         safety_tier = compute_safety_tier(max_condition_number, safety_bin_size)
         
         # Level 3: Smoothness Cost (Normalized Joint Energy)
-        # Need timestamps for energy computation
-        timestamps_for_energy = None
-        if len(joint_angles_rad) == n_waypoints:
-            # Estimate timestamps if not available
-            timestamps_for_energy = np.zeros(n_waypoints)
-            for i in range(1, n_waypoints):
-                dist = np.linalg.norm(trajectory[i, :3] - trajectory[i-1, :3])
-                dt = dist / (speed_mm_s / 1000.0) if speed_mm_s > 0 else 0.001
-                timestamps_for_energy[i] = timestamps_for_energy[i-1] + dt
-        
-        smoothness_cost = 0.0
-        if timestamps_for_energy is not None and len(joint_angles_rad) == n_waypoints and final_velocity_limits is not None:
+        smoothness_cost = float('inf')
+        if timestamps is not None and final_velocity_limits is not None:
             smoothness_cost = compute_normalized_joint_energy(
-                joint_angles_rad, timestamps_for_energy, final_velocity_limits
+                joint_angles_rad, timestamps, final_velocity_limits
             )
         
         # Level 4: Dexterity Score (already computed as dexterity_score)
@@ -1192,6 +1200,8 @@ def process_toolpath(
         if run_continuity and waypoint_idx is None and len(joint_angles_rad) == n_waypoints:
             if verbose:
                 print(f"    Running continuity analysis...")
+            # Note: analyze_continuity will re-compute timestamps using the same logic
+            # We could pass them if we modified analyze_continuity, but re-computing is cheap/safe
             continuity_result = analyze_continuity(
                 trajectory, joint_angles_rad, speed_mm_s, final_velocity_limits
             )
