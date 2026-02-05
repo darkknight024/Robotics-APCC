@@ -43,6 +43,7 @@ import json
 import logging
 import math
 import sys
+import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -88,12 +89,14 @@ class FeasibilityTask:
     knife_quaternion: np.ndarray
     toolpath_path: str
     toolpath_name: str
-    output_dir: str
+    base_output_dir: str
+    combo_name: str
     singularity_threshold: float
     speed_mm_s: float
     run_continuity: bool
     save_analysis: bool = False
     detailed_per_trajectory_report: bool = False
+    skip_plots: bool = False
 
 
 @dataclass
@@ -516,13 +519,17 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
     Returns:
         CombinationResult with metrics or error
     """
+    # Create temp directory for analysis
+    base_dir = Path(task.base_output_dir)
+    temp_dir = base_dir / "_temp" / task.combo_name
+    
     try:
         result = process_toolpath(
             toolpath_path=task.toolpath_path,
             urdf_path=task.urdf_path,
             knife_translation_m=task.knife_translation_m,
             knife_quaternion=task.knife_quaternion,
-            output_dir=task.output_dir,
+            output_dir=str(temp_dir),
             robot_model_name=task.robot_name,
             knife_pose_name=task.knife_name,
             robot_reach_m=task.robot_reach_m,
@@ -532,7 +539,8 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             run_continuity=task.run_continuity,
             save_analysis=task.save_analysis,
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
-            use_flat_output_structure=True  # CRITICAL FIX: Avoid Windows path length limit
+            use_flat_output_structure=True,  # CRITICAL FIX: Avoid Windows path length limit
+            skip_plots=task.skip_plots
         )
         
         # Extract per-trajectory metrics
@@ -544,7 +552,7 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
         # Aggregate across trajectories
         aggregated = aggregate_trajectory_metrics(trajectory_metrics)
         
-        return CombinationResult(
+        combo_result = CombinationResult(
             robot_name=task.robot_name,
             knife_pose_id=task.knife_name,
             toolpath_name=task.toolpath_name,
@@ -564,8 +572,44 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             dexterity_score=float(aggregated['dexterity_score']),
         )
         
+        # Move to Successful or Failed folder based on feasibility
+        # User request: "out_of_reach" (infeasible) should not be in Successful
+        # CRITICAL: Must have 100% reachability (max_IK_failure_rate == 0.0)
+        if aggregated['is_valid'] and aggregated['max_IK_failure_rate'] == 0.0:
+            final_dir = base_dir / "Successful" / task.combo_name
+        else:
+            final_dir = base_dir / "Failed" / task.combo_name
+            
+        final_dir.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Clean up existing destination if needed (though timestamped folders prevent this usually)
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+            
+        shutil.move(str(temp_dir), str(final_dir))
+        
+        return combo_result
+        
     except Exception as e:
         logger.error(f"Failed: {task.robot_name}/{task.knife_name}/{task.toolpath_name}: {e}")
+        
+        # Move to Failed folder
+        if temp_dir.exists():
+            final_dir = base_dir / "Failed" / task.combo_name
+            final_dir.parent.mkdir(parents=True, exist_ok=True)
+            
+            if final_dir.exists():
+                shutil.rmtree(final_dir)
+                
+            try:
+                shutil.move(str(temp_dir), str(final_dir))
+                
+                # Write error log in the failed folder
+                with open(final_dir / "error.log", "w") as f:
+                    f.write(str(e))
+            except Exception as move_error:
+                logger.error(f"Could not move failed analysis: {move_error}")
+        
         return CombinationResult(
             robot_name=task.robot_name,
             knife_pose_id=task.knife_name,
@@ -1126,7 +1170,8 @@ def generate_markdown_report(
     all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
     all_combination_results: List[CombinationResult],
     robot_rankings: List[RobotRankingResult],
-    output_path: str
+    output_path: str,
+    knife_poses: Dict[str, KnifePose]
 ) -> None:
     """
     Generate markdown summary report.
@@ -1136,6 +1181,7 @@ def generate_markdown_report(
         all_combination_results: All combination results
         robot_rankings: Robot-level ranking results
         output_path: Path to save markdown
+        knife_poses: Dictionary of knife poses
     """
     lines = []
     lines.append("# Feasibility Ranking Report")
@@ -1235,12 +1281,21 @@ def generate_markdown_report(
         # Top 5 best
         lines.append("### Top 5 Best Knife Poses")
         lines.append("")
-        lines.append("| Rank | Knife Pose | Feasibility Tuple | Safety Tier | Smoothness | Dexterity |")
-        lines.append("|------|------------|-------------------|-------------|------------|-----------|")
+        lines.append("| Rank | Knife Pose | XYZ (mm) | Quat (qw,qx,qy,qz) | Feasibility Tuple | Safety Tier | Smoothness | Dexterity |")
+        lines.append("|------|------------|----------|--------------------|-------------------|-------------|------------|-----------|")
         
         for r in results[:5]:
+            # Look up knife pose details
+            knife = knife_poses.get(r.knife_pose_id)
+            xyz_str = "N/A"
+            quat_str = "N/A"
+            if knife:
+                # Convert to mm and format
+                xyz_str = f"[{knife.translation_m[0]*1000:.3f}, {knife.translation_m[1]*1000:.3f}, {knife.translation_m[2]*1000:.3f}]"
+                quat_str = f"[{knife.quaternion[0]:.3f}, {knife.quaternion[1]:.3f}, {knife.quaternion[2]:.3f}, {knife.quaternion[3]:.3f}]"
+            
             lines.append(
-                f"| {r.rank} | {r.knife_pose_id[:40]} | "
+                f"| {r.rank} | {r.knife_pose_id[:30]} | {xyz_str} | {quat_str} | "
                 f"{format_feasibility_tuple(r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score)} | "
                 f"{r.safety_tier} | {r.smoothness_cost:.4f} | {r.dexterity_score:.4f} |"
             )
@@ -1572,7 +1627,8 @@ def _build_task_list(
     toolpath_files: List[Path],
     output_dir: Path,
     feas_config: Dict,
-    detailed_per_trajectory_report: bool = False
+    detailed_per_trajectory_report: bool = False,
+    skip_plots: bool = False
 ) -> List[FeasibilityTask]:
     """
     Build list of tasks for all combinations.
@@ -1584,6 +1640,7 @@ def _build_task_list(
         output_dir: Output directory
         feas_config: Feasibility configuration
         detailed_per_trajectory_report: Whether to generate detailed per-trajectory plots
+        skip_plots: Whether to skip saving PNG plots
         
     Returns:
         List of FeasibilityTask objects
@@ -1620,7 +1677,7 @@ def _build_task_list(
             for toolpath_file in toolpath_files:
                 toolpath_name = toolpath_file.stem
                 robot_name_clean = robot.name.replace(" ", "_").replace("/", "-")
-                combo_output = output_dir / f"{robot_name_clean}__{pose_name}__{toolpath_name}"
+                combo_name = f"{robot_name_clean}__{pose_name}__{toolpath_name}"
                 
                 tasks.append(FeasibilityTask(
                     robot_name=robot.name,
@@ -1632,12 +1689,14 @@ def _build_task_list(
                     knife_quaternion=knife.quaternion,
                     toolpath_path=str(toolpath_file),
                     toolpath_name=toolpath_name,
-                    output_dir=str(combo_output),
+                    base_output_dir=str(output_dir),
+                    combo_name=combo_name,
                     singularity_threshold=singularity_threshold,
                     speed_mm_s=speed_mm_s,
                     run_continuity=run_continuity,
                     save_analysis=False,  # Don't save text reports for each combo
-                    detailed_per_trajectory_report=detailed_per_trajectory_report
+                    detailed_per_trajectory_report=detailed_per_trajectory_report,
+                    skip_plots=skip_plots
                 ))
     
     return tasks
@@ -1668,7 +1727,14 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
             all_results.append(result)
             
             # Save per-combination summary
-            save_combination_summary(result, task.output_dir)
+            # Determine output directory based on feasibility (matches run_single_analysis logic)
+            base_dir = Path(task.base_output_dir)
+            if result.success and result.is_valid and result.max_IK_failure_rate == 0.0:
+                output_dir = base_dir / "Successful" / task.combo_name
+            else:
+                output_dir = base_dir / "Failed" / task.combo_name
+                
+            save_combination_summary(result, str(output_dir))
             
             # Update progress bar
             pbar.set_postfix({"robot": task.robot_name, "knife": task.knife_name})
@@ -1696,7 +1762,13 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
                     all_results.append(result)
                     
                     # Save per-combination summary
-                    save_combination_summary(result, task.output_dir)
+                    base_dir = Path(task.base_output_dir)
+                    if result.success and result.is_valid and result.max_IK_failure_rate == 0.0:
+                        output_dir = base_dir / "Successful" / task.combo_name
+                    else:
+                        output_dir = base_dir / "Failed" / task.combo_name
+                        
+                    save_combination_summary(result, str(output_dir))
                     
                     if result.success:
                         logger.debug(f"[{completed}/{total_tasks}] Completed: {task.knife_name}/{task.toolpath_name}")
@@ -1714,7 +1786,11 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
                         error=str(e)
                     )
                     all_results.append(failed_result)
-                    save_combination_summary(failed_result, task.output_dir)
+                    
+                    # Save summary in failed folder
+                    output_dir = Path(task.base_output_dir) / "Failed" / task.combo_name
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    save_combination_summary(failed_result, str(output_dir))
                 
                 # Update progress bar as each future completes
                 pbar.set_postfix({"robot": task.robot_name, "knife": task.knife_name})
@@ -1753,7 +1829,8 @@ def _organize_results_by_robot(
 def _process_robot_results(
     robot_name: str,
     knife_results: Dict[str, List[CombinationResult]],
-    per_robot_dir: Path
+    per_robot_dir: Path,
+    skip_plots: bool = False
 ) -> List[AggregatedKnifePoseResult]:
     """
     Process results for a single robot: aggregate, rank, and save.
@@ -1762,6 +1839,7 @@ def _process_robot_results(
         robot_name: Name of the robot
         knife_results: Dictionary mapping knife_pose_id to list of results
         per_robot_dir: Directory to save per-robot outputs
+        skip_plots: Whether to skip saving PNG plots
         
     Returns:
         Sorted list of AggregatedKnifePoseResult (best first)
@@ -1855,7 +1933,7 @@ def _process_robot_results(
     )
     
     # Save ranking plot
-    if generate_ranking_plot:
+    if generate_ranking_plot and not skip_plots:
         generate_ranking_plot(
             aggregated_list,
             str(robot_folder / "ranking_plot.png"),
@@ -1888,7 +1966,8 @@ def _process_robot_results(
 def _save_all_outputs(
     all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
     all_results: List[CombinationResult],
-    output_dir: Path
+    output_dir: Path,
+    knife_poses: Dict[str, KnifePose]
 ) -> List[RobotRankingResult]:
     """
     Save all global output files.
@@ -1897,6 +1976,7 @@ def _save_all_outputs(
         all_robot_results: Dictionary mapping robot name to aggregated results
         all_results: List of all combination results
         output_dir: Output directory
+        knife_poses: Dictionary of knife poses
     Returns:
         List of RobotRankingResult (sorted by rank)
     """
@@ -1914,7 +1994,8 @@ def _save_all_outputs(
         all_robot_results,
         all_results,
         robot_rankings,
-        str(output_dir / "feasibility_ranking_report.md")
+        str(output_dir / "feasibility_ranking_report.md"),
+        knife_poses
     )
     
     # Save batch summary JSON
@@ -1924,6 +2005,57 @@ def _save_all_outputs(
         robot_rankings,
         str(output_dir / "batch_ranking_summary.json")
     )
+
+    # -------------------------------------------------------------------------
+    # COPY TOP 5 CANDIDATES
+    # -------------------------------------------------------------------------
+    # 1. Flatten all results to find top 5 global combinations
+    flat_results = []
+    for robot_name, results in all_robot_results.items():
+        flat_results.extend(results)
+    
+    # 2. Sort by feasibility key
+    if flat_results:
+        flat_results.sort(key=lambda x: x.feasibility_sort_key)
+        
+        # 3. Take Top 5
+        top_5 = flat_results[:5]
+        
+        # 4. Copy to Top-5_candidates folder
+        top_5_dir = output_dir / "Top-5_candidates"
+        top_5_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Saving Top 5 candidates to {top_5_dir}...")
+        
+        for rank, agg_result in enumerate(top_5, 1):
+            robot_name = agg_result.robot_name
+            knife_id = agg_result.knife_pose_id
+            
+            # Construct folder name for this rank
+            # Rank_X_Robot_Knife
+            rank_folder_name = f"Rank_{rank}_{robot_name.replace(' ', '_')}_{knife_id}"
+            rank_dest_dir = top_5_dir / rank_folder_name
+            rank_dest_dir.mkdir(parents=True, exist_ok=True)
+            
+            # For each successful toolpath in this combination, copy the folder
+            for toolpath_res in agg_result.toolpath_results:
+                if toolpath_res.success:
+                    # Construct source path: Successful/ or Failed/ based on is_valid AND 100% reachability
+                    robot_name_clean = robot_name.replace(" ", "_").replace("/", "-")
+                    combo_name = f"{robot_name_clean}__{knife_id}__{toolpath_res.toolpath_name}"
+                    
+                    if toolpath_res.is_valid and toolpath_res.max_IK_failure_rate == 0.0:
+                        source_path = output_dir / "Successful" / combo_name
+                    else:
+                        source_path = output_dir / "Failed" / combo_name
+                    
+                    if source_path.exists():
+                        dest_path = rank_dest_dir / toolpath_res.toolpath_name
+                        if dest_path.exists():
+                            shutil.rmtree(dest_path)
+                        shutil.copytree(source_path, dest_path)
+                    else:
+                        logger.warning(f"Could not find source folder for Top 5 candidate: {source_path}")
     
     return robot_rankings
 
@@ -2024,7 +2156,8 @@ def process_ranking_batch(
     output_base: str = None,
     num_workers: int = 1,
     knife_config_path: str = None,
-    detailed_per_trajectory_report: bool = False
+    detailed_per_trajectory_report: bool = False,
+    skip_plots: bool = False
 ) -> Dict[str, Any]:
     """
     Run feasibility ranking on all combinations.
@@ -2038,6 +2171,7 @@ def process_ranking_batch(
         num_workers: Number of parallel workers
         knife_config_path: Path to knife poses YAML
         detailed_per_trajectory_report: Whether to generate detailed per-trajectory plots
+        skip_plots: Whether to skip saving PNG plots
         
     Returns:
         Dictionary with batch results
@@ -2054,15 +2188,16 @@ def process_ranking_batch(
     toolpath_files = _find_toolpath_files(config)
     
     # Step 4: Build task list
-    tasks = _build_task_list(config, knife_poses, toolpath_files, output_dir, feas_config, detailed_per_trajectory_report)
+    tasks = _build_task_list(config, knife_poses, toolpath_files, output_dir, feas_config, detailed_per_trajectory_report, skip_plots)
     
+    # Step 5: Execute tasks
     logger.info(f"Prepared {len(tasks)} analysis tasks")
     
     if len(tasks) == 0:
         logger.warning("No tasks to process!")
         return {'total_combinations': 0, 'successful': 0, 'failed': 0, 'results': []}
     
-    # Step 5: Execute tasks
+    # Execute tasks
     all_results = _execute_tasks(tasks, num_workers)
     
     # Step 6: Organize results by robot
@@ -2073,12 +2208,12 @@ def process_ranking_batch(
     
     for robot_name, knife_results in results_by_robot.items():
         aggregated_list = _process_robot_results(
-            robot_name, knife_results, per_robot_dir
+            robot_name, knife_results, per_robot_dir, skip_plots
         )
         all_robot_results[robot_name] = aggregated_list
     
     # Step 8: Save global outputs and get robot rankings
-    robot_rankings = _save_all_outputs(all_robot_results, all_results, output_dir)
+    robot_rankings = _save_all_outputs(all_robot_results, all_results, output_dir, knife_poses)
     
     # Step 9: Print summary
     _print_summary(all_results, all_robot_results, robot_rankings, output_dir)
@@ -2235,6 +2370,8 @@ def main():
                         help="Only validate existing outputs")
     parser.add_argument('--detailed_per_trajectory_report', action='store_true',
                         help="Generate detailed plots for each trajectory (default: only 4 aggregated plots)")
+    parser.add_argument('--plots', action='store_true',
+                        help="Enable saving PNG plots (default: disabled)")
     
     args = parser.parse_args()
     
@@ -2258,7 +2395,8 @@ def main():
             output_base=args.output,
             num_workers=args.workers,
             knife_config_path=args.knife_config,
-            detailed_per_trajectory_report=args.detailed_per_trajectory_report
+            detailed_per_trajectory_report=args.detailed_per_trajectory_report,
+            skip_plots=not args.plots
         )
         
         # Validate outputs

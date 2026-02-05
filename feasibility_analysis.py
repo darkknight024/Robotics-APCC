@@ -894,6 +894,7 @@ def process_toolpath(
     save_analysis: bool = True,
     detailed_per_trajectory_report: bool = True,
     use_flat_output_structure: bool = False,
+    skip_plots: bool = False,
     verbose: bool = True,
     traj_id: Optional[int] = None,
     waypoint_idx: Optional[int] = None
@@ -919,6 +920,7 @@ def process_toolpath(
                                         (default: False, generates only 4 aggregated plots)
         use_flat_output_structure: If True, use output_dir directly without adding subdirectories
                                     (used by combinatorial search to avoid path length issues)
+        skip_plots: If True, skip saving PNG plots (default: False)
         
     Returns:
         Dictionary with analysis results
@@ -1215,7 +1217,7 @@ def process_toolpath(
                 print(f"Continuity: {status} ({unreachable_count} unreachable waypoints)")
             
             # Generate per-trajectory continuity plot (only if detailed report is enabled)
-            if detailed_per_trajectory_report:
+            if detailed_per_trajectory_report and not skip_plots:
                 plot_continuity_analysis(
                     timestamps=continuity_result.timestamps,
                     trajectory_m=trajectory,
@@ -1230,7 +1232,7 @@ def process_toolpath(
         # Plots will be generated once per combination after all trajectories are processed
         
         # Generate per-trajectory plots (only if detailed report is enabled)
-        if detailed_per_trajectory_report:
+        if detailed_per_trajectory_report and not skip_plots:
             plot_reachability_per_waypoint(
                 reachable,
                 str(traj_out / "reachability.png"),
@@ -1316,7 +1318,7 @@ def process_toolpath(
         pbar.close()
     
     # Generate single comprehensive 4-level feasibility plot for the entire combination
-    if not (traj_id is not None and waypoint_idx is not None):
+    if not skip_plots and not (traj_id is not None and waypoint_idx is not None):
         print(f"\n  Generating comprehensive 4-level feasibility plot for combination...")
         safety_bin_size = 10.0  # Configurable bin size
         plot_combination_feasibility_levels(
@@ -1327,10 +1329,16 @@ def process_toolpath(
             toolpath_name=toolpath_name
         )
     
+<<<<<<< HEAD
     # Generate aggregated plots (4 plots by default) - skip if analyzing single trajectory/waypoint
     if not (traj_id is not None and waypoint_idx is not None):
         if verbose:
             print(f"\n  Generating aggregated plots for toolpath...")
+=======
+    # Generate aggregated plots (4 plots by default)
+    if not skip_plots:
+        print(f"\n  Generating aggregated plots for toolpath...")
+>>>>>>> 95da5f7 (code review - CLI for plots, segregate pass fail folder, top 5 knife poses with pose)
         
         # 1. Reachability rate per trajectory
         plot_reachability_rate_per_trajectory(
@@ -1364,11 +1372,15 @@ def process_toolpath(
                 velocity_limits_rad_s=velocity_limits_rad_s
             )
         
+<<<<<<< HEAD
         if verbose:
             print(f"  Aggregated plots saved to: {out_path}")
+=======
+        print(f"  Aggregated plots saved to: {out_path}")
+>>>>>>> 95da5f7 (code review - CLI for plots, segregate pass fail folder, top 5 knife poses with pose)
     
     # Generate legacy summary plot (kept for backward compatibility)
-    if detailed_per_trajectory_report:
+    if detailed_per_trajectory_report and not skip_plots:
         plot_reachability_summary(
             results['trajectory_stats'],
             str(out_path / "reachability_summary.png"),
