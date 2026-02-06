@@ -10,9 +10,31 @@ import numpy as np
 from typing import Optional, Dict, Any
 
 
+def shortest_angular_distance(q1: float, q2: float) -> float:
+    """
+    Compute shortest angular distance between two angles, handling wrapping.
+    
+    Handles the case where joint moves from 359° to 1° (should be 2°, not 358°).
+    
+    Args:
+        q1: First angle in radians
+        q2: Second angle in radians
+        
+    Returns:
+        Shortest angular distance in radians (always positive)
+    """
+    diff = q2 - q1
+    # Wrap to [-π, π]
+    diff = np.arctan2(np.sin(diff), np.cos(diff))
+    return abs(diff)
+
+
 def compute_joint_space_distance(q1: np.ndarray, q2: np.ndarray) -> float:
     """
-    Compute Euclidean distance between two joint configurations.
+    Compute Euclidean distance between two joint configurations with angular wrapping.
+    
+    CRITICAL FIX: Now handles angular wrapping to prevent false velocity spikes
+    when joints move from 359° to 1° (should be 2°, not 358°).
     
     Args:
         q1: First joint configuration (n_joints,)
@@ -21,7 +43,9 @@ def compute_joint_space_distance(q1: np.ndarray, q2: np.ndarray) -> float:
     Returns:
         Euclidean distance in joint space (radians)
     """
-    return float(np.linalg.norm(q2 - q1))
+    # Use shortest angular distance for each joint to handle wrapping
+    distances = np.array([shortest_angular_distance(q1[i], q2[i]) for i in range(len(q1))])
+    return float(np.linalg.norm(distances))
 
 
 def compute_distance_to_joint_limits(
@@ -59,6 +83,9 @@ def compute_joint_velocity_ratio(
     Returns the maximum ratio of |dq/dt| / limit across all joints.
     A value > 1.0 indicates a C1 violation.
     
+    CRITICAL FIX: Now uses shortest angular distance to prevent false velocity spikes
+    when joints wrap around (e.g., 359° to 1° should be 2°/dt, not 358°/dt).
+    
     Args:
         q_prev: Previous joint configuration (n_joints,)
         q_current: Current joint configuration (n_joints,)
@@ -68,10 +95,11 @@ def compute_joint_velocity_ratio(
     Returns:
         Maximum velocity ratio (max of |dq/dt| / limit across joints)
     """
-    if dt < 1e-10:
-        return 0.0
+    # CRITICAL FIX: Minimum time step clamp to prevent division by zero
+    dt = max(dt, 1e-6)
     
-    dq = np.abs(q_current - q_prev)
+    # CRITICAL FIX: Use shortest angular distance for each joint to handle wrapping
+    dq = np.array([shortest_angular_distance(q_prev[i], q_current[i]) for i in range(len(q_prev))])
     velocities = dq / dt
     ratios = velocities / velocity_limits_rad_s
     return float(np.max(ratios))
@@ -113,10 +141,13 @@ def compute_joint_velocity_metrics(
     for j in range(n_joints):
         # Compute velocities using finite differences
         dt = np.diff(timestamps)
-        dt = np.where(dt > 1e-10, dt, 1e-10)  # Avoid division by zero
-        dq = np.diff(joint_angles_rad[:, j])
+        dt = np.where(dt > 1e-6, dt, 1e-6)  # CRITICAL FIX: Minimum time step clamp
+        
+        # CRITICAL FIX: Use shortest angular distance to handle joint wrapping
+        dq = np.array([shortest_angular_distance(joint_angles_rad[i, j], joint_angles_rad[i+1, j]) 
+                       for i in range(len(joint_angles_rad) - 1)])
         vel = dq / dt
-        velocities.extend(np.abs(vel))
+        velocities.extend(vel)  # Keep signed velocities for acceleration calculation
         
         # Compute velocity ratios if limits provided
         if velocity_limits_rad_s is not None:
@@ -203,7 +234,9 @@ def compute_normalized_joint_energy(
     # Compute velocity ratios for each segment
     segment_energies = []
     for i in range(len(joint_angles_rad) - 1):
-        dq = np.abs(joint_angles_rad[i + 1] - joint_angles_rad[i])
+        # CRITICAL FIX: Use shortest angular distance to handle joint wrapping
+        dq = np.array([shortest_angular_distance(joint_angles_rad[i, j], joint_angles_rad[i+1, j]) 
+                       for j in range(len(velocity_limits_rad_s))])
         velocities = dq / dt[i]
         ratios = velocities / velocity_limits_rad_s
         # Sum of squared ratios across joints for this segment

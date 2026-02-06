@@ -128,6 +128,12 @@ def compute_segment_times(
         # Unified pose distance
         pose_distance = np.sqrt(d_linear**2 + (pose_scale_m_per_rad * d_angle)**2)
         
+        # CRITICAL FIX: Filter out duplicate waypoints to prevent infinite velocity
+        if pose_distance < 1e-6:
+            # Skip this segment - treat as duplicate waypoint
+            segment_durations[i] = 1e-3  # Minimal time for duplicate
+            continue
+        
         # CRITICAL PHYSICS UPDATE: Speed-driven time calculation
         if speeds_mm_s is not None:
             # Use average speed of current and next waypoint for this segment

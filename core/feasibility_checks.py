@@ -105,13 +105,30 @@ def compute_condition_number(jacobian: np.ndarray) -> float:
     Returns:
         Condition number (infinity if near singular)
     """
-    singular_values = np.linalg.svd(jacobian, compute_uv=False)
-    min_sv = np.min(singular_values)
-    
-    if min_sv < 1e-10:
+    try:
+        singular_values = np.linalg.svd(jacobian, compute_uv=False)
+        
+        # CRITICAL FIX: Sanitize NaN values that could break sorting
+        if np.any(np.isnan(singular_values)):
+            return np.inf
+        
+        min_sv = np.min(singular_values)
+        max_sv = np.max(singular_values)
+        
+        if min_sv < 1e-10 or np.isnan(min_sv) or np.isnan(max_sv):
+            return np.inf
+        
+        cond_num = max_sv / min_sv
+        
+        # Additional NaN check on final result
+        if np.isnan(cond_num):
+            return np.inf
+            
+        return cond_num
+        
+    except (np.linalg.LinAlgError, ValueError):
+        # Handle any SVD computation errors
         return np.inf
-    
-    return np.max(singular_values) / min_sv
 
 
 def compute_max_singular_value(jacobian: np.ndarray) -> float:
@@ -375,18 +392,27 @@ class FeasibilityAnalyzer:
             # Compute distances from previous waypoint if available
             if q_prev is not None and result.is_reachable:
                 joint_dist = compute_joint_space_distance(q_prev, result.joint_positions_rad)
+                
+                # CRITICAL FIX: Filter out duplicate waypoints to prevent infinite velocity
+                # Skip segments with very small joint space movement (likely duplicates or noise)
+                if joint_dist < 1e-6:
+                    # Skip this segment - treat as duplicate waypoint
+                    continue
+                
                 result.joint_space_distance = joint_dist
                 joint_space_distances.append(joint_dist)
                 
                 # CRITICAL: Compute joint velocity ratio for C1 feasibility
                 if self.velocity_limits_rad_s is not None and timestamps is not None and i > 0:
                     dt = timestamps[i] - timestamps[i-1]
-                    if dt > 1e-10:
-                        vel_ratio = compute_joint_velocity_ratio(
-                            q_prev, result.joint_positions_rad, dt, self.velocity_limits_rad_s
-                        )
-                        result.joint_velocity_ratio = vel_ratio
-                        velocity_ratios.append(vel_ratio)
+                    # CRITICAL FIX: Ensure minimum time step to prevent division by zero
+                    dt = max(dt, 1e-6)
+                    
+                    vel_ratio = compute_joint_velocity_ratio(
+                        q_prev, result.joint_positions_rad, dt, self.velocity_limits_rad_s
+                    )
+                    result.joint_velocity_ratio = vel_ratio
+                    velocity_ratios.append(vel_ratio)
             
             results.append(result)
             
@@ -435,13 +461,44 @@ class FeasibilityAnalyzer:
         
         # CRITICAL: Compute ranking scores
         safety_score = float(np.max(condition_numbers)) if condition_numbers else np.inf
-        dexterity_score = float(np.mean(manipulability_values)) if manipulability_values else 0.0  # CRITICAL: Mean manipulability
         
-        # CRITICAL: Smoothness score = mean of squared velocity ratios (POWER CONSUMPTION)
-        # This represents real power consumption: higher joint speeds = higher energy usage
-        # Formula: mean(sum(velocity_ratios^2)) penalizes high-speed joint movements
-        # Result: Prefers trajectories allowing "lazy" joint motion while meeting toolpath speed
-        smoothness_score = float(np.mean(np.array(velocity_ratios)**2)) if velocity_ratios else 0.0
+        # CRITICAL FIX: Time-weighted dexterity score to prevent sampling bias
+        # With variable speeds, fast segments (small dt) should not get equal weight to slow segments (large dt)
+        if manipulability_values and timestamps is not None and len(manipulability_values) > 1:
+            # Compute time weights for each reachable waypoint
+            dt_weights = []
+            manip_idx = 0
+            for i in range(n_waypoints):
+                if results[i].is_reachable:
+                    if i > 0:
+                        dt_weights.append(timestamps[i] - timestamps[i-1])
+                    else:
+                        dt_weights.append(timestamps[1] - timestamps[0] if len(timestamps) > 1 else 1.0)
+                    manip_idx += 1
+            
+            if len(dt_weights) == len(manipulability_values):
+                dexterity_score = float(np.average(manipulability_values, weights=dt_weights))
+            else:
+                dexterity_score = float(np.mean(manipulability_values))  # Fallback
+        else:
+            dexterity_score = float(np.mean(manipulability_values)) if manipulability_values else 0.0
+        
+        # CRITICAL FIX: Time-weighted smoothness score to prevent sampling bias
+        # Formula: time_weighted_average(sum(velocity_ratios^2)) penalizes high-speed joint movements
+        # This prevents fast segments from being under-weighted in the energy calculation
+        if velocity_ratios and timestamps is not None and len(velocity_ratios) > 0:
+            # Compute time weights for velocity ratio segments
+            dt_weights = []
+            for i in range(1, len(timestamps)):
+                if i-1 < len(velocity_ratios):  # Ensure we have a velocity ratio for this segment
+                    dt_weights.append(timestamps[i] - timestamps[i-1])
+            
+            if len(dt_weights) == len(velocity_ratios):
+                smoothness_score = float(np.average(np.array(velocity_ratios)**2, weights=dt_weights))
+            else:
+                smoothness_score = float(np.mean(np.array(velocity_ratios)**2))  # Fallback
+        else:
+            smoothness_score = float(np.mean(np.array(velocity_ratios)**2)) if velocity_ratios else 0.0
         
         # Compute trajectory-level statistics
         stats = {

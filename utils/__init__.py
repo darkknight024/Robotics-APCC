@@ -96,6 +96,7 @@ from .urdf_loader import (
 )
 
 from .math import (
+    shortest_angular_distance,
     compute_joint_space_distance,
     compute_distance_to_joint_limits,
     compute_joint_velocity_ratio,
@@ -168,6 +169,7 @@ __all__ = [
     'load_robot_model',
     'resolve_urdf_path',
     # Math utilities
+    'shortest_angular_distance',
     'compute_joint_space_distance',
     'compute_distance_to_joint_limits',
     'compute_joint_velocity_ratio',
