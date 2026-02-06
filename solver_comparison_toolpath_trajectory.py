@@ -333,7 +333,7 @@ def process_batch(config_path: str) -> Dict[str, Any]:
                 
                 # Load toolpath trajectories
                 try:
-                    trajectories_t_p_k = load_toolpath_trajectories(str(toolpath_file))
+                    trajectories_t_p_k, _ = load_toolpath_trajectories(str(toolpath_file))
                 except Exception as e:
                     skipped.append((toolpath_name, f"Error loading toolpath: {e}"))
                     continue

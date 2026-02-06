@@ -62,6 +62,7 @@ from utils import (
     load_knife_config,
     load_toolpath_config,
     load_feasibility_config,
+    extract_toolpath_speed,
     KnifePose,
     RobotConfig
 )
@@ -1658,6 +1659,7 @@ def _build_task_list(
     logger.info(f"Found {len(toolpath_files)} toolpath file(s)")
     logger.info(f"Processing {len(config['robots'])} robot(s) and {len(knife_poses_to_use)} knife pose(s)")
     logger.info(f"Continuity analysis: {'Enabled' if run_continuity else 'Disabled'}")
+    logger.info(f"Speed extraction: Using toolpath-specific speeds from CSV column 8")
     
     # Build task list
     tasks = []
@@ -1679,6 +1681,10 @@ def _build_task_list(
                 robot_name_clean = robot.name.replace(" ", "_").replace("/", "-")
                 combo_name = f"{robot_name_clean}__{pose_name}__{toolpath_name}"
                 
+                # Extract speed from this specific toolpath CSV
+                toolpath_speed_mm_s = extract_toolpath_speed(str(toolpath_file))
+                logger.debug(f"Toolpath {toolpath_name}: extracted speed = {toolpath_speed_mm_s} mm/s")
+                
                 tasks.append(FeasibilityTask(
                     robot_name=robot.name,
                     urdf_path=robot.urdf_path,
@@ -1692,7 +1698,7 @@ def _build_task_list(
                     base_output_dir=str(output_dir),
                     combo_name=combo_name,
                     singularity_threshold=singularity_threshold,
-                    speed_mm_s=speed_mm_s,
+                    speed_mm_s=toolpath_speed_mm_s,  # Use toolpath-specific speed
                     run_continuity=run_continuity,
                     save_analysis=False,  # Don't save text reports for each combo
                     detailed_per_trajectory_report=detailed_per_trajectory_report,

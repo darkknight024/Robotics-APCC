@@ -304,15 +304,19 @@ class FeasibilityAnalyzer:
         positions: np.ndarray,
         quaternions: np.ndarray,
         timestamps: Optional[np.ndarray] = None,
-        speed_mm_s: float = 100.0
+        speed_mm_s: float = 100.0,
+        speeds_mm_s: Optional[np.ndarray] = None
     ) -> Dict[str, Any]:
         """
-        Analyze feasibility of an entire trajectory.
+        Analyze feasibility of an entire trajectory with speed-driven physics.
+        
+        CRITICAL PHYSICS UPDATE: Now uses per-waypoint speeds to compute accurate dt values.
+        No more arbitrary time steps - dt = distance / speed for each segment.
         
         CRITICAL: Returns all metrics needed for ranking:
         - feasibility_flags (reachability_ok, c0_ok, c1_ok)
         - safety_score (max_condition_number)
-        - smoothness_score (mean_squared_velocity_ratio)
+        - smoothness_score (mean_squared_velocity_ratio) - POWER CONSUMPTION METRIC
         - dexterity_score (mean_manipulability)
         
         Args:
@@ -338,14 +342,31 @@ class FeasibilityAnalyzer:
         joint_space_distances = []
         velocity_ratios = []
         
-        # Estimate timestamps if not provided (for velocity ratio computation)
+        # CRITICAL PHYSICS UPDATE: Speed-driven timestamp calculation
         if timestamps is None and self.velocity_limits_rad_s is not None:
-            # Simple estimation: assume uniform spacing based on Cartesian distances
             estimated_times = np.zeros(n_waypoints)
-            for i in range(1, n_waypoints):
-                dist = np.linalg.norm(positions[i] - positions[i-1])
-                dt = dist / (speed_mm_s / 1000.0) if speed_mm_s > 0 else 0.001
-                estimated_times[i] = estimated_times[i-1] + dt
+            
+            # Use per-waypoint speeds if provided, otherwise constant speed
+            if speeds_mm_s is not None:
+                # Speed-driven physics: dt = distance / speed for each segment
+                for i in range(1, n_waypoints):
+                    # Cartesian distance for this segment
+                    dist_m = np.linalg.norm(positions[i] - positions[i-1])
+                    
+                    # Use average speed of current and previous waypoint for this segment
+                    avg_speed_mm_s = (speeds_mm_s[i] + speeds_mm_s[i-1]) / 2.0
+                    avg_speed_m_s = avg_speed_mm_s / 1000.0
+                    
+                    # CRITICAL: dt = distance / speed (no more arbitrary time steps!)
+                    dt = dist_m / avg_speed_m_s if avg_speed_m_s > 1e-6 else 0.001
+                    estimated_times[i] = estimated_times[i-1] + dt
+            else:
+                # Fallback to constant speed
+                for i in range(1, n_waypoints):
+                    dist_m = np.linalg.norm(positions[i] - positions[i-1])
+                    dt = dist_m / (speed_mm_s / 1000.0) if speed_mm_s > 0 else 0.001
+                    estimated_times[i] = estimated_times[i-1] + dt
+            
             timestamps = estimated_times
         
         for i in range(n_waypoints):
@@ -401,17 +422,25 @@ class FeasibilityAnalyzer:
             max_jump = np.max(joint_space_distances) if joint_space_distances else 0.0
             c0_ok = max_jump < self.joint_jump_limit_rad
         
-        # C1 check: max velocity ratio <= 1.0
+        # C1 check: max velocity ratio <= 1.0 (SPEED TRAP!)
         c1_ok = True
+        max_vel_ratio = 0.0
         if velocity_ratios:
             max_vel_ratio = np.max(velocity_ratios)
             c1_ok = max_vel_ratio <= 1.0
+            # CRITICAL: This is the "Speed Trap" - trajectory fails if motor can't keep up
+            if not c1_ok:
+                print(f"    WARNING: C1 SPEED TRAP TRIGGERED! Max velocity ratio: {max_vel_ratio:.2f} > 1.0")
+                print(f"             Motor cannot physically keep up with toolpath speed requirements")
         
         # CRITICAL: Compute ranking scores
         safety_score = float(np.max(condition_numbers)) if condition_numbers else np.inf
         dexterity_score = float(np.mean(manipulability_values)) if manipulability_values else 0.0  # CRITICAL: Mean manipulability
         
-        # CRITICAL: Smoothness score = mean of squared velocity ratios
+        # CRITICAL: Smoothness score = mean of squared velocity ratios (POWER CONSUMPTION)
+        # This represents real power consumption: higher joint speeds = higher energy usage
+        # Formula: mean(sum(velocity_ratios^2)) penalizes high-speed joint movements
+        # Result: Prefers trajectories allowing "lazy" joint motion while meeting toolpath speed
         smoothness_score = float(np.mean(np.array(velocity_ratios)**2)) if velocity_ratios else 0.0
         
         # Compute trajectory-level statistics
@@ -428,7 +457,7 @@ class FeasibilityAnalyzer:
                 'c1_ok': c1_ok
             },
             'safety_score': safety_score,  # max_condition_number
-            'smoothness_score': smoothness_score,  # mean_squared_velocity_ratio
+            'smoothness_score': smoothness_score,  # mean_squared_velocity_ratio (POWER CONSUMPTION)
             'dexterity_score': dexterity_score,  # mean_manipulability
             
             # Manipulability statistics

@@ -90,23 +90,27 @@ def compute_segment_times(
     trajectory_m: np.ndarray,
     joint_angles_rad: np.ndarray,
     speed_mm_s: float = 100.0,
+    speeds_mm_s: Optional[np.ndarray] = None,
     velocity_limits_rad_s: Optional[np.ndarray] = None,
     pose_scale_m_per_rad: float = 0.1
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Compute segment times using unified pose metric with joint constraints.
+    Compute segment times using speed-driven physics with joint constraints.
+    
+    CRITICAL PHYSICS UPDATE: Now uses per-waypoint speeds instead of constant speed.
+    dt = distance / speed for each segment - no more arbitrary time steps!
     
     Args:
         trajectory_m: Poses (n_waypoints, 7) in meters
         joint_angles_rad: Joint angles (n_waypoints, 6) in radians
-        speed_mm_s: End-effector speed in mm/s
+        speed_mm_s: Fallback end-effector speed in mm/s
+        speeds_mm_s: Per-waypoint speeds in mm/s (overrides speed_mm_s if provided)
         velocity_limits_rad_s: Per-joint velocity limits
         pose_scale_m_per_rad: Scale for rotation contribution
         
     Returns:
         timestamps, segment_durations
     """
-    pose_speed_m_s = speed_mm_s / 1000.0
     n_waypoints = len(trajectory_m)
     segment_durations = np.zeros(n_waypoints - 1)
     
@@ -123,7 +127,18 @@ def compute_segment_times(
         
         # Unified pose distance
         pose_distance = np.sqrt(d_linear**2 + (pose_scale_m_per_rad * d_angle)**2)
-        t_pose = pose_distance / pose_speed_m_s if pose_speed_m_s > 0 else 0.001
+        
+        # CRITICAL PHYSICS UPDATE: Speed-driven time calculation
+        if speeds_mm_s is not None:
+            # Use average speed of current and next waypoint for this segment
+            avg_speed_mm_s = (speeds_mm_s[i] + speeds_mm_s[i + 1]) / 2.0
+            segment_speed_m_s = avg_speed_mm_s / 1000.0
+        else:
+            # Fallback to constant speed
+            segment_speed_m_s = speed_mm_s / 1000.0
+        
+        # Time based on actual commanded speed: dt = distance / speed
+        t_pose = pose_distance / segment_speed_m_s if segment_speed_m_s > 1e-6 else 0.001
         
         # Joint velocity constraint
         t_joint_min = 0
@@ -146,6 +161,7 @@ def analyze_continuity(
     trajectory_m: np.ndarray,
     joint_angles_rad: np.ndarray,
     speed_mm_s: float = 100.0,
+    speeds_mm_s: Optional[np.ndarray] = None,
     velocity_limits_rad_s: Optional[np.ndarray] = None,
     pose_scale_m_per_rad: float = 0.1,
     safety_factor: float = 1.05
@@ -167,9 +183,9 @@ def analyze_continuity(
     if velocity_limits_rad_s is None:
         velocity_limits_rad_s = np.array([4.443, 3.142, 4.312, 8.727, 7.245, 12.566])  # IRB 1300-7/1.4 defaults
     
-    # Compute timing
+    # Compute timing with speed-driven physics
     timestamps, segment_durations = compute_segment_times(
-        trajectory_m, joint_angles_rad, speed_mm_s, velocity_limits_rad_s, pose_scale_m_per_rad
+        trajectory_m, joint_angles_rad, speed_mm_s, speeds_mm_s, velocity_limits_rad_s, pose_scale_m_per_rad
     )
     
     # Interpolate joints with cubic splines
@@ -837,9 +853,10 @@ def analyze_trajectory_feasibility(
     verbose: bool = True,
     waypoint_idx: Optional[int] = None,
     timestamps: Optional[np.ndarray] = None,
-    speed_mm_s: float = 100.0
+    speeds_mm_s: Optional[np.ndarray] = None,
+    speed_mm_s: float = 100.0  # Fallback for backward compatibility
 ) -> dict:
-    """Analyze feasibility of a single trajectory."""
+    """Analyze feasibility of a single trajectory with per-waypoint speeds."""
     positions = trajectory_t_b_p[:, :3]
     quaternions = trajectory_t_b_p[:, 3:7]
     
@@ -866,7 +883,11 @@ def analyze_trajectory_feasibility(
             'per_waypoint_results': [result_single]
         }
     else:
-        result = analyzer.analyze_trajectory(positions, quaternions, timestamps=timestamps, speed_mm_s=speed_mm_s)
+        # Use per-waypoint speeds if provided, otherwise use constant speed
+        if speeds_mm_s is not None:
+            result = analyzer.analyze_trajectory(positions, quaternions, timestamps=timestamps, speeds_mm_s=speeds_mm_s)
+        else:
+            result = analyzer.analyze_trajectory(positions, quaternions, timestamps=timestamps, speed_mm_s=speed_mm_s)
     
     if verbose:
         print(f"  {trajectory_name}:")
@@ -963,12 +984,13 @@ def process_toolpath(
         joint_jump_limit_rad=final_joint_jump_limit
     )
     
-    # Load and transform trajectories
-    trajectories_t_p_k = load_toolpath_trajectories(toolpath_path)
+    # Load and transform trajectories with per-waypoint speeds
+    trajectories_t_p_k, trajectory_speeds = load_toolpath_trajectories(toolpath_path)
     trajectories_t_b_p = transform_trajectories_to_base_frame(
         trajectories_t_p_k, knife_translation_m, knife_quaternion
     )
     
+<<<<<<< HEAD
     # Filter to specific trajectory if requested
     if traj_id is not None:
         total_trajectories = len(trajectories_t_b_p)
@@ -981,6 +1003,16 @@ def process_toolpath(
     
     if verbose:
         print(f"  Loaded {n_trajectories} trajectories")
+=======
+    # Validate that speeds match trajectory lengths
+    for i, (traj, speeds) in enumerate(zip(trajectories_t_p_k, trajectory_speeds)):
+        if len(speeds) != len(traj):
+            raise ValueError(f"Trajectory {i}: speed array length ({len(speeds)}) doesn't match waypoint count ({len(traj)})")
+    
+    print(f"Loaded {len(trajectories_t_p_k)} trajectory(ies) with per-waypoint speeds from CSV")
+    n_trajectories = len(trajectories_t_b_p)
+    print(f"  Loaded {n_trajectories} trajectories")
+>>>>>>> 3744ffa (Added toolpath speed and its corresponding metrics estimates to ranking)
     
     # Create output directory structure
     if use_flat_output_structure:
@@ -1012,7 +1044,7 @@ def process_toolpath(
         pbar = tqdm(total=n_trajectories, desc="Processing trajectories", unit="traj", leave=False)
     
     # Analyze each trajectory (now filtered if traj_id was specified)
-    for local_idx, trajectory in enumerate(trajectories_t_b_p):
+    for local_idx, (trajectory, speeds) in enumerate(zip(trajectories_t_b_p, trajectory_speeds)):
         traj_idx = start_idx + local_idx
         traj_name = f"trajectory_{traj_idx + 1}"
         n_waypoints = len(trajectory)
@@ -1021,10 +1053,10 @@ def process_toolpath(
         if use_progress_bar:
             pbar.set_description(f"Processing {traj_name}")
         
-        # Feasibility analysis
+        # Feasibility analysis with per-waypoint speeds
         traj_result = analyze_trajectory_feasibility(
             trajectory, analyzer, traj_name, verbose=verbose, waypoint_idx=waypoint_idx,
-            timestamps=None, speed_mm_s=speed_mm_s
+            timestamps=None, speeds_mm_s=speeds
         )
         
         # Update progress bar after analysis
@@ -1165,7 +1197,8 @@ def process_toolpath(
             timestamps, _ = compute_segment_times(
                 trajectory, 
                 joint_angles_rad, 
-                speed_mm_s=speed_mm_s, 
+                speed_mm_s=100.0,  # Fallback speed
+                speeds_mm_s=speeds,  # Per-waypoint speeds
                 velocity_limits_rad_s=final_velocity_limits
             )
         
@@ -1205,7 +1238,8 @@ def process_toolpath(
             # Note: analyze_continuity will re-compute timestamps using the same logic
             # We could pass them if we modified analyze_continuity, but re-computing is cheap/safe
             continuity_result = analyze_continuity(
-                trajectory, joint_angles_rad, speed_mm_s, final_velocity_limits
+                trajectory, joint_angles_rad, speed_mm_s=100.0, speeds_mm_s=speeds, 
+                velocity_limits_rad_s=final_velocity_limits
             )
             status = "PASSED" if continuity_result.passed else "FAILED"
             # Always print continuity status (even in non-verbose mode)
@@ -1224,7 +1258,8 @@ def process_toolpath(
                     joint_angles_rad=joint_angles_rad,
                     output_path=str(traj_out / "continuity.png"),
                     title=f"C1 Continuity Analysis\n{toolpath_name} - {traj_name}",
-                    speed_mm_s=speed_mm_s,
+                    speed_mm_s=100.0,  # Fallback speed
+                    speeds_mm_s=speeds,  # Per-waypoint speeds
                     velocity_limits_rad_s=final_velocity_limits
                 )
         
@@ -1329,16 +1364,10 @@ def process_toolpath(
             toolpath_name=toolpath_name
         )
     
-<<<<<<< HEAD
-    # Generate aggregated plots (4 plots by default) - skip if analyzing single trajectory/waypoint
-    if not (traj_id is not None and waypoint_idx is not None):
+    # Generate aggregated plots (4 plots by default) - skip if analyzing single trajectory/waypoint or if skip_plots is True
+    if not skip_plots and not (traj_id is not None and waypoint_idx is not None):
         if verbose:
             print(f"\n  Generating aggregated plots for toolpath...")
-=======
-    # Generate aggregated plots (4 plots by default)
-    if not skip_plots:
-        print(f"\n  Generating aggregated plots for toolpath...")
->>>>>>> 95da5f7 (code review - CLI for plots, segregate pass fail folder, top 5 knife poses with pose)
         
         # 1. Reachability rate per trajectory
         plot_reachability_rate_per_trajectory(
@@ -1368,16 +1397,12 @@ def process_toolpath(
                 results['trajectory_results'],
                 str(out_path / "aggregated_continuity.png"),
                 title=f"Continuity Summary\n{toolpath_name}",
-                speed_mm_s=speed_mm_s,
+                speed_mm_s=100.0,  # Will be overridden by individual trajectory speeds
                 velocity_limits_rad_s=velocity_limits_rad_s
             )
         
-<<<<<<< HEAD
         if verbose:
             print(f"  Aggregated plots saved to: {out_path}")
-=======
-        print(f"  Aggregated plots saved to: {out_path}")
->>>>>>> 95da5f7 (code review - CLI for plots, segregate pass fail folder, top 5 knife poses with pose)
     
     # Generate legacy summary plot (kept for backward compatibility)
     if detailed_per_trajectory_report and not skip_plots:

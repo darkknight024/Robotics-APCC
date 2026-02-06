@@ -25,7 +25,8 @@ from .transform_handler import (
 from .csv_loader_toolpath import (
     load_toolpath_trajectories,
     get_trajectory_count,
-    validate_toolpath_csv
+    validate_toolpath_csv,
+    extract_toolpath_speed
 )
 
 from .csv_loader_robostudio import (
@@ -118,6 +119,7 @@ __all__ = [
     'load_toolpath_trajectories',
     'get_trajectory_count',
     'validate_toolpath_csv',
+    'extract_toolpath_speed',
     'load_robostudio_full',
     'load_robostudio_joints_only',
     'validate_robostudio_csv',

@@ -196,15 +196,18 @@ def plot_continuity_analysis(
     output_path: str,
     title: str = "Continuity Analysis",
     speed_mm_s: float = 100.0,
+    speeds_mm_s: Optional[np.ndarray] = None,
     velocity_limits_rad_s: Optional[np.ndarray] = None
 ) -> None:
     """
-    Plot C1 continuity analysis graphs (4-panel figure).
+    Plot C1 continuity analysis graphs (4-panel figure) with speed integration.
     
     Panel 1: Cartesian position components (X, Y, Z) in meters
-    Panel 2: Cartesian velocity magnitude vs target speed
+    Panel 2: Cartesian velocity magnitude vs commanded speeds from CSV
     Panel 3: Velocity components (Vx, Vy, Vz)
     Panel 4: Joint velocities with hardware limits
+    
+    SPEED INTEGRATION: Now shows per-waypoint commanded speeds from toolpath CSV.
     
     Args:
         timestamps: Time values (n_waypoints,) in seconds
@@ -268,11 +271,21 @@ def plot_continuity_analysis(
     ax1.legend(loc='best')
     ax1.grid(True, alpha=0.3)
     
-    # Plot 2: Cartesian velocity magnitude
-    ax2.plot(t_samples, velocity_norms_mm_s, label='Speed', linewidth=2, color='tab:green')
-    ax2.axhline(y=speed_mm_s, color='orange', linestyle='--', linewidth=2, 
-               label=f'Target speed ({speed_mm_s:.1f} mm/s)')
-    ax2.fill_between(t_samples, 0, speed_mm_s, alpha=0.1, color='green')
+    # Plot 2: Cartesian velocity magnitude with speed information
+    ax2.plot(t_samples, velocity_norms_mm_s, label='Actual Speed', linewidth=2, color='tab:green')
+    
+    if speeds_mm_s is not None:
+        # Plot per-waypoint commanded speeds
+        ax2.plot(timestamps, speeds_mm_s, 'o-', color='orange', linewidth=2, markersize=4,
+                label='Commanded Speed (CSV)', alpha=0.8)
+        avg_speed = np.mean(speeds_mm_s)
+        ax2.axhline(y=avg_speed, color='red', linestyle=':', linewidth=1, 
+                   label=f'Average ({avg_speed:.1f} mm/s)')
+    else:
+        # Fallback to constant speed
+        ax2.axhline(y=speed_mm_s, color='orange', linestyle='--', linewidth=2, 
+                   label=f'Target speed ({speed_mm_s:.1f} mm/s)')
+        ax2.fill_between(t_samples, 0, speed_mm_s, alpha=0.1, color='green')
     ax2.set_xlabel('Time (s)', fontweight='bold')
     ax2.set_ylabel('Velocity (mm/s)', fontweight='bold')
     ax2.set_title('Cartesian Velocity', fontweight='bold')
@@ -572,7 +585,7 @@ def plot_continuity_summary(
     ax1.bar(trajectory_indices, durations, color=colors_duration, alpha=0.7, edgecolor='black')
     ax1.set_xlabel('Trajectory', fontweight='bold')
     ax1.set_ylabel('Duration (s)', fontweight='bold')
-    ax1.set_title(f'Trajectory Durations (Target Speed: {speed_mm_s:.0f} mm/s)', fontweight='bold')
+    ax1.set_title(f'Trajectory Durations (Speed-Driven Physics)', fontweight='bold')
     ax1.set_xticks(trajectory_indices)
     ax1.grid(True, alpha=0.3, axis='y')
     
