@@ -194,7 +194,8 @@ class FeasibilityAnalyzer:
         characteristic_length_m: float = 1.0,
         singularity_threshold: float = 0.01,
         velocity_limits_rad_s: Optional[np.ndarray] = None,
-        joint_jump_limit_rad: Optional[float] = None
+        joint_jump_limit_rad: Optional[float] = None,
+        max_ik_failures_per_trajectory: Optional[int] = None
     ):
         """
         Initialize feasibility analyzer.
@@ -208,6 +209,7 @@ class FeasibilityAnalyzer:
             singularity_threshold: Threshold for singularity warning
             velocity_limits_rad_s: Per-joint velocity limits for C1 checking (optional)
             joint_jump_limit_rad: Maximum allowed joint jump for C0 checking (optional)
+            max_ik_failures_per_trajectory: Max IK failures before early termination (optional)
         """
         self.model = model
         self.data = data
@@ -217,6 +219,7 @@ class FeasibilityAnalyzer:
         self.singularity_threshold = singularity_threshold
         self.velocity_limits_rad_s = velocity_limits_rad_s
         self.joint_jump_limit_rad = joint_jump_limit_rad
+        self.max_ik_failures_per_trajectory = max_ik_failures_per_trajectory
     
     def analyze_waypoint(
         self,
@@ -241,6 +244,9 @@ class FeasibilityAnalyzer:
         )
         
         if not is_reachable:
+            # CRITICAL FIX: Unreachable waypoints should NOT be marked as singularities
+            # They failed IK, which is different from being near a singularity
+            
             # Compute additional debug information for failed waypoints
             distance_from_origin = float(np.linalg.norm(target_position))
             
@@ -281,7 +287,7 @@ class FeasibilityAnalyzer:
                 min_singular_value=0.0,
                 max_singular_value=0.0,
                 condition_number=np.inf,
-                near_singularity=True,
+                near_singularity=False,  # Changed from True - unreachable != singularity
                 joint_positions_rad=None,
                 ik_debug_info=debug_info,
                 target_position=target_position,
@@ -386,8 +392,37 @@ class FeasibilityAnalyzer:
             
             timestamps = estimated_times
         
+        # Track IK failures for early termination
+        ik_failure_count = 0
+        early_terminated = False
+        
         for i in range(n_waypoints):
             result = self.analyze_waypoint(positions[i], quaternions[i], q_prev)
+            
+            # Early termination check: stop if too many IK failures
+            if not result.is_reachable:
+                ik_failure_count += 1
+                if self.max_ik_failures_per_trajectory is not None and \
+                   self.max_ik_failures_per_trajectory > 0 and \
+                   ik_failure_count >= self.max_ik_failures_per_trajectory:
+                    early_terminated = True
+                    # Mark remaining waypoints as unreachable
+                    for j in range(i, n_waypoints):
+                        if j == i:
+                            results.append(result)  # Add current result
+                        else:
+                            # Create unreachable result for remaining waypoints
+                            unreachable_result = FeasibilityResult(
+                                is_reachable=False,
+                                manipulability=0.0,
+                                min_singular_value=0.0,
+                                max_singular_value=0.0,
+                                condition_number=np.inf,
+                                near_singularity=False,  # CRITICAL FIX: Unreachable != singularity
+                                joint_positions_rad=None
+                            )
+                            results.append(unreachable_result)
+                    break
             
             # Compute distances from previous waypoint if available
             if q_prev is not None and result.is_reachable:
@@ -425,9 +460,11 @@ class FeasibilityAnalyzer:
                 if result.distance_to_joint_limits is not None:
                     joint_limit_distances.append(result.distance_to_joint_limits)
                 q_prev = result.joint_positions_rad
-            
-            if result.near_singularity:
-                singularity_count += 1
+                
+                # CRITICAL FIX: Only count singularities for REACHABLE waypoints
+                # Unreachable waypoints should not be counted as singularities
+                if result.near_singularity:
+                    singularity_count += 1
         
         # Compute joint limit violations
         joint_angles_all = np.array([r.joint_positions_rad for r in results if r.is_reachable])
@@ -506,6 +543,8 @@ class FeasibilityAnalyzer:
             'reachable_count': reachable_count,
             'reachability_percent': 100.0 * reachable_count / n_waypoints,
             'singularity_count': singularity_count,
+            'early_terminated': early_terminated,  # NEW: Track if trajectory was terminated early
+            'ik_failure_count': ik_failure_count,  # NEW: Total IK failures encountered
             
             # CRITICAL: Ranking scores
             'feasibility_flags': {

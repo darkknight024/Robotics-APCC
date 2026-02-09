@@ -73,6 +73,15 @@ ranking:
   dexterity_weight: 1.0
 
 # =============================================================================
+# Performance Optimization
+# =============================================================================
+performance:
+  # Early termination for failing trajectories
+  # Stop processing a trajectory after N IK failures to save computation time
+  # Set to 0 to disable early termination
+  max_ik_failures_per_trajectory: 1
+
+# =============================================================================
 # Continuity Analysis Settings
 # =============================================================================
 continuity:

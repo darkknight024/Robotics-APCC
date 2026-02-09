@@ -944,7 +944,8 @@ def process_toolpath(
     skip_plots: bool = False,
     verbose: bool = True,
     traj_id: Optional[int] = None,
-    waypoint_idx: Optional[int] = None
+    waypoint_idx: Optional[int] = None,
+    max_ik_failures_per_trajectory: Optional[int] = None
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -968,6 +969,7 @@ def process_toolpath(
         use_flat_output_structure: If True, use output_dir directly without adding subdirectories
                                     (used by combinatorial search to avoid path length issues)
         skip_plots: If True, skip saving PNG plots (default: False)
+        max_ik_failures_per_trajectory: Max IK failures before early termination (optional)
         
     Returns:
         Dictionary with analysis results
@@ -1007,7 +1009,8 @@ def process_toolpath(
         characteristic_length_m=robot_reach_m,
         singularity_threshold=singularity_threshold,
         velocity_limits_rad_s=final_velocity_limits,
-        joint_jump_limit_rad=final_joint_jump_limit
+        joint_jump_limit_rad=final_joint_jump_limit,
+        max_ik_failures_per_trajectory=max_ik_failures_per_trajectory
     )
     
     # Load and transform trajectories with per-waypoint speeds
@@ -1016,29 +1019,26 @@ def process_toolpath(
         trajectories_t_p_k, knife_translation_m, knife_quaternion
     )
     
-<<<<<<< HEAD
-    # Filter to specific trajectory if requested
-    if traj_id is not None:
-        total_trajectories = len(trajectories_t_b_p)
-        if traj_id < 1 or traj_id > total_trajectories:
-            raise ValueError(f"Trajectory ID {traj_id} is out of range (1-{total_trajectories})")
-        trajectories_t_b_p = [trajectories_t_b_p[traj_id - 1]]
-        n_trajectories = 1
-    else:
-        n_trajectories = len(trajectories_t_b_p)
-    
-    if verbose:
-        print(f"  Loaded {n_trajectories} trajectories")
-=======
     # Validate that speeds match trajectory lengths
     for i, (traj, speeds) in enumerate(zip(trajectories_t_p_k, trajectory_speeds)):
         if len(speeds) != len(traj):
             raise ValueError(f"Trajectory {i}: speed array length ({len(speeds)}) doesn't match waypoint count ({len(traj)})")
     
     print(f"Loaded {len(trajectories_t_p_k)} trajectory(ies) with per-waypoint speeds from CSV")
-    n_trajectories = len(trajectories_t_b_p)
-    print(f"  Loaded {n_trajectories} trajectories")
->>>>>>> 3744ffa (Added toolpath speed and its corresponding metrics estimates to ranking)
+    
+    # Filter to specific trajectory if requested
+    if traj_id is not None:
+        total_trajectories = len(trajectories_t_b_p)
+        if traj_id < 1 or traj_id > total_trajectories:
+            raise ValueError(f"Trajectory ID {traj_id} is out of range (1-{total_trajectories})")
+        trajectories_t_b_p = [trajectories_t_b_p[traj_id - 1]]
+        trajectory_speeds = [trajectory_speeds[traj_id - 1]]
+        n_trajectories = 1
+    else:
+        n_trajectories = len(trajectories_t_b_p)
+    
+    if verbose:
+        print(f"  Loaded {n_trajectories} trajectories")
     
     # Create output directory structure
     if use_flat_output_structure:

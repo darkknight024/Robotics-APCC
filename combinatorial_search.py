@@ -98,6 +98,7 @@ class FeasibilityTask:
     save_analysis: bool = False
     detailed_per_trajectory_report: bool = False
     skip_plots: bool = False
+    max_ik_failures_per_trajectory: Optional[int] = None
 
 
 @dataclass
@@ -558,7 +559,8 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             save_analysis=task.save_analysis,
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
             use_flat_output_structure=True,  # CRITICAL FIX: Avoid Windows path length limit
-            skip_plots=task.skip_plots
+            skip_plots=task.skip_plots,
+            max_ik_failures_per_trajectory=task.max_ik_failures_per_trajectory
         )
         
         # Extract per-trajectory metrics
@@ -1096,7 +1098,8 @@ def save_robot_ranking_csv(
 
 def save_global_ranking_csv(
     all_robot_results: Dict[str, List[AggregatedKnifePoseResult]],
-    output_path: str
+    output_path: str,
+    knife_poses: Optional[Dict[str, KnifePose]] = None
 ) -> None:
     """
     Save global ranking CSV across all robots using lexicographic feasibility keys.
@@ -1108,12 +1111,30 @@ def save_global_ranking_csv(
     Args:
         all_robot_results: Dictionary mapping robot name to results
         output_path: Path to save CSV
+        knife_poses: Dictionary of knife poses (for position/quaternion data)
     """
     rows = []
     
     for robot_name, results in all_robot_results.items():
         for r in results:
             verdict = _compute_verdict(r.is_valid)
+            
+            # Extract knife pose position and quaternion
+            knife_x_mm, knife_y_mm, knife_z_mm = 'N/A', 'N/A', 'N/A'
+            knife_qw, knife_qx, knife_qy, knife_qz = 'N/A', 'N/A', 'N/A', 'N/A'
+            
+            if knife_poses and r.knife_pose_id in knife_poses:
+                knife = knife_poses[r.knife_pose_id]
+                # Convert from meters to mm and format
+                knife_x_mm = f"{knife.translation_m[0] * 1000:.3f}"
+                knife_y_mm = f"{knife.translation_m[1] * 1000:.3f}"
+                knife_z_mm = f"{knife.translation_m[2] * 1000:.3f}"
+                # Quaternion [qw, qx, qy, qz]
+                knife_qw = f"{knife.quaternion[0]:.6f}"
+                knife_qx = f"{knife.quaternion[1]:.6f}"
+                knife_qy = f"{knife.quaternion[2]:.6f}"
+                knife_qz = f"{knife.quaternion[3]:.6f}"
+            
             rows.append({
                 # Basic info
                 'Robot Name': robot_name,
@@ -1123,6 +1144,15 @@ def save_global_ranking_csv(
                 'Feasibility Tuple': format_feasibility_tuple(
                     r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
                 ),
+                
+                # Knife Pose Geometry (NEW)
+                'X (mm)': knife_x_mm,
+                'Y (mm)': knife_y_mm,
+                'Z (mm)': knife_z_mm,
+                'qw': knife_qw,
+                'qx': knife_qx,
+                'qy': knife_qy,
+                'qz': knife_qz,
                 
                 # 4-Level Feasibility Metrics
                 'Is Valid': bool(r.is_valid),
@@ -1151,6 +1181,7 @@ def save_global_ranking_csv(
         # Create empty CSV with headers
         df = pd.DataFrame(columns=[
             'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Verdict',
+            'X (mm)', 'Y (mm)', 'Z (mm)', 'qw', 'qx', 'qy', 'qz',
             'Feasibility Tuple', 'Is Valid', 'Safety Tier', 'Smoothness Cost', 'Dexterity Score',
             'IK Failure Rate (raw)', 'Singularity Rate (raw)', 'Min Manipulability (raw)',
             'Mean Manipulability (raw)', 'Mean Min SV (raw)',
@@ -1167,9 +1198,11 @@ def save_global_ranking_csv(
     
     df = pd.DataFrame(rows)
     
-    # Reorder columns - show basic info, feasibility metrics, then raw metrics
+    # Reorder columns - show basic info, knife pose geometry, feasibility metrics, then raw metrics
     cols = [
         'Global Rank', 'Robot Rank', 'Robot Name', 'Knife Pose ID', 'Verdict',
+        # Knife Pose Geometry
+        'X (mm)', 'Y (mm)', 'Z (mm)', 'qw', 'qx', 'qy', 'qz',
         # Feasibility metrics
         'Feasibility Tuple', 'Is Valid', 'Safety Tier', 'Smoothness Cost', 'Dexterity Score',
         # Raw metrics
@@ -1673,10 +1706,18 @@ def _build_task_list(
     run_continuity = continuity_config.get('enabled', True)
     speed_mm_s = continuity_config.get('default_speed_mm_s', 100.0)
     
+    # Get early termination parameter
+    performance_config = feas_config.get('performance', {})
+    max_ik_failures = performance_config.get('max_ik_failures_per_trajectory', None)
+    
     logger.info(f"Found {len(toolpath_files)} toolpath file(s)")
     logger.info(f"Processing {len(config['robots'])} robot(s) and {len(knife_poses_to_use)} knife pose(s)")
     logger.info(f"Continuity analysis: {'Enabled' if run_continuity else 'Disabled'}")
     logger.info(f"Speed extraction: Using toolpath-specific speeds from CSV column 8")
+    if max_ik_failures is not None and max_ik_failures > 0:
+        logger.info(f"Early termination: Enabled (max {max_ik_failures} IK failures per trajectory)")
+    else:
+        logger.info(f"Early termination: Disabled")
     
     # Build task list
     tasks = []
@@ -1719,7 +1760,8 @@ def _build_task_list(
                     run_continuity=run_continuity,
                     save_analysis=False,  # Don't save text reports for each combo
                     detailed_per_trajectory_report=detailed_per_trajectory_report,
-                    skip_plots=skip_plots
+                    skip_plots=skip_plots,
+                    max_ik_failures_per_trajectory=max_ik_failures
                 ))
     
     return tasks
@@ -2010,7 +2052,7 @@ def _save_all_outputs(
     save_robot_ranking_csv(robot_rankings, str(output_dir / "robot_ranking.csv"))
     
     # Save global ranking CSV (all robot x knife combinations)
-    save_global_ranking_csv(all_robot_results, str(output_dir / "global_ranking.csv"))
+    save_global_ranking_csv(all_robot_results, str(output_dir / "global_ranking.csv"), knife_poses)
     
     # Generate markdown report with robot ranking
     generate_markdown_report(
