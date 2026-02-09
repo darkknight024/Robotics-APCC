@@ -342,7 +342,7 @@ def plot_reachability_rate_per_trajectory(
     Plot reachability rate (%) for each trajectory in a toolpath.
     
     Args:
-        trajectory_results: List of trajectory result dicts with 'reachable_count' and 'n_waypoints'
+        trajectory_results: List of trajectory result dicts with 'reachable_count' and 'num_waypoints'
         output_path: Path to save the output image
         title: Plot title
     """
@@ -354,9 +354,9 @@ def plot_reachability_rate_per_trajectory(
     reachability_rates = []
     
     for traj in trajectory_results:
-        n_waypoints = traj.get('n_waypoints', 0)
+        num_waypoints = traj.get('num_waypoints', 0)
         reachable_count = traj.get('reachable_count', 0)
-        rate = 100 * reachable_count / n_waypoints if n_waypoints > 0 else 0
+        rate = 100 * reachable_count / num_waypoints if num_waypoints > 0 else 0
         reachability_rates.append(rate)
     
     reachability_rates = np.array(reachability_rates)

@@ -502,7 +502,7 @@ class FeasibilityAnalyzer:
         
         # Compute trajectory-level statistics
         stats = {
-            'n_waypoints': n_waypoints,
+            'num_waypoints': n_waypoints,
             'reachable_count': reachable_count,
             'reachability_percent': 100.0 * reachable_count / n_waypoints,
             'singularity_count': singularity_count,

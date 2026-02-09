@@ -102,11 +102,11 @@ class FeasibilityTask:
 
 @dataclass
 class TrajectoryMetrics:
-    """Per-trajectory computed metrics."""
+    """Per-trajectory computed metrics with standardized naming (PEP 8)."""
     trajectory_index: int
-    n_waypoints: int
+    num_waypoints: int
     reachable_count: int
-    IK_failure_rate: float
+    ik_failure_rate: float  # Renamed from IK_failure_rate for consistency
     singularity_count: int
     singularity_rate: float
     mean_manipulability: float
@@ -122,16 +122,16 @@ class TrajectoryMetrics:
 
 @dataclass
 class CombinationResult:
-    """Result for a single (robot, knife, toolpath) combination."""
+    """Result for a single (robot, knife, toolpath) combination with PEP 8 naming."""
     robot_name: str
     knife_pose_id: str
     toolpath_name: str
     success: bool
     error: Optional[str] = None
-    n_trajectories: int = 0
+    num_trajectories: int = 0
     trajectory_metrics: List[TrajectoryMetrics] = field(default_factory=list)
-    # Aggregated metrics across trajectories (legacy, kept for compatibility)
-    max_IK_failure_rate: float = 1.0
+    # Aggregated metrics across trajectories
+    max_ik_failure_rate: float = 1.0  # Renamed from max_IK_failure_rate
     max_singularity_rate: float = 1.0
     min_min_manipulability: float = 0.0
     mean_mean_manipulability: float = 0.0
@@ -145,13 +145,13 @@ class CombinationResult:
 
 @dataclass
 class AggregatedKnifePoseResult:
-    """Aggregated result for a (robot, knife_pose) across all toolpaths."""
+    """Aggregated result for a (robot, knife_pose) across all toolpaths with PEP 8 naming."""
     robot_name: str
     knife_pose_id: str
-    n_toolpaths: int
-    n_successful: int
-    # Aggregated metrics (worst-case across toolpaths) - legacy, kept for compatibility
-    max_IK_failure_rate: float = 1.0
+    num_toolpaths: int
+    num_successful: int
+    # Aggregated metrics (worst-case across toolpaths)
+    max_ik_failure_rate: float = 1.0  # Renamed from max_IK_failure_rate
     max_singularity_rate: float = 1.0
     min_min_manipulability: float = 0.0
     mean_mean_manipulability: float = 0.0
@@ -169,14 +169,14 @@ class AggregatedKnifePoseResult:
 
 @dataclass
 class RobotRankingResult:
-    """Robot-level ranking result using the best knife pose."""
+    """Robot-level ranking result using the best knife pose with PEP 8 naming."""
     robot_name: str
     best_knife_pose_id: str
     best_knife_pose_rank: int
-    n_knife_poses_evaluated: int
-    n_toolpaths: int
+    num_knife_poses_evaluated: int
+    num_toolpaths: int
     # Metrics from best knife pose
-    max_IK_failure_rate: float = 1.0
+    max_ik_failure_rate: float = 1.0  # Renamed from max_IK_failure_rate
     max_singularity_rate: float = 1.0
     min_min_manipulability: float = 0.0
     mean_mean_manipulability: float = 0.0
@@ -203,22 +203,39 @@ def get_sort_key(
     dexterity_score: float
 ) -> Tuple[int, int, float, float]:
     """
-    Generate sort key for lexicographical sorting (tuple sort).
+    Generate sort key for lexicographical sorting (4-Level Hierarchical Feasibility).
     
     LEXICOGRAPHICAL SORT LOGIC (CRITICAL):
     ======================================
     
-    Python compares tuples element-by-element. We use ASCENDING sort so "Lower Values"
-    appear first. The tuple is ordered by severity:
+    Implementation Strategy:
+    ------------------------
+    Python compares tuples element-by-element. This implementation uses ASCENDING sort
+    with inverted tuple construction (differs from algorithm doc but achieves same result).
     
-    Key Structure (ascending):
+    Algorithm Doc (docs/combinatorial_context.md Line 107):
+        return (valid_score, -safety_tier, -smoothness, dexterity)
+        sorted(..., reverse=True)  # Descending
+    
+    This Implementation (equivalent, but inverted):
+        return (invalid_flag, safety_tier, smoothness_cost, -dexterity_score)
+        sorted(..., reverse=False)  # Ascending
+    
+    Key Structure (ascending sort):
+    ------------------------------
     (Invalid_Flag, Safety_Tier, Smoothness_Cost, -Dexterity_Score)
     
-    Why this order?
-    - Invalid_Flag: 0 for valid, 1 for invalid → valid always ranks first
-    - Safety_Tier: Lower tiers are better
-    - Smoothness_Cost: Lower cost is better
-    - Dexterity_Score: Higher is better → use negative to sort descending
+    Level-by-level breakdown:
+    - Invalid_Flag: 0 for valid, 1 for invalid → valid (0) sorts before invalid (1)
+    - Safety_Tier: Lower tier = safer → lower values sort first
+    - Smoothness_Cost: Lower cost = smoother → lower values sort first
+    - Dexterity_Score: Higher = better → negate to sort descending (-0.9 < -0.1)
+    
+    Example Rankings (ascending sort):
+    - (0, 1, 0.05, -0.12) → Rank 1: Valid, Tier 1, smooth, good dexterity
+    - (0, 1, 0.08, -0.10) → Rank 2: Valid, Tier 1, less smooth, lower dexterity
+    - (0, 2, 0.03, -0.15) → Rank 3: Valid, Tier 2 (worse safety dominates)
+    - (1, 1, 0.01, -0.20) → Rank 4: Invalid (fails regardless of other scores)
     
     Args:
         is_valid: Boolean validity flag (Level 1)
@@ -281,15 +298,15 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
         trajectory_result: Dictionary from process_toolpath trajectory_results
         
     Returns:
-        TrajectoryMetrics with computed IK_failure_rate, singularity_rate, and 4-level metrics
+        TrajectoryMetrics with computed ik_failure_rate, singularity_rate, and 4-level metrics
     """
-    n_waypoints = trajectory_result.get('n_waypoints', 0)
+    num_waypoints = trajectory_result.get('num_waypoints', 0)
     reachable_count = trajectory_result.get('reachable_count', 0)
     singularity_count = trajectory_result.get('singularity_count', 0)
     
     # Compute derived metrics
-    IK_failure_rate = 1.0 - (reachable_count / n_waypoints) if n_waypoints > 0 else 1.0
-    singularity_rate = singularity_count / n_waypoints if n_waypoints > 0 else 1.0
+    ik_failure_rate = 1.0 - (reachable_count / num_waypoints) if num_waypoints > 0 else 1.0
+    singularity_rate = singularity_count / num_waypoints if num_waypoints > 0 else 1.0
     
     # Get continuity status
     continuity_info = trajectory_result.get('continuity')
@@ -305,7 +322,7 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
     dexterity_score = trajectory_result.get('dexterity_score', 0.0)
     
     # Handle edge cases: NaN, Infinity, empty trajectories
-    if n_waypoints == 0:
+    if num_waypoints == 0:
         is_valid = False
         safety_tier = 999999
         smoothness_cost = float('inf')
@@ -322,9 +339,9 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
     
     return TrajectoryMetrics(
         trajectory_index=trajectory_result.get('trajectory_index', 0),
-        n_waypoints=n_waypoints,
+        num_waypoints=num_waypoints,
         reachable_count=reachable_count,
-        IK_failure_rate=IK_failure_rate,
+        ik_failure_rate=ik_failure_rate,
         singularity_count=singularity_count,
         singularity_rate=singularity_rate,
         mean_manipulability=trajectory_result.get('mean_manipulability', 0.0),
@@ -392,7 +409,7 @@ def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, 
     if not metrics:
         # No metrics available - return worst-case values
         return {
-            'max_IK_failure_rate': 1.0,
+            'max_ik_failure_rate': 1.0,
             'max_singularity_rate': 1.0,
             'min_min_manipulability': 0.0,
             'mean_mean_manipulability': 0.0,
@@ -409,7 +426,7 @@ def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, 
     valid_metrics = [m for m in metrics if m.is_valid]
     
     return {
-        'max_IK_failure_rate': max(m.IK_failure_rate for m in metrics),  # Worst IK failure
+        'max_ik_failure_rate': max(m.ik_failure_rate for m in metrics),  # Worst IK failure
         'max_singularity_rate': max(m.singularity_rate for m in metrics),  # Worst singularity
         'min_min_manipulability': min(m.min_manipulability for m in metrics),  # Bottleneck
         'mean_mean_manipulability': mean(m.mean_manipulability for m in metrics),  # Average quality
@@ -422,7 +439,7 @@ def aggregate_trajectory_metrics(metrics: List[TrajectoryMetrics]) -> Dict[str, 
     }
 
 
-def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, float]:
+def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, Any]:
     """
     Aggregate metrics across multiple toolpaths for a single (robot, knife_pose) combination.
     
@@ -479,7 +496,7 @@ def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, fl
     if not successful:
         # All toolpaths failed for this knife pose - return worst-case values
         return {
-            'max_IK_failure_rate': 1.0,
+            'max_ik_failure_rate': 1.0,
             'max_singularity_rate': 1.0,
             'min_min_manipulability': 0.0,
             'mean_mean_manipulability': 0.0,
@@ -493,7 +510,7 @@ def aggregate_across_toolpaths(results: List[CombinationResult]) -> Dict[str, fl
     
     # CRITICAL: Worst-case aggregation across all toolpaths for this knife pose
     return {
-        'max_IK_failure_rate': max(r.max_IK_failure_rate for r in successful),  # Worst IK across toolpaths
+        'max_ik_failure_rate': max(r.max_ik_failure_rate for r in successful),  # Worst IK across toolpaths
         'max_singularity_rate': max(r.max_singularity_rate for r in successful),  # Worst singularity
         'min_min_manipulability': min(r.min_min_manipulability for r in successful),  # Bottleneck
         'mean_mean_manipulability': mean(r.mean_mean_manipulability for r in successful),  # Average
@@ -558,10 +575,10 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             knife_pose_id=task.knife_name,
             toolpath_name=task.toolpath_name,
             success=True,
-            n_trajectories=result.get('n_trajectories', 0),
+            num_trajectories=result.get('num_trajectories', 0),
             trajectory_metrics=trajectory_metrics,
-            # Legacy metrics (kept for compatibility)
-            max_IK_failure_rate=aggregated['max_IK_failure_rate'],
+            # Aggregated metrics
+            max_ik_failure_rate=aggregated['max_ik_failure_rate'],
             max_singularity_rate=aggregated['max_singularity_rate'],
             min_min_manipulability=aggregated['min_min_manipulability'],
             mean_mean_manipulability=aggregated['mean_mean_manipulability'],
@@ -575,8 +592,8 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
         
         # Move to Successful or Failed folder based on feasibility
         # User request: "out_of_reach" (infeasible) should not be in Successful
-        # CRITICAL: Must have 100% reachability (max_IK_failure_rate == 0.0)
-        if aggregated['is_valid'] and aggregated['max_IK_failure_rate'] == 0.0:
+        # CRITICAL: Must have 100% reachability (max_ik_failure_rate == 0.0)
+        if aggregated['is_valid'] and aggregated['max_ik_failure_rate'] == 0.0:
             final_dir = base_dir / "Successful" / task.combo_name
         else:
             final_dir = base_dir / "Failed" / task.combo_name
@@ -681,7 +698,7 @@ def save_per_robot_csv(
             'Dexterity Score': f"{r.dexterity_score:.6f}",
 
             # RAW METRICS (actual measured values)
-            'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
+            'IK Failure Rate (raw)': f"{r.max_ik_failure_rate:.4f}",
             'Singularity Rate (raw)': f"{r.max_singularity_rate:.4f}",
             'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
             'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
@@ -754,16 +771,16 @@ def save_per_robot_metadata(
     infeasible = sum(1 for r in results if _compute_verdict(r.is_valid) == "❌ Infeasible")
     
     # Count poses with all toolpaths reachable
-    fully_reachable = sum(1 for r in results if r.max_IK_failure_rate == 0.0)
+    fully_reachable = sum(1 for r in results if r.max_ik_failure_rate == 0.0)
     
     # Get toolpath count (assume all poses have same number of toolpaths)
-    n_toolpaths = results[0].n_toolpaths if results else 0
+    num_toolpaths = results[0].num_toolpaths if results else 0
     
     metadata = {
         'robot_name': robot_name,
         'generated': datetime.now().isoformat(),
         'total_knife_poses_evaluated': len(results),
-        'total_toolpaths': n_toolpaths,
+        'total_toolpaths': num_toolpaths,
         'fully_reachable_poses': fully_reachable,
         'verdict_breakdown': {
             'feasible': feasible,
@@ -777,7 +794,7 @@ def save_per_robot_metadata(
                 results[0].smoothness_cost,
                 results[0].dexterity_score
             ) if results else None,
-            'ik_failure_rate': float(results[0].max_IK_failure_rate) if results else None,
+            'ik_failure_rate': float(results[0].max_ik_failure_rate) if results else None,
             'verdict': _compute_verdict(results[0].is_valid) if results else None
         } if results else None,
         'worst_knife_pose': {
@@ -788,7 +805,7 @@ def save_per_robot_metadata(
                 results[-1].smoothness_cost,
                 results[-1].dexterity_score
             ) if results else None,
-            'ik_failure_rate': float(results[-1].max_IK_failure_rate) if results else None,
+            'ik_failure_rate': float(results[-1].max_ik_failure_rate) if results else None,
             'verdict': _compute_verdict(results[-1].is_valid) if results else None
         } if results else None
     }
@@ -818,7 +835,7 @@ def save_knife_pose_details(
         rows.append({
             'Toolpath': toolpath_result.toolpath_name,
             'Success': 'Yes' if toolpath_result.success else 'No',
-            'IK Failure Rate': f"{toolpath_result.max_IK_failure_rate:.2f}" if toolpath_result.success else 'N/A',
+            'IK Failure Rate': f"{toolpath_result.max_ik_failure_rate:.2f}" if toolpath_result.success else 'N/A',
             'Singularity Rate': f"{toolpath_result.max_singularity_rate:.2f}" if toolpath_result.success else 'N/A',
             'Min Manipulability': f"{toolpath_result.min_min_manipulability:.3f}" if toolpath_result.success else 'N/A',
             'Mean Manipulability': f"{toolpath_result.mean_mean_manipulability:.3f}" if toolpath_result.success else 'N/A',
@@ -858,7 +875,7 @@ def save_knife_pose_details(
         ),
         'verdict': _compute_verdict(knife_pose_result.is_valid),
         'aggregated_metrics': {
-            'max_IK_failure_rate': float(knife_pose_result.max_IK_failure_rate),
+            'max_ik_failure_rate': float(knife_pose_result.max_ik_failure_rate),
             'max_singularity_rate': float(knife_pose_result.max_singularity_rate),
             'min_min_manipulability': float(knife_pose_result.min_min_manipulability),
             'mean_mean_manipulability': float(knife_pose_result.mean_mean_manipulability),
@@ -868,16 +885,16 @@ def save_knife_pose_details(
             'smoothness_cost': float(knife_pose_result.smoothness_cost),
             'dexterity_score': float(knife_pose_result.dexterity_score)
         },
-        'n_toolpaths': knife_pose_result.n_toolpaths,
-        'n_successful': knife_pose_result.n_successful,
+        'num_toolpaths': knife_pose_result.num_toolpaths,
+        'num_successful': knife_pose_result.num_successful,
         'per_toolpath_results': [
             {
                 'toolpath_name': tr.toolpath_name,
                 'success': tr.success,
                 'error': tr.error,
-                'n_trajectories': tr.n_trajectories if tr.success else None,
+                'num_trajectories': tr.num_trajectories if tr.success else None,
                 'metrics': {
-                    'max_IK_failure_rate': float(tr.max_IK_failure_rate) if tr.success else None,
+                    'max_ik_failure_rate': float(tr.max_ik_failure_rate) if tr.success else None,
                     'max_singularity_rate': float(tr.max_singularity_rate) if tr.success else None,
                     'min_min_manipulability': float(tr.min_min_manipulability) if tr.success else None,
                     'mean_mean_manipulability': float(tr.mean_mean_manipulability) if tr.success else None,
@@ -928,7 +945,7 @@ def save_per_robot_json(
     data = {
         'robot_name': robot_name,
         'generated': datetime.now().isoformat(),
-        'n_knife_poses': len(results),
+        'num_knife_poses': len(results),
         'results': [convert_to_serializable(asdict(r)) for r in results]
     }
     
@@ -985,10 +1002,10 @@ def build_robot_ranking(
             robot_name=robot_name,
             best_knife_pose_id=best_knife.knife_pose_id,
             best_knife_pose_rank=1,
-            n_knife_poses_evaluated=len(knife_results),
-            n_toolpaths=best_knife.n_toolpaths,
-            # RAW METRICS - used for cross-robot ranking (legacy)
-            max_IK_failure_rate=best_knife.max_IK_failure_rate,
+            num_knife_poses_evaluated=len(knife_results),
+            num_toolpaths=best_knife.num_toolpaths,
+            # RAW METRICS - used for cross-robot ranking
+            max_ik_failure_rate=best_knife.max_ik_failure_rate,
             max_singularity_rate=best_knife.max_singularity_rate,
             min_min_manipulability=best_knife.min_min_manipulability,
             mean_mean_manipulability=best_knife.mean_mean_manipulability,
@@ -1061,15 +1078,15 @@ def save_robot_ranking_csv(
             'Dexterity Score': f"{r.dexterity_score:.6f}",
             
             # RAW METRICS from best knife pose (for cross-robot comparison)
-            'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
+            'IK Failure Rate (raw)': f"{r.max_ik_failure_rate:.4f}",
             'Singularity Rate (raw)': f"{r.max_singularity_rate:.4f}",
             'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
             'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
             'Mean Min SV (raw)': f"{r.mean_mean_min_singular_value:.6f}",
             
             # Metadata
-            'N Knife Poses Evaluated': r.n_knife_poses_evaluated,
-            'N Toolpaths': r.n_toolpaths,
+            'N Knife Poses Evaluated': r.num_knife_poses_evaluated,
+            'N Toolpaths': r.num_toolpaths,
         })
     
     df = pd.DataFrame(rows)
@@ -1114,15 +1131,15 @@ def save_global_ranking_csv(
                 'Dexterity Score': f"{r.dexterity_score:.6f}",
                 
                 # RAW METRICS (actual measured values - use for cross-robot comparison)
-                'IK Failure Rate (raw)': f"{r.max_IK_failure_rate:.4f}",
+                'IK Failure Rate (raw)': f"{r.max_ik_failure_rate:.4f}",
                 'Singularity Rate (raw)': f"{r.max_singularity_rate:.4f}",
                 'Min Manipulability (raw)': f"{r.min_min_manipulability:.6f}",
                 'Mean Manipulability (raw)': f"{r.mean_mean_manipulability:.6f}",
                 'Mean Min SV (raw)': f"{r.mean_mean_min_singular_value:.6f}",
 
                 # Metadata
-                'N Toolpaths': r.n_toolpaths,
-                'N Successful': r.n_successful,
+                'N Toolpaths': r.num_toolpaths,
+                'N Successful': r.num_successful,
                 '_sort_key': get_sort_key(
                     r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
                 ),
@@ -1196,19 +1213,19 @@ def generate_markdown_report(
     
     # Extract dimensions
     n_robots = len(all_robot_results)
-    n_knife_poses = len(all_robot_results[list(all_robot_results.keys())[0]]) if all_robot_results else 0
-    n_toolpaths = all_robot_results[list(all_robot_results.keys())[0]][0].n_toolpaths if all_robot_results and all_robot_results[list(all_robot_results.keys())[0]] else 0
+    num_knife_poses = len(all_robot_results[list(all_robot_results.keys())[0]]) if all_robot_results else 0
+    num_toolpaths = all_robot_results[list(all_robot_results.keys())[0]][0].num_toolpaths if all_robot_results and all_robot_results[list(all_robot_results.keys())[0]] else 0
     
     lines.append("## Summary")
     lines.append("")
     lines.append("### Problem Statement")
-    lines.append(f"**Given {n_toolpaths} toolpath(s), find the best robot model and knife pose combination.**")
+    lines.append(f"**Given {num_toolpaths} toolpath(s), find the best robot model and knife pose combination.**")
     lines.append("")
     lines.append("### Analysis Dimensions")
     lines.append(f"- **Robots evaluated**: {n_robots}")
-    lines.append(f"- **Knife poses per robot**: {n_knife_poses}")
-    lines.append(f"- **Toolpaths (constant)**: {n_toolpaths}")
-    lines.append(f"- **Total combinations**: {total_combos} ({n_robots} × {n_knife_poses} × {n_toolpaths})")
+    lines.append(f"- **Knife poses per robot**: {num_knife_poses}")
+    lines.append(f"- **Toolpaths (constant)**: {num_toolpaths}")
+    lines.append(f"- **Total combinations**: {total_combos} ({n_robots} × {num_knife_poses} × {num_toolpaths})")
     lines.append(f"- **Successful analyses**: {successful_combos}")
     lines.append(f"- **Failed analyses**: {failed_combos}")
     lines.append("")
@@ -1231,7 +1248,7 @@ def generate_markdown_report(
         else:
             lines.append("## 🏆 Recommended Solution")
             lines.append("")
-            lines.append(f"**For the {n_toolpaths} given toolpath(s), use:**")
+            lines.append(f"**For the {num_toolpaths} given toolpath(s), use:**")
             lines.append("")
         lines.append(f"- **Robot Model**: {best_robot.robot_name}")
         lines.append(f"- **Knife Pose**: {best_robot.best_knife_pose_id}")
@@ -1244,7 +1261,7 @@ def generate_markdown_report(
         lines.append(f"- **Safety Tier**: {best_robot.safety_tier}")
         lines.append(f"- **Smoothness Cost**: {best_robot.smoothness_cost:.4f}")
         lines.append(f"- **Dexterity Score**: {best_robot.dexterity_score:.4f}")
-        lines.append(f"- **IK Failure Rate**: {best_robot.max_IK_failure_rate:.2%}")
+        lines.append(f"- **IK Failure Rate**: {best_robot.max_ik_failure_rate:.2%}")
         lines.append(f"- **Singularity Rate**: {best_robot.max_singularity_rate:.2%}")
         lines.append(f"- **Min Manipulability**: {best_robot.min_min_manipulability:.4f}")
         lines.append(f"- **Mean Manipulability**: {best_robot.mean_mean_manipulability:.4f}")
@@ -1311,7 +1328,7 @@ def generate_markdown_report(
         for r in results[-5:]:
             # Determine failure reason
             reasons = []
-            if r.max_IK_failure_rate > 0.2:
+            if r.max_ik_failure_rate > 0.2:
                 reasons.append(f"IK failure > 20%")
             if r.max_singularity_rate > 0.3:
                 reasons.append(f"Singularity rate high")
@@ -1322,7 +1339,7 @@ def generate_markdown_report(
             lines.append(
                 f"| {r.rank} | {r.knife_pose_id[:40]} | "
                 f"{format_feasibility_tuple(r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score)} | "
-                f"{r.max_IK_failure_rate:.3f} | {r.max_singularity_rate:.3f} | {reason_str} |"
+                f"{r.max_ik_failure_rate:.3f} | {r.max_singularity_rate:.3f} | {reason_str} |"
             )
         lines.append("")
         
@@ -1379,8 +1396,8 @@ def save_batch_summary_json(
     
     # Extract dimensions
     n_robots = len(all_robot_results)
-    n_knife_poses = len(all_robot_results[list(all_robot_results.keys())[0]]) if all_robot_results else 0
-    n_toolpaths = all_robot_results[list(all_robot_results.keys())[0]][0].n_toolpaths if all_robot_results and all_robot_results[list(all_robot_results.keys())[0]] else 0
+    num_knife_poses = len(all_robot_results[list(all_robot_results.keys())[0]]) if all_robot_results else 0
+    num_toolpaths = all_robot_results[list(all_robot_results.keys())[0]][0].num_toolpaths if all_robot_results and all_robot_results[list(all_robot_results.keys())[0]] else 0
     
     top_per_robot = {}
     for robot_name, results in all_robot_results.items():
@@ -1406,7 +1423,7 @@ def save_batch_summary_json(
             'feasibility_tuple': format_feasibility_tuple(
                 r.is_valid, r.safety_tier, r.smoothness_cost, r.dexterity_score
             ),
-            'ik_failure_rate': float(r.max_IK_failure_rate),
+            'ik_failure_rate': float(r.max_ik_failure_rate),
             'singularity_rate': float(r.max_singularity_rate),
             'min_manipulability': float(r.min_min_manipulability),
             'verdict': r.verdict
@@ -1422,17 +1439,17 @@ def save_batch_summary_json(
             'feasibility_tuple': format_feasibility_tuple(
                 best.is_valid, best.safety_tier, best.smoothness_cost, best.dexterity_score
             ),
-            'ik_failure_rate': float(best.max_IK_failure_rate),
+            'ik_failure_rate': float(best.max_ik_failure_rate),
             'verdict': best.verdict
         }
     
     summary = {
-        'problem_statement': f'Find best robot and knife pose for {n_toolpaths} toolpath(s)',
+        'problem_statement': f'Find best robot and knife pose for {num_toolpaths} toolpath(s)',
         'generated': datetime.now().isoformat(),
         'dimensions': {
             'n_robots': n_robots,
-            'n_knife_poses': n_knife_poses,
-            'n_toolpaths': n_toolpaths,
+            'num_knife_poses': num_knife_poses,
+            'num_toolpaths': num_toolpaths,
             'total_combinations': total
         },
         'results_summary': {
@@ -1735,7 +1752,7 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
             # Save per-combination summary
             # Determine output directory based on feasibility (matches run_single_analysis logic)
             base_dir = Path(task.base_output_dir)
-            if result.success and result.is_valid and result.max_IK_failure_rate == 0.0:
+            if result.success and result.is_valid and result.max_ik_failure_rate == 0.0:
                 output_dir = base_dir / "Successful" / task.combo_name
             else:
                 output_dir = base_dir / "Failed" / task.combo_name
@@ -1747,7 +1764,7 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
             pbar.update(1)
             
             if result.success:
-                logger.debug(f"  Completed: {result.n_trajectories} trajectories")
+                logger.debug(f"  Completed: {result.num_trajectories} trajectories")
             else:
                 logger.warning(f"  FAILED: {result.error}")
     else:
@@ -1769,7 +1786,7 @@ def _execute_tasks(tasks: List[FeasibilityTask], num_workers: int) -> List[Combi
                     
                     # Save per-combination summary
                     base_dir = Path(task.base_output_dir)
-                    if result.success and result.is_valid and result.max_IK_failure_rate == 0.0:
+                    if result.success and result.is_valid and result.max_ik_failure_rate == 0.0:
                         output_dir = base_dir / "Successful" / task.combo_name
                     else:
                         output_dir = base_dir / "Failed" / task.combo_name
@@ -1862,10 +1879,10 @@ def _process_robot_results(
         agg = AggregatedKnifePoseResult(
             robot_name=robot_name,
             knife_pose_id=knife_id,
-            n_toolpaths=len(combo_results),
-            n_successful=len(successful),
-            # Legacy metrics (kept for compatibility)
-            max_IK_failure_rate=aggregated_metrics['max_IK_failure_rate'],
+            num_toolpaths=len(combo_results),
+            num_successful=len(successful),
+            # Aggregated metrics
+            max_ik_failure_rate=aggregated_metrics['max_ik_failure_rate'],
             max_singularity_rate=aggregated_metrics['max_singularity_rate'],
             min_min_manipulability=aggregated_metrics['min_min_manipulability'],
             mean_mean_manipulability=aggregated_metrics['mean_mean_manipulability'],
@@ -2050,7 +2067,7 @@ def _save_all_outputs(
                     robot_name_clean = robot_name.replace(" ", "_").replace("/", "-")
                     combo_name = f"{robot_name_clean}__{knife_id}__{toolpath_res.toolpath_name}"
                     
-                    if toolpath_res.is_valid and toolpath_res.max_IK_failure_rate == 0.0:
+                    if toolpath_res.is_valid and toolpath_res.max_ik_failure_rate == 0.0:
                         source_path = output_dir / "Successful" / combo_name
                     else:
                         source_path = output_dir / "Failed" / combo_name
@@ -2086,14 +2103,14 @@ def _print_summary(
     
     # Extract dimensions - handle empty results
     n_robots = len(all_robot_results)
-    n_knife_poses = 0
-    n_toolpaths = 0
+    num_knife_poses = 0
+    num_toolpaths = 0
     
     if all_robot_results:
         first_robot = list(all_robot_results.values())[0]
-        n_knife_poses = len(first_robot) if first_robot else 0
+        num_knife_poses = len(first_robot) if first_robot else 0
         if first_robot and len(first_robot) > 0:
-            n_toolpaths = first_robot[0].n_toolpaths
+            num_toolpaths = first_robot[0].num_toolpaths
     
     print("\n" + "=" * 80)
     print("COMBINATORIAL FEASIBILITY ANALYSIS COMPLETE")
@@ -2114,8 +2131,8 @@ def _print_summary(
         print("=" * 80)
         return
     
-    print(f"PROBLEM: Find best robot and knife pose for {n_toolpaths} toolpath(s)")
-    print(f"EVALUATED: {n_robots} robots × {n_knife_poses} knife poses × {n_toolpaths} toolpaths")
+    print(f"PROBLEM: Find best robot and knife pose for {num_toolpaths} toolpath(s)")
+    print(f"EVALUATED: {n_robots} robots × {num_knife_poses} knife poses × {num_toolpaths} toolpaths")
     print(f"           = {len(all_results)} total combinations")
     print(f"RESULTS: {successful_count} successful, {failed_count} failed")
     print(f"OUTPUT: {output_dir}")
@@ -2133,7 +2150,7 @@ def _print_summary(
         print(f"  + Robot Model: {best_robot.robot_name}")
         print(f"  + Best Knife Pose: {best_robot.best_knife_pose_id}")
         print(f"  + Feasibility Tuple: {format_feasibility_tuple(best_robot.is_valid, best_robot.safety_tier, best_robot.smoothness_cost, best_robot.dexterity_score)}")
-        print(f"  + IK Failure Rate: {best_robot.max_IK_failure_rate:.2%}")
+        print(f"  + IK Failure Rate: {best_robot.max_ik_failure_rate:.2%}")
         print(f"  + Verdict: {best_robot.verdict}")
         if not best_robot.is_valid:
             print("")
@@ -2146,7 +2163,7 @@ def _print_summary(
         print(f"  {i}. {robot_result.robot_name}")
         print(f"     Best Knife: {robot_result.best_knife_pose_id}")
         print(f"     Feasibility: {format_feasibility_tuple(robot_result.is_valid, robot_result.safety_tier, robot_result.smoothness_cost, robot_result.dexterity_score)} | "
-              f"IK Fail: {robot_result.max_IK_failure_rate:.2%} | "
+              f"IK Fail: {robot_result.max_ik_failure_rate:.2%} | "
               f"Verdict: {robot_result.verdict}")
         print("")
     

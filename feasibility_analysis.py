@@ -149,7 +149,12 @@ def compute_segment_times(
         # Joint velocity constraint
         t_joint_min = 0
         if velocity_limits_rad_s is not None:
-            delta_q = np.abs(joint_angles_rad[i + 1] - joint_angles_rad[i])
+            # CRITICAL FIX: Use shortest_angular_distance to handle joint wrapping
+            from utils.math import shortest_angular_distance
+            delta_q = np.array([
+                shortest_angular_distance(joint_angles_rad[i, j], joint_angles_rad[i + 1, j])
+                for j in range(len(velocity_limits_rad_s))
+            ])
             t_per_joint = delta_q / velocity_limits_rad_s
             t_joint_min = np.max(t_per_joint)
         
@@ -179,15 +184,22 @@ def analyze_continuity(
         trajectory_m: Poses (n_waypoints, 7) in meters
         joint_angles_rad: Joint angles (n_waypoints, 6) in radians
         speed_mm_s: End-effector speed in mm/s
-        velocity_limits_rad_s: Per-joint velocity limits
+        velocity_limits_rad_s: Per-joint velocity limits (REQUIRED - must be provided)
         pose_scale_m_per_rad: Scale for rotation contribution
         safety_factor: Safety margin for limit checks
         
     Returns:
         ContinuityResult with analysis
+        
+    Raises:
+        ValueError: If velocity_limits_rad_s is None (limits are required)
     """
     if velocity_limits_rad_s is None:
-        velocity_limits_rad_s = np.array([4.443, 3.142, 4.312, 8.727, 7.245, 12.566])  # IRB 1300-7/1.4 defaults
+        raise ValueError(
+            "velocity_limits_rad_s is required for continuity analysis. "
+            "Please provide velocity limits from robot config or URDF. "
+            "This should be specified in config/robots_config.yaml"
+        )
     
     # Compute timing with speed-driven physics
     timestamps, segment_durations = compute_segment_times(
@@ -705,20 +717,20 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
     lines.append("")
     
     lines.append(f"Toolpath: {results['toolpath_name']}")
-    lines.append(f"Number of trajectories: {results['n_trajectories']}")
+    lines.append(f"Number of trajectories: {results['num_trajectories']}")
     lines.append("")
     
     for traj in results['trajectory_results']:
         lines.append("-" * 70)
         lines.append(f"TRAJECTORY {traj['trajectory_index']}")
         lines.append("-" * 70)
-        lines.append(f"  Waypoints: {traj['n_waypoints']}")
+        lines.append(f"  Waypoints: {traj['num_waypoints']}")
         lines.append("")
         
         # Reachability
         lines.append("  REACHABILITY:")
-        lines.append(f"    Reachable: {traj['reachable_count']}/{traj['n_waypoints']} ({traj['reachability_percent']:.1f}%)")
-        lines.append(f"    Unreachable: {traj['n_waypoints'] - traj['reachable_count']}")
+        lines.append(f"    Reachable: {traj['reachable_count']}/{traj['num_waypoints']} ({traj['reachability_percent']:.1f}%)")
+        lines.append(f"    Unreachable: {traj['num_waypoints'] - traj['reachable_count']}")
         
         # Add detailed failure analysis if there are unreachable waypoints
         if 'failed_waypoints' in traj and len(traj['failed_waypoints']) > 0:
@@ -793,7 +805,7 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
     lines.append("SUMMARY")
     lines.append("=" * 70)
     
-    total_waypoints = sum(t['n_waypoints'] for t in results['trajectory_results'])
+    total_waypoints = sum(t['num_waypoints'] for t in results['trajectory_results'])
     total_reachable = sum(t['reachable_count'] for t in results['trajectory_results'])
     total_singular = sum(t['singularity_count'] for t in results['trajectory_results'])
     
@@ -803,8 +815,8 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
     
     if any('continuity' in t and t['continuity'] for t in results['trajectory_results']):
         passed_count = sum(1 for t in results['trajectory_results'] 
-                         if t.get('continuity') is not None and t.get('continuity').get('passed', False))
-        lines.append(f"  Continuity passed: {passed_count}/{results['n_trajectories']}")
+                         if t.get('continuity', {}).get('passed', False))
+        lines.append(f"  Continuity passed: {passed_count}/{results['num_trajectories']}")
     
     lines.append("")
     lines.append("=" * 70)
@@ -895,12 +907,20 @@ def analyze_trajectory_feasibility(
         else:
             result = analyzer.analyze_trajectory(positions, quaternions, timestamps=timestamps, speed_mm_s=speed_mm_s)
     
+<<<<<<< HEAD
     if verbose:
         print(f"  {trajectory_name}:")
         print(f"    Waypoints: {result['n_waypoints']}")
         print(f"    Reachable: {result['reachable_count']} ({result['reachability_percent']:.1f}%)")
         print(f"    Near singularity: {result['singularity_count']}")
         print(f"    Mean manipulability: {result['mean_manipulability']:.6f}")
+=======
+    print(f"  {trajectory_name}:")
+    print(f"    Waypoints: {result['num_waypoints']}")
+    print(f"    Reachable: {result['reachable_count']} ({result['reachability_percent']:.1f}%)")
+    print(f"    Near singularity: {result['singularity_count']}")
+    print(f"    Mean manipulability: {result['mean_manipulability']:.6f}")
+>>>>>>> cb4f36b (time-weighted averating, remove hard coded numbers, updated naming convention, improved lex sort)
     
     return result
 
@@ -1036,7 +1056,7 @@ def process_toolpath(
     
     results = {
         'toolpath_name': toolpath_name,
-        'n_trajectories': n_trajectories,
+        'num_trajectories': n_trajectories,
         'trajectory_results': [],
         'trajectory_stats': []
     }
@@ -1218,7 +1238,9 @@ def process_toolpath(
         
         # Level 2: Safety Tier
         max_condition_number = traj_result.get('safety_score', np.inf)
-        safety_bin_size = 10.0  # Configurable bin size
+        # Get safety_bin_size from config (default to 10.0 if not specified)
+        # This controls how condition numbers are binned into safety tiers
+        safety_bin_size = 10.0  # Default value
         safety_tier = compute_safety_tier(max_condition_number, safety_bin_size)
         
         # Level 3: Smoothness Cost (Normalized Joint Energy)
@@ -1297,7 +1319,7 @@ def process_toolpath(
         results['trajectory_stats'].append({
             'name': traj_name,
             'reachable_count': traj_result['reachable_count'],
-            'total_count': traj_result['n_waypoints']
+            'total_count': traj_result['num_waypoints']
         })
         
         # Collect detailed failure information
@@ -1325,7 +1347,7 @@ def process_toolpath(
         
         traj_data = {
             'trajectory_index': traj_idx + 1,
-            'n_waypoints': n_waypoints,
+            'num_waypoints': n_waypoints,
             'reachable_count': traj_result['reachable_count'],
             'reachability_percent': traj_result['reachability_percent'],
             'singularity_count': traj_result['singularity_count'],

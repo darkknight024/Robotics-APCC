@@ -100,6 +100,57 @@ def load_toolpath_trajectories(
     return trajectories, speeds
 
 
+def _remove_duplicate_waypoints(
+    trajectory: np.ndarray,
+    speeds: np.ndarray,
+    tolerance: float = 1e-6
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Remove consecutive duplicate waypoints from trajectory.
+    
+    CRITICAL: Per algorithm spec (docs/combinatorial_context.md Section 3.A),
+    duplicate points (dist ≈ 0) must be filtered during preprocessing to prevent
+    division-by-zero in time step calculations: Δt = distance / speed.
+    
+    Args:
+        trajectory: Trajectory waypoints (n_waypoints, 7) [x, y, z, qw, qx, qy, qz]
+        speeds: Speed per waypoint (n_waypoints,)
+        tolerance: Distance threshold for duplicate detection (meters)
+        
+    Returns:
+        Filtered (trajectory, speeds) with duplicates removed
+    """
+    if len(trajectory) < 2:
+        return trajectory, speeds
+    
+    mask = np.ones(len(trajectory), dtype=bool)
+    
+    for i in range(1, len(trajectory)):
+        # Check Cartesian distance
+        pos_dist = np.linalg.norm(trajectory[i, :3] - trajectory[i-1, :3])
+        
+        # Check quaternion distance (angular)
+        q1 = trajectory[i-1, 3:7] / np.linalg.norm(trajectory[i-1, 3:7])
+        q2 = trajectory[i, 3:7] / np.linalg.norm(trajectory[i, 3:7])
+        quat_dist = 1.0 - abs(np.dot(q1, q2))  # 0 = identical, 2 = opposite
+        
+        # Mark as duplicate if both position and orientation are nearly identical
+        if pos_dist < tolerance and quat_dist < tolerance:
+            mask[i] = False
+    
+    filtered_trajectory = trajectory[mask]
+    filtered_speeds = speeds[mask]
+    
+    # Log if duplicates were removed
+    n_removed = len(trajectory) - len(filtered_trajectory)
+    if n_removed > 0:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Removed {n_removed} duplicate waypoint(s) from trajectory")
+    
+    return filtered_trajectory, filtered_speeds
+
+
 def _finalize_trajectory(
     trajectories: List[np.ndarray],
     speeds: List[np.ndarray],
@@ -107,11 +158,17 @@ def _finalize_trajectory(
     current_speeds: List[float],
     max_trajectories: Optional[int]
 ) -> None:
-    """Add completed trajectory and speeds to lists if valid."""
+    """Add completed trajectory and speeds to lists if valid, filtering duplicates."""
     if current_trajectory and current_speeds:
         if max_trajectories is None or len(trajectories) < max_trajectories:
-            trajectories.append(np.array(current_trajectory, dtype=float))
-            speeds.append(np.array(current_speeds, dtype=float))
+            traj_array = np.array(current_trajectory, dtype=float)
+            speed_array = np.array(current_speeds, dtype=float)
+            
+            # CRITICAL FIX: Remove duplicate waypoints during preprocessing
+            traj_filtered, speed_filtered = _remove_duplicate_waypoints(traj_array, speed_array)
+            
+            trajectories.append(traj_filtered)
+            speeds.append(speed_filtered)
 
 
 def _parse_waypoint(row: List[str]) -> tuple[Optional[List[float]], Optional[float]]:

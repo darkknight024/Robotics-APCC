@@ -169,7 +169,7 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
         'knife': task.knife_name,
         'toolpath': task.toolpath_name,
         'trajectory_idx': task.trajectory_idx,
-        'n_waypoints': len(task.trajectory_t_b_p),
+        'num_waypoints': len(task.trajectory_t_b_p),
         'ik_success_count': 0,
         'ik_success_percent': 0.0,
         'mean_error_deg': None,
@@ -418,7 +418,7 @@ def process_batch(config_path: str) -> Dict[str, Any]:
             }
         summary[key]['trajectories'].append({
             'trajectory_idx': r['trajectory_idx'],
-            'n_waypoints': r['n_waypoints'],
+            'num_waypoints': r['num_waypoints'],
             'ik_success_percent': r['ik_success_percent'],
             'mean_error_deg': r['mean_error_deg'],
             'max_error_deg': r['max_error_deg']

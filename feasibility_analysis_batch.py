@@ -87,7 +87,7 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             'knife_pose': task.knife_name,
             'toolpath': task.toolpath_name,
             'success': True,
-            'n_trajectories': result['n_trajectories'],
+            'num_trajectories': result['num_trajectories'],
             'summary': result['trajectory_results']
         }
         
@@ -129,10 +129,10 @@ def generate_batch_summary(results: List[Dict], output_path: Path) -> None:
             lines.append(f"\n  Robot: {r['robot']}")
             lines.append(f"  Knife: {r['knife_pose']}")
             lines.append(f"  Toolpath: {r['toolpath']}")
-            lines.append(f"  Trajectories: {r['n_trajectories']}")
+            lines.append(f"  Trajectories: {r['num_trajectories']}")
             
             if 'summary' in r and r['summary']:
-                total_wp = sum(t.get('n_waypoints', 0) for t in r['summary'])
+                total_wp = sum(t.get('num_waypoints', 0) for t in r['summary'])
                 total_reachable = sum(t.get('reachable_count', 0) for t in r['summary'])
                 pct = 100 * total_reachable / total_wp if total_wp > 0 else 0
                 lines.append(f"  Reachability: {total_reachable}/{total_wp} ({pct:.1f}%)")
@@ -269,7 +269,7 @@ def process_batch(
             results.append(result)
             
             if result['success']:
-                print(f"  Completed: {result['n_trajectories']} trajectories")
+                print(f"  Completed: {result['num_trajectories']} trajectories")
             else:
                 print(f"  FAILED: {result.get('error', 'Unknown')}")
     else:
@@ -285,7 +285,7 @@ def process_batch(
                     results.append(result)
                     
                     if result['success']:
-                        print(f"  Completed: {task.toolpath_name} ({result['n_trajectories']} traj)")
+                        print(f"  Completed: {task.toolpath_name} ({result['num_trajectories']} traj)")
                     else:
                         print(f"  FAILED: {task.toolpath_name} - {result.get('error', 'Unknown')}")
                         

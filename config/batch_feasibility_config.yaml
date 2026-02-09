@@ -54,6 +54,25 @@ thresholds:
   manipulability_warning: 0.001
 
 # =============================================================================
+# Ranking Parameters (4-Level Hierarchical Feasibility)
+# =============================================================================
+# Controls the lexicographic ranking algorithm per docs/combinatorial_context.md
+ranking:
+  # Safety Tier binning (Level 2)
+  # Discretizes condition numbers to group "equally safe" paths
+  # Example: bin_size=10 means Cond=12 and Cond=18 are both "Tier 2"
+  # Lower bin_size = more sensitive to safety differences
+  safety_bin_size: 10.0
+  
+  # Smoothness weight (Level 3) - reserved for future use
+  # Currently not used, but could scale smoothness cost if needed
+  smoothness_weight: 1.0
+  
+  # Dexterity weight (Level 4) - reserved for future use
+  # Currently not used, but could scale dexterity score if needed
+  dexterity_weight: 1.0
+
+# =============================================================================
 # Continuity Analysis Settings
 # =============================================================================
 continuity:
