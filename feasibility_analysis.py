@@ -1354,6 +1354,9 @@ def process_toolpath(
             'mean_manipulability': traj_result['mean_manipulability'],
             'min_manipulability': traj_result['min_manipulability'],
             'mean_min_singular_value': traj_result['mean_min_singular_value'],
+            # Early termination tracking
+            'early_terminated': traj_result.get('early_terminated', False),
+            'ik_failure_count': traj_result.get('ik_failure_count', 0),
             # 4-Level Feasibility Metrics
             'feasibility_flags': feasibility_flags,
             'level1_valid': level1_valid,

@@ -114,6 +114,9 @@ class TrajectoryMetrics:
     min_manipulability: float
     mean_min_singular_value: float
     continuity_passed: Optional[bool] = None
+    # Early termination tracking
+    early_terminated: bool = False  # True if trajectory processing stopped early
+    ik_failure_count: int = 0  # Total IK failures encountered before termination
     # 4-Level Feasibility Metrics (for lexicographical sorting)
     is_valid: bool = False  # Level 1: Feasibility Gate
     safety_tier: int = 999999  # Level 2: Safety Tier (lower is better)
@@ -349,6 +352,9 @@ def extract_trajectory_metrics(trajectory_result: Dict[str, Any]) -> TrajectoryM
         min_manipulability=trajectory_result.get('min_manipulability', 0.0),
         mean_min_singular_value=trajectory_result.get('mean_min_singular_value', 0.0),
         continuity_passed=continuity_passed,
+        # Early termination tracking
+        early_terminated=trajectory_result.get('early_terminated', False),
+        ik_failure_count=trajectory_result.get('ik_failure_count', 0),
         # 4-Level Feasibility Metrics
         is_valid=is_valid,
         safety_tier=int(safety_tier) if not math.isnan(safety_tier) and not math.isinf(safety_tier) else 999999,

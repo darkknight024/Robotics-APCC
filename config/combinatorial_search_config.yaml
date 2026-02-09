@@ -56,6 +56,15 @@ thresholds:
   manipulability_warning: 0.001
 
 # =============================================================================
+# Performance Optimization
+# =============================================================================
+performance:
+  # Early termination for failing trajectories
+  # Stop processing a trajectory after N IK failures to save computation time
+  # Set to null or 0 to disable early termination
+  max_ik_failures_per_trajectory: 1
+
+# =============================================================================
 # Continuity Analysis Settings
 # =============================================================================
 continuity:
