@@ -171,9 +171,7 @@ def check_reachability(
         target_position, target_quaternion, q_init
     )
     
-    # Always return q (even on failure) so we can analyze the final configuration
-    # The IK solver returns the best configuration found, which is useful for debugging
-    return success, q, info
+    return success, q if success else None, info
 
 
 class FeasibilityAnalyzer:

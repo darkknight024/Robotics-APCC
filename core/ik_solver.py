@@ -57,10 +57,6 @@ class IKConfig:
     max_step: float = _DEFAULT_MAX_STEP
     backtrack: bool = _DEFAULT_BACKTRACK
     ee_frame_name: str = _DEFAULT_EE_FRAME_NAME
-    # Adaptive tolerance: only for known-reachable waypoints with numerical precision issues
-    # Set to False by default to avoid false positives for truly infeasible waypoints
-    use_adaptive_tolerance: bool = _DEFAULT_USE_ADAPTIVE_TOLERANCE
-    adaptive_tolerance_multiplier: float = _DEFAULT_ADAPTIVE_TOLERANCE_MULTIPLIER  # Conservative: 2x tolerance (was 10x)
 
 
 class IKSolver:
@@ -96,8 +92,7 @@ class IKSolver:
         self,
         target_position: np.ndarray,
         target_quaternion: np.ndarray,
-        q_init: Optional[np.ndarray] = None,
-        use_adaptive_tolerance: Optional[bool] = None
+        q_init: Optional[np.ndarray] = None
     ) -> Tuple[bool, np.ndarray, Dict[str, Any]]:
         """
         Solve IK for a single target pose.
@@ -106,9 +101,6 @@ class IKSolver:
             target_position: Target position [x, y, z] in meters
             target_quaternion: Target quaternion [qw, qx, qy, qz]
             q_init: Initial joint configuration (uses neutral if None)
-            use_adaptive_tolerance: Override config setting for adaptive tolerance.
-                                   Use True only for known-reachable waypoints.
-                                   If None, uses config default (False).
             
         Returns:
             success: Whether IK converged
@@ -119,18 +111,14 @@ class IKSolver:
         rotation = self._quat_to_rotation(target_quaternion)
         target_pose = pin.SE3(rotation, np.asarray(target_position))
         
-        # Determine adaptive tolerance setting
-        adaptive_tol_enabled = use_adaptive_tolerance if use_adaptive_tolerance is not None else self.config.use_adaptive_tolerance
-        
-        return self._solve_damped(target_pose, q_init, adaptive_tol_enabled)
+        return self._solve_damped(target_pose, q_init)
     
     def solve_with_retries(
         self,
         target_position: np.ndarray,
         target_quaternion: np.ndarray,
         q_init: Optional[np.ndarray] = None,
-        num_random_retries: int = 3,
-        use_adaptive_tolerance: Optional[bool] = None
+        num_random_retries: int = 3
     ) -> Tuple[bool, np.ndarray, Dict[str, Any]]:
         """
         Solve IK with multiple initialization attempts.
@@ -140,9 +128,6 @@ class IKSolver:
             target_quaternion: Target quaternion [qw, qx, qy, qz]
             q_init: Initial joint configuration
             num_random_retries: Number of random configuration retries
-            use_adaptive_tolerance: Override config setting for adaptive tolerance.
-                                   Use True only for known-reachable waypoints.
-                                   If None, uses config default (False).
             
         Returns:
             success: Whether IK converged
@@ -150,19 +135,19 @@ class IKSolver:
             info: Dictionary with convergence information
         """
         # Try with provided or previous initial guess
-        success, q, info = self.solve(target_position, target_quaternion, q_init, use_adaptive_tolerance)
+        success, q, info = self.solve(target_position, target_quaternion, q_init)
         if success:
             return success, q, info
         
         # Try with neutral configuration
-        success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model), use_adaptive_tolerance)
+        success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model))
         if success:
             return success, q, info
         
         # Try random configurations
         for _ in range(num_random_retries):
             q_random = pin.randomConfiguration(self.model)
-            success, q, info = self.solve(target_position, target_quaternion, q_random, use_adaptive_tolerance)
+            success, q, info = self.solve(target_position, target_quaternion, q_random)
             if success:
                 return success, q, info
         
@@ -205,16 +190,7 @@ class IKSolver:
             'sigma_min': None,
             'sigma_max': None,
             'converged': False,
-            'clip_count': 0,
-            'iteration_history': {
-                'residuals': [],
-                'sigma_mins': [],
-                'sigma_maxs': [],
-                'damping': [],
-                'joint_configurations': [],  # Store q at each iteration
-                'joint_clipped': [],  # Track which joints were clipped at each iteration
-                'residual_after_clip': []  # Residual after clipping (if clipping occurred)
-            }
+            'clip_count': 0
         }
         
         for k in range(cfg.max_iterations):
@@ -229,41 +205,10 @@ class IKSolver:
             res_norm = np.linalg.norm((W**0.5) @ e)
             info['residual_norm'] = res_norm
             
-            # Store iteration history
-            info['iteration_history']['residuals'].append(float(res_norm))
-            info['iteration_history']['joint_configurations'].append(q.copy().tolist())
-            
-            # Track best configuration found so far
-            if 'best_residual' not in info or res_norm < info['best_residual']:
-                info['best_residual'] = float(res_norm)
-                info['best_configuration'] = q.copy()
-                info['best_iteration'] = k
-            
             if res_norm < cfg.tolerance:
                 info['converged'] = True
                 info['reason'] = 'converged'
                 return True, q, info
-            
-            # Adaptive tolerance: ONLY if enabled and for known-reachable waypoints
-            # This is conservative to avoid false positives for truly infeasible waypoints
-            if adaptive_tol_enabled:
-                adaptive_tolerance = cfg.tolerance * cfg.adaptive_tolerance_multiplier
-                # Only apply if:
-                # 1. Residual is close to tolerance (within multiplier)
-                # 2. We've done enough iterations to establish convergence trend
-                # 3. Residual is still decreasing (not stuck or diverging)
-                # 4. Residual is very close (within 3x tolerance) - conservative check
-                if res_norm < adaptive_tolerance and k > 10:  # More iterations required
-                    if len(info['iteration_history']['residuals']) >= 5:  # Need more history
-                        recent_residuals = info['iteration_history']['residuals'][-5:]
-                        # Check if residual is consistently decreasing
-                        is_decreasing = all(recent_residuals[i] >= recent_residuals[i+1] 
-                                          for i in range(len(recent_residuals)-1))
-                        # Also check if we're very close (within 3x tolerance) - extra conservative
-                        if is_decreasing and res_norm < cfg.tolerance * 3.0:
-                            info['converged'] = True
-                            info['reason'] = f'converged_adaptive_tolerance (residual: {res_norm:.8f}, tolerance: {cfg.tolerance:.8f})'
-                            return True, q, info
             
             J = pin.computeFrameJacobian(self.model, self.data, q, self.ee_frame_id, pin.LOCAL)
             
@@ -279,19 +224,12 @@ class IKSolver:
             info['sigma_min'] = float(sigma_min)
             info['sigma_max'] = float(sigma_max)
             
-            # Store singular values in history
-            info['iteration_history']['sigma_mins'].append(float(sigma_min))
-            info['iteration_history']['sigma_maxs'].append(float(sigma_max))
-            
             sigma_safe = 1e-2
             if sigma_min > 0:
                 lam = cfg.lambda0 * max(1.0, (sigma_safe / sigma_min - 1.0))
                 lam = min(lam, cfg.lambda_max)
             else:
                 lam = cfg.lambda_max
-            
-            # Store damping in history
-            info['iteration_history']['damping'].append(float(lam))
             
             JW = J.T @ W
             H = JW @ J + (lam**2) * np.eye(nv)
@@ -306,41 +244,17 @@ class IKSolver:
                 else:
                     dq = 0.01 * g / (np.linalg.norm(g) + 1e-12)
             
-            # Project gradient onto feasible space when joints are at limits
-            # This prevents trying to move joints that are already constrained
-            q_lower = self.model.lowerPositionLimit
-            q_upper = self.model.upperPositionLimit
-            margin = 1e-6  # Small margin to detect "at limit"
-            
-            # Find joints that are at or very close to limits
-            at_lower_limit = (q <= q_lower + margin) & (dq < 0)  # At lower limit and trying to go lower
-            at_upper_limit = (q >= q_upper - margin) & (dq > 0)  # At upper limit and trying to go higher
-            
-            # Zero out gradient components for constrained joints
-            dq[at_lower_limit] = 0.0
-            dq[at_upper_limit] = 0.0
-            
             max_step_norm = np.max(np.abs(dq))
             if max_step_norm > cfg.max_step:
                 dq = dq * (cfg.max_step / max_step_norm)
             
             q_new = pin.integrate(self.model, q, dq)
-            
-            # Clip to joint limits BEFORE evaluating residual
-            q_new_clipped = np.clip(q_new, q_lower, q_upper)
-            was_clipped = not np.allclose(q_new, q_new_clipped, atol=1e-12)
-            
-            # If clipping occurred, use clipped configuration for evaluation
-            if was_clipped:
-                q_new = q_new_clipped
-            
             pin.forwardKinematics(self.model, self.data, q_new)
             pin.updateFramePlacements(self.model, self.data)
             new_err = pin.log(self.data.oMf[self.ee_frame_id].inverse() * target_pose).vector
             new_res_norm = np.linalg.norm((W**0.5) @ new_err)
             
-            # Backtrack if residual increased OR if joints were clipped (which may worsen residual)
-            if cfg.backtrack and (new_res_norm > res_norm or was_clipped):
+            if cfg.backtrack and new_res_norm > res_norm:
                 alpha = 0.5
                 max_back = 10
                 accepted = False
@@ -348,10 +262,6 @@ class IKSolver:
                 for bt in range(max_back):
                     dq_bt = dq * (alpha**(bt+1))
                     q_try = pin.integrate(self.model, q, dq_bt)
-                    
-                    # Clip to joint limits before evaluating
-                    q_try = np.clip(q_try, q_lower, q_upper)
-                    
                     pin.forwardKinematics(self.model, self.data, q_try)
                     pin.updateFramePlacements(self.model, self.data)
                     try_err = pin.log(self.data.oMf[self.ee_frame_id].inverse() * target_pose).vector
@@ -369,102 +279,9 @@ class IKSolver:
             
             q = q_new.copy()
             q_clipped = np.clip(q, self.model.lowerPositionLimit, self.model.upperPositionLimit)
-            
-            # Track which joints were clipped (use element-wise comparison)
-            clipped_mask = ~np.isclose(q, q_clipped, atol=1e-12)
-            clipped_joints = np.where(clipped_mask)[0].tolist()
-            info['iteration_history']['joint_clipped'].append(clipped_joints)
-            
-            if len(clipped_joints) > 0:
+            if not np.allclose(q, q_clipped, atol=1e-12):
                 info['clip_count'] = info.get('clip_count', 0) + 1
                 q = q_clipped
-                
-                # Recompute residual after clipping to see the actual error
-                pin.forwardKinematics(self.model, self.data, q)
-                pin.updateFramePlacements(self.model, self.data)
-                clipped_pose = self.data.oMf[self.ee_frame_id]
-                clipped_err = pin.log(clipped_pose.inverse() * target_pose).vector
-                clipped_res_norm = np.linalg.norm((W**0.5) @ clipped_err)
-                info['iteration_history']['residual_after_clip'].append(float(clipped_res_norm))
-            else:
-                info['iteration_history']['residual_after_clip'].append(None)
-        
-        # Final attempt: if we're very close but didn't converge, try a few more iterations
-        # with reduced damping and smaller steps
-        if 'best_residual' in info and info['best_residual'] < cfg.tolerance * 10.0:
-            # Use best configuration as starting point
-            q = info['best_configuration'].copy()
-            final_attempt_lam = cfg.lambda0  # Use minimal damping
-            final_attempt_max_step = cfg.max_step * 0.5  # Smaller steps
-            
-            for final_k in range(min(10, cfg.max_iterations - k)):  # Up to 10 more iterations
-                pin.forwardKinematics(self.model, self.data, q)
-                pin.updateFramePlacements(self.model, self.data)
-                current_pose = self.data.oMf[self.ee_frame_id]
-                
-                err_se3 = pin.log(current_pose.inverse() * target_pose)
-                e = err_se3.vector.reshape(6)
-                res_norm = np.linalg.norm((W**0.5) @ e)
-                
-                if res_norm < cfg.tolerance:
-                    info['converged'] = True
-                    info['reason'] = 'converged_final_attempt'
-                    info['iterations'] = k + final_k + 1
-                    return True, q, info
-                
-                J = pin.computeFrameJacobian(self.model, self.data, q, self.ee_frame_id, pin.LOCAL)
-                JW = J.T @ W
-                H = JW @ J + (final_attempt_lam**2) * np.eye(nv)
-                g = JW @ e
-                
-                try:
-                    dq = np.linalg.solve(H, g)
-                except np.linalg.LinAlgError:
-                    dq = 0.01 * g / (np.linalg.norm(g) + 1e-12)
-                
-                # Project to limits
-                q_lower = self.model.lowerPositionLimit
-                q_upper = self.model.upperPositionLimit
-                at_lower = (q <= q_lower + 1e-6) & (dq < 0)
-                at_upper = (q >= q_upper - 1e-6) & (dq > 0)
-                dq[at_lower] = 0.0
-                dq[at_upper] = 0.0
-                
-                max_step_norm = np.max(np.abs(dq))
-                if max_step_norm > final_attempt_max_step:
-                    dq = dq * (final_attempt_max_step / max_step_norm)
-                
-                q_new = pin.integrate(self.model, q, dq)
-                q_new = np.clip(q_new, q_lower, q_upper)
-                
-                pin.forwardKinematics(self.model, self.data, q_new)
-                pin.updateFramePlacements(self.model, self.data)
-                new_err = pin.log(self.data.oMf[self.ee_frame_id].inverse() * target_pose).vector
-                new_res_norm = np.linalg.norm((W**0.5) @ new_err)
-                
-                if new_res_norm < res_norm:
-                    q = q_new
-                else:
-                    # Try smaller step
-                    dq_small = dq * 0.5
-                    q_try = pin.integrate(self.model, q, dq_small)
-                    q_try = np.clip(q_try, q_lower, q_upper)
-                    pin.forwardKinematics(self.model, self.data, q_try)
-                    pin.updateFramePlacements(self.model, self.data)
-                    try_err = pin.log(self.data.oMf[self.ee_frame_id].inverse() * target_pose).vector
-                    try_res_norm = np.linalg.norm((W**0.5) @ try_err)
-                    if try_res_norm < res_norm:
-                        q = q_try
-            
-        # If we didn't converge but got very close, use best configuration found
-        # This is especially useful when waypoints are known to be reachable
-        if 'best_residual' in info and info['best_residual'] < cfg.tolerance * 5.0:
-            # Use the best configuration we found (might be better than final)
-            q = info['best_configuration']
-            info['reason'] = f'max_iter_exceeded_but_close (best_residual: {info["best_residual"]:.8f} at iter {info["best_iteration"]})'
-            info['converged'] = False
-            # Still return False to indicate it didn't fully converge, but q is the best we found
-            return False, q, info
         
         info['reason'] = 'max_iter_exceeded'
         info['converged'] = False

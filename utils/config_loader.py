@@ -31,10 +31,7 @@ _DEFAULT_IK_CONFIG = {
     'lambda_max': 1e1,
     'max_step': 0.2,
     'backtrack': True,
-    'ee_frame_name': 'ee_link',
-    # Adaptive tolerance: disabled by default to avoid false positives
-    'use_adaptive_tolerance': False,
-    'adaptive_tolerance_multiplier': 2.0  # Conservative: 2x tolerance (only if enabled)
+    'ee_frame_name': 'ee_link'
 }
 
 
@@ -366,9 +363,7 @@ def load_ik_config_as_object(config_path: str = None):
             lambda_max=float(params.get('lambda_max', _DEFAULT_IK_CONFIG['lambda_max'])),
             max_step=float(params.get('max_step', _DEFAULT_IK_CONFIG['max_step'])),
             backtrack=bool(params.get('backtrack', _DEFAULT_IK_CONFIG['backtrack'])),
-            ee_frame_name=str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name'])),
-            use_adaptive_tolerance=bool(params.get('use_adaptive_tolerance', _DEFAULT_IK_CONFIG['use_adaptive_tolerance'])),
-            adaptive_tolerance_multiplier=float(params.get('adaptive_tolerance_multiplier', _DEFAULT_IK_CONFIG['adaptive_tolerance_multiplier']))
+            ee_frame_name=str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name']))
         )
     except Exception as e:
         print(f"Warning: Could not load IK config from {config_path}: {e}")
@@ -383,9 +378,7 @@ def load_ik_config_as_object(config_path: str = None):
             lambda_max=_DEFAULT_IK_CONFIG['lambda_max'],
             max_step=_DEFAULT_IK_CONFIG['max_step'],
             backtrack=_DEFAULT_IK_CONFIG['backtrack'],
-            ee_frame_name=_DEFAULT_IK_CONFIG['ee_frame_name'],
-            use_adaptive_tolerance=_DEFAULT_IK_CONFIG['use_adaptive_tolerance'],
-            adaptive_tolerance_multiplier=_DEFAULT_IK_CONFIG['adaptive_tolerance_multiplier']
+            ee_frame_name=_DEFAULT_IK_CONFIG['ee_frame_name']
         )
 
 

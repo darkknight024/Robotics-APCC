@@ -8,8 +8,8 @@ ik_parameters:
   # Maximum number of iterations for convergence
   max_iterations: 50
   
-  # Convergence tolerance (residual norm threshold) Changed to 0.5mm from 0.1mm
-  tolerance: 5.0e-3
+  # Convergence tolerance (residual norm threshold)
+  tolerance: 1.0e-4
   
   # Weight for rotation error in cost function
   rot_weight: 0.2
