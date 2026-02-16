@@ -494,9 +494,10 @@ def process_toolpath(
     speed_mm_s: float = 100.0,
     run_continuity: bool = True,
     save_analysis: bool = True,
-    detailed_per_trajectory_report: bool = True,
+    detailed_per_trajectory_report: bool = False,
     use_flat_output_structure: bool = False,
     skip_plots: bool = False,
+    level1_only: bool = True,
     verbose: bool = True,
     traj_id: Optional[int] = None,
     waypoint_idx: Optional[int] = None,
@@ -519,11 +520,12 @@ def process_toolpath(
         speed_mm_s: End-effector speed for timing
         run_continuity: Whether to run continuity analysis
         save_analysis: Whether to save text report
-        detailed_per_trajectory_report: Whether to generate detailed plots for each trajectory
-                                        (default: False, generates only 4 aggregated plots)
+        detailed_per_trajectory_report: Whether to generate per-trajectory plots
+                                        (default: False, only aggregated plots for entire toolpath)
         use_flat_output_structure: If True, use output_dir directly without adding subdirectories
                                     (used by combinatorial search to avoid path length issues)
         skip_plots: If True, skip saving PNG plots (default: False)
+        level1_only: If True (default), only compute Level 1 gate; skip Level 2-4 scoring
         max_ik_failures_per_trajectory: Max IK failures before early termination (optional)
         
     Returns:
@@ -706,34 +708,42 @@ def process_toolpath(
             )
         
         # ---------------------------------------------------------------------
-        # Compute 4-Level Feasibility Metrics
+        # Compute Feasibility Metrics (Level 1 required; Level 2-4 optional)
         # ---------------------------------------------------------------------
         feasibility_flags = traj_result.get('feasibility_flags', {})
         
-        # Level 1: Feasibility Gate (already computed in traj_result)
+        # Level 1: Feasibility Gate (IK 100%, C0 and C1 continuity)
         level1_valid = all(feasibility_flags.values())
         
-        # Level 2: Safety Tier
-        max_condition_number = traj_result.get('safety_score', traj_result.get('max_condition_number', np.inf))
-        # Get safety_bin_size from config (default to 10.0 if not specified)
-        # This controls how condition numbers are binned into safety tiers
-        safety_bin_size = 10.0  # Default value
-        safety_tier = compute_safety_tier(max_condition_number, safety_bin_size)
+        # Level 2-4: Only computed when level1_only=False
+        safety_tier = 0
+        smoothness_cost = 0.0
+        dexterity_score = 0.0
+        max_condition_number = np.inf  # For traj_data['safety_score'] when level1_only
+        if not level1_only:
+            # Level 2: Safety Tier
+            max_condition_number = traj_result.get('safety_score', traj_result.get('max_condition_number', np.inf))
+            safety_bin_size = 10.0
+            safety_tier = compute_safety_tier(max_condition_number, safety_bin_size)
+            
+            # Level 3: Smoothness Cost
+            if timestamps is not None and final_velocity_limits is not None:
+                smoothness_cost = compute_normalized_joint_energy(
+                    joint_angles_rad, timestamps, final_velocity_limits
+                )
+            else:
+                smoothness_cost = float('inf')
+            
+            # Level 4: Dexterity Score
+            dexterity_score = traj_result.get('dexterity_score', 0.0)
         
-        # Level 3: Smoothness Cost (Normalized Joint Energy)
-        smoothness_cost = float('inf')
-        if timestamps is not None and final_velocity_limits is not None:
-            smoothness_cost = compute_normalized_joint_energy(
-                joint_angles_rad, timestamps, final_velocity_limits
-            )
-        
-        # Level 4: Dexterity Score (already computed as dexterity_score)
-        dexterity_score = traj_result.get('dexterity_score', 0.0)
-        
-        print(f"    Level 1 (Feasibility Gate): {'VALID' if level1_valid else 'INVALID'}")
-        print(f"    Level 2 (Safety Tier): Tier {safety_tier}")
-        print(f"    Level 3 (Smoothness Cost): {smoothness_cost:.4f}")
-        print(f"    Level 4 (Dexterity Score): {dexterity_score:.6f}")
+        print(f"    Level 1 (Feasibility Gate): {'VALID' if level1_valid else 'INVALID'} "
+              f"(reachability: {feasibility_flags.get('reachability_ok', False)}, "
+              f"C0: {feasibility_flags.get('c0_ok', False)}, C1: {feasibility_flags.get('c1_ok', False)})")
+        if not level1_only:
+            print(f"    Level 2 (Safety Tier): Tier {safety_tier}")
+            print(f"    Level 3 (Smoothness Cost): {smoothness_cost:.4f}")
+            print(f"    Level 4 (Dexterity Score): {dexterity_score:.6f}")
         
         # Continuity analysis (skip if analyzing single waypoint)
         continuity_result = None
@@ -830,8 +840,8 @@ def process_toolpath(
     # Generate aggregated plots (4 plots by default)
     print(f"\n  Generating aggregated plots for toolpath...")
     
-    # Generate single comprehensive 4-level feasibility plot for the entire combination
-    if not skip_plots and not (traj_id is not None and waypoint_idx is not None):
+    # Generate 4-level feasibility plot (only when full analysis requested)
+    if not level1_only and not skip_plots and not (traj_id is not None and waypoint_idx is not None):
         print(f"\n  Generating comprehensive 4-level feasibility plot for combination...")
         safety_bin_size = 10.0  # Configurable bin size
         plot_combination_feasibility_levels(
@@ -918,6 +928,12 @@ def main():
                         help="End-effector speed in mm/s")
     parser.add_argument('--no-continuity', action='store_true',
                         help="Skip continuity analysis")
+    parser.add_argument('--full-analysis', action='store_true',
+                        help="Compute Level 2-4 metrics (default: Level 1 only)")
+    parser.add_argument('--per-trajectory-plots', action='store_true',
+                        help="Save per-trajectory plots (default: only aggregated plots)")
+    parser.add_argument('--skip-plots', action='store_true',
+                        help="Skip all PNG plots")
     
     args = parser.parse_args()
     
@@ -950,7 +966,10 @@ def main():
         singularity_threshold=args.singularity_threshold,
         velocity_limits_rad_s=velocity_limits,
         speed_mm_s=args.speed,
-        run_continuity=not args.no_continuity
+        run_continuity=not args.no_continuity,
+        level1_only=not args.full_analysis,
+        detailed_per_trajectory_report=args.per_trajectory_plots,
+        skip_plots=args.skip_plots
     )
     
     print("\nAnalysis complete!")

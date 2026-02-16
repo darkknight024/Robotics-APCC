@@ -60,6 +60,8 @@ class FeasibilityTask:
     singularity_threshold: float
     speed_mm_s: float
     run_continuity: bool
+    level1_only: bool = True
+    detailed_per_trajectory_report: bool = False
 
 
 def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
@@ -81,7 +83,9 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             velocity_limits_rad_s=task.velocity_limits_rad_s,
             speed_mm_s=task.speed_mm_s,
             run_continuity=task.run_continuity,
-            save_analysis=True
+            save_analysis=True,
+            level1_only=task.level1_only,
+            detailed_per_trajectory_report=task.detailed_per_trajectory_report
         )
         
         return {
@@ -164,7 +168,9 @@ def generate_batch_summary(results: List[Dict], output_path: Path) -> None:
 def process_batch(
     config_path: str,
     output_base: str = None,
-    num_workers: int = 1
+    num_workers: int = 1,
+    level1_only: bool = None,
+    detailed_per_trajectory_report: bool = None
 ) -> dict:
     """
     Run feasibility analysis on all combinations defined in config.
@@ -200,6 +206,14 @@ def process_batch(
     run_continuity = continuity_config.get('enabled', True)
     speed_mm_s = continuity_config.get('default_speed_mm_s', 100.0)
     
+    # Output options: Level 1 only by default; aggregated plots only by default
+    output_config = config.get('output', {}) or feas_config.get('output', {})
+    level1_only = level1_only if level1_only is not None else output_config.get('level1_only', True)
+    detailed_per_trajectory_report = (
+        detailed_per_trajectory_report if detailed_per_trajectory_report is not None
+        else output_config.get('per_trajectory_plots', False) or output_config.get('per_waypoint_plots', False)
+    )
+    
     # Find toolpath files from toolpaths_folder
     toolpaths_folder = Path(config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')))
     toolpath_files = []
@@ -221,6 +235,7 @@ def process_batch(
     print(f"Found {len(toolpath_files)} toolpath file(s)")
     print(f"Processing with {len(config['robots'])} robot(s) and {len(config.get('knife_poses_to_use', []))} knife pose(s)")
     print(f"Continuity analysis: {'Enabled' if run_continuity else 'Disabled'}")
+    print(f"Level 1 only: {level1_only} | Per-trajectory plots: {detailed_per_trajectory_report}")
     
     # Build task list
     tasks = []
@@ -255,7 +270,9 @@ def process_batch(
                     output_dir=str(combo_output),
                     singularity_threshold=singularity_threshold,
                     speed_mm_s=speed_mm_s,
-                    run_continuity=run_continuity
+                    run_continuity=run_continuity,
+                    level1_only=level1_only,
+                    detailed_per_trajectory_report=detailed_per_trajectory_report
                 ))
     
     print(f"\nPrepared {len(tasks)} analysis tasks")
@@ -322,10 +339,18 @@ def main():
                         help="Output directory (overrides config)")
     parser.add_argument('--workers', '-w', type=int, default=1,
                         help="Number of parallel workers (1 = sequential)")
+    parser.add_argument('--full-analysis', action='store_true',
+                        help="Compute Level 2-4 metrics (overrides config)")
+    parser.add_argument('--per-trajectory-plots', action='store_true',
+                        help="Save per-trajectory plots (overrides config)")
     
     args = parser.parse_args()
     
-    process_batch(args.config, args.output, args.workers)
+    process_batch(
+        args.config, args.output, args.workers,
+        level1_only=False if args.full_analysis else None,
+        detailed_per_trajectory_report=True if args.per_trajectory_plots else None
+    )
 
 
 if __name__ == "__main__":

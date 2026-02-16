@@ -566,6 +566,7 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
             use_flat_output_structure=True,  # CRITICAL FIX: Avoid Windows path length limit
             skip_plots=task.skip_plots,
+            level1_only=False,  # Combinatorial search needs full 4-level ranking
             max_ik_failures_per_trajectory=task.max_ik_failures_per_trajectory
         )
         

@@ -101,10 +101,14 @@ continuity:
 # Output Options
 # =============================================================================
 output:
-  # Generate per-waypoint plots
-  per_waypoint_plots: true
+  # Level 1 only: only compute feasibility gate (IK 100%, C0, C1); skip Level 2-4
+  level1_only: true
   
-  # Generate trajectory summary plots
+  # Per-trajectory plots: save reachability/manipulability/singularity/continuity per trajectory
+  # When false (default), only aggregated plots for entire toolpath are saved
+  per_trajectory_plots: false
+  
+  # Generate trajectory summary plots (aggregated)
   summary_plots: true
   
   # Save analysis report to text file

@@ -277,6 +277,7 @@ def load_toolpath_config(config_path: str) -> Dict[str, Any]:
         'robostudio_joints_folder': config.get('robostudio_joints_folder', 'input/robostudio_joints'),
         'output_folder': config.get('output_folder', 'output/toolpath_comparison'),
         'toolpaths': config.get('toolpaths', []),
+        'output': config.get('output', {}),
         'options': config.get('options', {
             'save_joint_csv': True,
             'generate_plots': True,
