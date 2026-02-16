@@ -74,6 +74,8 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             knife_translation_m=task.knife_translation_m,
             knife_quaternion=task.knife_quaternion,
             output_dir=task.output_dir,
+            robot_model_name=task.robot_name,
+            knife_pose_name=task.knife_name,
             robot_reach_m=task.robot_reach_m,
             singularity_threshold=task.singularity_threshold,
             velocity_limits_rad_s=task.velocity_limits_rad_s,
