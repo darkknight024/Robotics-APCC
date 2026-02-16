@@ -47,6 +47,11 @@ def load_toolpath_trajectories(
         ValueError: If CSV format is invalid
     """
     csv_path = Path(csv_path)
+    # If path has no extension and points to a directory, try the .csv file with same name
+    if csv_path.suffix.lower() != ".csv" and csv_path.is_dir():
+        csv_path = csv_path.parent / (csv_path.name + ".csv")
+    elif csv_path.suffix.lower() != ".csv" and not csv_path.exists() and (csv_path.parent / (csv_path.name + ".csv")).exists():
+        csv_path = csv_path.parent / (csv_path.name + ".csv")
     if not csv_path.exists():
         raise FileNotFoundError(f"Toolpath CSV not found: {csv_path}")
     

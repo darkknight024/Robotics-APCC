@@ -268,7 +268,8 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
     lines.append(f"Number of trajectories: {results['num_trajectories']}")
     lines.append("")
     
-    for traj in results['trajectory_results']:
+    traj_list = [t for t in results['trajectory_results'] if t is not None]
+    for traj in traj_list:
         lines.append("-" * 70)
         lines.append(f"TRAJECTORY {traj['trajectory_index']}")
         lines.append("-" * 70)
@@ -353,17 +354,17 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
     lines.append("SUMMARY")
     lines.append("=" * 70)
     
-    total_waypoints = sum(t['num_waypoints'] for t in results['trajectory_results'])
-    total_reachable = sum(t['reachable_count'] for t in results['trajectory_results'])
-    total_singular = sum(t['singularity_count'] for t in results['trajectory_results'])
+    total_waypoints = sum(t['num_waypoints'] for t in traj_list)
+    total_reachable = sum(t['reachable_count'] for t in traj_list)
+    total_singular = sum(t['singularity_count'] for t in traj_list)
     
     lines.append(f"  Total waypoints: {total_waypoints}")
     lines.append(f"  Total reachable: {total_reachable} ({100*total_reachable/total_waypoints:.1f}%)")
     lines.append(f"  Total near singularity: {total_singular}")
     
-    if any('continuity' in t and t['continuity'] for t in results['trajectory_results']):
-        passed_count = sum(1 for t in results['trajectory_results'] 
-                         if t.get('continuity', {}).get('passed', False))
+    if any(t is not None and 'continuity' in t and t['continuity'] for t in traj_list):
+        passed_count = sum(1 for t in traj_list
+                         if t is not None and (t.get('continuity') or {}).get('passed', False))
         lines.append(f"  Continuity passed: {passed_count}/{results['num_trajectories']}")
     
     lines.append("")
