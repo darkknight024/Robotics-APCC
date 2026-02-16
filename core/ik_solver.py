@@ -23,8 +23,6 @@ try:
     _DEFAULT_MAX_STEP = _DEFAULT_IK_CONFIG['max_step']
     _DEFAULT_BACKTRACK = _DEFAULT_IK_CONFIG['backtrack']
     _DEFAULT_EE_FRAME_NAME = _DEFAULT_IK_CONFIG['ee_frame_name']
-    _DEFAULT_USE_ADAPTIVE_TOLERANCE = _DEFAULT_IK_CONFIG.get('use_adaptive_tolerance', False)
-    _DEFAULT_ADAPTIVE_TOLERANCE_MULTIPLIER = _DEFAULT_IK_CONFIG.get('adaptive_tolerance_multiplier', 2.0)
 except ImportError:
     # Fallback if config_loader is not available (shouldn't happen in normal usage)
     _DEFAULT_MAX_ITERATIONS = 50
@@ -36,8 +34,6 @@ except ImportError:
     _DEFAULT_MAX_STEP = 0.2
     _DEFAULT_BACKTRACK = True
     _DEFAULT_EE_FRAME_NAME = "ee_link"
-    _DEFAULT_USE_ADAPTIVE_TOLERANCE = False
-    _DEFAULT_ADAPTIVE_TOLERANCE_MULTIPLIER = 2.0
 
 
 @dataclass
@@ -156,25 +152,20 @@ class IKSolver:
     def _solve_damped(
         self,
         target_pose: pin.SE3,
-        q_init: Optional[np.ndarray] = None,
-        use_adaptive_tolerance_override: Optional[bool] = None
+        q_init: Optional[np.ndarray] = None
     ) -> Tuple[bool, np.ndarray, Dict[str, Any]]:
         """
-        Core damped least-squares IK solver with improved convergence strategies.
+        Core damped least-squares IK solver.
         
         Args:
             target_pose: Target pose as pin.SE3
             q_init: Initial joint configuration
-            use_adaptive_tolerance_override: Override config adaptive tolerance setting
             
         Returns:
             success, q, info
         """
         cfg = self.config
         nv = self.model.nv
-        
-        # Use override if provided, otherwise use config setting
-        adaptive_tol_enabled = use_adaptive_tolerance_override if use_adaptive_tolerance_override is not None else cfg.use_adaptive_tolerance
         
         if q_init is None:
             q = pin.neutral(self.model)
