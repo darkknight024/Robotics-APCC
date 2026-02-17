@@ -39,7 +39,9 @@ from .csv_loader_robostudio import (
 
 from .generate_plot_ik import (
     plot_joint_comparison,
-    plot_joint_deltas
+    plot_joint_deltas,
+    plot_ik_success_failure,
+    plot_ik_solve_methods
 )
 
 from .generate_plot_fk import (
@@ -129,6 +131,8 @@ __all__ = [
     # Plotting
     'plot_joint_comparison',
     'plot_joint_deltas',
+    'plot_ik_success_failure',
+    'plot_ik_solve_methods',
     'plot_singularity_per_waypoint',
     'plot_reachability_per_waypoint',
     'plot_manipulability_per_waypoint',

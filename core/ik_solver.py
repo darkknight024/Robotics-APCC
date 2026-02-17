@@ -107,7 +107,13 @@ class IKSolver:
         rotation = self._quat_to_rotation(target_quaternion)
         target_pose = pin.SE3(rotation, np.asarray(target_position))
         
-        return self._solve_damped(target_pose, q_init)
+        success, q, info = self._solve_damped(target_pose, q_init)
+        
+        # Normalize joint angles to [-pi, pi]
+        if success:
+            q = self._normalize_joints(q)
+            
+        return success, q, info
     
     def solve_with_retries(
         self,
@@ -133,11 +139,13 @@ class IKSolver:
         # Try with provided or previous initial guess
         success, q, info = self.solve(target_position, target_quaternion, q_init)
         if success:
+            info['solve_method'] = 'initial_guess'
             return success, q, info
         
         # Try with neutral configuration
         success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model))
         if success:
+            info['solve_method'] = 'neutral'
             return success, q, info
         
         # Try random configurations
@@ -145,8 +153,10 @@ class IKSolver:
             q_random = pin.randomConfiguration(self.model)
             success, q, info = self.solve(target_position, target_quaternion, q_random)
             if success:
+                info['solve_method'] = 'random'
                 return success, q, info
         
+        info['solve_method'] = 'failed'
         return False, q, info
     
     def _solve_damped(
@@ -289,20 +299,19 @@ class IKSolver:
         Returns:
             3x3 rotation matrix
         """
-        qw, qx, qy, qz = quat
-        
-        # Normalize
-        norm = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
+        # Pinocchio expects [x, y, z, w] while RobotStudio provides [w, x, y, z]
+        # Match implementation from apcc-copy for consistency
+        q_pin = np.array([quat[1], quat[2], quat[3], quat[0]])
+        norm = np.linalg.norm(q_pin)
         if norm < 1e-10:
             return np.eye(3)
-        qw, qx, qy, qz = qw/norm, qx/norm, qy/norm, qz/norm
-        
-        R = np.array([
-            [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
-            [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
-            [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)]
-        ])
-        return R
+        q_pin = q_pin / norm
+        return pin.Quaternion(q_pin).toRotationMatrix()
+    
+    @staticmethod
+    def _normalize_joints(q: np.ndarray) -> np.ndarray:
+        """Normalize joint angles to [-pi, pi]."""
+        return np.arctan2(np.sin(q), np.cos(q))
 
 
 # Import URDF loading from utils (file handling separated from IK solving)

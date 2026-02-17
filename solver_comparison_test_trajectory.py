@@ -32,6 +32,8 @@ from utils import (
     plot_euclidean_error,
     plot_joint_comparison,
     plot_joint_deltas,
+    plot_ik_success_failure,
+    plot_ik_solve_methods,
     load_ik_config_as_object
 )
 
@@ -305,9 +307,12 @@ def process_single_csv(
     # IK Analysis
     # =========================================================================
     print("  Running IK analysis...")
-    ik_joints_rad = np.zeros((n_waypoints, 6))
+    ik_joints_rad = np.full((n_waypoints, 6), np.nan)
     ik_success = np.zeros(n_waypoints, dtype=bool)
-    q_prev = None
+    ik_solve_methods = np.empty(n_waypoints, dtype=object)
+    # Seed with the first reference joint angles — in real operation the
+    # robot's starting configuration is always known.
+    q_prev = rs_data.joint_positions_rad[0]
     
     for i in range(n_waypoints):
         success, q, info = ik_solver.solve_with_retries(
@@ -316,24 +321,39 @@ def process_single_csv(
             q_prev
         )
         ik_success[i] = success
+        ik_solve_methods[i] = info.get('solve_method', 'failed')
         if success:
             ik_joints_rad[i] = q
             q_prev = q
-        else:
-            ik_joints_rad[i] = rs_data.joint_positions_rad[i]
+        # Failed waypoints stay NaN — no deceptive fallback
     
     rs_joints_deg = np.degrees(rs_data.joint_positions_rad)
     ik_joints_deg = np.degrees(ik_joints_rad)
-    joint_errors_deg = np.abs(rs_joints_deg - ik_joints_deg)
+    
+    # Compute shortest angular distance (0-360 wrapping)
+    # NaN where IK failed will propagate correctly
+    diff = np.abs(rs_joints_deg - ik_joints_deg)
+    diff = diff % 360.0
+    joint_errors_deg = np.minimum(diff, 360.0 - diff)
+    
+    # Compute stats only over successful waypoints
+    success_mask = ik_success.astype(bool)
+    if np.any(success_mask):
+        successful_errors = joint_errors_deg[success_mask]
+        mean_err = float(np.nanmean(successful_errors))
+        max_err = float(np.nanmax(successful_errors))
+    else:
+        mean_err = float('nan')
+        max_err = float('nan')
     
     ik_stats = {
         'success_count': int(np.sum(ik_success)),
         'success_percent': float(100 * np.sum(ik_success) / n_waypoints),
-        'mean_error_deg': float(np.nanmean(joint_errors_deg)),
-        'max_error_deg': float(np.nanmax(joint_errors_deg))
+        'mean_error_deg': mean_err,
+        'max_error_deg': max_err
     }
     print(f"  IK Success: {ik_stats['success_count']}/{n_waypoints} ({ik_stats['success_percent']:.1f}%)")
-    print(f"  IK Error: mean={ik_stats['mean_error_deg']:.4f}deg, max={ik_stats['max_error_deg']:.4f}deg")
+    print(f"  IK Error (successful only): mean={ik_stats['mean_error_deg']:.4f}deg, max={ik_stats['max_error_deg']:.4f}deg")
     
     # IK Plots
     plot_joint_comparison(
@@ -341,15 +361,85 @@ def process_single_csv(
         str(out_path / "ik_joint_comparison.png"),
         title=f"Joint Angle Comparison - RobotStudio vs IK\n{csv_name}",
         ref_label="RobotStudio", computed_label="IK (Pinocchio)",
-        adaptive_scale=adaptive_scale
+        adaptive_scale=adaptive_scale,
+        mask=ik_success
     )
     
     plot_joint_deltas(
         rs_joints_deg, ik_joints_deg,
         str(out_path / "ik_joint_deltas.png"),
         title=f"Joint Angle Errors |RobotStudio - IK|\n{csv_name}",
-        adaptive_scale=adaptive_scale
+        adaptive_scale=adaptive_scale,
+        mask=ik_success
     )
+    
+    # IK Success/Failure plot
+    plot_ik_success_failure(
+        ik_success,
+        str(out_path / "ik_success_failure.png"),
+        title=f"IK Success/Failure per Waypoint",
+        traj_index=csv_name
+    )
+    
+    # IK Solve Method plot
+    plot_ik_solve_methods(
+        ik_solve_methods,
+        ik_success,
+        str(out_path / "ik_solve_methods.png"),
+        title=f"IK Solve Method per Waypoint",
+        traj_index=csv_name
+    )
+    
+    # =========================================================================
+    # Raw Data CSV Export
+    # =========================================================================
+    print("  Saving raw comparison CSV...")
+    raw_csv_path = out_path / "raw_comparison.csv"
+    
+    # Build header
+    header = ['waypoint']
+    # RobotStudio inputs
+    header += [f'rs_j{j+1}_deg' for j in range(6)]
+    header += ['rs_tcp_x_mm', 'rs_tcp_y_mm', 'rs_tcp_z_mm']
+    header += ['rs_qw', 'rs_qx', 'rs_qy', 'rs_qz']
+    # FK outputs
+    header += ['fk_tcp_x_mm', 'fk_tcp_y_mm', 'fk_tcp_z_mm']
+    header += ['fk_qw', 'fk_qx', 'fk_qy', 'fk_qz']
+    header += ['fk_pos_error_mm']
+    # IK outputs
+    header += [f'ik_j{j+1}_deg' for j in range(6)]
+    header += ['ik_success', 'ik_solve_method']
+    header += [f'ik_j{j+1}_error_deg' for j in range(6)]
+    
+    # Build rows
+    rows = np.empty((n_waypoints, len(header)), dtype=object)
+    for i in range(n_waypoints):
+        row = [i]
+        # RS joints (deg)
+        row += [f'{v:.6f}' for v in rs_joints_deg[i]]
+        # RS TCP (mm)
+        row += [f'{v:.6f}' for v in rs_positions_mm[i]]
+        # RS quaternions
+        row += [f'{v:.8f}' for v in rs_data.tcp_quaternions[i]]
+        # FK TCP (mm)
+        row += [f'{v:.6f}' for v in fk_positions_mm[i]]
+        # FK quaternions
+        row += [f'{v:.8f}' for v in fk_quaternions[i]]
+        # FK position error
+        row += [f'{fk_errors_mm[i]:.6f}']
+        # IK joints (deg) — NaN for failed
+        row += [f'{v:.6f}' if not np.isnan(v) else '' for v in ik_joints_deg[i]]
+        # IK success & method
+        row += [str(ik_success[i]), ik_solve_methods[i]]
+        # IK joint errors (deg) — NaN for failed
+        row += [f'{v:.6f}' if not np.isnan(v) else '' for v in joint_errors_deg[i]]
+        rows[i] = row
+    
+    with open(raw_csv_path, 'w') as f:
+        f.write(','.join(header) + '\n')
+        for row in rows:
+            f.write(','.join(str(v) for v in row) + '\n')
+    print(f"    Raw CSV saved: {raw_csv_path.name}")
     
     # Save individual analysis
     save_individual_analysis(
