@@ -1,0 +1,2369 @@
+poses:
+  nominal_x-467.8_y-1015.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.0019294565069464286
+      x: 0.6982476100674456
+      y: -0.7147762914073797
+      z: 0.03926073706135513
+
+
+  nominal_x-467.8_y-1015.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: -0.028215259878413144
+      x: 0.7311639536705851
+      y: -0.6794970891063022
+      z: -0.05372967391353001
+
+
+  nominal_x-467.8_y-1015.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: 0.04580654750723059
+      x: 0.7211871090761891
+      y: -0.6911678416385066
+      z: 0.008827717290728022
+
+
+  nominal_x-467.8_y-1015.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: 0.05075793445378301
+      x: 0.7385126549953835
+      y: -0.6714402307898627
+      z: -0.03450662224140474
+
+
+  nominal_x-467.8_y-1015.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: -0.017225694540905497
+      x: 0.6858053069768556
+      y: -0.7275796404605251
+      z: -0.0014910255857462252
+
+
+  nominal_x-467.8_y-1015.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: 0.058248228997549965
+      x: 0.6795266666965157
+      y: -0.7312906676642107
+      z: -0.008038187246159177
+
+
+  nominal_x-467.8_y-965.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: 0.024364023391245965
+      x: 0.7008375042703361
+      y: -0.7119820506634095
+      z: 0.036259433330428255
+
+
+  nominal_x-467.8_y-965.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: -0.010808779809175703
+      x: 0.7492376929491422
+      y: -0.6610012459725694
+      z: -0.040042509486728
+
+
+  nominal_x-467.8_y-965.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: 0.03203500041338381
+      x: 0.6957213695987797
+      y: -0.7171286595197575
+      z: 0.025923354865998952
+
+
+  nominal_x-467.8_y-965.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: 0.041274461730465624
+      x: 0.7420835657515331
+      y: -0.6678851614667706
+      z: -0.03921493775152886
+
+
+  nominal_x-467.8_y-965.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: -0.025801574829935742
+      x: 0.6979645100638562
+      y: -0.7153029448056748
+      z: -0.022836781295667612
+
+
+  nominal_x-467.8_y-965.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: 0.008398264662604116
+      x: 0.6820127762179325
+      y: -0.729095271657517
+      z: 0.056640330797205166
+
+
+  nominal_x-467.8_y-915.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: -0.013935162493192717
+      x: 0.684716429551328
+      y: -0.7286631978434749
+      z: -0.004377951266343529
+
+
+  nominal_x-467.8_y-915.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: -0.009387228941728517
+      x: 0.7290942068927475
+      y: -0.6814662389101741
+      z: -0.06274776995123095
+
+
+  nominal_x-467.8_y-915.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: -0.02173950038177257
+      x: 0.6911861645273258
+      y: -0.7221553627207619
+      z: -0.016754467547500318
+
+
+  nominal_x-467.8_y-915.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: -0.020978644648699227
+      x: 0.7437662187286831
+      y: -0.6666366426015196
+      z: -0.044354200339024596
+
+
+  nominal_x-467.8_y-915.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: 0.010187330595841792
+      x: 0.6839318861071033
+      y: -0.7292705130978216
+      z: 0.017260132889158633
+
+
+  nominal_x-467.8_y-915.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: 0.045258655909298
+      x: 0.7152260146088438
+      y: -0.6951485742816441
+      z: -0.05631928414167842
+
+
+  nominal_x-467.8_y-865.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: 0.04444544587152882
+      x: 0.7077826648944562
+      y: -0.7048096295690187
+      z: -0.017654678783981997
+
+
+  nominal_x-467.8_y-865.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: 0.054949933210962205
+      x: 0.7225391178486307
+      y: -0.6875903649447538
+      z: 0.04623005574054508
+
+
+  nominal_x-467.8_y-865.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: -0.021632839794471014
+      x: 0.7353926928925663
+      y: -0.6772430051823852
+      z: -0.008456915169158885
+
+
+  nominal_x-467.8_y-865.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: 0.04643862623113777
+      x: 0.7477681434581228
+      y: -0.6620392074391376
+      z: 0.019757161646236362
+
+
+  nominal_x-467.8_y-865.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: 0.026568671937586587
+      x: 0.6874839118805715
+      y: -0.7255425802456493
+      z: 0.01574613690227745
+
+
+  nominal_x-467.8_y-865.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: 0.059646093524812316
+      x: 0.7396944606258339
+      y: -0.6701468773736782
+      z: 0.014057424835102892
+
+
+  nominal_x-467.8_y-815.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: -0.00973043417216362
+      x: 0.712897937182585
+      y: -0.7000247555795286
+      z: -0.04058560566823702
+
+
+  nominal_x-467.8_y-815.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: -0.013883099820784056
+      x: 0.7363142608101281
+      y: -0.6741611507125292
+      z: -0.05617216158346742
+
+
+  nominal_x-467.8_y-815.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: -0.023773050657799968
+      x: 0.7114664398115842
+      y: -0.7015406075294398
+      z: 0.03303215208665246
+
+
+  nominal_x-467.8_y-815.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: -0.008573385167265028
+      x: 0.751638540725022
+      y: -0.6585025932304832
+      z: 0.036610597813503655
+
+
+  nominal_x-467.8_y-815.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: -0.030960972910331494
+      x: 0.695836239888698
+      y: -0.7174941820230404
+      z: -0.007446084682050031
+
+
+  nominal_x-467.8_y-815.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -467.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: 0.03409052750040092
+      x: 0.7548060047973054
+      y: -0.6549970368556587
+      z: -0.009198519825579858
+
+
+  nominal_x-417.8_y-1015.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: -0.0065967294247477526
+      x: 0.7293687825744072
+      y: -0.6832659377762709
+      z: -0.033545796182785755
+
+
+  nominal_x-417.8_y-1015.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.04851164792355193
+      x: 0.6788337709609752
+      y: -0.7320784976483347
+      z: -0.029873143450281456
+
+
+  nominal_x-417.8_y-1015.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: -0.036188996716267796
+      x: 0.7213625872326936
+      y: -0.6915949738772558
+      z: 0.004771411252692012
+
+
+  nominal_x-417.8_y-1015.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: 0.0390080638490149
+      x: 0.7517605671158165
+      y: -0.6580392622812476
+      z: 0.01785357053389458
+
+
+  nominal_x-417.8_y-1015.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: 0.04850197264689225
+      x: 0.7150330005629454
+      y: -0.6974052522833948
+      z: -0.0011317432772747927
+
+
+  nominal_x-417.8_y-1015.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: -0.056101728068358794
+      x: 0.7170483023263989
+      y: -0.6939926370399074
+      z: 0.03268865205187671
+
+
+  nominal_x-417.8_y-965.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: -0.006888761843860607
+      x: 0.7411864690348939
+      y: -0.6712410880466326
+      z: 0.0055285439147697065
+
+
+  nominal_x-417.8_y-965.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: 0.012826502413332224
+      x: 0.7301220871689954
+      y: -0.6802589899730785
+      z: -0.06328447854440858
+
+
+  nominal_x-417.8_y-965.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: 0.03571182670280645
+      x: 0.6977142763669503
+      y: -0.7151049757324112
+      z: -0.0233308308904635
+
+
+  nominal_x-417.8_y-965.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: 0.041852628468155274
+      x: 0.6792043408326582
+      y: -0.7317120607386565
+      z: 0.03908044336966372
+
+
+  nominal_x-417.8_y-965.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: 0.0072076722358414376
+      x: 0.6840146366118177
+      y: -0.7292278927639619
+      z: -0.01728313561757052
+
+
+  nominal_x-417.8_y-965.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: 0.05204824023405277
+      x: 0.7295077152067568
+      y: -0.6805336661292419
+      z: 0.04453541744554827
+
+
+  nominal_x-417.8_y-915.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: -0.021618017578542675
+      x: 0.7131703121199736
+      y: -0.6997928940647843
+      z: 0.034794721483392854
+
+
+  nominal_x-417.8_y-915.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: 0.024708315204053376
+      x: 0.7489338391737146
+      y: -0.6610479579156003
+      z: -0.03877113663426058
+
+
+  nominal_x-417.8_y-915.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: -0.01293360944293445
+      x: 0.7388033547537726
+      y: -0.6737031905982873
+      z: 0.011239916771786065
+
+
+  nominal_x-417.8_y-915.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: 0.0111495918129581
+      x: 0.7460545452384127
+      y: -0.6640776654826915
+      z: -0.04774051045567009
+
+
+  nominal_x-417.8_y-915.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: 0.026418919309387803
+      x: 0.7385070277410398
+      y: -0.6737191685195781
+      z: 0.003448572009898264
+
+
+  nominal_x-417.8_y-915.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: -0.012977122173644894
+      x: 0.7294855082095081
+      y: -0.6810944859649614
+      z: -0.061585621702885666
+
+
+  nominal_x-417.8_y-865.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: 0.015871156893858932
+      x: 0.685949716318524
+      y: -0.727199987523911
+      z: -0.020031754955839372
+
+
+  nominal_x-417.8_y-865.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: -0.012084184785554591
+      x: 0.6934343238238031
+      y: -0.717710715828563
+      z: -0.0624030400376864
+
+
+  nominal_x-417.8_y-865.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: 0.03531583248565908
+      x: 0.6905663658317847
+      y: -0.7223507917864115
+      z: 0.008956559789963991
+
+
+  nominal_x-417.8_y-865.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: -0.049678910237176285
+      x: 0.6822246858618378
+      y: -0.7293462413962783
+      z: -0.012471729610803072
+
+
+  nominal_x-417.8_y-865.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: 0.0246314142624736
+      x: 0.700691609576872
+      y: -0.7121284235426532
+      z: 0.0360231881245757
+
+
+  nominal_x-417.8_y-865.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: -0.030984897255165778
+      x: 0.7461082951183794
+      y: -0.6642873738747371
+      z: 0.032933766991299886
+
+
+  nominal_x-417.8_y-815.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.047476988973812584
+      x: 0.7044742665247645
+      y: -0.7081388224880213
+      z: -0.0011625006039152122
+
+
+  nominal_x-417.8_y-815.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.028534954544799533
+      x: 0.6820090717607538
+      y: -0.7290117126507777
+      z: -0.0509048644349561
+
+
+  nominal_x-417.8_y-815.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: 0.048174260338567115
+      x: 0.7084641223603729
+      y: -0.7040828094138212
+      z: -0.005022495089026852
+
+
+  nominal_x-417.8_y-815.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: 0.06684441365187359
+      x: 0.7321510234925855
+      y: -0.6777583719629952
+      z: 0.011414569477952758
+
+
+  nominal_x-417.8_y-815.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: 0.010372099823177479
+      x: 0.717664046815248
+      y: -0.6950361549129878
+      z: -0.0421364310044065
+
+
+  nominal_x-417.8_y-815.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -417.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: 0.01067313637465308
+      x: 0.7577136350292561
+      y: -0.6521991870075118
+      z: 0.01980787513642314
+
+
+  nominal_x-367.8_y-1015.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.01038994635666986
+      x: 0.7268674906542045
+      y: -0.6856840514651872
+      z: -0.03732400850728623
+
+
+  nominal_x-367.8_y-1015.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: -0.04838607241851105
+      x: 0.6977331089533744
+      y: -0.7135982070061722
+      z: -0.0400611485574939
+
+
+  nominal_x-367.8_y-1015.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: -0.032537145466993746
+      x: 0.7109379030996587
+      y: -0.702172799878502
+      z: -0.021493980829648793
+
+
+  nominal_x-367.8_y-1015.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: -0.05275977242628712
+      x: 0.7383919895582324
+      y: -0.6723047451698075
+      z: -7.610467662489517e-05
+
+
+  nominal_x-367.8_y-1015.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: -0.009678611115958443
+      x: 0.7345795666731701
+      y: -0.6779617080063916
+      z: 0.025828418267092628
+
+
+  nominal_x-367.8_y-1015.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: 0.037408708105436186
+      x: 0.7470259040743493
+      y: -0.6628897914037568
+      z: -0.03361564594749401
+
+
+  nominal_x-367.8_y-965.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: 0.006237901656956122
+      x: 0.723275391438341
+      y: -0.6893651780854203
+      z: -0.04011792574261147
+
+
+  nominal_x-367.8_y-965.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: 0.058358767009656747
+      x: 0.6927256643788335
+      y: -0.7178979567037552
+      z: -0.0367141932308138
+
+
+  nominal_x-367.8_y-965.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: -0.03353615173904538
+      x: 0.7217661571183873
+      y: -0.6911762740258244
+      z: -0.014293326725076827
+
+
+  nominal_x-367.8_y-965.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: -0.030446550350118156
+      x: 0.7523109819316535
+      y: -0.6579942748943357
+      z: 0.012030305195069632
+
+
+  nominal_x-367.8_y-965.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: 0.03255483312452057
+      x: 0.6932029179471596
+      y: -0.719685685065241
+      z: 0.02150376948241487
+
+
+  nominal_x-367.8_y-965.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: -0.034307071784654294
+      x: 0.7104484902096675
+      y: -0.7005874686953681
+      z: -0.057124130552537164
+
+
+  nominal_x-367.8_y-915.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: 0.02731767305146808
+      x: 0.6924411798760702
+      y: -0.7205242827994501
+      z: -0.024974287722118352
+
+
+  nominal_x-367.8_y-915.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: -0.0553267916069075
+      x: 0.7349631412654937
+      y: -0.6758106726064462
+      z: -0.006932669245440732
+
+
+  nominal_x-367.8_y-915.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: -0.035888804083743224
+      x: 0.7115146881517634
+      y: -0.70159082358883
+      z: 0.015137983408798792
+
+
+  nominal_x-367.8_y-915.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: 0.041014658449586454
+      x: 0.6805327382667615
+      y: -0.7304140953229302
+      z: -0.0410881892153036
+
+
+  nominal_x-367.8_y-915.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: -0.008934891847407101
+      x: 0.7355278387269523
+      y: -0.6769937137668774
+      z: 0.02446380357721998
+
+
+  nominal_x-367.8_y-915.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: -0.056023633529851284
+      x: 0.7301274103140276
+      y: -0.6807351668573097
+      z: -0.019363620477463893
+
+
+  nominal_x-367.8_y-865.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: 0.01720673636843085
+      x: 0.7394872166980511
+      y: -0.6727847110467733
+      z: 0.01494379956460396
+
+
+  nominal_x-367.8_y-865.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: -0.004931468726979319
+      x: 0.6718543375779845
+      y: -0.7395675084956984
+      z: -0.040340179366328825
+
+
+  nominal_x-367.8_y-865.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: 0.03063709732463952
+      x: 0.6969672244095655
+      y: -0.7158717597848633
+      z: 0.028734646489388813
+
+
+  nominal_x-367.8_y-865.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: -0.017669004097626465
+      x: 0.6777660724489643
+      y: -0.7336586923746482
+      z: -0.04545195743226875
+
+
+  nominal_x-367.8_y-865.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: -0.022667688767246216
+      x: 0.7327123652507503
+      y: -0.6799775526209202
+      z: -0.01578903500110059
+
+
+  nominal_x-367.8_y-865.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: -0.058335914377203785
+      x: 0.730305117894535
+      y: -0.6805658101613551
+      z: -0.009029612961999665
+
+
+  nominal_x-367.8_y-815.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.015097578037163882
+      x: 0.6896038260602122
+      y: -0.7234662147123392
+      z: 0.028552800043570713
+
+
+  nominal_x-367.8_y-815.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: -0.027656585694587007
+      x: 0.6972197999471323
+      y: -0.7139772788886168
+      z: -0.057931934718298835
+
+
+  nominal_x-367.8_y-815.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: -0.027302542091250437
+      x: 0.6941063831840515
+      y: -0.7192279535175136
+      z: -0.013492623818949607
+
+
+  nominal_x-367.8_y-815.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: 0.02233879446291392
+      x: 0.7027302037142753
+      y: -0.7079412244960347
+      z: 0.0670109073859768
+
+
+  nominal_x-367.8_y-815.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: 0.03198597295156263
+      x: 0.7078074619277781
+      y: -0.7048467147190786
+      z: 0.034301648989822464
+
+
+  nominal_x-367.8_y-815.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -367.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: 0.06504742466061639
+      x: 0.7293062879606074
+      y: -0.6806811533377781
+      z: -0.023544391622919027
+
+
+  nominal_x-317.8_y-1015.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.02695482686308789
+      x: 0.7381209054780364
+      y: -0.6741062302939563
+      z: 0.0056352891617100585
+
+
+  nominal_x-317.8_y-1015.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.05582202204157295
+      x: 0.7195931157886617
+      y: -0.6905764022708698
+      z: 0.04662490955892345
+
+
+  nominal_x-317.8_y-1015.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: 0.015026979425957971
+      x: 0.7411648283962259
+      y: -0.6711001558956746
+      z: 0.008571335632580826
+
+
+  nominal_x-317.8_y-1015.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: -0.010069464595450715
+      x: 0.6822378663094528
+      y: -0.72900348544555
+      z: 0.054808921395389024
+
+
+  nominal_x-317.8_y-1015.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: 0.013606855473024843
+      x: 0.6878078870591853
+      y: -0.7253030725892855
+      z: 0.025896271466314385
+
+
+  nominal_x-317.8_y-1015.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: -0.013813104542906473
+      x: 0.739340735675776
+      y: -0.6710845321113853
+      z: -0.05319798374123021
+
+
+  nominal_x-317.8_y-965.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: 0.02268267991440236
+      x: 0.706047684606855
+      y: -0.7067440433860311
+      z: -0.03866549148224858
+
+
+  nominal_x-317.8_y-965.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: -0.024478550336211206
+      x: 0.6720408128055169
+      y: -0.739515802579279
+      z: -0.029636535436226845
+
+
+  nominal_x-317.8_y-965.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: -0.027981459453942058
+      x: 0.7033974226515625
+      y: -0.7097724304735783
+      z: 0.025926833080732146
+
+
+  nominal_x-317.8_y-965.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: 0.04399224387063366
+      x: 0.7337211742105101
+      y: -0.6763106449640596
+      z: 0.04818539719328713
+
+
+  nominal_x-317.8_y-965.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: 0.014566377134494103
+      x: 0.6932522586404823
+      y: -0.7197609991708454
+      z: 0.033663490900853354
+
+
+  nominal_x-317.8_y-965.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: -0.059494303423557986
+      x: 0.7273943287215399
+      y: -0.6835328372581767
+      z: -0.01186502396427742
+
+
+  nominal_x-317.8_y-915.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: 0.028300992721636407
+      x: 0.73652943821902
+      y: -0.6757095042200549
+      z: 0.011836653008026759
+
+
+  nominal_x-317.8_y-915.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: -0.06453727682694733
+      x: 0.7124554040710211
+      y: -0.6987371629530221
+      z: 0.002934998828265905
+
+
+  nominal_x-317.8_y-915.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: 0.007093885248373577
+      x: 0.7132551055107504
+      y: -0.6995396260175669
+      z: -0.04314096528977799
+
+
+  nominal_x-317.8_y-915.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: 0.009614833805627051
+      x: 0.7534299623718272
+      y: -0.6565501844881745
+      z: 0.03453551823588847
+
+
+  nominal_x-317.8_y-915.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: 0.04734040512557443
+      x: 0.717630256444056
+      y: -0.6947703808760842
+      z: 0.007734270223223932
+
+
+  nominal_x-317.8_y-915.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: -0.017646207789564477
+      x: 0.7245956246108795
+      y: -0.6860967648059547
+      z: -0.06261806023999242
+
+
+  nominal_x-317.8_y-865.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: -0.03564817080123111
+      x: 0.7166511806489547
+      y: -0.6963716115390063
+      z: 0.014383039857867838
+
+
+  nominal_x-317.8_y-865.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: -0.022538095485879622
+      x: 0.7387794223483946
+      y: -0.6716601910266694
+      z: 0.0506910954355865
+
+
+  nominal_x-317.8_y-865.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: -0.013231039458921038
+      x: 0.7381325307937128
+      y: -0.6744005360410665
+      z: -0.013008595866864418
+
+
+  nominal_x-317.8_y-865.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: -0.04423934160564093
+      x: 0.69677129656329
+      y: -0.7145472318987558
+      z: -0.04443978314120048
+
+
+  nominal_x-317.8_y-865.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: 0.022601026259015767
+      x: 0.6964380360403744
+      y: -0.7165033103527129
+      z: -0.032958486340694045
+
+
+  nominal_x-317.8_y-865.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: 0.01465027657156143
+      x: 0.7535124533798018
+      y: -0.6564300905091583
+      z: 0.033224814101318445
+
+
+  nominal_x-317.8_y-815.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.03849422131071012
+      x: 0.7119499518468527
+      y: -0.7005939931488652
+      z: 0.028522232638315534
+
+
+  nominal_x-317.8_y-815.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.009037802343253432
+      x: 0.749419914613542
+      y: -0.6606231160770607
+      z: 0.043188056382178326
+
+
+  nominal_x-317.8_y-815.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: -0.010265055640172244
+      x: 0.7157808450555624
+      y: -0.6970540813667386
+      z: 0.040841377721880255
+
+
+  nominal_x-317.8_y-815.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: 0.0743699685803035
+      x: 0.7128683758873735
+      y: -0.6972928658933326
+      z: 0.008393188150288396
+
+
+  nominal_x-317.8_y-815.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: 0.004297554624585678
+      x: 0.7290268933913863
+      y: -0.6835343906987806
+      z: -0.03580581612531673
+
+
+  nominal_x-317.8_y-815.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -317.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: 0.04794293062858303
+      x: 0.7209273743301096
+      y: -0.6892750569934123
+      z: 0.05352655556791738
+
+
+  nominal_x-267.8_y-1015.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: -0.01397442103922463
+      x: 0.7148417882906677
+      y: -0.6980802017416394
+      z: -0.03860006743997902
+
+
+  nominal_x-267.8_y-1015.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -1015.815
+      z: 420.4
+    rotation:
+      w: 0.03138629939893052
+      x: 0.6777068979014864
+      y: -0.7333070911580216
+      z: 0.044597878919809625
+
+
+  nominal_x-267.8_y-1015.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: -0.00015478283088670697
+      x: 0.7358650536842273
+      y: -0.6766152983475401
+      z: -0.026350272307020178
+
+
+  nominal_x-267.8_y-1015.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -1015.815
+      z: 520.4
+    rotation:
+      w: -0.03881367747812954
+      x: 0.7170542074107454
+      y: -0.6939079652396052
+      z: -0.053089526765667236
+
+
+  nominal_x-267.8_y-1015.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: 0.017331698176002757
+      x: 0.6965294256969625
+      y: -0.7164505447342534
+      z: -0.03528439211020995
+
+
+  nominal_x-267.8_y-1015.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -1015.815
+      z: 620.4
+    rotation:
+      w: 0.01278709749593173
+      x: 0.6627887950925758
+      y: -0.7486292498790388
+      z: -0.010087093878254993
+
+
+  nominal_x-267.8_y-965.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: -0.02217387596872149
+      x: 0.6999217959853787
+      y: -0.7132582877612099
+      z: 0.029671765519980835
+
+
+  nominal_x-267.8_y-965.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -965.815
+      z: 420.4
+    rotation:
+      w: 0.05303606095983244
+      x: 0.6949965412248088
+      y: -0.715634989705878
+      z: -0.045094849285538564
+
+
+  nominal_x-267.8_y-965.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: -0.029877757542178335
+      x: 0.7021643001853977
+      y: -0.7110411398455511
+      z: 0.02220613871300118
+
+
+  nominal_x-267.8_y-965.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -965.815
+      z: 520.4
+    rotation:
+      w: -0.04872448291105781
+      x: 0.7286287097758871
+      y: -0.6821720776074763
+      z: 0.03697816366554186
+
+
+  nominal_x-267.8_y-965.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: 0.030539316536789762
+      x: 0.7366156451774115
+      y: -0.6756139883880764
+      z: -0.003237301297043329
+
+
+  nominal_x-267.8_y-965.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -965.815
+      z: 620.4
+    rotation:
+      w: 0.07006787966701411
+      x: 0.7197443186598096
+      y: -0.6903565829996025
+      z: -0.021596210431661465
+
+
+  nominal_x-267.8_y-915.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: -0.02453540061335946
+      x: 0.7319979288085201
+      y: -0.6806996413568834
+      z: 0.015001486372665645
+
+
+  nominal_x-267.8_y-915.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -915.815
+      z: 420.4
+    rotation:
+      w: 0.017799810224326928
+      x: 0.6628716803300128
+      y: -0.7484992225506585
+      z: 0.005763333540855048
+
+
+  nominal_x-267.8_y-915.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: -0.01968642315195181
+      x: 0.7136144535708518
+      y: -0.6993671792486171
+      z: -0.035389334383251946
+
+
+  nominal_x-267.8_y-915.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: -0.03300329358756176
+      x: 0.674030826831466
+      y: -0.7375541384761264
+      z: -0.0246398033677723
+
+
+  nominal_x-267.8_y-915.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: -0.030596692198248603
+      x: 0.7246843232868294
+      y: -0.688191777948079
+      z: -0.016986782317375652
+
+
+  nominal_x-267.8_y-915.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -915.815
+      z: 620.4
+    rotation:
+      w: -0.06189180385432359
+      x: 0.7224217971468994
+      y: -0.6886008671415044
+      z: -0.010246823638108941
+
+
+  nominal_x-267.8_y-865.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: 0.009931392382478197
+      x: 0.7046675524399264
+      y: -0.7082415450194276
+      z: -0.041700382398281645
+
+
+  nominal_x-267.8_y-865.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -865.815
+      z: 420.4
+    rotation:
+      w: 0.019160120971200425
+      x: 0.6764142090925247
+      y: -0.7347082843012768
+      z: 0.047962949045879805
+
+
+  nominal_x-267.8_y-865.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: 0.030981500192226525
+      x: 0.7346237607800011
+      y: -0.6776244925769848
+      z: 0.013896899045140128
+
+
+  nominal_x-267.8_y-865.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -865.815
+      z: 520.4
+    rotation:
+      w: -0.001994094557969189
+      x: 0.7334308987394863
+      y: -0.6770055570516308
+      z: -0.061144223621649826
+
+
+  nominal_x-267.8_y-865.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: 0.02153177111460756
+      x: 0.7390318439150967
+      y: -0.673230358079036
+      z: -0.011366682580837341
+
+
+  nominal_x-267.8_y-865.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -865.815
+      z: 620.4
+    rotation:
+      w: -0.06144253089726838
+      x: 0.7239152110434467
+      y: -0.6870801325248126
+      z: -0.009616345800057886
+
+
+  nominal_x-267.8_y-815.8_z420.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.03519033755875596
+      x: 0.6901537710472849
+      y: -0.722779451237561
+      z: -0.00626716207248673
+
+
+  nominal_x-267.8_y-815.8_z420.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -815.815
+      z: 420.4
+    rotation:
+      w: 0.0546853231192477
+      x: 0.676735527088058
+      y: -0.7341520427099122
+      z: -0.007701947614420844
+
+
+  nominal_x-267.8_y-815.8_z520.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: -0.03139885416303869
+      x: 0.7181798398013856
+      y: -0.6947828618569513
+      z: 0.0225522621918294
+
+
+  nominal_x-267.8_y-815.8_z520.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -815.815
+      z: 520.4
+    rotation:
+      w: 0.05435452571318021
+      x: 0.7316348052566929
+      y: -0.6783585783167375
+      z: 0.039821307055282584
+
+
+  nominal_x-267.8_y-815.8_z620.4_oriA:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: -0.00809752111888887
+      x: 0.721497964628165
+      y: -0.6912755169743093
+      z: -0.038900858872854285
+
+
+  nominal_x-267.8_y-815.8_z620.4_oriB:
+    description: nominal
+    intent: Nominal grid knife pose for workspace coverage
+    translation_mm:
+      x: -267.773
+      y: -815.815
+      z: 620.4
+    rotation:
+      w: -0.04164417738208768
+      x: 0.7317592185324948
+      y: -0.6789365551297722
+      z: 0.04288779186901027
+
+
+  out_of_reach_r900_dir+X:
+    category: out_of_reach
+    robot_reach_class: 900
+    intent: Intentionally unreachable knife pose for reachability validation for robot 900
+    translation_mm:
+      x: 950
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r900_dir-X:
+    category: out_of_reach
+    robot_reach_class: 900
+    intent: Intentionally unreachable knife pose for reachability validation for robot 900
+    translation_mm:
+      x: -950
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r900_dir+Y:
+    category: out_of_reach
+    robot_reach_class: 900
+    intent: Intentionally unreachable knife pose for reachability validation for robot 900
+    translation_mm:
+      x: 0
+      y: 950
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r900_dir-Y:
+    category: out_of_reach
+    robot_reach_class: 900
+    intent: Intentionally unreachable knife pose for reachability validation for robot 900
+    translation_mm:
+      x: 0
+      y: -950
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r900_dirdiagonal:
+    category: out_of_reach
+    robot_reach_class: 900
+    intent: Intentionally unreachable knife pose for reachability validation for robot 900
+    translation_mm:
+      x: 671.7514421272201
+      y: 671.7514421272201
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r900_dirhigh_Z:
+    category: out_of_reach
+    robot_reach_class: 900
+    intent: Intentionally unreachable knife pose for reachability validation for robot 900
+    translation_mm:
+      x: 0
+      y: 0
+      z: 950
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1150_dir+X:
+    category: out_of_reach
+    robot_reach_class: 1150
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1150
+    translation_mm:
+      x: 1200
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1150_dir-X:
+    category: out_of_reach
+    robot_reach_class: 1150
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1150
+    translation_mm:
+      x: -1200
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1150_dir+Y:
+    category: out_of_reach
+    robot_reach_class: 1150
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1150
+    translation_mm:
+      x: 0
+      y: 1200
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1150_dir-Y:
+    category: out_of_reach
+    robot_reach_class: 1150
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1150
+    translation_mm:
+      x: 0
+      y: -1200
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1150_dirdiagonal:
+    category: out_of_reach
+    robot_reach_class: 1150
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1150
+    translation_mm:
+      x: 848.528137423857
+      y: 848.528137423857
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1150_dirhigh_Z:
+    category: out_of_reach
+    robot_reach_class: 1150
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1150
+    translation_mm:
+      x: 0
+      y: 0
+      z: 1200
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1400_dir+X:
+    category: out_of_reach
+    robot_reach_class: 1400
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1400
+    translation_mm:
+      x: 1450
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1400_dir-X:
+    category: out_of_reach
+    robot_reach_class: 1400
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1400
+    translation_mm:
+      x: -1450
+      y: 0
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1400_dir+Y:
+    category: out_of_reach
+    robot_reach_class: 1400
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1400
+    translation_mm:
+      x: 0
+      y: 1450
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1400_dir-Y:
+    category: out_of_reach
+    robot_reach_class: 1400
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1400
+    translation_mm:
+      x: 0
+      y: -1450
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1400_dirdiagonal:
+    category: out_of_reach
+    robot_reach_class: 1400
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1400
+    translation_mm:
+      x: 1025.3048327204938
+      y: 1025.3048327204938
+      z: 1.0
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046
+
+
+  out_of_reach_r1400_dirhigh_Z:
+    category: out_of_reach
+    robot_reach_class: 1400
+    intent: Intentionally unreachable knife pose for reachability validation for robot 1400
+    translation_mm:
+      x: 0
+      y: 0
+      z: 1450
+    rotation:
+      w: 0.005159843475345318
+      x: 0.7126324799843183
+      y: -0.7015184724986233
+      z: 0.0003965222670724046

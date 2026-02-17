@@ -1,0 +1,30 @@
+# =============================================================================
+# RobotStudio Test Trajectory Configuration
+# =============================================================================
+# Configuration for FK/IK comparison with RobotStudio test trajectories.
+# Used by solver_comparison_test_trajectory.py
+
+# =============================================================================
+# Robot to Use
+# =============================================================================
+# Reference robot name from config/robots_config.yaml
+robot_name: "IRB 1300-7/1.4"
+
+# =============================================================================
+# I/O Directories
+# =============================================================================
+input_folder: "/home/cognitron/Projects/Trajectories/EXP_8_Results/Experiment_8/square_profile_trajectories_sampled"
+output_folder: "/home/cognitron/Projects/Trajectories/EXP_8_Results/9dcd8ae3259363881ad8066919cce4088539ab56"
+
+# =============================================================================
+# Processing Options
+# =============================================================================
+options:
+  # Use adaptive scaling for plots (if false, uniform scale)
+  adaptive_scale: false
+  
+  # Generate FK comparison plots
+  generate_fk_plots: false
+  
+  # Generate IK comparison plots
+  generate_ik_plots: false

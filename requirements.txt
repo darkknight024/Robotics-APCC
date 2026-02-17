@@ -1,0 +1,26 @@
+# Core scientific computing and data analysis
+numpy
+pandas
+
+# Visualization and plotting
+matplotlib
+PyYAML
+# PyTorch ecosystem (includes Apple Silicon support in newer versions)
+#torch>=1.12.0
+
+# Computer vision
+# opencv-python>=4.5.0
+
+# Robotics and kinematics
+#pin
+
+# Progress bars and utilities
+tqdm
+
+# Note: Isaac Sim and Isaac Lab dependencies are intentionally excluded
+
+# macOS Compatibility Notes:
+# - All packages are cross-platform and work on macOS
+# - For Apple Silicon Macs, ensure you install compatible versions:
+#   - torch: Use 'pip install torch' (will install appropriate Apple Silicon version)
+#   - pinocchio: Should work with standard pip installation. Refer https://stack-of-tasks.github.io/pinocchio/download.html
