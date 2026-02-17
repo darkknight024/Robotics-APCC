@@ -147,25 +147,55 @@ class IKSolver:
         Returns:
             success: Whether IK converged
             q: Joint configuration
-            info: Dictionary with convergence information
+            info: Dictionary with convergence information (includes all retry attempts)
         """
-        # Try with provided or previous initial guess
-        success, q, info = self.solve(target_position, target_quaternion, q_init, use_adaptive_tolerance)
-        if success:
-            return success, q, info
+        # Track all attempts for debugging/visualization
+        all_attempts = []
+        q_neutral = pin.neutral(self.model)
         
-        # Try with neutral configuration
-        success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model), use_adaptive_tolerance)
-        if success:
-            return success, q, info
-        
-        # Try random configurations
-        for _ in range(num_random_retries):
-            q_random = pin.randomConfiguration(self.model)
-            success, q, info = self.solve(target_position, target_quaternion, q_random, use_adaptive_tolerance)
+        # Attempt 1: Try with provided initial guess (from previous waypoint)
+        if q_init is not None:
+            success, q, info = self.solve(target_position, target_quaternion, q_init, use_adaptive_tolerance)
+            all_attempts.append({
+                'attempt_type': 'initial_from_prev',
+                'q_init': q_init.copy().tolist(),
+                'success': success,
+                'info': info.copy()
+            })
             if success:
+                info['all_retry_attempts'] = all_attempts
                 return success, q, info
         
+        # Attempt 2: Try with neutral configuration
+        # Only skip if q_init was provided and is identical to neutral
+        if q_init is None or not np.allclose(q_init, q_neutral):
+            success, q, info = self.solve(target_position, target_quaternion, q_neutral, use_adaptive_tolerance)
+            all_attempts.append({
+                'attempt_type': 'neutral',
+                'q_init': q_neutral.copy().tolist(),
+                'success': success,
+                'info': info.copy()
+            })
+            if success:
+                info['all_retry_attempts'] = all_attempts
+                return success, q, info
+        
+        # Try random configurations
+        for retry_idx in range(num_random_retries):
+            q_random = pin.randomConfiguration(self.model)
+            success, q, info = self.solve(target_position, target_quaternion, q_random, use_adaptive_tolerance)
+            all_attempts.append({
+                'attempt_type': f'random_{retry_idx + 1}',
+                'q_init': q_random.copy().tolist(),
+                'success': success,
+                'info': info.copy()
+            })
+            if success:
+                info['all_retry_attempts'] = all_attempts
+                return success, q, info
+        
+        # No attempt succeeded, return last attempt's info with all attempts logged
+        info['all_retry_attempts'] = all_attempts
         return False, q, info
     
     def _solve_damped(

@@ -1082,12 +1082,13 @@ def plot_joint_configurations_vs_limits(
     """
     Plot joint configurations against joint limits across all IK iterations.
     Marks iterations where joints were clipped/constrained.
+    Now generates separate plots for each retry attempt.
     
     Args:
         waypoint_result: FeasibilityResult object
         waypoint_index: Waypoint index
         trajectory_index: Trajectory number
-        output_path: Path to save the plot
+        output_path: Path to save the plot (base name, will append attempt suffix)
         model: Pinocchio model (for joint limits)
     """
     if waypoint_result.is_reachable:
@@ -1098,6 +1099,69 @@ def plot_joint_configurations_vs_limits(
     
     debug_info = waypoint_result.ik_debug_info
     ik_info = debug_info['ik_solver_info']
+    
+    # Check if we have multiple retry attempts
+    all_attempts = ik_info.get('all_retry_attempts', [])
+    
+    if not all_attempts:
+        # Fallback to old behavior if no retry tracking
+        _plot_single_attempt(
+            ik_info, output_path, model, 
+            waypoint_index, trajectory_index, 
+            attempt_name="single", q_init_for_marker=None
+        )
+        return
+    
+    # Plot each attempt separately
+    output_base = Path(output_path)
+    output_dir = output_base.parent
+    output_stem = output_base.stem
+    output_ext = output_base.suffix
+    
+    for attempt_idx, attempt in enumerate(all_attempts):
+        attempt_type = attempt['attempt_type']
+        attempt_info = attempt['info']
+        q_init = np.array(attempt['q_init'])
+        success = attempt['success']
+        
+        # Create filename for this attempt
+        attempt_filename = f"{output_stem}_attempt_{attempt_idx + 1}_{attempt_type}{output_ext}"
+        attempt_output_path = output_dir / attempt_filename
+        
+        _plot_single_attempt(
+            attempt_info, str(attempt_output_path), model,
+            waypoint_index, trajectory_index,
+            attempt_name=f"Attempt {attempt_idx + 1}: {attempt_type}",
+            q_init_for_marker=q_init,
+            success=success
+        )
+    
+    print(f"    Generated {len(all_attempts)} joint config plots for all retry attempts")
+
+
+def _plot_single_attempt(
+    ik_info: dict,
+    output_path: str,
+    model,
+    waypoint_index: int,
+    trajectory_index: int,
+    attempt_name: str = "IK Attempt",
+    q_init_for_marker: Optional[np.ndarray] = None,
+    success: bool = False
+) -> None:
+    """
+    Helper function to plot a single IK attempt.
+    
+    Args:
+        ik_info: IK solver info dictionary
+        output_path: Path to save the plot
+        model: Pinocchio model
+        waypoint_index: Waypoint index
+        trajectory_index: Trajectory index
+        attempt_name: Name of this attempt (e.g., "initial", "neutral", "random_1")
+        q_init_for_marker: Initial joint configuration to mark with bright blue cross
+        success: Whether this attempt succeeded
+    """
     history = ik_info.get('iteration_history', {})
     
     joint_configs = history.get('joint_configurations', [])
@@ -1118,9 +1182,13 @@ def plot_joint_configurations_vs_limits(
     
     # Create figure with subplots for each joint
     fig = plt.figure(figsize=(20, 4 * n_joints))
-    fig.suptitle(f'Joint Configurations vs Limits Across IK Iterations\n'
+    
+    success_text = "✓ SUCCESS" if success else "✗ FAILED"
+    success_color = "green" if success else "red"
+    
+    fig.suptitle(f'Joint Configurations vs Limits - {attempt_name} [{success_text}]\n'
                  f'Trajectory {trajectory_index}, Waypoint {waypoint_index}',
-                 fontsize=16, fontweight='bold')
+                 fontsize=16, fontweight='bold', color=success_color)
     
     gs = fig.add_gridspec(n_joints, 1, hspace=0.4)
     
@@ -1133,6 +1201,12 @@ def plot_joint_configurations_vs_limits(
         # Plot joint configuration trajectory
         ax.plot(iterations, joint_values, 'b-o', linewidth=2, markersize=4, 
                alpha=0.7, label=f'Joint {j+1} Configuration')
+        
+        # Mark initial configuration with bright blue cross
+        if q_init_for_marker is not None:
+            ax.scatter([0], [q_init_for_marker[j]], c='cyan', s=300, 
+                      marker='X', edgecolors='darkblue', linewidths=3, 
+                      zorder=10, label='Initial Configuration')
         
         # Plot joint limits
         ax.axhline(y=q_lower[j], color='red', linestyle='--', linewidth=2, 
@@ -1214,4 +1288,4 @@ def plot_joint_configurations_vs_limits(
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"    Generated joint configs vs limits plot: {Path(output_path).name}")
+    print(f"      - {Path(output_path).name}")
