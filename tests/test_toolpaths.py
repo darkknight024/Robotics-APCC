@@ -25,7 +25,7 @@ Output Structure:
         └── summary.yaml
 
 Usage:
-    python tests/solver_comparison_toolpath_trajectory.py --config tests/configs/toolpath_config.yaml
+    python tests/test_toolpaths.py --config tests/configs/test_toolpaths_config.yaml
 """
 
 import argparse
@@ -271,7 +271,7 @@ def process_batch(config_path: str) -> Dict[str, Any]:
     Run batch toolpath comparison with parallel processing.
     
     Args:
-        config_path: Path to toolpath_config.yaml
+        config_path: Path to test_toolpaths_config.yaml
         
     Returns:
         Dictionary with batch results
@@ -453,7 +453,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare Pinocchio IK with RobotStudio for toolpath trajectories (parallel)"
     )
-    parser.add_argument('--config', '-c', default='tests/configs/toolpath_config.yaml',
+    parser.add_argument('--config', '-c', default='tests/configs/test_toolpaths_config.yaml',
                         help="Path to toolpath config YAML")
     
     args = parser.parse_args()

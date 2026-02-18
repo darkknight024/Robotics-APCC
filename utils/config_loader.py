@@ -31,7 +31,11 @@ _DEFAULT_IK_CONFIG = {
     'lambda_max': 1e1,
     'max_step': 0.2,
     'backtrack': True,
-    'ee_frame_name': 'ee_link'
+    'ee_frame_name': 'ee_link',
+    'use_initial_guess': True,
+    'use_neutral': True,
+    'use_random': True,
+    'num_random_retries': 3
 }
 
 
@@ -364,7 +368,11 @@ def load_ik_config_as_object(config_path: str = None):
             lambda_max=float(params.get('lambda_max', _DEFAULT_IK_CONFIG['lambda_max'])),
             max_step=float(params.get('max_step', _DEFAULT_IK_CONFIG['max_step'])),
             backtrack=bool(params.get('backtrack', _DEFAULT_IK_CONFIG['backtrack'])),
-            ee_frame_name=str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name']))
+            ee_frame_name=str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name'])),
+            use_initial_guess=bool(params.get('use_initial_guess', _DEFAULT_IK_CONFIG['use_initial_guess'])),
+            use_neutral=bool(params.get('use_neutral', _DEFAULT_IK_CONFIG['use_neutral'])),
+            use_random=bool(params.get('use_random', _DEFAULT_IK_CONFIG['use_random'])),
+            num_random_retries=int(params.get('num_random_retries', _DEFAULT_IK_CONFIG['num_random_retries']))
         )
     except Exception as e:
         print(f"Warning: Could not load IK config from {config_path}: {e}")
@@ -379,7 +387,11 @@ def load_ik_config_as_object(config_path: str = None):
             lambda_max=_DEFAULT_IK_CONFIG['lambda_max'],
             max_step=_DEFAULT_IK_CONFIG['max_step'],
             backtrack=_DEFAULT_IK_CONFIG['backtrack'],
-            ee_frame_name=_DEFAULT_IK_CONFIG['ee_frame_name']
+            ee_frame_name=_DEFAULT_IK_CONFIG['ee_frame_name'],
+            use_initial_guess=_DEFAULT_IK_CONFIG['use_initial_guess'],
+            use_neutral=_DEFAULT_IK_CONFIG['use_neutral'],
+            use_random=_DEFAULT_IK_CONFIG['use_random'],
+            num_random_retries=_DEFAULT_IK_CONFIG['num_random_retries']
         )
 
 

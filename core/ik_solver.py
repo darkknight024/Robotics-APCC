@@ -23,6 +23,10 @@ try:
     _DEFAULT_MAX_STEP = _DEFAULT_IK_CONFIG['max_step']
     _DEFAULT_BACKTRACK = _DEFAULT_IK_CONFIG['backtrack']
     _DEFAULT_EE_FRAME_NAME = _DEFAULT_IK_CONFIG['ee_frame_name']
+    _DEFAULT_USE_INITIAL_GUESS = _DEFAULT_IK_CONFIG['use_initial_guess']
+    _DEFAULT_USE_NEUTRAL = _DEFAULT_IK_CONFIG['use_neutral']
+    _DEFAULT_USE_RANDOM = _DEFAULT_IK_CONFIG['use_random']
+    _DEFAULT_NUM_RANDOM_RETRIES = _DEFAULT_IK_CONFIG['num_random_retries']
 except ImportError:
     # Fallback if config_loader is not available (shouldn't happen in normal usage)
     _DEFAULT_MAX_ITERATIONS = 50
@@ -34,6 +38,10 @@ except ImportError:
     _DEFAULT_MAX_STEP = 0.2
     _DEFAULT_BACKTRACK = True
     _DEFAULT_EE_FRAME_NAME = "ee_link"
+    _DEFAULT_USE_INITIAL_GUESS = True
+    _DEFAULT_USE_NEUTRAL = True
+    _DEFAULT_USE_RANDOM = True
+    _DEFAULT_NUM_RANDOM_RETRIES = 3
 
 
 @dataclass
@@ -53,6 +61,10 @@ class IKConfig:
     max_step: float = _DEFAULT_MAX_STEP
     backtrack: bool = _DEFAULT_BACKTRACK
     ee_frame_name: str = _DEFAULT_EE_FRAME_NAME
+    use_initial_guess: bool = _DEFAULT_USE_INITIAL_GUESS
+    use_neutral: bool = _DEFAULT_USE_NEUTRAL
+    use_random: bool = _DEFAULT_USE_RANDOM
+    num_random_retries: int = _DEFAULT_NUM_RANDOM_RETRIES
 
 
 class IKSolver:
@@ -120,41 +132,52 @@ class IKSolver:
         target_position: np.ndarray,
         target_quaternion: np.ndarray,
         q_init: Optional[np.ndarray] = None,
-        num_random_retries: int = 3
+        num_random_retries: int = None
     ) -> Tuple[bool, np.ndarray, Dict[str, Any]]:
         """
         Solve IK with multiple initialization attempts.
+        
+        Respects IKConfig toggles: use_initial_guess, use_neutral, use_random.
         
         Args:
             target_position: Target position [x, y, z] in meters
             target_quaternion: Target quaternion [qw, qx, qy, qz]
             q_init: Initial joint configuration
-            num_random_retries: Number of random configuration retries
+            num_random_retries: Number of random configuration retries (overrides config)
             
         Returns:
             success: Whether IK converged
             q: Joint configuration
             info: Dictionary with convergence information
         """
+        if num_random_retries is None:
+            num_random_retries = self.config.num_random_retries
+        
+        info = {}
+        q = q_init if q_init is not None else pin.neutral(self.model)
+        
         # Try with provided or previous initial guess
-        success, q, info = self.solve(target_position, target_quaternion, q_init)
-        if success:
-            info['solve_method'] = 'initial_guess'
-            return success, q, info
+        if self.config.use_initial_guess:
+            success, q, info = self.solve(target_position, target_quaternion, q_init)
+            if success:
+                info['solve_method'] = 'initial_guess'
+                return success, q, info
         
         # Try with neutral configuration
-        success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model))
-        if success:
-            info['solve_method'] = 'neutral'
-            return success, q, info
+        if self.config.use_neutral:
+            success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model))
+            if success:
+                info['solve_method'] = 'neutral'
+                return success, q, info
         
         # Try random configurations
-        for _ in range(num_random_retries):
-            q_random = pin.randomConfiguration(self.model)
-            success, q, info = self.solve(target_position, target_quaternion, q_random)
-            if success:
-                info['solve_method'] = 'random'
-                return success, q, info
+        if self.config.use_random:
+            for _ in range(num_random_retries):
+                q_random = pin.randomConfiguration(self.model)
+                success, q, info = self.solve(target_position, target_quaternion, q_random)
+                if success:
+                    info['solve_method'] = 'random'
+                    return success, q, info
         
         info['solve_method'] = 'failed'
         return False, q, info

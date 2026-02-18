@@ -36,6 +36,9 @@ from typing import List, Dict, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import yaml
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from core import IKSolver, IKConfig, load_robot_model
 from utils import (
     load_toolpath_trajectories,
@@ -44,6 +47,7 @@ from utils import (
     load_ik_config_as_object,
     plot_reachability_per_waypoint,
     plot_reachability_rate_per_trajectory,
+    plot_ik_success_failure,
 )
 from utils.config_loader import load_robots_config
 
@@ -61,6 +65,7 @@ class TrajectoryResult:
     unreachable_count: int
     reachable_flags: np.ndarray  # bool array
     unreachable_waypoints: List[int] = field(default_factory=list)
+    solve_methods: np.ndarray = field(default_factory=lambda: np.array([], dtype=object))
 
     @property
     def reachability_pct(self) -> float:
@@ -123,6 +128,7 @@ def check_trajectory_reachability(
     """
     n_waypoints = len(trajectory_t_b_p)
     reachable_flags = np.zeros(n_waypoints, dtype=bool)
+    solve_methods = np.empty(n_waypoints, dtype=object)
     unreachable_waypoints = []
 
     # Use neutral config as initial guess
@@ -137,6 +143,7 @@ def check_trajectory_reachability(
         )
 
         reachable_flags[i] = success
+        solve_methods[i] = info.get('solve_method', 'failed')
         if success:
             q_prev = q
         else:
@@ -149,8 +156,101 @@ def check_trajectory_reachability(
         reachable_count=reachable_count,
         unreachable_count=n_waypoints - reachable_count,
         reachable_flags=reachable_flags,
-        unreachable_waypoints=unreachable_waypoints
+        unreachable_waypoints=unreachable_waypoints,
+        solve_methods=solve_methods
     )
+
+
+# =============================================================================
+# Plotting — IK Solve Method with Exclusion Highlighting
+# =============================================================================
+
+def plot_ik_solve_methods_with_exclusions(
+    solve_methods: np.ndarray,
+    ik_success: np.ndarray,
+    ik_config: IKConfig,
+    output_path: str,
+    title: str = "IK Solve Method per Waypoint",
+    traj_index: str = None
+) -> None:
+    """
+    Plot IK solve method per waypoint, showing excluded (disabled) methods in red.
+    
+    Args:
+        solve_methods: String array (n_waypoints,) with method names
+        ik_success: Boolean array (n_waypoints,)
+        ik_config: IKConfig to check which methods are enabled
+        output_path: Path to save the output image
+        title: Main plot title
+        traj_index: Optional trajectory index for subtitle
+    """
+    n = len(solve_methods)
+    waypoints = np.arange(n)
+
+    # Build method map: (y-level, color, label)
+    # Methods are: initial_guess(3), neutral(2), random(1), failed(0)
+    method_map = {
+        'initial_guess': (3, '#2196F3', 'Initial Guess'),
+        'neutral':       (2, '#FF9800', 'Neutral'),
+        'random':        (1, '#4CAF50', 'Random'),
+        'failed':        (0, '#9E9E9E', 'Failed'),
+    }
+
+    # Check which methods are excluded
+    excluded_methods = set()
+    if not ik_config.use_initial_guess:
+        excluded_methods.add('initial_guess')
+    if not ik_config.use_neutral:
+        excluded_methods.add('neutral')
+    if not ik_config.use_random:
+        excluded_methods.add('random')
+
+    fig, ax = plt.subplots(figsize=(16, 5))
+
+    # Plot each method category
+    for method, (level, color, label) in method_map.items():
+        mask = (solve_methods == method)
+        count = int(np.sum(mask))
+        if count > 0:
+            ax.scatter(waypoints[mask], np.full(count, level),
+                       c=color, s=50, label=f'{label} ({count})', zorder=3,
+                       edgecolors='black', linewidths=0.3)
+
+    # Draw exclusion bands (red background) for disabled methods
+    for method in excluded_methods:
+        if method in method_map:
+            level = method_map[method][0]
+            label_text = method_map[method][2]
+            ax.axhspan(level - 0.35, level + 0.35, color='red', alpha=0.15, zorder=1)
+            ax.text(n + 0.5, level, f'{label_text}\n(EXCLUDED)',
+                    ha='left', va='center', color='red', fontsize=8, fontweight='bold')
+
+    ax.set_xlabel('Waypoint Index', fontweight='bold')
+    ax.set_ylabel('Solve Method', fontweight='bold')
+    ax.set_yticks([0, 1, 2, 3])
+    ax.set_yticklabels(['Failed', 'Random', 'Neutral', 'Initial Guess'])
+    ax.set_ylim(-0.5, 3.8)
+    ax.set_xlim(-0.5, n + n * 0.08)  # extra space for exclusion labels
+    ax.legend(loc='upper right', fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    # Summary bar
+    summary_parts = []
+    for method, (_, _, label) in method_map.items():
+        count = int(np.sum(solve_methods == method))
+        suffix = ' [OFF]' if method in excluded_methods else ''
+        if count > 0 or method in excluded_methods:
+            summary_parts.append(f'{label}: {count}{suffix}')
+    summary_text = ' | '.join(summary_parts)
+    ax.text(n / 2, 3.5, summary_text, ha='center', fontsize=9, fontstyle='italic')
+
+    full_title = title
+    if traj_index is not None:
+        full_title += f"\nTrajectory: {traj_index}"
+    plt.title(full_title, fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
 
 
 # =============================================================================
@@ -301,6 +401,24 @@ def process_combination(
             traj_result.reachable_flags,
             str(combo_output / f"reachability_per_waypoint_T{traj_num}.png"),
             title=f"Reachability — {toolpath_name} — T{traj_num}\n{robot_name} / {knife_name}"
+        )
+
+        # IK success/failure plot
+        plot_ik_success_failure(
+            traj_result.reachable_flags,
+            str(combo_output / f"ik_success_failure_T{traj_num}.png"),
+            title=f"IK Success/Failure — {toolpath_name}",
+            traj_index=f"T{traj_num}"
+        )
+
+        # IK solve method plot (with exclusion highlighting)
+        plot_ik_solve_methods_with_exclusions(
+            traj_result.solve_methods,
+            traj_result.reachable_flags,
+            ik_config,
+            str(combo_output / f"ik_solve_methods_T{traj_num}.png"),
+            title=f"IK Solve Method — {toolpath_name}",
+            traj_index=f"T{traj_num}"
         )
 
     # Multi-trajectory summary plot

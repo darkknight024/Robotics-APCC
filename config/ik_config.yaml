@@ -31,3 +31,21 @@ ik_parameters:
   
   # End-effector frame name in URDF either Link_6 or ee_link
   ee_frame_name: "ee_link"
+
+  # =========================================================================
+  # IK Initialization Strategies
+  # =========================================================================
+  # Controls which initialization methods solve_with_retries() will attempt.
+  # At least one must be true. Order: initial_guess → neutral → random.
+  
+  # Try with provided initial guess (previous joint config)
+  use_initial_guess: true
+  
+  # Try with neutral (zero) configuration
+  use_neutral: true
+  
+  # Try with random configurations
+  use_random: true
+  
+  # Number of random configuration retries (if use_random is true)
+  num_random_retries: 3

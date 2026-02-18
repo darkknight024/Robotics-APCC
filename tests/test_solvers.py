@@ -8,8 +8,8 @@ Input: CSV with both configuration-space (joint angles) and task-space (position
 Output: FK comparison plots, IK comparison plots, analysis reports (local + global)
 
 Usage:
-    python tests/solver_comparison_test_trajectory.py --input <csv_or_folder> --urdf <urdf_path>
-    python tests/solver_comparison_test_trajectory.py --config tests/configs/robostudio_test_config.yaml
+    python tests/test_solvers.py --input <csv_or_folder> --urdf <urdf_path>
+    python tests/test_solvers.py --config tests/configs/test_solvers_config.yaml
 """
 
 import argparse
@@ -233,7 +233,9 @@ def process_single_csv(
     data,
     output_dir: str,
     ik_config: IKConfig = None,
-    adaptive_scale: bool = False
+    adaptive_scale: bool = False,
+    generate_fk_plots: bool = True,
+    generate_ik_plots: bool = True
 ) -> dict:
     """Process a single RobotStudio CSV file."""
     csv_name = Path(csv_path).stem
@@ -273,35 +275,36 @@ def process_single_csv(
     print(f"  FK Error: mean={fk_stats['mean_error_mm']:.4f}mm, max={fk_stats['max_error_mm']:.4f}mm")
     
     # FK Plots
-    plot_position_comparison(
-        rs_positions_mm, fk_positions_mm,
-        str(out_path / "fk_position_comparison.png"),
-        title=f"Position Comparison - FK vs RobotStudio\n{csv_name}",
-        ref_label="RobotStudio", computed_label="FK (Pinocchio)",
-        adaptive_scale=adaptive_scale
-    )
-    
-    plot_position_deltas(
-        rs_positions_mm, fk_positions_mm,
-        str(out_path / "fk_position_deltas.png"),
-        title=f"Position Deltas (FK - RobotStudio)\n{csv_name}",
-        adaptive_scale=adaptive_scale
-    )
-    
-    plot_quaternion_comparison(
-        rs_data.tcp_quaternions, fk_quaternions,
-        str(out_path / "fk_quaternion_comparison.png"),
-        title=f"Quaternion Comparison - FK vs RobotStudio\n{csv_name}",
-        ref_label="RobotStudio", computed_label="FK (Pinocchio)",
-        adaptive_scale=adaptive_scale
-    )
-    
-    plot_euclidean_error(
-        rs_positions_mm, fk_positions_mm,
-        str(out_path / "fk_euclidean_error.png"),
-        title=f"Position Error (Euclidean Distance)\n{csv_name}",
-        adaptive_scale=adaptive_scale
-    )
+    if generate_fk_plots:
+        plot_position_comparison(
+            rs_positions_mm, fk_positions_mm,
+            str(out_path / "fk_position_comparison.png"),
+            title=f"Position Comparison - FK vs RobotStudio\n{csv_name}",
+            ref_label="RobotStudio", computed_label="FK (Pinocchio)",
+            adaptive_scale=adaptive_scale
+        )
+        
+        plot_position_deltas(
+            rs_positions_mm, fk_positions_mm,
+            str(out_path / "fk_position_deltas.png"),
+            title=f"Position Deltas (FK - RobotStudio)\n{csv_name}",
+            adaptive_scale=adaptive_scale
+        )
+        
+        plot_quaternion_comparison(
+            rs_data.tcp_quaternions, fk_quaternions,
+            str(out_path / "fk_quaternion_comparison.png"),
+            title=f"Quaternion Comparison - FK vs RobotStudio\n{csv_name}",
+            ref_label="RobotStudio", computed_label="FK (Pinocchio)",
+            adaptive_scale=adaptive_scale
+        )
+        
+        plot_euclidean_error(
+            rs_positions_mm, fk_positions_mm,
+            str(out_path / "fk_euclidean_error.png"),
+            title=f"Position Error (Euclidean Distance)\n{csv_name}",
+            adaptive_scale=adaptive_scale
+        )
     
     # =========================================================================
     # IK Analysis
@@ -356,39 +359,40 @@ def process_single_csv(
     print(f"  IK Error (successful only): mean={ik_stats['mean_error_deg']:.4f}deg, max={ik_stats['max_error_deg']:.4f}deg")
     
     # IK Plots
-    plot_joint_comparison(
-        rs_joints_deg, ik_joints_deg,
-        str(out_path / "ik_joint_comparison.png"),
-        title=f"Joint Angle Comparison - RobotStudio vs IK\n{csv_name}",
-        ref_label="RobotStudio", computed_label="IK (Pinocchio)",
-        adaptive_scale=adaptive_scale,
-        mask=ik_success
-    )
-    
-    plot_joint_deltas(
-        rs_joints_deg, ik_joints_deg,
-        str(out_path / "ik_joint_deltas.png"),
-        title=f"Joint Angle Errors |RobotStudio - IK|\n{csv_name}",
-        adaptive_scale=adaptive_scale,
-        mask=ik_success
-    )
-    
-    # IK Success/Failure plot
-    plot_ik_success_failure(
-        ik_success,
-        str(out_path / "ik_success_failure.png"),
-        title=f"IK Success/Failure per Waypoint",
-        traj_index=csv_name
-    )
-    
-    # IK Solve Method plot
-    plot_ik_solve_methods(
-        ik_solve_methods,
-        ik_success,
-        str(out_path / "ik_solve_methods.png"),
-        title=f"IK Solve Method per Waypoint",
-        traj_index=csv_name
-    )
+    if generate_ik_plots:
+        plot_joint_comparison(
+            rs_joints_deg, ik_joints_deg,
+            str(out_path / "ik_joint_comparison.png"),
+            title=f"Joint Angle Comparison - RobotStudio vs IK\n{csv_name}",
+            ref_label="RobotStudio", computed_label="IK (Pinocchio)",
+            adaptive_scale=adaptive_scale,
+            mask=ik_success
+        )
+        
+        plot_joint_deltas(
+            rs_joints_deg, ik_joints_deg,
+            str(out_path / "ik_joint_deltas.png"),
+            title=f"Joint Angle Errors |RobotStudio - IK|\n{csv_name}",
+            adaptive_scale=adaptive_scale,
+            mask=ik_success
+        )
+        
+        # IK Success/Failure plot
+        plot_ik_success_failure(
+            ik_success,
+            str(out_path / "ik_success_failure.png"),
+            title=f"IK Success/Failure per Waypoint",
+            traj_index=csv_name
+        )
+        
+        # IK Solve Method plot
+        plot_ik_solve_methods(
+            ik_solve_methods,
+            ik_success,
+            str(out_path / "ik_solve_methods.png"),
+            title=f"IK Solve Method per Waypoint",
+            traj_index=csv_name
+        )
     
     # =========================================================================
     # Raw Data CSV Export
@@ -462,7 +466,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare Pinocchio FK/IK with RobotStudio test trajectories"
     )
-    parser.add_argument('--config', '-c', help="Path to robostudio_test_config.yaml", default="tests/configs/robostudio_test_config.yaml")
+    parser.add_argument('--config', '-c', help="Path to test_solvers_config.yaml", default="tests/configs/test_solvers_config.yaml")
     parser.add_argument('--input', '-i', help="Input CSV file or folder (auto-detected)")
     parser.add_argument('--urdf', '-u', help="Path to URDF file")
     parser.add_argument('--output', '-o', help="Output directory")
@@ -486,6 +490,8 @@ def main():
         output_folder = config['output_folder']
         options = config['options']
         adaptive_scale = options.get('adaptive_scale', False)
+        generate_fk_plots = options.get('generate_fk_plots', True)
+        generate_ik_plots = options.get('generate_ik_plots', True)
         
         print(f"Robot: {config['robot_name']}")
         
@@ -507,6 +513,8 @@ def main():
         input_path = args.input
         output_folder = args.output or 'output/test_comparison'
         adaptive_scale = args.adaptive_scale
+        generate_fk_plots = True
+        generate_ik_plots = True
     
     # Load robot model
     print(f"Loading robot model: {urdf_path}")
@@ -548,7 +556,8 @@ def main():
     for csv_file in valid_files:
         csv_output = Path(output_folder) / csv_file.stem
         result = process_single_csv(
-            str(csv_file), model, data, str(csv_output), ik_config, adaptive_scale
+            str(csv_file), model, data, str(csv_output), ik_config, adaptive_scale,
+            generate_fk_plots, generate_ik_plots
         )
         results.append(result)
     
