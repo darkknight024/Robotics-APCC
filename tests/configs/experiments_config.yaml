@@ -1,0 +1,106 @@
+# =============================================================================
+# Automated Experiment Configuration
+# =============================================================================
+# Each experiment defines a test_script and one or more runs.
+# Experiment-level fields are inherited by all runs unless overridden per-run.
+#
+# Supported test_scripts:
+#   - test_solvers       (tests/test_solvers.py)
+#   - test_reachability  (tests/test_reachability.py)
+#   - test_toolpaths     (tests/test_toolpaths.py)
+#
+# Per-run fields that can override experiment-level defaults:
+#   solver, robot, ee_frame, input, output, knife_pose
+#
+# Output path: If not specified per-run, auto-generated as:
+#   <output_base>/<run_name>
+
+experiments:
+
+  # ===========================================================================
+  # Experiment 7: FK/IK solver comparison - square profile trajectories (Link_6)
+  # ===========================================================================
+  - name: "Experiment_7"
+    test_script: "test_solvers"
+    robot: "IRB 1300-7/1.4"
+    ee_frame: "Link_6"
+    input: "Robot_APCC/Experiments/Experiment_7/trajectories_with_square_profile/full_trajectories_sampled"
+    output_base: "Robot_APCC/Results/Experiment_7"
+    runs:
+      - run_name: "EAIK"
+        solver: "eaik"
+      - run_name: "Pinocchio"
+        solver: "pin"
+
+  # ===========================================================================
+  # Experiment 8: FK/IK solver comparison - square profile sampled (ee_link)
+  # ===========================================================================
+  - name: "Experiment_8"
+    test_script: "test_solvers"
+    robot: "IRB 1300-7/1.4"
+    ee_frame: "ee_link"
+    input: "Robot_APCC/Experiments/Experiment_8/square_profile_trajectories_sampled"
+    output_base: "Robot_APCC/Results/Experiment_8"
+    runs:
+      - run_name: "EAIK"
+        solver: "eaik"
+      - run_name: "Pinocchio"
+        solver: "pin"
+
+  # ===========================================================================
+  # Experiment 9: FK/IK solver comparison - two robot variants (Link_6)
+  # ===========================================================================
+  - name: "Experiment_9"
+    test_script: "test_solvers"
+    ee_frame: "Link_6"
+    output_base: "Robot_APCC/Results/Experiment_9"
+    runs:
+      # IRB 1300-11/0.9
+      - run_name: "IRB_1300_900/EAIK"
+        solver: "eaik"
+        robot: "IRB 1300-11/0.9"
+        input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_900_trajectories/square_profile_trajectories"
+      - run_name: "IRB_1300_900/Pinocchio"
+        solver: "pin"
+        robot: "IRB 1300-11/0.9"
+        input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_900_trajectories/square_profile_trajectories"
+      # IRB 1300-10/1.15
+      - run_name: "IRB_1300_1150/EAIK"
+        solver: "eaik"
+        robot: "IRB 1300-10/1.15"
+        input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_1150_trajectories/square_profile_trajectories"
+      - run_name: "IRB_1300_1150/Pinocchio"
+        solver: "pin"
+        robot: "IRB 1300-10/1.15"
+        input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_1150_trajectories/square_profile_trajectories"
+
+  # ===========================================================================
+  # Experiment 10: FK/IK solver comparison - TPEE inputs (ee_link)
+  # ===========================================================================
+  - name: "Experiment_10"
+    test_script: "test_solvers"
+    robot: "IRB 1300-7/1.4"
+    ee_frame: "ee_link"
+    input: "Robot_APCC/Experiments/Experiment_10/inputs"
+    output_base: "Robot_APCC/Results/Experiment_10"
+    runs:
+      - run_name: "EAIK"
+        solver: "eaik"
+      - run_name: "Pinocchio"
+        solver: "pin"
+
+  # ===========================================================================
+  # Experiment 12: Reachability test with Zund knife
+  # ===========================================================================
+  - name: "Experiment_12"
+    test_script: "test_reachability"
+    robot: "IRB 1300-7/1.4"
+    ee_frame: "ee_link"
+    knife_pose: "Zund"
+    input: "Robot_APCC/Experiments/Experiment_12/Toolpaths"
+    output_base: "Robot_APCC/Results/Experiment_12"
+    runs:
+      - run_name: "EAIK"
+        solver: "eaik"
+      - run_name: "Pinocchio"
+        solver: "pin"

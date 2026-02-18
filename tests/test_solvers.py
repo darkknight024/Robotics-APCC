@@ -2,7 +2,7 @@
 """
 Solver Comparison - Test Trajectory
 
-Compares Pinocchio FK/IK results with RobotStudio data from test trajectories.
+Compares FK/IK solver results with RobotStudio data from test trajectories.
 
 Input: CSV with both configuration-space (joint angles) and task-space (position/quaternion)
 Output: FK comparison plots, IK comparison plots, analysis reports (local + global)
@@ -111,7 +111,8 @@ def save_individual_analysis(output_path: Path, csv_name: str, n_waypoints: int,
     print(f"    Analysis saved: {output_path.name}")
 
 
-def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, input_path: str) -> None:
+def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, input_path: str,
+                         solver_name: str = "Solver", ee_frame_name: str = "ee_link") -> None:
     """Save global analysis.txt summarizing all CSV files."""
     
     # Aggregate statistics
@@ -149,18 +150,20 @@ def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, i
         
         f.write("METHODOLOGY\n")
         f.write("-" * 50 + "\n")
-        f.write("This report compares Tool Center Point (ee_link) positions computed\n")
-        f.write("using Forward Kinematics (FK) against the ee_link positions recorded\n")
+        f.write(f"This report compares Tool Center Point ({ee_frame_name}) positions computed\n")
+        f.write(f"using Forward Kinematics (FK) against the {ee_frame_name} positions recorded\n")
         f.write("by RobotStudio.\n\n")
+        f.write(f"Solver: {solver_name}\n")
+        f.write(f"End-Effector Frame: {ee_frame_name}\n\n")
         f.write("Process:\n")
         f.write("  1. Joint angles (in degrees) are read from each CSV file\n")
         f.write("  2. Joint angles are converted to radians\n")
-        f.write("  3. Forward Kinematics is computed using Pinocchio library\n")
-        f.write("  4. The FK-computed ee_link position (ee_link frame) is compared\n")
-        f.write("     against the RobotStudio-recorded ee_link position\n")
-        f.write("  5. Position error = |FK - RobotStudio(ee_link)| (absolute)\n")
+        f.write(f"  3. Forward Kinematics is computed using {solver_name} solver\n")
+        f.write(f"  4. The FK-computed position ({ee_frame_name} frame) is compared\n")
+        f.write(f"     against the RobotStudio-recorded {ee_frame_name} position\n")
+        f.write(f"  5. Position error = |FK - RobotStudio({ee_frame_name})| (absolute)\n")
         f.write("  6. Euclidean distance error is computed from the position errors\n")
-        f.write("  7. Inverse Kinematics is run on ee_link positions to compute joint angles\n")
+        f.write(f"  7. Inverse Kinematics is run on {ee_frame_name} positions to compute joint angles\n")
         f.write("  8. IK-computed joints are compared against CSV-recorded joints\n\n")
         f.write(f"URDF File Used: {urdf_path}\n")
         f.write(f"IK Analysis: Enabled\n\n")
@@ -461,7 +464,7 @@ def process_single_csv(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare Pinocchio FK/IK with RobotStudio test trajectories"
+        description="Compare FK/IK solver results with RobotStudio test trajectories"
     )
     parser.add_argument('--config', '-c', help="Path to test_solvers_config.yaml", default="tests/configs/test_solvers_config.yaml")
     parser.add_argument('--input', '-i', help="Input CSV file or folder (auto-detected)")
@@ -470,6 +473,10 @@ def main():
     parser.add_argument('--ik-config', help="Path to IK config YAML (default: config/ik_config.yaml)")
     parser.add_argument('--adaptive-scale', action='store_true',
                         help="Use adaptive scaling for plots")
+    parser.add_argument('--solver', choices=['pin', 'eaik'],
+                        help="Override solver backend (pin or eaik)")
+    parser.add_argument('--ee-frame',
+                        help="Override end-effector frame name (e.g. ee_link, Link_6)")
     
     args = parser.parse_args()
     
@@ -492,10 +499,14 @@ def main():
         # Override with CLI args if provided
         if args.input:
             input_path = args.input
+        if args.urdf:
+            urdf_path = args.urdf
         if args.output:
             output_folder = args.output
         if args.adaptive_scale:
             adaptive_scale = True
+        if args.solver:
+            solver_type = args.solver
     else:
         # CLI mode
         if not args.urdf:
@@ -509,10 +520,12 @@ def main():
         adaptive_scale = args.adaptive_scale
         generate_fk_plots = True
         generate_ik_plots = True
-        solver_type = 'pin'
+        solver_type = args.solver or 'pin'
     
     # Load IK config for the chosen solver
     ik_config = load_ik_config_as_object(args.ik_config, solver=solver_type)
+    if args.ee_frame:
+        ik_config.ee_frame_name = args.ee_frame
     print(f"IK Config: solver={solver_type}, ee_frame={ik_config.ee_frame_name}")
     
     # Create solvers via factory
@@ -568,7 +581,8 @@ def main():
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
     save_global_analysis(
-        output_path / "global_analysis.txt", results, urdf_path, str(input_path)
+        output_path / "global_analysis.txt", results, urdf_path, str(input_path),
+        solver_name=ik_solver.solver_name, ee_frame_name=ik_config.ee_frame_name
     )
     
     # Print summary

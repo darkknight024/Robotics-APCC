@@ -2,7 +2,7 @@
 """
 Solver Comparison - Toolpath Trajectory (Parallel Processing)
 
-Compares Pinocchio IK results with RobotStudio recorded joint positions for toolpath data.
+Compares IK solver results with RobotStudio recorded joint positions for toolpath data.
 
 Process (parallelized):
 1. Load toolpath CSV (T_P_K format, multiple trajectories per file)
@@ -456,7 +456,7 @@ def process_batch(config_path: str) -> Dict[str, Any]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare Pinocchio IK with RobotStudio for toolpath trajectories (parallel)"
+        description="Compare IK solver with RobotStudio for toolpath trajectories (parallel)"
     )
     parser.add_argument('--config', '-c', default='tests/configs/test_toolpaths_config.yaml',
                         help="Path to toolpath config YAML")

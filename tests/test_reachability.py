@@ -112,7 +112,7 @@ class ToolpathResult:
 
 def check_trajectory_reachability(
     trajectory_t_b_p: np.ndarray,
-    ik_solver: IKSolver,
+    ik_solver,
     trajectory_index: int
 ) -> TrajectoryResult:
     """
@@ -355,7 +355,8 @@ def process_combination(
     knife_quaternion: np.ndarray,
     toolpath_path: str,
     output_dir: Path,
-    solver_type: str = "pin"
+    solver_type: str = "pin",
+    ee_frame_override: str = None
 ) -> ToolpathResult:
     """Process one robot/knife/toolpath combination."""
     toolpath_name = Path(toolpath_path).stem
@@ -363,6 +364,8 @@ def process_combination(
 
     # Create solvers via factory
     ik_config = load_ik_config_as_object(solver=solver_type)
+    if ee_frame_override:
+        ik_config.ee_frame_name = ee_frame_override
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=solver_type, ik_config=ik_config,
         ee_frame_name=ik_config.ee_frame_name
@@ -446,6 +449,13 @@ def main():
     )
     parser.add_argument('--config', '-c', default='tests/configs/reachability_config.yaml',
                         help="Path to reachability config YAML")
+    parser.add_argument('--robot', help="Override robot name (must exist in robots_config.yaml)")
+    parser.add_argument('--urdf', help="Override URDF path directly (alternative to --robot)")
+    parser.add_argument('--knife-pose', help="Override knife pose name (e.g. Zund, pose_1)")
+    parser.add_argument('--toolpaths-folder', help="Override toolpaths input folder")
+    parser.add_argument('--output', '-o', help="Override output directory")
+    parser.add_argument('--solver', choices=['pin', 'eaik'], help="Override solver backend")
+    parser.add_argument('--ee-frame', help="Override end-effector frame name")
     args = parser.parse_args()
 
     # Load config
@@ -455,13 +465,26 @@ def main():
 
     # Resolve robots from central config
     robots_db = load_robots_config()
-    robot_names = config.get('robots_to_use', [])
+    if args.robot:
+        robot_names = [args.robot]
+    else:
+        robot_names = config.get('robots_to_use', [])
     robots = []
     for name in robot_names:
         if name in robots_db:
             robots.append(robots_db[name])
         else:
             print(f"  Warning: Robot '{name}' not found in robots_config.yaml, skipping")
+
+    # If --urdf provided without --robot, create a minimal robot entry
+    if args.urdf and not robots:
+        from dataclasses import dataclass as _dc
+        @_dc
+        class _MinRobot:
+            name: str = "custom"
+            urdf_path: str = ""
+        r = _MinRobot(name=args.robot or "custom", urdf_path=args.urdf)
+        robots = [r]
 
     if not robots:
         print("ERROR: No valid robots configured")
@@ -470,17 +493,27 @@ def main():
     # Load knife config
     knife_config_path = str(Path(__file__).parent.parent / "config" / "knife_config.yaml")
     knife_poses = load_knife_config(knife_config_path)
-    knife_names = config.get('knife_poses_to_use', [])
+    if args.knife_pose:
+        knife_names = [args.knife_pose]
+    else:
+        knife_names = config.get('knife_poses_to_use', [])
 
     # Discover toolpath files
-    toolpaths_folder = Path(config.get('toolpaths_folder', 'input/toolpaths'))
+    if args.toolpaths_folder:
+        toolpaths_folder = Path(args.toolpaths_folder)
+    else:
+        toolpaths_folder = Path(config.get('toolpaths_folder', 'input/toolpaths'))
     toolpath_files = sorted(toolpaths_folder.glob("*.csv")) if toolpaths_folder.exists() else []
 
-    output_dir = Path(config.get('output_folder', 'output/reachability_test'))
+    if args.output:
+        output_dir = Path(args.output)
+    else:
+        output_dir = Path(config.get('output_folder', 'output/reachability_test'))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     options = config.get('options', {})
-    solver_type = options.get('solver', 'pin')
+    solver_type = args.solver or options.get('solver', 'pin')
+    ee_frame_override = args.ee_frame
 
     print(f"\nSolver:     {solver_type}")
     print(f"Robots:     {len(robots)}")
@@ -525,7 +558,8 @@ def main():
                     toolpath_path=str(toolpath_file),
                     knife_name=knife_name,
                     output_dir=robot_knife_output,
-                    solver_type=solver_type
+                    solver_type=solver_type,
+                    ee_frame_override=ee_frame_override
                 )
                 all_results.append(result)
 
