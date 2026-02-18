@@ -34,6 +34,7 @@ from utils import (
     plot_joint_deltas,
     plot_ik_success_failure,
     plot_ik_solve_methods,
+    plot_eaik_solve_outcome,
     load_ik_config_as_object
 )
 
@@ -385,14 +386,23 @@ def process_single_csv(
             traj_index=csv_name
         )
         
-        # IK Solve Method plot
-        plot_ik_solve_methods(
-            ik_solve_methods,
-            ik_success,
-            str(out_path / "ik_solve_methods.png"),
-            title=f"IK Solve Method per Waypoint",
-            traj_index=csv_name
-        )
+        # IK Solve Method / Outcome plot (solver-specific)
+        if solver_label == "EAIK":
+            plot_eaik_solve_outcome(
+                ik_solve_methods,
+                ik_success,
+                str(out_path / "ik_solve_outcome.png"),
+                title=f"EAIK Solve Outcome per Waypoint",
+                traj_index=csv_name
+            )
+        else:
+            plot_ik_solve_methods(
+                ik_solve_methods,
+                ik_success,
+                str(out_path / "ik_solve_methods.png"),
+                title=f"IK Solve Method per Waypoint",
+                traj_index=csv_name
+            )
     
     # =========================================================================
     # Raw Data CSV Export
