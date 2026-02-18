@@ -5,6 +5,10 @@ Assets/Robot APCC/Toolpaths/Successful/*
 results
 output/*
 docs/*
+Robot_APCC/*
+
+#ignore Robot_APCC Folder
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

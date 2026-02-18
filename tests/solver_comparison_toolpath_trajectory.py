@@ -25,7 +25,7 @@ Output Structure:
         └── summary.yaml
 
 Usage:
-    python solver_comparison_toolpath_trajectory.py --config config/toolpath_config.yaml
+    python tests/solver_comparison_toolpath_trajectory.py --config tests/configs/toolpath_config.yaml
 """
 
 import argparse
@@ -40,7 +40,7 @@ from typing import List, Dict, Any, Tuple, Optional
 import yaml
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import IKSolver, IKConfig, load_robot_model
 from utils import (
@@ -279,7 +279,7 @@ def process_batch(config_path: str) -> Dict[str, Any]:
     # Load configurations
     config = load_toolpath_config(config_path)
     
-    knife_config_path = str(Path(__file__).parent / "config" / "knife_config.yaml")
+    knife_config_path = str(Path(__file__).parent.parent / "config" / "knife_config.yaml")
     knife_poses = load_knife_config(knife_config_path)
     
     ik_config = load_ik_config_as_object()
@@ -453,7 +453,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare Pinocchio IK with RobotStudio for toolpath trajectories (parallel)"
     )
-    parser.add_argument('--config', '-c', default='config/toolpath_config.yaml',
+    parser.add_argument('--config', '-c', default='tests/configs/toolpath_config.yaml',
                         help="Path to toolpath config YAML")
     
     args = parser.parse_args()

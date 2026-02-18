@@ -13,8 +13,8 @@ robot_name: "IRB 1300-7/1.4"
 # =============================================================================
 # I/O Directories
 # =============================================================================
-input_folder: "/home/cognitron/Projects/Trajectories/EXP_8_Results/Experiment_8/square_profile_trajectories_sampled"
-output_folder: "/home/cognitron/Projects/Trajectories/EXP_8_Results/9dcd8ae3259363881ad8066919cce4088539ab56"
+input_folder: "Robot_APCC/Experiments/Experiment_7/trajectories_with_square_profile/full_trajectories_sampled"
+output_folder: "Robot_APCC/Results/Experiment_7/full_trajectories_sampled"
 
 # =============================================================================
 # Processing Options

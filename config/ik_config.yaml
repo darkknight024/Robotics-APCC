@@ -29,5 +29,5 @@ ik_parameters:
   # Enable backtracking line search
   backtrack: true
   
-  # End-effector frame name in URDF
+  # End-effector frame name in URDF either Link_6 or ee_link
   ee_frame_name: "ee_link"

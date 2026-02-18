@@ -8,8 +8,8 @@ Input: CSV with both configuration-space (joint angles) and task-space (position
 Output: FK comparison plots, IK comparison plots, analysis reports (local + global)
 
 Usage:
-    python solver_comparison_test_trajectory.py --input <csv_or_folder> --urdf <urdf_path>
-    python solver_comparison_test_trajectory.py --config config/robostudio_test_config.yaml
+    python tests/solver_comparison_test_trajectory.py --input <csv_or_folder> --urdf <urdf_path>
+    python tests/solver_comparison_test_trajectory.py --config tests/configs/robostudio_test_config.yaml
 """
 
 import argparse
@@ -19,7 +19,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import IKSolver, IKConfig, FKSolver, load_robot_model
 from utils import (
@@ -462,7 +462,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare Pinocchio FK/IK with RobotStudio test trajectories"
     )
-    parser.add_argument('--config', '-c', help="Path to robostudio_test_config.yaml", default="config/robostudio_test_config.yaml")
+    parser.add_argument('--config', '-c', help="Path to robostudio_test_config.yaml", default="tests/configs/robostudio_test_config.yaml")
     parser.add_argument('--input', '-i', help="Input CSV file or folder (auto-detected)")
     parser.add_argument('--urdf', '-u', help="Path to URDF file")
     parser.add_argument('--output', '-o', help="Output directory")
@@ -570,6 +570,21 @@ def main():
         print(f"  IK Mean Error: {r['ik_stats']['mean_error_deg']:.4f} deg")
     
     print(f"\n✓ All results saved to: {output_folder}")
+    
+    # =========================================================================
+    # Auto-run Tolerance Check
+    # =========================================================================
+    from tests.tolerance_check import run_tolerance_check, load_config
+    tolerance_config_path = str(Path(__file__).parent / "configs" / "tolerance_config.yaml")
+    tol_cfg = load_config(tolerance_config_path)
+    tol_thresholds = tol_cfg.get('thresholds', {})
+    run_tolerance_check(
+        input_folder=output_folder,
+        report_output=str(Path(output_folder) / "tolerance_test_report.txt"),
+        fk_threshold_mm=float(tol_thresholds.get('fk_euclidean_error_mm', 2.0)),
+        fk_rot_threshold_deg=float(tol_thresholds.get('fk_rotation_error_deg', 2.0)),
+        ik_threshold_deg=float(tol_thresholds.get('ik_joint_error_deg', 1.0))
+    )
 
 
 if __name__ == "__main__":
