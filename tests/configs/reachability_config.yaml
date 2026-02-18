@@ -1,0 +1,30 @@
+# =============================================================================
+# Reachability Test Configuration
+# =============================================================================
+# Used by: tests/test_reachability.py
+#
+# Checks if robot end-effector can reach all waypoints in toolpaths
+# for each robot/knife/toolpath combination.
+
+# =============================================================================
+# Robots to Test
+# =============================================================================
+# Reference robot names from config/robots_config.yaml
+robots_to_use:
+  - "IRB 1300-7/1.4"
+
+# =============================================================================
+# Knife Poses to Use
+# =============================================================================
+# Reference knife pose names from config/knife_config.yaml
+knife_poses_to_use:
+  - "Zund"
+
+# =============================================================================
+# I/O Directories
+# =============================================================================
+# Folder containing toolpath CSVs (T_P_K format, positions in mm)
+toolpaths_folder: "Robot_APCC/Experiments/Experiment_12/Toolpaths"
+
+# Output directory for results
+output_folder: "Robot_APCC/Results/Experiment_12/"
