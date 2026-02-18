@@ -27,6 +27,10 @@ class PinocchioIKConfig(BaseIKConfig):
     lambda_max: float = 1e1
     max_step: float = 0.2
     backtrack: bool = True
+    use_initial_guess: bool = True
+    use_neutral: bool = True
+    use_random: bool = True
+    num_random_retries: int = 3
 
 
 class PinocchioIKSolver(BaseIKSolver):
@@ -92,42 +96,54 @@ class PinocchioIKSolver(BaseIKSolver):
         target_position: np.ndarray,
         target_quaternion: np.ndarray,
         q_init: Optional[np.ndarray] = None,
-        num_random_retries: int = 3
+        num_random_retries: Optional[int] = None
     ) -> Tuple[bool, np.ndarray, Dict[str, Any]]:
         """
         Solve IK with multiple initialization attempts.
+        
+        Which strategies are attempted is controlled by the config flags
+        use_initial_guess, use_neutral, use_random.  At least one must
+        be enabled.
         
         Args:
             target_position: Target position [x, y, z] in meters
             target_quaternion: Target quaternion [qw, qx, qy, qz]
             q_init: Initial joint configuration
-            num_random_retries: Number of random configuration retries
+            num_random_retries: Override for config.num_random_retries
             
         Returns:
             success: Whether IK converged
             q: Joint configuration
             info: Dictionary with convergence information (includes 'solve_method' key)
         """
-        # Try with provided or previous initial guess
-        success, q, info = self.solve(target_position, target_quaternion, q_init)
-        if success:
-            info['solve_method'] = 'initial_guess'
-            return success, q, info
-        
-        # Try with neutral configuration
-        success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model))
-        if success:
-            info['solve_method'] = 'neutral'
-            return success, q, info
-        
-        # Try random configurations
-        for _ in range(num_random_retries):
-            q_random = pin.randomConfiguration(self.model)
-            success, q, info = self.solve(target_position, target_quaternion, q_random)
+        cfg = self.config
+        q = None
+        info: Dict[str, Any] = {}
+
+        if cfg.use_initial_guess:
+            success, q, info = self.solve(target_position, target_quaternion, q_init)
             if success:
-                info['solve_method'] = 'random'
+                info['solve_method'] = 'initial_guess'
                 return success, q, info
-        
+
+        if cfg.use_neutral:
+            success, q, info = self.solve(target_position, target_quaternion, pin.neutral(self.model))
+            if success:
+                info['solve_method'] = 'neutral'
+                return success, q, info
+
+        if cfg.use_random:
+            retries = num_random_retries if num_random_retries is not None else cfg.num_random_retries
+            for _ in range(retries):
+                q_random = pin.randomConfiguration(self.model)
+                success, q, info = self.solve(target_position, target_quaternion, q_random)
+                if success:
+                    info['solve_method'] = 'random'
+                    return success, q, info
+
+        if q is None:
+            success, q, info = self.solve(target_position, target_quaternion, q_init)
+
         info['solve_method'] = 'failed'
         return False, q, info
     

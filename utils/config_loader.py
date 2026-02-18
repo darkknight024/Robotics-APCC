@@ -34,7 +34,12 @@ _DEFAULT_IK_CONFIG = {
     'lambda0': 1e-3,
     'lambda_max': 1e1,
     'max_step': 0.2,
-    'backtrack': True
+    'backtrack': True,
+    # Retry strategy (Pinocchio only)
+    'use_initial_guess': True,
+    'use_neutral': True,
+    'use_random': True,
+    'num_random_retries': 3,
 }
 
 
@@ -383,7 +388,11 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
             lambda0=float(params.get('lambda0', _DEFAULT_IK_CONFIG['lambda0'])),
             lambda_max=float(params.get('lambda_max', _DEFAULT_IK_CONFIG['lambda_max'])),
             max_step=float(params.get('max_step', _DEFAULT_IK_CONFIG['max_step'])),
-            backtrack=bool(params.get('backtrack', _DEFAULT_IK_CONFIG['backtrack']))
+            backtrack=bool(params.get('backtrack', _DEFAULT_IK_CONFIG['backtrack'])),
+            use_initial_guess=bool(params.get('use_initial_guess', _DEFAULT_IK_CONFIG['use_initial_guess'])),
+            use_neutral=bool(params.get('use_neutral', _DEFAULT_IK_CONFIG['use_neutral'])),
+            use_random=bool(params.get('use_random', _DEFAULT_IK_CONFIG['use_random'])),
+            num_random_retries=int(params.get('num_random_retries', _DEFAULT_IK_CONFIG['num_random_retries'])),
         )
     else:
         from core.eaik_ik_solver import EAIKConfig
