@@ -3,6 +3,8 @@
 FK Solver Module - Pinocchio Forward Kinematics
 
 Provides a clean abstraction for forward kinematics computation using Pinocchio.
+
+Restored from commit d78ff39, adapted to inherit from BaseFKSolver.
 """
 
 import numpy as np
@@ -10,22 +12,16 @@ import pinocchio as pin
 from typing import Tuple, Optional
 from dataclasses import dataclass
 
-
-@dataclass
-class FKResult:
-    """Result of forward kinematics computation."""
-    position_m: np.ndarray    # [x, y, z] in meters
-    quaternion: np.ndarray    # [qw, qx, qy, qz]
-    rotation_matrix: np.ndarray  # 3x3 rotation matrix
+from core.base_solvers import BaseFKSolver, FKResult
 
 
-class FKSolver:
+class PinocchioFKSolver(BaseFKSolver):
     """
     Forward Kinematics solver using Pinocchio.
     
     Example:
         model, data = load_robot_model(urdf_path)
-        solver = FKSolver(model, data)
+        solver = PinocchioFKSolver(model, data)
         result = solver.solve(q)
         print(f"Position: {result.position_m}")
     """
@@ -46,13 +42,21 @@ class FKSolver:
         """
         self.model = model
         self.data = data
-        self.ee_frame_name = ee_frame_name
+        self._ee_frame_name = ee_frame_name
         
         try:
             self.ee_frame_id = model.getFrameId(ee_frame_name)
         except Exception as e:
             raise ValueError(f"Frame '{ee_frame_name}' not found in model: {e}")
-    
+
+    @property
+    def ee_frame_name(self) -> str:
+        return self._ee_frame_name
+
+    @property
+    def solver_name(self) -> str:
+        return "Pinocchio"
+
     def solve(self, q: np.ndarray) -> FKResult:
         """
         Compute forward kinematics for given joint configuration.

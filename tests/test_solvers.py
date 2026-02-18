@@ -21,7 +21,7 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import IKSolver, IKConfig, FKSolver, load_robot_model
+from core import create_solvers
 from utils import (
     load_robostudio_full,
     find_robostudio_csvs,
@@ -229,10 +229,9 @@ def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, i
 
 def process_single_csv(
     csv_path: str,
-    model,
-    data,
+    fk_solver,
+    ik_solver,
     output_dir: str,
-    ik_config: IKConfig = None,
     adaptive_scale: bool = False,
     generate_fk_plots: bool = True,
     generate_ik_plots: bool = True
@@ -250,10 +249,8 @@ def process_single_csv(
     n_waypoints = rs_data.num_waypoints
     print(f"  Loaded {n_waypoints} waypoints")
     
-    # Initialize solvers (both use same ee_frame from config)
-    fk_solver = FKSolver(model, data, ee_frame_name=ik_config.ee_frame_name)
-    ik_solver = IKSolver(model, data, config=ik_config)
-    print(f"  EE Frame: {fk_solver.ee_frame_name}")
+    solver_label = getattr(ik_solver, 'solver_name', 'Solver')
+    print(f"  Solver: {solver_label}, EE Frame: {fk_solver.ee_frame_name}")
     
     # =========================================================================
     # FK Analysis
@@ -280,7 +277,7 @@ def process_single_csv(
             rs_positions_mm, fk_positions_mm,
             str(out_path / "fk_position_comparison.png"),
             title=f"Position Comparison - FK vs RobotStudio\n{csv_name}",
-            ref_label="RobotStudio", computed_label="FK (Pinocchio)",
+            ref_label="RobotStudio", computed_label=f"FK ({solver_label})",
             adaptive_scale=adaptive_scale
         )
         
@@ -295,7 +292,7 @@ def process_single_csv(
             rs_data.tcp_quaternions, fk_quaternions,
             str(out_path / "fk_quaternion_comparison.png"),
             title=f"Quaternion Comparison - FK vs RobotStudio\n{csv_name}",
-            ref_label="RobotStudio", computed_label="FK (Pinocchio)",
+            ref_label="RobotStudio", computed_label=f"FK ({solver_label})",
             adaptive_scale=adaptive_scale
         )
         
@@ -364,7 +361,7 @@ def process_single_csv(
             rs_joints_deg, ik_joints_deg,
             str(out_path / "ik_joint_comparison.png"),
             title=f"Joint Angle Comparison - RobotStudio vs IK\n{csv_name}",
-            ref_label="RobotStudio", computed_label="IK (Pinocchio)",
+            ref_label="RobotStudio", computed_label=f"IK ({solver_label})",
             adaptive_scale=adaptive_scale,
             mask=ik_success
         )
@@ -476,10 +473,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Load IK config
-    ik_config = load_ik_config_as_object(args.ik_config)
-    print(f"IK Config: max_iter={ik_config.max_iterations}, tol={ik_config.tolerance}, ee_frame={ik_config.ee_frame_name}")
-    
     if args.config:
         # Config mode
         from utils import load_robostudio_test_config
@@ -492,6 +485,7 @@ def main():
         adaptive_scale = options.get('adaptive_scale', False)
         generate_fk_plots = options.get('generate_fk_plots', True)
         generate_ik_plots = options.get('generate_ik_plots', True)
+        solver_type = options.get('solver', 'pin')
         
         print(f"Robot: {config['robot_name']}")
         
@@ -515,11 +509,20 @@ def main():
         adaptive_scale = args.adaptive_scale
         generate_fk_plots = True
         generate_ik_plots = True
+        solver_type = 'pin'
     
-    # Load robot model
+    # Load IK config for the chosen solver
+    ik_config = load_ik_config_as_object(args.ik_config, solver=solver_type)
+    print(f"IK Config: solver={solver_type}, ee_frame={ik_config.ee_frame_name}")
+    
+    # Create solvers via factory
     print(f"Loading robot model: {urdf_path}")
-    model, data = load_robot_model(urdf_path)
-    print(f"  Joints: {model.nq}")
+    fk_solver, ik_solver, robot_data = create_solvers(
+        urdf_path, solver=solver_type, ik_config=ik_config,
+        ee_frame_name=ik_config.ee_frame_name
+    )
+    n_joints = robot_data.n_joints if hasattr(robot_data, 'n_joints') else robot_data[0].nq
+    print(f"  Solver: {ik_solver.solver_name}, Joints: {n_joints}")
     
     # Auto-detect: file or folder
     input_path_obj = Path(input_path)
@@ -556,8 +559,8 @@ def main():
     for csv_file in valid_files:
         csv_output = Path(output_folder) / csv_file.stem
         result = process_single_csv(
-            str(csv_file), model, data, str(csv_output), ik_config, adaptive_scale,
-            generate_fk_plots, generate_ik_plots
+            str(csv_file), fk_solver, ik_solver, str(csv_output),
+            adaptive_scale, generate_fk_plots, generate_ik_plots
         )
         results.append(result)
     

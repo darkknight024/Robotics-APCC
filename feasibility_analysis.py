@@ -34,8 +34,8 @@ from scipy.interpolate import CubicSpline
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core import (
-    IKSolver, IKConfig, FKSolver, FeasibilityAnalyzer,
-    load_robot_model, compute_manipulability, compute_singularity_proximity
+    create_solvers, FeasibilityAnalyzer,
+    compute_manipulability, compute_singularity_proximity
 )
 from utils import (
     load_toolpath_trajectories,
@@ -502,7 +502,8 @@ def process_toolpath(
     verbose: bool = True,
     traj_id: Optional[int] = None,
     waypoint_idx: Optional[int] = None,
-    max_ik_failures_per_trajectory: Optional[int] = None
+    max_ik_failures_per_trajectory: Optional[int] = None,
+    solver_type: str = "pin"
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -535,20 +536,18 @@ def process_toolpath(
     toolpath_name = Path(toolpath_path).stem
     print(f"\nAnalyzing: {toolpath_name}")
     
-    # Load robot model
-    model, data = load_robot_model(urdf_path)
-    
-    # Initialize solvers
-    ik_config = load_ik_config_as_object()
-    ik_solver = IKSolver(model, data, config=ik_config)
-    fk_solver = FKSolver(model, data, ee_frame_name=ik_config.ee_frame_name)
+    # Create solvers via factory
+    ik_config = load_ik_config_as_object(solver=solver_type)
+    fk_solver, ik_solver, robot_data = create_solvers(
+        urdf_path, solver=solver_type, ik_config=ik_config,
+        ee_frame_name=ik_config.ee_frame_name
+    )
     
     # Try to load robot config for velocity limits and joint jump limit
     robot_config = None
     try:
         robot_config = get_robot_by_name(robot_model_name)
     except (ValueError, Exception):
-        # Robot not found in config, use provided parameters
         pass
     
     # Use robot config parameters if available, otherwise use provided parameters
@@ -561,9 +560,9 @@ def process_toolpath(
         if robot_config.joint_jump_limit_rad:
             final_joint_jump_limit = robot_config.joint_jump_limit_rad
     
-    # Create analyzer
+    # Create analyzer (accepts RobotModel or (pin.Model, pin.Data) tuple)
     analyzer = FeasibilityAnalyzer(
-        model, data, ik_solver, fk_solver,
+        robot_data, ik_solver, fk_solver,
         characteristic_length_m=robot_reach_m,
         singularity_threshold=singularity_threshold,
         velocity_limits_rad_s=final_velocity_limits,
@@ -935,6 +934,8 @@ def main():
                         help="Save per-trajectory plots (default: only aggregated plots)")
     parser.add_argument('--skip-plots', action='store_true',
                         help="Skip all PNG plots")
+    parser.add_argument('--solver', choices=['pin', 'eaik'], default='pin',
+                        help="Solver backend: pin (Pinocchio) or eaik (EAIK analytical)")
     
     args = parser.parse_args()
     
@@ -970,7 +971,8 @@ def main():
         run_continuity=not args.no_continuity,
         level1_only=not args.full_analysis,
         detailed_per_trajectory_report=args.per_trajectory_plots,
-        skip_plots=args.skip_plots
+        skip_plots=args.skip_plots,
+        solver_type=args.solver
     )
     
     print("\nAnalysis complete!")

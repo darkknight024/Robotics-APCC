@@ -11,7 +11,6 @@ Provides kinematic feasibility analysis functions:
 """
 
 import numpy as np
-import pinocchio as pin
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
@@ -179,14 +178,13 @@ class FeasibilityAnalyzer:
     Comprehensive feasibility analyzer for robot configurations.
     
     Example:
-        analyzer = FeasibilityAnalyzer(model, data, ik_solver, fk_solver)
+        analyzer = FeasibilityAnalyzer(robot_data, ik_solver, fk_solver)
         result = analyzer.analyze_waypoint(target_pos, target_quat)
     """
     
     def __init__(
         self,
-        model: pin.Model,
-        data: pin.Data,
+        robot_model_or_limits,
         ik_solver,
         fk_solver,
         characteristic_length_m: float = 1.0,
@@ -199,18 +197,31 @@ class FeasibilityAnalyzer:
         Initialize feasibility analyzer.
         
         Args:
-            model: Pinocchio model
-            data: Pinocchio data
-            ik_solver: IKSolver instance
-            fk_solver: FKSolver instance
+            robot_model_or_limits:
+                - A RobotModel (EAIK backend) -- has .lower_position_limit / .upper_position_limit
+                - A (pin.Model, pin.Data) tuple -- limits read from model
+                - Any object with .lower_position_limit and .upper_position_limit arrays
+            ik_solver: IKSolver instance (BaseIKSolver subclass)
+            fk_solver: FKSolver instance (BaseFKSolver subclass)
             characteristic_length_m: Robot workspace reach for manipulability
             singularity_threshold: Threshold for singularity warning
             velocity_limits_rad_s: Per-joint velocity limits for C1 checking (optional)
             joint_jump_limit_rad: Maximum allowed joint jump for C0 checking (optional)
             max_ik_failures_per_trajectory: Max IK failures before early termination (optional)
         """
-        self.model = model
-        self.data = data
+        if isinstance(robot_model_or_limits, tuple):
+            pin_model = robot_model_or_limits[0]
+            self.lower_position_limit = np.array(pin_model.lowerPositionLimit).flatten()
+            self.upper_position_limit = np.array(pin_model.upperPositionLimit).flatten()
+        elif hasattr(robot_model_or_limits, 'lower_position_limit'):
+            self.lower_position_limit = robot_model_or_limits.lower_position_limit
+            self.upper_position_limit = robot_model_or_limits.upper_position_limit
+        else:
+            raise TypeError(
+                "robot_model_or_limits must be a RobotModel, (pin.Model, pin.Data) tuple, "
+                "or any object with lower_position_limit / upper_position_limit attributes."
+            )
+
         self.ik_solver = ik_solver
         self.fk_solver = fk_solver
         self.characteristic_length_m = characteristic_length_m
@@ -257,8 +268,8 @@ class FeasibilityAnalyzer:
             joint_limit_violations = None
             joint_limit_distances = None
             if q is not None:
-                lower_violations = self.model.lowerPositionLimit - q
-                upper_violations = q - self.model.upperPositionLimit
+                lower_violations = self.lower_position_limit - q
+                upper_violations = q - self.upper_position_limit
                 joint_limit_violations = {
                     'lower': [float(v) for v in np.maximum(0, lower_violations)],
                     'upper': [float(v) for v in np.maximum(0, upper_violations)],
@@ -266,8 +277,8 @@ class FeasibilityAnalyzer:
                 }
                 
                 # Distance to joint limits (0 = at limit, 1 = at opposite limit)
-                joint_ranges = self.model.upperPositionLimit - self.model.lowerPositionLimit
-                normalized_pos = (q - self.model.lowerPositionLimit) / joint_ranges
+                joint_ranges = self.upper_position_limit - self.lower_position_limit
+                normalized_pos = (q - self.lower_position_limit) / joint_ranges
                 joint_limit_distances = [float(min(p, 1-p)) for p in normalized_pos]
             
             debug_info = {
@@ -304,7 +315,7 @@ class FeasibilityAnalyzer:
         
         # Compute distance to joint limits
         distance_to_limits = compute_distance_to_joint_limits(
-            q, self.model.lowerPositionLimit, self.model.upperPositionLimit
+            q, self.lower_position_limit, self.upper_position_limit
         )
         
         return FeasibilityResult(
@@ -470,8 +481,8 @@ class FeasibilityAnalyzer:
         if len(joint_angles_all) > 0:
             joint_limit_stats = compute_joint_limit_violations(
                 joint_angles_all,
-                self.model.lowerPositionLimit,
-                self.model.upperPositionLimit
+                self.lower_position_limit,
+                self.upper_position_limit
             )
         
         # CRITICAL: Compute feasibility flags for ranking

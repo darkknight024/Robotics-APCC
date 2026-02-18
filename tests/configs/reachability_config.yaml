@@ -28,3 +28,10 @@ toolpaths_folder: "Robot_APCC/Experiments/Experiment_12/Toolpaths"
 
 # Output directory for results
 output_folder: "Robot_APCC/Results/Experiment_12/"
+
+# =============================================================================
+# Processing Options
+# =============================================================================
+options:
+  # Solver backend: "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
+  solver: "pin"

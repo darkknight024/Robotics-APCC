@@ -45,6 +45,9 @@ output_folder: "output/toolpath_comparison"
 # Processing Options
 # =============================================================================
 options:
+  # Solver backend: "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
+  solver: "pin"
+
   # Save computed joint positions to CSV
   save_joint_csv: true
   

@@ -13,18 +13,21 @@ robot_name: "IRB 1300-7/1.4"
 # =============================================================================
 # I/O Directories
 # =============================================================================
-input_folder: "Robot_APCC/Experiments/Experiment_10/inputs"
-output_folder: "Robot_APCC/Results/Experiment_10/"
+input_folder: "Robot_APCC/Experiments/Experiment_8/square_profile_trajectories_sampled"
+output_folder: "Robot_APCC/Results_new/Experiment_8/EAIK"
 
 # =============================================================================
 # Processing Options
 # =============================================================================
 options:
+  # Solver backend: "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
+  solver: "eaik"
+
   # Use adaptive scaling for plots (if false, uniform scale)
   adaptive_scale: false
   
   # Generate FK comparison plots
-  generate_fk_plots: true
+  generate_fk_plots: false
   
   # Generate IK comparison plots
-  generate_ik_plots: true
+  generate_ik_plots: false

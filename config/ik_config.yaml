@@ -1,8 +1,8 @@
 # =============================================================================
 # IK Solver Configuration
 # =============================================================================
-# Configuration parameters for the Pinocchio-based inverse kinematics solver.
-# These values are used by the IKSolver class in core/ik_solver.py.
+# Configuration parameters for IK solvers (Pinocchio and EAIK).
+# Pinocchio-specific parameters are ignored when using EAIK, and vice versa.
 
 ik_parameters:
   # Maximum number of iterations for convergence
@@ -31,6 +31,12 @@ ik_parameters:
   
   # End-effector frame name in URDF either Link_6 or ee_link
   ee_frame_name: "ee_link"
+
+  # =========================================================================
+  # EAIK-Specific Parameters (ignored when using Pinocchio)
+  # =========================================================================
+  # Solution selection strategy: "closest" (to previous config) or "min_norm"
+  solution_selection: "closest"
 
   # =========================================================================
   # IK Initialization Strategies

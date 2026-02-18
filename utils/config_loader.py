@@ -23,6 +23,10 @@ from dataclasses import dataclass
 # To change IK solver defaults, modify this dictionary.
 # The config file (config/ik_config.yaml) should match these values.
 _DEFAULT_IK_CONFIG = {
+    'ee_frame_name': 'ee_link',
+    # EAIK-specific
+    'solution_selection': 'closest',
+    # Pinocchio-specific
     'max_iterations': 50,
     'tolerance': 1e-4,
     'rot_weight': 0.2,
@@ -30,12 +34,7 @@ _DEFAULT_IK_CONFIG = {
     'lambda0': 1e-3,
     'lambda_max': 1e1,
     'max_step': 0.2,
-    'backtrack': True,
-    'ee_frame_name': 'ee_link',
-    'use_initial_guess': True,
-    'use_neutral': True,
-    'use_random': True,
-    'num_random_retries': 3
+    'backtrack': True
 }
 
 
@@ -338,28 +337,45 @@ def get_default_ik_config() -> Dict[str, Any]:
     return _DEFAULT_IK_CONFIG.copy()
 
 
-def load_ik_config_as_object(config_path: str = None):
+def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
     """
-    Load IK configuration and return as IKConfig object.
-    
+    Load IK configuration and return the appropriate IKConfig object.
+
+    The *solver* argument tells this function which config object to build.
+    It is always provided by the calling script (which reads it from its own
+    script-level config, e.g. toolpath_config.yaml, robostudio_test_config.yaml,
+    batch_feasibility_config.yaml). The ik_config.yaml file itself does NOT
+    contain a solver field -- it only holds IK tuning parameters.
+
     Args:
         config_path: Path to IK config YAML. If None, uses default at config/ik_config.yaml
-        
+        solver: Which backend to build config for: "eaik" or "pin"
+
     Returns:
-        IKConfig instance from core.ik_solver
+        EAIKConfig or PinocchioIKConfig instance
     """
     from pathlib import Path
-    from core.ik_solver import IKConfig
-    
+
     # Default path
     if config_path is None:
         config_path = str(Path(__file__).parent.parent / "config" / "ik_config.yaml")
-    
+
     try:
-        params = load_ik_config(config_path)
-        # Use defaults from _DEFAULT_IK_CONFIG if values are missing
-        # Explicitly convert to correct types (YAML may load scientific notation as strings)
-        return IKConfig(
+        raw = load_yaml(config_path)
+        params = raw.get('ik_parameters', {})
+    except Exception as e:
+        print(f"Warning: Could not load IK config from {config_path}: {e}")
+        print("Using default IK parameters from _DEFAULT_IK_CONFIG")
+        params = {}
+
+    solver = solver.lower().strip()
+
+    ee_frame_name = str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name']))
+
+    if solver in ("pin", "pinocchio"):
+        from core.pin_ik_solver import PinocchioIKConfig
+        return PinocchioIKConfig(
+            ee_frame_name=ee_frame_name,
             max_iterations=int(params.get('max_iterations', _DEFAULT_IK_CONFIG['max_iterations'])),
             tolerance=float(params.get('tolerance', _DEFAULT_IK_CONFIG['tolerance'])),
             rot_weight=float(params.get('rot_weight', _DEFAULT_IK_CONFIG['rot_weight'])),
@@ -367,31 +383,13 @@ def load_ik_config_as_object(config_path: str = None):
             lambda0=float(params.get('lambda0', _DEFAULT_IK_CONFIG['lambda0'])),
             lambda_max=float(params.get('lambda_max', _DEFAULT_IK_CONFIG['lambda_max'])),
             max_step=float(params.get('max_step', _DEFAULT_IK_CONFIG['max_step'])),
-            backtrack=bool(params.get('backtrack', _DEFAULT_IK_CONFIG['backtrack'])),
-            ee_frame_name=str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name'])),
-            use_initial_guess=bool(params.get('use_initial_guess', _DEFAULT_IK_CONFIG['use_initial_guess'])),
-            use_neutral=bool(params.get('use_neutral', _DEFAULT_IK_CONFIG['use_neutral'])),
-            use_random=bool(params.get('use_random', _DEFAULT_IK_CONFIG['use_random'])),
-            num_random_retries=int(params.get('num_random_retries', _DEFAULT_IK_CONFIG['num_random_retries']))
+            backtrack=bool(params.get('backtrack', _DEFAULT_IK_CONFIG['backtrack']))
         )
-    except Exception as e:
-        print(f"Warning: Could not load IK config from {config_path}: {e}")
-        print("Using default IK parameters from _DEFAULT_IK_CONFIG")
-        # Create IKConfig using defaults from the constant
-        return IKConfig(
-            max_iterations=_DEFAULT_IK_CONFIG['max_iterations'],
-            tolerance=_DEFAULT_IK_CONFIG['tolerance'],
-            rot_weight=_DEFAULT_IK_CONFIG['rot_weight'],
-            trans_weight=_DEFAULT_IK_CONFIG['trans_weight'],
-            lambda0=_DEFAULT_IK_CONFIG['lambda0'],
-            lambda_max=_DEFAULT_IK_CONFIG['lambda_max'],
-            max_step=_DEFAULT_IK_CONFIG['max_step'],
-            backtrack=_DEFAULT_IK_CONFIG['backtrack'],
-            ee_frame_name=_DEFAULT_IK_CONFIG['ee_frame_name'],
-            use_initial_guess=_DEFAULT_IK_CONFIG['use_initial_guess'],
-            use_neutral=_DEFAULT_IK_CONFIG['use_neutral'],
-            use_random=_DEFAULT_IK_CONFIG['use_random'],
-            num_random_retries=_DEFAULT_IK_CONFIG['num_random_retries']
+    else:
+        from core.eaik_ik_solver import EAIKConfig
+        return EAIKConfig(
+            ee_frame_name=ee_frame_name,
+            solution_selection=str(params.get('solution_selection', _DEFAULT_IK_CONFIG['solution_selection']))
         )
 
 

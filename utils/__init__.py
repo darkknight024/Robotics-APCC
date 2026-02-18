@@ -94,7 +94,10 @@ from .config_loader import (
 
 from .urdf_loader import (
     load_robot_model,
-    resolve_urdf_path
+    load_robot_model_eaik,
+    load_robot_model_pin,
+    resolve_urdf_path,
+    RobotModel
 )
 
 from .math import (

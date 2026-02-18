@@ -95,6 +95,7 @@ class FeasibilityTask:
     singularity_threshold: float
     speed_mm_s: float
     run_continuity: bool
+    solver_type: str = "pin"
     save_analysis: bool = False
     detailed_per_trajectory_report: bool = False
     skip_plots: bool = False
@@ -564,10 +565,11 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             run_continuity=task.run_continuity,
             save_analysis=task.save_analysis,
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
-            use_flat_output_structure=True,  # CRITICAL FIX: Avoid Windows path length limit
+            use_flat_output_structure=True,
             skip_plots=task.skip_plots,
-            level1_only=False,  # Combinatorial search needs full 4-level ranking
-            max_ik_failures_per_trajectory=task.max_ik_failures_per_trajectory
+            level1_only=False,
+            max_ik_failures_per_trajectory=task.max_ik_failures_per_trajectory,
+            solver_type=task.solver_type
         )
         
         # Extract per-trajectory metrics
@@ -1686,7 +1688,8 @@ def _build_task_list(
     output_dir: Path,
     feas_config: Dict,
     detailed_per_trajectory_report: bool = False,
-    skip_plots: bool = False
+    skip_plots: bool = False,
+    solver_type: str = "pin"
 ) -> List[FeasibilityTask]:
     """
     Build list of tasks for all combinations.
@@ -1763,9 +1766,10 @@ def _build_task_list(
                     base_output_dir=str(output_dir),
                     combo_name=combo_name,
                     singularity_threshold=singularity_threshold,
-                    speed_mm_s=toolpath_speed_mm_s,  # Use toolpath-specific speed
+                    speed_mm_s=toolpath_speed_mm_s,
                     run_continuity=run_continuity,
-                    save_analysis=False,  # Don't save text reports for each combo
+                    solver_type=solver_type,
+                    save_analysis=False,
                     detailed_per_trajectory_report=detailed_per_trajectory_report,
                     skip_plots=skip_plots,
                     max_ik_failures_per_trajectory=max_ik_failures
@@ -2260,7 +2264,8 @@ def process_ranking_batch(
     toolpath_files = _find_toolpath_files(config)
     
     # Step 4: Build task list
-    tasks = _build_task_list(config, knife_poses, toolpath_files, output_dir, feas_config, detailed_per_trajectory_report, skip_plots)
+    solver_type = config.get('solver', 'pin')
+    tasks = _build_task_list(config, knife_poses, toolpath_files, output_dir, feas_config, detailed_per_trajectory_report, skip_plots, solver_type=solver_type)
     
     # Step 5: Execute tasks
     logger.info(f"Prepared {len(tasks)} analysis tasks")

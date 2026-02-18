@@ -39,7 +39,7 @@ import yaml
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from core import IKSolver, IKConfig, load_robot_model
+from core import create_solvers
 from utils import (
     load_toolpath_trajectories,
     transform_trajectories_to_base_frame,
@@ -168,7 +168,7 @@ def check_trajectory_reachability(
 def plot_ik_solve_methods_with_exclusions(
     solve_methods: np.ndarray,
     ik_success: np.ndarray,
-    ik_config: IKConfig,
+    ik_config,
     output_path: str,
     title: str = "IK Solve Method per Waypoint",
     traj_index: str = None
@@ -179,7 +179,7 @@ def plot_ik_solve_methods_with_exclusions(
     Args:
         solve_methods: String array (n_waypoints,) with method names
         ik_success: Boolean array (n_waypoints,)
-        ik_config: IKConfig to check which methods are enabled
+        ik_config: IK config object to check which methods are enabled
         output_path: Path to save the output image
         title: Main plot title
         traj_index: Optional trajectory index for subtitle
@@ -196,13 +196,13 @@ def plot_ik_solve_methods_with_exclusions(
         'failed':        (0, '#9E9E9E', 'Failed'),
     }
 
-    # Check which methods are excluded
+    # Check which methods are excluded (attributes may not exist on all config types)
     excluded_methods = set()
-    if not ik_config.use_initial_guess:
+    if not getattr(ik_config, 'use_initial_guess', True):
         excluded_methods.add('initial_guess')
-    if not ik_config.use_neutral:
+    if not getattr(ik_config, 'use_neutral', True):
         excluded_methods.add('neutral')
-    if not ik_config.use_random:
+    if not getattr(ik_config, 'use_random', True):
         excluded_methods.add('random')
 
     fig, ax = plt.subplots(figsize=(16, 5))
@@ -354,18 +354,19 @@ def process_combination(
     knife_translation_m: np.ndarray,
     knife_quaternion: np.ndarray,
     toolpath_path: str,
-    output_dir: Path
+    output_dir: Path,
+    solver_type: str = "pin"
 ) -> ToolpathResult:
     """Process one robot/knife/toolpath combination."""
     toolpath_name = Path(toolpath_path).stem
     print(f"\n  Toolpath: {toolpath_name}")
 
-    # Load robot model
-    model, data = load_robot_model(urdf_path)
-
-    # Initialize IK solver
-    ik_config = load_ik_config_as_object()
-    ik_solver = IKSolver(model, data, config=ik_config)
+    # Create solvers via factory
+    ik_config = load_ik_config_as_object(solver=solver_type)
+    fk_solver, ik_solver, robot_data = create_solvers(
+        urdf_path, solver=solver_type, ik_config=ik_config,
+        ee_frame_name=ik_config.ee_frame_name
+    )
 
     # Load and transform trajectories
     trajectories_t_p_k, _ = load_toolpath_trajectories(toolpath_path)
@@ -478,7 +479,11 @@ def main():
     output_dir = Path(config.get('output_folder', 'output/reachability_test'))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nRobots:     {len(robots)}")
+    options = config.get('options', {})
+    solver_type = options.get('solver', 'pin')
+
+    print(f"\nSolver:     {solver_type}")
+    print(f"Robots:     {len(robots)}")
     print(f"Knives:     {len(knife_names)}")
     print(f"Toolpaths:  {len(toolpath_files)}")
     total_combos = len(robots) * len(knife_names) * len(toolpath_files)
@@ -519,7 +524,8 @@ def main():
                     knife_quaternion=knife.quaternion,
                     toolpath_path=str(toolpath_file),
                     knife_name=knife_name,
-                    output_dir=robot_knife_output
+                    output_dir=robot_knife_output,
+                    solver_type=solver_type
                 )
                 all_results.append(result)
 

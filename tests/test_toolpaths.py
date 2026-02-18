@@ -42,7 +42,7 @@ import yaml
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import IKSolver, IKConfig, load_robot_model
+from core import create_solvers
 from utils import (
     load_toolpath_trajectories,
     transform_trajectories_to_base_frame,
@@ -67,7 +67,8 @@ class TrajectoryComparisonTask:
     trajectory_t_b_p: np.ndarray  # Transformed trajectory in base frame
     reference_joints_rad: np.ndarray  # RobotStudio recorded joints
     output_dir: str
-    ik_config: IKConfig
+    ik_config: object  # EAIKConfig or PinocchioIKConfig
+    solver_type: str  # "pin" or "eaik"
     adaptive_scale: bool
     save_csv: bool
     generate_plots: bool
@@ -178,11 +179,12 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
     }
     
     try:
-        # Load robot model
-        model, data = load_robot_model(task.urdf_path)
-        
-        # Initialize IK solver
-        ik_solver = IKSolver(model, data, config=task.ik_config)
+        # Create solvers via factory
+        fk_solver, ik_solver, robot_data = create_solvers(
+            task.urdf_path, solver=task.solver_type,
+            ik_config=task.ik_config,
+            ee_frame_name=task.ik_config.ee_frame_name
+        )
         
         # Run IK on all waypoints
         n_waypoints = len(task.trajectory_t_b_p)
@@ -225,11 +227,12 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
         
         # Generate plots
         if task.generate_plots:
+            solver_label = getattr(ik_solver, 'solver_name', task.solver_type)
             plot_joint_comparison(
                 ref_deg, computed_deg,
                 str(out_path / "joint_comparison.png"),
                 title=f"Joint Comparison\n{task.toolpath_name} - {traj_name}",
-                ref_label="RobotStudio", computed_label="IK (Pinocchio)",
+                ref_label="RobotStudio", computed_label=f"IK ({solver_label})",
                 adaptive_scale=task.adaptive_scale
             )
             
@@ -282,18 +285,19 @@ def process_batch(config_path: str) -> Dict[str, Any]:
     knife_config_path = str(Path(__file__).parent.parent / "config" / "knife_config.yaml")
     knife_poses = load_knife_config(knife_config_path)
     
-    ik_config = load_ik_config_as_object()
-    
     # Get config values
     toolpaths_folder = Path(config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')))
     robostudio_folder = Path(config.get('robostudio_joints_folder', 'input/robostudio_joints'))
     output_folder = Path(config.get('output_folder', 'output/toolpath_comparison'))
     
     options = config.get('options', {})
+    solver_type = options.get('solver', 'pin')
     save_csv = options.get('save_joint_csv', True)
     generate_plots = options.get('generate_plots', True)
     adaptive_scale = options.get('adaptive_plot_scale', False)
     num_workers = options.get('num_workers', 0)
+    
+    ik_config = load_ik_config_as_object(solver=solver_type)
     
     if num_workers <= 0:
         num_workers = os.cpu_count() or 4
@@ -370,6 +374,7 @@ def process_batch(config_path: str) -> Dict[str, Any]:
                         reference_joints_rad=rs_trajectories[traj_id],
                         output_dir=str(combo_output),
                         ik_config=ik_config,
+                        solver_type=solver_type,
                         adaptive_scale=adaptive_scale,
                         save_csv=save_csv,
                         generate_plots=generate_plots
