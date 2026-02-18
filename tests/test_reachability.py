@@ -48,6 +48,7 @@ from utils import (
     plot_reachability_per_waypoint,
     plot_reachability_rate_per_trajectory,
     plot_ik_success_failure,
+    plot_eaik_solve_outcome,
 )
 from utils.config_loader import load_robots_config
 
@@ -415,15 +416,25 @@ def process_combination(
             traj_index=f"T{traj_num}"
         )
 
-        # IK solve method plot (with exclusion highlighting)
-        plot_ik_solve_methods_with_exclusions(
-            traj_result.solve_methods,
-            traj_result.reachable_flags,
-            ik_config,
-            str(combo_output / f"ik_solve_methods_T{traj_num}.png"),
-            title=f"IK Solve Method — {toolpath_name}",
-            traj_index=f"T{traj_num}"
-        )
+        # IK solve method / outcome plot (solver-specific)
+        solver_label = getattr(ik_solver, 'solver_name', 'Solver')
+        if solver_label == "EAIK":
+            plot_eaik_solve_outcome(
+                traj_result.solve_methods,
+                traj_result.reachable_flags,
+                str(combo_output / f"ik_solve_outcome_T{traj_num}.png"),
+                title=f"EAIK Solve Outcome — {toolpath_name}",
+                traj_index=f"T{traj_num}"
+            )
+        else:
+            plot_ik_solve_methods_with_exclusions(
+                traj_result.solve_methods,
+                traj_result.reachable_flags,
+                ik_config,
+                str(combo_output / f"ik_solve_methods_T{traj_num}.png"),
+                title=f"IK Solve Method — {toolpath_name}",
+                traj_index=f"T{traj_num}"
+            )
 
     # Multi-trajectory summary plot
     if len(result.trajectories) > 1:

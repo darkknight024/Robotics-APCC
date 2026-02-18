@@ -80,11 +80,13 @@ class EAIKIKSolver(BaseIKSolver):
             'is_ls': is_ls,
             'selected_index': None,
             'converged': False,
-            'reason': None
+            'reason': None,
+            'solve_method': None,
         }
 
         if n_sol == 0:
             info['reason'] = 'no_solutions'
+            info['solve_method'] = 'no_solutions'
             return False, np.zeros(self.n_joints), info
 
         solutions = [Q[i, :] for i in range(n_sol)]
@@ -100,6 +102,7 @@ class EAIKIKSolver(BaseIKSolver):
 
         if len(valid_solutions) == 0:
             info['reason'] = 'no_valid_solutions_within_limits'
+            info['solve_method'] = 'joint_limits'
             best_sol = self._select_least_violation(solutions, q_init)
             return False, best_sol, info
 
@@ -112,6 +115,7 @@ class EAIKIKSolver(BaseIKSolver):
         info['selected_index'] = best_idx
         info['converged'] = True
         info['reason'] = 'converged'
+        info['solve_method'] = 'converged'
 
         return True, selected_q, info
 

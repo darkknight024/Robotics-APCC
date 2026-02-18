@@ -274,6 +274,83 @@ def plot_ik_solve_methods(
     plt.close()
 
 
+def plot_eaik_solve_outcome(
+    solve_methods: np.ndarray,
+    ik_success: np.ndarray,
+    output_path: str,
+    title: str = "EAIK Solve Outcome per Waypoint",
+    traj_index: Optional[str] = None
+) -> None:
+    """
+    Plot per-waypoint EAIK outcome: converged, joint_limits, no_solutions.
+
+    Unlike Pinocchio which uses initialization strategies (initial_guess,
+    neutral, random), EAIK is analytical and either succeeds or fails for
+    a specific reason.
+
+    Args:
+        solve_methods: String array (n_waypoints,) with EAIK outcome labels
+        ik_success: Boolean array (n_waypoints,)
+        output_path: Path to save the output image
+        title: Main plot title
+        traj_index: Optional trajectory index/name to show in subtitle
+    """
+    n = len(solve_methods)
+    waypoints = np.arange(n)
+
+    outcome_map = {
+        'converged':    (2, '#4CAF50', 'Converged'),
+        'joint_limits': (1, '#FF9800', 'Joint Limits Violated'),
+        'no_solutions': (0, '#F44336', 'No Solution (Outside Workspace)'),
+    }
+
+    fig, ax = plt.subplots(figsize=(16, 5))
+
+    for outcome, (level, color, label) in outcome_map.items():
+        mask = (solve_methods == outcome)
+        count = int(np.sum(mask))
+        if count > 0:
+            ax.scatter(waypoints[mask], np.full(count, level),
+                       c=color, s=50, label=f'{label} ({count})', zorder=3,
+                       edgecolors='black', linewidths=0.3)
+
+    # Handle unexpected values that don't match known outcomes
+    known = set(outcome_map.keys())
+    unknown_mask = np.array([m not in known for m in solve_methods])
+    unknown_count = int(np.sum(unknown_mask))
+    if unknown_count > 0:
+        ax.scatter(waypoints[unknown_mask], np.full(unknown_count, -0.5),
+                   c='#9E9E9E', s=50, marker='x', linewidths=1.5,
+                   label=f'Unknown ({unknown_count})', zorder=3)
+
+    ax.set_xlabel('Waypoint Index', fontweight='bold')
+    ax.set_ylabel('Solve Outcome', fontweight='bold')
+    ax.set_yticks([0, 1, 2])
+    ax.set_yticklabels(['No Solution', 'Joint Limits', 'Converged'])
+    ax.set_ylim(-0.5, 2.8)
+    ax.set_xlim(-0.5, n - 0.5)
+    ax.legend(loc='upper right', fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    summary_parts = []
+    for outcome, (_, _, label) in outcome_map.items():
+        count = int(np.sum(solve_methods == outcome))
+        if count > 0:
+            summary_parts.append(f'{label}: {count}')
+    if unknown_count > 0:
+        summary_parts.append(f'Unknown: {unknown_count}')
+    summary_text = ' | '.join(summary_parts)
+    ax.text(n / 2, 2.5, summary_text, ha='center', fontsize=9, fontstyle='italic')
+
+    full_title = title
+    if traj_index is not None:
+        full_title += f"\nTrajectory: {traj_index}"
+    plt.title(full_title, fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
 def _compute_uniform_scale(data_arrays: List[np.ndarray]) -> tuple:
     """Compute uniform y-axis scale for multiple data arrays."""
     valid_arrays = [arr for arr in data_arrays if len(arr) > 0]
