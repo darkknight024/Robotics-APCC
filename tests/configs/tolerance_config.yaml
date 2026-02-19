@@ -1,0 +1,26 @@
+# =============================================================================
+# Solver Comparison Tolerance Test Configuration
+# =============================================================================
+# This config is used by: tests/tolerance_check.py
+#
+# It loads raw_comparison.csv files from each toolpath subfolder and checks
+# whether FK/IK errors exceed the specified thresholds.
+
+# Input folder containing toolpath subfolders (each with raw_comparison.csv)
+input_folder: "/home/cognitron/gitHub_Repos/outputs/apcc-duplicate/exp-10"
+
+# Output report path
+report_output: "/home/cognitron/gitHub_Repos/outputs/apcc-duplicate/exp-10/tolerance_test_report.txt"
+
+# =============================================================================
+# Tolerance Thresholds
+# =============================================================================
+thresholds:
+  # Maximum acceptable FK euclidean position error (millimeters)
+  fk_euclidean_error_mm: 1.0
+
+  # Maximum acceptable FK rotation error (degrees) — quaternion angular difference
+  fk_rotation_error_deg: 1.0
+
+  # Maximum acceptable IK joint error per joint (degrees)
+  ik_joint_error_deg: 1.0

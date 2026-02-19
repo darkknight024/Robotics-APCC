@@ -2,14 +2,14 @@
 """
 Solver Comparison - Test Trajectory
 
-Compares Pinocchio FK/IK results with RobotStudio data from test trajectories.
+Compares FK/IK solver results with RobotStudio data from test trajectories.
 
 Input: CSV with both configuration-space (joint angles) and task-space (position/quaternion)
 Output: FK comparison plots, IK comparison plots, analysis reports (local + global)
 
 Usage:
-    python solver_comparison_test_trajectory.py --input <csv_or_folder> --urdf <urdf_path>
-    python solver_comparison_test_trajectory.py --config config/robostudio_test_config.yaml
+    python tests/test_solvers.py --input <csv_or_folder> --urdf <urdf_path>
+    python tests/test_solvers.py --config tests/configs/test_solvers_config.yaml
 """
 
 import argparse
@@ -19,9 +19,9 @@ from pathlib import Path
 from datetime import datetime
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import IKSolver, IKConfig, FKSolver, load_robot_model
+from core import create_solvers
 from utils import (
     load_robostudio_full,
     find_robostudio_csvs,
@@ -32,6 +32,9 @@ from utils import (
     plot_euclidean_error,
     plot_joint_comparison,
     plot_joint_deltas,
+    plot_ik_success_failure,
+    plot_ik_solve_methods,
+    plot_eaik_solve_outcome,
     load_ik_config_as_object
 )
 
@@ -109,7 +112,8 @@ def save_individual_analysis(output_path: Path, csv_name: str, n_waypoints: int,
     print(f"    Analysis saved: {output_path.name}")
 
 
-def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, input_path: str) -> None:
+def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, input_path: str,
+                         solver_name: str = "Solver", ee_frame_name: str = "ee_link") -> None:
     """Save global analysis.txt summarizing all CSV files."""
     
     # Aggregate statistics
@@ -147,18 +151,20 @@ def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, i
         
         f.write("METHODOLOGY\n")
         f.write("-" * 50 + "\n")
-        f.write("This report compares Tool Center Point (ee_link) positions computed\n")
-        f.write("using Forward Kinematics (FK) against the ee_link positions recorded\n")
+        f.write(f"This report compares Tool Center Point ({ee_frame_name}) positions computed\n")
+        f.write(f"using Forward Kinematics (FK) against the {ee_frame_name} positions recorded\n")
         f.write("by RobotStudio.\n\n")
+        f.write(f"Solver: {solver_name}\n")
+        f.write(f"End-Effector Frame: {ee_frame_name}\n\n")
         f.write("Process:\n")
         f.write("  1. Joint angles (in degrees) are read from each CSV file\n")
         f.write("  2. Joint angles are converted to radians\n")
-        f.write("  3. Forward Kinematics is computed using Pinocchio library\n")
-        f.write("  4. The FK-computed ee_link position (ee_link frame) is compared\n")
-        f.write("     against the RobotStudio-recorded ee_link position\n")
-        f.write("  5. Position error = |FK - RobotStudio(ee_link)| (absolute)\n")
+        f.write(f"  3. Forward Kinematics is computed using {solver_name} solver\n")
+        f.write(f"  4. The FK-computed position ({ee_frame_name} frame) is compared\n")
+        f.write(f"     against the RobotStudio-recorded {ee_frame_name} position\n")
+        f.write(f"  5. Position error = |FK - RobotStudio({ee_frame_name})| (absolute)\n")
         f.write("  6. Euclidean distance error is computed from the position errors\n")
-        f.write("  7. Inverse Kinematics is run on ee_link positions to compute joint angles\n")
+        f.write(f"  7. Inverse Kinematics is run on {ee_frame_name} positions to compute joint angles\n")
         f.write("  8. IK-computed joints are compared against CSV-recorded joints\n\n")
         f.write(f"URDF File Used: {urdf_path}\n")
         f.write(f"IK Analysis: Enabled\n\n")
@@ -227,11 +233,12 @@ def save_global_analysis(output_path: Path, all_results: list, urdf_path: str, i
 
 def process_single_csv(
     csv_path: str,
-    model,
-    data,
+    fk_solver,
+    ik_solver,
     output_dir: str,
-    ik_config: IKConfig = None,
-    adaptive_scale: bool = False
+    adaptive_scale: bool = False,
+    generate_fk_plots: bool = True,
+    generate_ik_plots: bool = True
 ) -> dict:
     """Process a single RobotStudio CSV file."""
     csv_name = Path(csv_path).stem
@@ -246,10 +253,8 @@ def process_single_csv(
     n_waypoints = rs_data.num_waypoints
     print(f"  Loaded {n_waypoints} waypoints")
     
-    # Initialize solvers (both use same ee_frame from config)
-    fk_solver = FKSolver(model, data, ee_frame_name=ik_config.ee_frame_name)
-    ik_solver = IKSolver(model, data, config=ik_config)
-    print(f"  EE Frame: {fk_solver.ee_frame_name}")
+    solver_label = getattr(ik_solver, 'solver_name', 'Solver')
+    print(f"  Solver: {solver_label}, EE Frame: {fk_solver.ee_frame_name}")
     
     # =========================================================================
     # FK Analysis
@@ -271,43 +276,47 @@ def process_single_csv(
     print(f"  FK Error: mean={fk_stats['mean_error_mm']:.4f}mm, max={fk_stats['max_error_mm']:.4f}mm")
     
     # FK Plots
-    plot_position_comparison(
-        rs_positions_mm, fk_positions_mm,
-        str(out_path / "fk_position_comparison.png"),
-        title=f"Position Comparison - FK vs RobotStudio\n{csv_name}",
-        ref_label="RobotStudio", computed_label="FK (Pinocchio)",
-        adaptive_scale=adaptive_scale
-    )
-    
-    plot_position_deltas(
-        rs_positions_mm, fk_positions_mm,
-        str(out_path / "fk_position_deltas.png"),
-        title=f"Position Deltas (FK - RobotStudio)\n{csv_name}",
-        adaptive_scale=adaptive_scale
-    )
-    
-    plot_quaternion_comparison(
-        rs_data.tcp_quaternions, fk_quaternions,
-        str(out_path / "fk_quaternion_comparison.png"),
-        title=f"Quaternion Comparison - FK vs RobotStudio\n{csv_name}",
-        ref_label="RobotStudio", computed_label="FK (Pinocchio)",
-        adaptive_scale=adaptive_scale
-    )
-    
-    plot_euclidean_error(
-        rs_positions_mm, fk_positions_mm,
-        str(out_path / "fk_euclidean_error.png"),
-        title=f"Position Error (Euclidean Distance)\n{csv_name}",
-        adaptive_scale=adaptive_scale
-    )
+    if generate_fk_plots:
+        plot_position_comparison(
+            rs_positions_mm, fk_positions_mm,
+            str(out_path / "fk_position_comparison.png"),
+            title=f"Position Comparison - FK vs RobotStudio\n{csv_name}",
+            ref_label="RobotStudio", computed_label=f"FK ({solver_label})",
+            adaptive_scale=adaptive_scale
+        )
+        
+        plot_position_deltas(
+            rs_positions_mm, fk_positions_mm,
+            str(out_path / "fk_position_deltas.png"),
+            title=f"Position Deltas (FK - RobotStudio)\n{csv_name}",
+            adaptive_scale=adaptive_scale
+        )
+        
+        plot_quaternion_comparison(
+            rs_data.tcp_quaternions, fk_quaternions,
+            str(out_path / "fk_quaternion_comparison.png"),
+            title=f"Quaternion Comparison - FK vs RobotStudio\n{csv_name}",
+            ref_label="RobotStudio", computed_label=f"FK ({solver_label})",
+            adaptive_scale=adaptive_scale
+        )
+        
+        plot_euclidean_error(
+            rs_positions_mm, fk_positions_mm,
+            str(out_path / "fk_euclidean_error.png"),
+            title=f"Position Error (Euclidean Distance)\n{csv_name}",
+            adaptive_scale=adaptive_scale
+        )
     
     # =========================================================================
     # IK Analysis
     # =========================================================================
     print("  Running IK analysis...")
-    ik_joints_rad = np.zeros((n_waypoints, 6))
+    ik_joints_rad = np.full((n_waypoints, 6), np.nan)
     ik_success = np.zeros(n_waypoints, dtype=bool)
-    q_prev = None
+    ik_solve_methods = np.empty(n_waypoints, dtype=object)
+    # Seed with the first reference joint angles — in real operation the
+    # robot's starting configuration is always known.
+    q_prev = rs_data.joint_positions_rad[0]
     
     for i in range(n_waypoints):
         success, q, info = ik_solver.solve_with_retries(
@@ -316,40 +325,135 @@ def process_single_csv(
             q_prev
         )
         ik_success[i] = success
+        ik_solve_methods[i] = info.get('solve_method', 'failed')
         if success:
             ik_joints_rad[i] = q
             q_prev = q
-        else:
-            ik_joints_rad[i] = rs_data.joint_positions_rad[i]
+        # Failed waypoints stay NaN — no deceptive fallback
     
     rs_joints_deg = np.degrees(rs_data.joint_positions_rad)
     ik_joints_deg = np.degrees(ik_joints_rad)
-    joint_errors_deg = np.abs(rs_joints_deg - ik_joints_deg)
+    
+    # Compute shortest angular distance (0-360 wrapping)
+    # NaN where IK failed will propagate correctly
+    diff = np.abs(rs_joints_deg - ik_joints_deg)
+    diff = diff % 360.0
+    joint_errors_deg = np.minimum(diff, 360.0 - diff)
+    
+    # Compute stats only over successful waypoints
+    success_mask = ik_success.astype(bool)
+    if np.any(success_mask):
+        successful_errors = joint_errors_deg[success_mask]
+        mean_err = float(np.nanmean(successful_errors))
+        max_err = float(np.nanmax(successful_errors))
+    else:
+        mean_err = float('nan')
+        max_err = float('nan')
     
     ik_stats = {
         'success_count': int(np.sum(ik_success)),
         'success_percent': float(100 * np.sum(ik_success) / n_waypoints),
-        'mean_error_deg': float(np.nanmean(joint_errors_deg)),
-        'max_error_deg': float(np.nanmax(joint_errors_deg))
+        'mean_error_deg': mean_err,
+        'max_error_deg': max_err
     }
     print(f"  IK Success: {ik_stats['success_count']}/{n_waypoints} ({ik_stats['success_percent']:.1f}%)")
-    print(f"  IK Error: mean={ik_stats['mean_error_deg']:.4f}deg, max={ik_stats['max_error_deg']:.4f}deg")
+    print(f"  IK Error (successful only): mean={ik_stats['mean_error_deg']:.4f}deg, max={ik_stats['max_error_deg']:.4f}deg")
     
     # IK Plots
-    plot_joint_comparison(
-        rs_joints_deg, ik_joints_deg,
-        str(out_path / "ik_joint_comparison.png"),
-        title=f"Joint Angle Comparison - RobotStudio vs IK\n{csv_name}",
-        ref_label="RobotStudio", computed_label="IK (Pinocchio)",
-        adaptive_scale=adaptive_scale
-    )
+    if generate_ik_plots:
+        plot_joint_comparison(
+            rs_joints_deg, ik_joints_deg,
+            str(out_path / "ik_joint_comparison.png"),
+            title=f"Joint Angle Comparison - RobotStudio vs IK\n{csv_name}",
+            ref_label="RobotStudio", computed_label=f"IK ({solver_label})",
+            adaptive_scale=adaptive_scale,
+            mask=ik_success
+        )
+        
+        plot_joint_deltas(
+            rs_joints_deg, ik_joints_deg,
+            str(out_path / "ik_joint_deltas.png"),
+            title=f"Joint Angle Errors |RobotStudio - IK|\n{csv_name}",
+            adaptive_scale=adaptive_scale,
+            mask=ik_success
+        )
+        
+        # IK Success/Failure plot
+        plot_ik_success_failure(
+            ik_success,
+            str(out_path / "ik_success_failure.png"),
+            title=f"IK Success/Failure per Waypoint",
+            traj_index=csv_name
+        )
+        
+        # IK Solve Method / Outcome plot (solver-specific)
+        if solver_label == "EAIK":
+            plot_eaik_solve_outcome(
+                ik_solve_methods,
+                ik_success,
+                str(out_path / "ik_solve_outcome.png"),
+                title=f"EAIK Solve Outcome per Waypoint",
+                traj_index=csv_name
+            )
+        else:
+            plot_ik_solve_methods(
+                ik_solve_methods,
+                ik_success,
+                str(out_path / "ik_solve_methods.png"),
+                title=f"IK Solve Method per Waypoint",
+                traj_index=csv_name
+            )
     
-    plot_joint_deltas(
-        rs_joints_deg, ik_joints_deg,
-        str(out_path / "ik_joint_deltas.png"),
-        title=f"Joint Angle Errors |RobotStudio - IK|\n{csv_name}",
-        adaptive_scale=adaptive_scale
-    )
+    # =========================================================================
+    # Raw Data CSV Export
+    # =========================================================================
+    print("  Saving raw comparison CSV...")
+    raw_csv_path = out_path / "raw_comparison.csv"
+    
+    # Build header
+    header = ['waypoint']
+    # RobotStudio inputs
+    header += [f'rs_j{j+1}_deg' for j in range(6)]
+    header += ['rs_tcp_x_mm', 'rs_tcp_y_mm', 'rs_tcp_z_mm']
+    header += ['rs_qw', 'rs_qx', 'rs_qy', 'rs_qz']
+    # FK outputs
+    header += ['fk_tcp_x_mm', 'fk_tcp_y_mm', 'fk_tcp_z_mm']
+    header += ['fk_qw', 'fk_qx', 'fk_qy', 'fk_qz']
+    header += ['fk_pos_error_mm']
+    # IK outputs
+    header += [f'ik_j{j+1}_deg' for j in range(6)]
+    header += ['ik_success', 'ik_solve_method']
+    header += [f'ik_j{j+1}_error_deg' for j in range(6)]
+    
+    # Build rows
+    rows = np.empty((n_waypoints, len(header)), dtype=object)
+    for i in range(n_waypoints):
+        row = [i]
+        # RS joints (deg)
+        row += [f'{v:.6f}' for v in rs_joints_deg[i]]
+        # RS TCP (mm)
+        row += [f'{v:.6f}' for v in rs_positions_mm[i]]
+        # RS quaternions
+        row += [f'{v:.8f}' for v in rs_data.tcp_quaternions[i]]
+        # FK TCP (mm)
+        row += [f'{v:.6f}' for v in fk_positions_mm[i]]
+        # FK quaternions
+        row += [f'{v:.8f}' for v in fk_quaternions[i]]
+        # FK position error
+        row += [f'{fk_errors_mm[i]:.6f}']
+        # IK joints (deg) — NaN for failed
+        row += [f'{v:.6f}' if not np.isnan(v) else '' for v in ik_joints_deg[i]]
+        # IK success & method
+        row += [str(ik_success[i]), ik_solve_methods[i]]
+        # IK joint errors (deg) — NaN for failed
+        row += [f'{v:.6f}' if not np.isnan(v) else '' for v in joint_errors_deg[i]]
+        rows[i] = row
+    
+    with open(raw_csv_path, 'w') as f:
+        f.write(','.join(header) + '\n')
+        for row in rows:
+            f.write(','.join(str(v) for v in row) + '\n')
+    print(f"    Raw CSV saved: {raw_csv_path.name}")
     
     # Save individual analysis
     save_individual_analysis(
@@ -370,21 +474,21 @@ def process_single_csv(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare Pinocchio FK/IK with RobotStudio test trajectories"
+        description="Compare FK/IK solver results with RobotStudio test trajectories"
     )
-    parser.add_argument('--config', '-c', help="Path to robostudio_test_config.yaml", default="config/robostudio_test_config.yaml")
+    parser.add_argument('--config', '-c', help="Path to test_solvers_config.yaml", default="tests/configs/test_solvers_config.yaml")
     parser.add_argument('--input', '-i', help="Input CSV file or folder (auto-detected)")
     parser.add_argument('--urdf', '-u', help="Path to URDF file")
     parser.add_argument('--output', '-o', help="Output directory")
     parser.add_argument('--ik-config', help="Path to IK config YAML (default: config/ik_config.yaml)")
     parser.add_argument('--adaptive-scale', action='store_true',
                         help="Use adaptive scaling for plots")
+    parser.add_argument('--solver', choices=['pin', 'eaik'],
+                        help="Override solver backend (pin or eaik)")
+    parser.add_argument('--ee-frame',
+                        help="Override end-effector frame name (e.g. ee_link, Link_6)")
     
     args = parser.parse_args()
-    
-    # Load IK config
-    ik_config = load_ik_config_as_object(args.ik_config)
-    print(f"IK Config: max_iter={ik_config.max_iterations}, tol={ik_config.tolerance}, ee_frame={ik_config.ee_frame_name}")
     
     if args.config:
         # Config mode
@@ -396,16 +500,23 @@ def main():
         output_folder = config['output_folder']
         options = config['options']
         adaptive_scale = options.get('adaptive_scale', False)
+        generate_fk_plots = options.get('generate_fk_plots', True)
+        generate_ik_plots = options.get('generate_ik_plots', True)
+        solver_type = options.get('solver', 'pin')
         
         print(f"Robot: {config['robot_name']}")
         
         # Override with CLI args if provided
         if args.input:
             input_path = args.input
+        if args.urdf:
+            urdf_path = args.urdf
         if args.output:
             output_folder = args.output
         if args.adaptive_scale:
             adaptive_scale = True
+        if args.solver:
+            solver_type = args.solver
     else:
         # CLI mode
         if not args.urdf:
@@ -417,11 +528,24 @@ def main():
         input_path = args.input
         output_folder = args.output or 'output/test_comparison'
         adaptive_scale = args.adaptive_scale
+        generate_fk_plots = True
+        generate_ik_plots = True
+        solver_type = args.solver or 'pin'
     
-    # Load robot model
+    # Load IK config for the chosen solver
+    ik_config = load_ik_config_as_object(args.ik_config, solver=solver_type)
+    if args.ee_frame:
+        ik_config.ee_frame_name = args.ee_frame
+    print(f"IK Config: solver={solver_type}, ee_frame={ik_config.ee_frame_name}")
+    
+    # Create solvers via factory
     print(f"Loading robot model: {urdf_path}")
-    model, data = load_robot_model(urdf_path)
-    print(f"  Joints: {model.nq}")
+    fk_solver, ik_solver, robot_data = create_solvers(
+        urdf_path, solver=solver_type, ik_config=ik_config,
+        ee_frame_name=ik_config.ee_frame_name
+    )
+    n_joints = robot_data.n_joints if hasattr(robot_data, 'n_joints') else robot_data[0].nq
+    print(f"  Solver: {ik_solver.solver_name}, Joints: {n_joints}")
     
     # Auto-detect: file or folder
     input_path_obj = Path(input_path)
@@ -458,7 +582,8 @@ def main():
     for csv_file in valid_files:
         csv_output = Path(output_folder) / csv_file.stem
         result = process_single_csv(
-            str(csv_file), model, data, str(csv_output), ik_config, adaptive_scale
+            str(csv_file), fk_solver, ik_solver, str(csv_output),
+            adaptive_scale, generate_fk_plots, generate_ik_plots
         )
         results.append(result)
     
@@ -466,7 +591,8 @@ def main():
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
     save_global_analysis(
-        output_path / "global_analysis.txt", results, urdf_path, str(input_path)
+        output_path / "global_analysis.txt", results, urdf_path, str(input_path),
+        solver_name=ik_solver.solver_name, ee_frame_name=ik_config.ee_frame_name
     )
     
     # Print summary
@@ -480,6 +606,21 @@ def main():
         print(f"  IK Mean Error: {r['ik_stats']['mean_error_deg']:.4f} deg")
     
     print(f"\n✓ All results saved to: {output_folder}")
+    
+    # =========================================================================
+    # Auto-run Tolerance Check
+    # =========================================================================
+    from tests.tolerance_check import run_tolerance_check, load_config
+    tolerance_config_path = str(Path(__file__).parent / "configs" / "tolerance_config.yaml")
+    tol_cfg = load_config(tolerance_config_path)
+    tol_thresholds = tol_cfg.get('thresholds', {})
+    run_tolerance_check(
+        input_folder=output_folder,
+        report_output=str(Path(output_folder) / "tolerance_test_report.txt"),
+        fk_threshold_mm=float(tol_thresholds.get('fk_euclidean_error_mm', 2.0)),
+        fk_rot_threshold_deg=float(tol_thresholds.get('fk_rotation_error_deg', 2.0)),
+        ik_threshold_deg=float(tol_thresholds.get('ik_joint_error_deg', 1.0))
+    )
 
 
 if __name__ == "__main__":

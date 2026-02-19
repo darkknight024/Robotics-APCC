@@ -1,8 +1,8 @@
 # =============================================================================
 # IK Solver Configuration
 # =============================================================================
-# Configuration parameters for the Pinocchio-based inverse kinematics solver.
-# These values are used by the IKSolver class in core/ik_solver.py.
+# Configuration parameters for IK solvers (Pinocchio and EAIK).
+# Pinocchio-specific parameters are ignored when using EAIK, and vice versa.
 
 ik_parameters:
   # Maximum number of iterations for convergence
@@ -29,5 +29,29 @@ ik_parameters:
   # Enable backtracking line search
   backtrack: true
   
-  # End-effector frame name in URDF
+  # End-effector frame name in URDF either Link_6 or ee_link
   ee_frame_name: "ee_link"
+
+  # =========================================================================
+  # EAIK-Specific Parameters (ignored when using Pinocchio)
+  # =========================================================================
+  # Solution selection strategy: "closest" (to previous config) or "min_norm"
+  solution_selection: "closest"
+
+  # =========================================================================
+  # IK Initialization Strategies
+  # =========================================================================
+  # Controls which initialization methods solve_with_retries() will attempt.
+  # At least one must be true. Order: initial_guess → neutral → random.
+  
+  # Try with provided initial guess (previous joint config)
+  use_initial_guess: true
+  
+  # Try with neutral (zero) configuration
+  use_neutral: true
+  
+  # Try with random configurations
+  use_random: true
+  
+  # Number of random configuration retries (if use_random is true)
+  num_random_retries: 3

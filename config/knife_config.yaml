@@ -55,3 +55,14 @@ poses:
   #     x: 0.0
   #     y: 0.0
   #     z: 0.0
+  zundV1:
+    description: "Knife pose for zundV1"
+    translation_mm:
+      x: -368.015
+      y: -915.815
+      z: 520.4
+    rotation:
+      w: 0.00976529
+      x: 0.718246
+      y: -0.695702
+      z: -0.005153

@@ -60,6 +60,7 @@ class FeasibilityTask:
     singularity_threshold: float
     speed_mm_s: float
     run_continuity: bool
+    solver_type: str = "pin"
     level1_only: bool = True
     detailed_per_trajectory_report: bool = False
 
@@ -85,7 +86,8 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             run_continuity=task.run_continuity,
             save_analysis=True,
             level1_only=task.level1_only,
-            detailed_per_trajectory_report=task.detailed_per_trajectory_report
+            detailed_per_trajectory_report=task.detailed_per_trajectory_report,
+            solver_type=task.solver_type
         )
         
         return {
@@ -235,6 +237,8 @@ def process_batch(
     print(f"Found {len(toolpath_files)} toolpath file(s)")
     print(f"Processing with {len(config['robots'])} robot(s) and {len(config.get('knife_poses_to_use', []))} knife pose(s)")
     print(f"Continuity analysis: {'Enabled' if run_continuity else 'Disabled'}")
+    solver_type = config.get('solver', 'pin')
+    print(f"Solver: {solver_type}")
     print(f"Level 1 only: {level1_only} | Per-trajectory plots: {detailed_per_trajectory_report}")
     
     # Build task list
@@ -271,6 +275,7 @@ def process_batch(
                     singularity_threshold=singularity_threshold,
                     speed_mm_s=speed_mm_s,
                     run_continuity=run_continuity,
+                    solver_type=solver_type,
                     level1_only=level1_only,
                     detailed_per_trajectory_report=detailed_per_trajectory_report
                 ))
