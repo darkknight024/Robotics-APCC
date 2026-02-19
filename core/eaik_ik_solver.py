@@ -94,6 +94,7 @@ class EAIKIKSolver(BaseIKSolver):
             'converged': False,
             'reason': None,
             'solve_method': None,
+            'violated_joints': None,  # List of joint indices that violated limits
         }
 
         if n_sol == 0:
@@ -102,6 +103,7 @@ class EAIKIKSolver(BaseIKSolver):
             return False, np.zeros(self.n_joints), info
 
         solutions = [Q[i, :] for i in range(n_sol)]
+        info['all_solutions'] = solutions
 
         valid_solutions = []
         valid_indices = []
@@ -116,6 +118,8 @@ class EAIKIKSolver(BaseIKSolver):
             info['reason'] = 'no_valid_solutions_within_limits'
             info['solve_method'] = 'joint_limits'
             best_sol = self._select_least_violation(solutions, q_init)
+            # Track which joints violated limits using the selected best solution
+            info['violated_joints'] = self._get_violated_joints(best_sol)
             return False, best_sol, info
 
         if self.config.solution_selection == "closest" and q_init is not None:
@@ -170,6 +174,32 @@ class EAIKIKSolver(BaseIKSolver):
         return bool(np.all(q >= self.robot_model.lower_position_limit - tolerance) and
                      np.all(q <= self.robot_model.upper_position_limit + tolerance))
 
+    def _get_violated_joints(self, q: np.ndarray, tolerance: float = 1e-6) -> list:
+        """
+        Return list of joint indices that violated their limits for solution q.
+        
+        Args:
+            q: Joint configuration vector
+            tolerance: Tolerance for limit checking
+            
+        Returns:
+            List of joint indices (0-based) that violated limits
+        """
+        violated = []
+        lower = self.robot_model.lower_position_limit
+        upper = self.robot_model.upper_position_limit
+        q = np.asarray(q).flatten()
+        
+        for i in range(len(q)):
+            if q[i] < lower[i] - tolerance or q[i] > upper[i] + tolerance:
+                violated.append(i)
+        
+        return violated
+
+    def _wrapped_dist_debug(self, q: np.ndarray, q_ref: np.ndarray) -> float:
+        diff = (q - q_ref + np.pi) % (2.0 * np.pi) - np.pi
+        return float(np.linalg.norm(diff))
+
     def _select_closest(self, solutions: list, q_ref: np.ndarray) -> int:
         """Select solution closest to q_ref using angle-wrapped distance.
 
@@ -177,10 +207,7 @@ class EAIKIKSolver(BaseIKSolver):
         angle, so the raw Euclidean difference overstates the true distance.
         Wrapping each joint difference to [-pi, pi] fixes this.
         """
-        def _wrapped_dist(q: np.ndarray) -> float:
-            diff = (q - q_ref + np.pi) % (2.0 * np.pi) - np.pi
-            return float(np.linalg.norm(diff))
-        distances = [_wrapped_dist(sol) for sol in solutions]
+        distances = [self._wrapped_dist_debug(sol, q_ref) for sol in solutions]
         return int(np.argmin(distances))
 
     def _select_min_norm(self, solutions: list) -> int:
@@ -202,4 +229,4 @@ class EAIKIKSolver(BaseIKSolver):
                 best_sol = q
         if best_sol is None:
             return np.zeros(self.n_joints)
-        return np.clip(best_sol, lower, upper)
+        return best_sol

@@ -1,6 +1,9 @@
 # =============================================================================
 # Automated Experiment Configuration
 # =============================================================================
+# Top-level settings
+enable_benchmarking: true  # Set to false to disable ground-truth comparison
+
 # Each experiment defines a test_script and one or more runs.
 # Experiment-level fields are inherited by all runs unless overridden per-run.
 #
@@ -10,10 +13,18 @@
 #   - test_toolpaths     (tests/test_toolpaths.py)
 #
 # Per-run fields that can override experiment-level defaults:
-#   solver, robot, ee_frame, input, output, knife_pose
+#   solver, robot, ee_frame, input, output, knife_pose, ground_truth
 #
 # Output path: If not specified per-run, auto-generated as:
 #   <output_base>/<run_name>
+#
+# Ground truth:
+#   Each run can specify a ground_truth path pointing to a Benchmarks
+#   directory that mirrors the output structure. After the test script
+#   finishes, all raw CSV files in the output are compared against
+#   matching CSVs under ground_truth (only if enable_benchmarking is true).
+#   If ground_truth is absent or benchmarking is disabled, the run result
+#   is reported as OK/FAILED (execution only).
 
 experiments:
 
@@ -29,8 +40,10 @@ experiments:
     runs:
       - run_name: "EAIK"
         solver: "eaik"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_7/EAIK"
       - run_name: "Pinocchio"
         solver: "pin"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_7/Pinocchio"
 
   # ===========================================================================
   # Experiment 8: FK/IK solver comparison - square profile sampled (ee_link)
@@ -44,8 +57,10 @@ experiments:
     runs:
       - run_name: "EAIK"
         solver: "eaik"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_8/EAIK"
       - run_name: "Pinocchio"
         solver: "pin"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_8/Pinocchio"
 
   # ===========================================================================
   # Experiment 9: FK/IK solver comparison - two robot variants (Link_6)
@@ -60,19 +75,23 @@ experiments:
         solver: "eaik"
         robot: "IRB 1300-11/0.9"
         input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_900_trajectories/square_profile_trajectories"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_9/IRB_1300_900/EAIK"
       - run_name: "IRB_1300_900/Pinocchio"
         solver: "pin"
         robot: "IRB 1300-11/0.9"
         input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_900_trajectories/square_profile_trajectories"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_9/IRB_1300_900/Pinocchio"
       # IRB 1300-10/1.15
       - run_name: "IRB_1300_1150/EAIK"
         solver: "eaik"
         robot: "IRB 1300-10/1.15"
         input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_1150_trajectories/square_profile_trajectories"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_9/IRB_1300_1150/EAIK"
       - run_name: "IRB_1300_1150/Pinocchio"
         solver: "pin"
         robot: "IRB 1300-10/1.15"
         input: "Robot_APCC/Experiments/Experiment_9/IRB_1300_1150_trajectories/square_profile_trajectories"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_9/IRB_1300_1150/Pinocchio"
 
   # ===========================================================================
   # Experiment 10: FK/IK solver comparison - TPEE inputs (ee_link)
@@ -86,8 +105,10 @@ experiments:
     runs:
       - run_name: "EAIK"
         solver: "eaik"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_10/EAIK"
       - run_name: "Pinocchio"
         solver: "pin"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_10/Pinocchio"
 
   # ===========================================================================
   # Experiment 12: Reachability test with Zund knife
@@ -102,5 +123,25 @@ experiments:
     runs:
       - run_name: "EAIK"
         solver: "eaik"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_12/EAIK"
       - run_name: "Pinocchio"
         solver: "pin"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_12/Pinocchio"
+
+  # ===========================================================================
+  # Experiment 13: FK/IK solver comparison with overriden RobotStudio Seed
+  # ===========================================================================
+  - name: "Experiment_13"
+    test_script: "test_solvers"
+    robot: "IRB 1300-7/1.4"
+    ee_frame: "ee_link"
+    input: "Robot_APCC/Experiments/Experiment_13/Results"
+    output_base: "Robot_APCC/Results/Experiment_13"
+    use_robostudio_seed: true
+    runs:
+      - run_name: "EAIK"
+        solver: "eaik"
+        ground_truth: "Robot_APCC/Benchmarks/Experiment_13/EAIK"
+      - run_name: "Pinocchio"
+        solver: "pin"
+        ground_truth : "Robot_APCC/Benchmarks/Experiment_13/Pinocchio"

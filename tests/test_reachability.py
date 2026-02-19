@@ -49,6 +49,7 @@ from utils import (
     plot_reachability_rate_per_trajectory,
     plot_ik_success_failure,
     plot_eaik_solve_outcome,
+    plot_joint_limits_violated_per_waypoint,
 )
 from utils.config_loader import load_robots_config
 
@@ -67,6 +68,9 @@ class TrajectoryResult:
     reachable_flags: np.ndarray  # bool array
     unreachable_waypoints: List[int] = field(default_factory=list)
     solve_methods: np.ndarray = field(default_factory=lambda: np.array([], dtype=object))
+    violated_joints_per_wp: List[Optional[List[int]]] = field(default_factory=list)
+    joint_angles_rad: Optional[np.ndarray] = None
+    target_poses: Optional[np.ndarray] = None
 
     @property
     def reachability_pct(self) -> float:
@@ -114,7 +118,9 @@ class ToolpathResult:
 def check_trajectory_reachability(
     trajectory_t_b_p: np.ndarray,
     ik_solver,
-    trajectory_index: int
+    trajectory_index: int,
+    rs_data_seed: Optional[np.ndarray] = None,
+    use_robostudio_seed: bool = False
 ) -> TrajectoryResult:
     """
     Check reachability of each waypoint in a transformed trajectory.
@@ -123,29 +129,54 @@ def check_trajectory_reachability(
         trajectory_t_b_p: (n_waypoints, 7) array [x, y, z, qw, qx, qy, qz] in base frame (meters)
         ik_solver: Configured IKSolver instance
         trajectory_index: 1-based trajectory index
+        rs_data_seed: Optional (n_waypoints, 6) array of joint angles from RobotStudio to use for seeding
+        use_robostudio_seed: Whether to seed every waypoint with rs_data_seed
         
     Returns:
-        TrajectoryResult with per-waypoint reachability flags
+        TrajectoryResult with per-waypoint reachability flags and EAIK joint violations
     """
     n_waypoints = len(trajectory_t_b_p)
+    n_joints = getattr(ik_solver, 'n_joints', None) or getattr(
+        getattr(ik_solver, 'model', None), 'nq', 6)
     reachable_flags = np.zeros(n_waypoints, dtype=bool)
     solve_methods = np.empty(n_waypoints, dtype=object)
+    joint_angles_rad = np.full((n_waypoints, n_joints), np.nan)
+    violated_joints_per_wp = [None] * n_waypoints
     unreachable_waypoints = []
 
-    # Use neutral config as initial guess
     q_prev = None
+    if rs_data_seed is not None and len(rs_data_seed) > 0:
+        q_prev = rs_data_seed[0]
 
     for i in range(n_waypoints):
         target_pos = trajectory_t_b_p[i, :3]       # [x, y, z] in meters
         target_quat = trajectory_t_b_p[i, 3:7]     # [qw, qx, qy, qz]
 
+        # Seed correctly 
+        if rs_data_seed is not None and use_robostudio_seed:
+            current_q_ref = rs_data_seed[i]
+        else:
+            current_q_ref = q_prev
+
         success, q, info = ik_solver.solve_with_retries(
-            target_pos, target_quat, q_prev
+            target_pos, target_quat, current_q_ref
         )
 
+        if getattr(ik_solver, 'solver_name', '') == 'EAIK' and success and info.get('is_ls', False):
+            success = False
+            info['solve_method'] = 'least_squares'
+
         reachable_flags[i] = success
-        solve_methods[i] = info.get('solve_method', 'failed')
+        
+        # Override solve_method to explicitly show we seeded with RS tracking
+        solve_method = info.get('solve_method', 'failed')
+        if use_robostudio_seed and solve_method == 'initial_guess' and rs_data_seed is not None:
+            solve_method = 'robostudio_seed'
+            
+        solve_methods[i] = solve_method
+        violated_joints_per_wp[i] = info.get('violated_joints', None)
         if success:
+            joint_angles_rad[i] = q
             q_prev = q
         else:
             unreachable_waypoints.append(i)
@@ -158,7 +189,10 @@ def check_trajectory_reachability(
         unreachable_count=n_waypoints - reachable_count,
         reachable_flags=reachable_flags,
         unreachable_waypoints=unreachable_waypoints,
-        solve_methods=solve_methods
+        solve_methods=solve_methods,
+        violated_joints_per_wp=violated_joints_per_wp,
+        joint_angles_rad=joint_angles_rad,
+        target_poses=trajectory_t_b_p
     )
 
 
@@ -189,9 +223,10 @@ def plot_ik_solve_methods_with_exclusions(
     waypoints = np.arange(n)
 
     # Build method map: (y-level, color, label)
-    # Methods are: initial_guess(3), neutral(2), random(1), failed(0)
+    # Methods are: initial_guess(4), robostudio_seed(3), neutral(2), random(1), failed(0)
     method_map = {
-        'initial_guess': (3, '#2196F3', 'Initial Guess'),
+        'initial_guess': (4, '#2196F3', 'Initial Guess'),
+        'robostudio_seed': (3, '#9C27B0', 'RobotStudio Seed'),
         'neutral':       (2, '#FF9800', 'Neutral'),
         'random':        (1, '#4CAF50', 'Random'),
         'failed':        (0, '#9E9E9E', 'Failed'),
@@ -228,9 +263,9 @@ def plot_ik_solve_methods_with_exclusions(
 
     ax.set_xlabel('Waypoint Index', fontweight='bold')
     ax.set_ylabel('Solve Method', fontweight='bold')
-    ax.set_yticks([0, 1, 2, 3])
-    ax.set_yticklabels(['Failed', 'Random', 'Neutral', 'Initial Guess'])
-    ax.set_ylim(-0.5, 3.8)
+    ax.set_yticks([0, 1, 2, 3, 4])
+    ax.set_yticklabels(['Failed', 'Random', 'Neutral', 'RobotStudio Seed', 'Initial Guess'])
+    ax.set_ylim(-0.5, 4.8)
     ax.set_xlim(-0.5, n + n * 0.08)  # extra space for exclusion labels
     ax.legend(loc='upper right', fontsize=9)
     ax.grid(True, alpha=0.3)
@@ -243,7 +278,7 @@ def plot_ik_solve_methods_with_exclusions(
         if count > 0 or method in excluded_methods:
             summary_parts.append(f'{label}: {count}{suffix}')
     summary_text = ' | '.join(summary_parts)
-    ax.text(n / 2, 3.5, summary_text, ha='center', fontsize=9, fontstyle='italic')
+    ax.text(n / 2, 4.5, summary_text, ha='center', fontsize=9, fontstyle='italic')
 
     full_title = title
     if traj_index is not None:
@@ -252,6 +287,51 @@ def plot_ik_solve_methods_with_exclusions(
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
+
+
+# =============================================================================
+# Raw CSV Export
+# =============================================================================
+
+def save_reachability_csv(traj_result: TrajectoryResult, output_path: str) -> None:
+    """
+    Save per-waypoint reachability data to a CSV for benchmark comparison.
+
+    Columns: waypoint, target_x_m, target_y_m, target_z_m,
+             target_qw, target_qx, target_qy, target_qz,
+             ik_success, solve_method,
+             ik_j1_deg .. ik_j6_deg
+    """
+    n = traj_result.num_waypoints
+    poses = traj_result.target_poses
+    joints_deg = np.degrees(traj_result.joint_angles_rad) if traj_result.joint_angles_rad is not None else None
+    n_joints = joints_deg.shape[1] if joints_deg is not None else 6
+
+    header = ['waypoint',
+              'target_x_m', 'target_y_m', 'target_z_m',
+              'target_qw', 'target_qx', 'target_qy', 'target_qz',
+              'ik_success', 'solve_method']
+    header += [f'ik_j{j+1}_deg' for j in range(n_joints)]
+
+    lines = [','.join(header)]
+    for i in range(n):
+        row = [str(i)]
+        if poses is not None:
+            row += [f'{poses[i, j]:.8f}' for j in range(7)]
+        else:
+            row += [''] * 7
+        row.append(str(traj_result.reachable_flags[i]))
+        row.append(str(traj_result.solve_methods[i]))
+        if joints_deg is not None:
+            row += [f'{joints_deg[i, j]:.6f}' if not np.isnan(joints_deg[i, j]) else ''
+                    for j in range(n_joints)]
+        else:
+            row += [''] * n_joints
+        lines.append(','.join(row))
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
 
 
 # =============================================================================
@@ -372,8 +452,10 @@ def process_combination(
         ee_frame_name=ik_config.ee_frame_name
     )
 
+    use_robostudio_seed = ik_config.use_robostudio_seed if hasattr(ik_config, 'use_robostudio_seed') else False
+    
     # Load and transform trajectories
-    trajectories_t_p_k, _ = load_toolpath_trajectories(toolpath_path)
+    trajectories_t_p_k, speeds = load_toolpath_trajectories(toolpath_path)
     trajectories_t_b_p = transform_trajectories_to_base_frame(
         trajectories_t_p_k, knife_translation_m, knife_quaternion
     )
@@ -394,8 +476,15 @@ def process_combination(
     for traj_idx, traj in enumerate(trajectories_t_b_p):
         traj_num = traj_idx + 1
         print(f"    T{traj_num}: {len(traj)} waypoints...", end=" ")
+        
+        # Identify rs data if available for seeding (only true if we wrote a custom loader for some formats)
+        rs_data_seed = None
 
-        traj_result = check_trajectory_reachability(traj, ik_solver, traj_num)
+        traj_result = check_trajectory_reachability(
+            traj, ik_solver, traj_num, 
+            rs_data_seed=rs_data_seed, 
+            use_robostudio_seed=use_robostudio_seed
+        )
         result.trajectories.append(traj_result)
 
         status = "PASS" if traj_result.is_fully_reachable else "FAIL"
@@ -426,6 +515,16 @@ def process_combination(
                 title=f"EAIK Solve Outcome — {toolpath_name}",
                 traj_index=f"T{traj_num}"
             )
+            
+            # Plot joint limits violations for EAIK
+            plot_joint_limits_violated_per_waypoint(
+                traj_result.violated_joints_per_wp,
+                traj_result.reachable_flags,
+                robot_data,
+                str(combo_output / f"ik_joint_limits_violated_T{traj_num}.png"),
+                title=f"Joint Limits Violated — {toolpath_name}",
+                traj_index=f"T{traj_num}"
+            )
         else:
             plot_ik_solve_methods_with_exclusions(
                 traj_result.solve_methods,
@@ -435,6 +534,12 @@ def process_combination(
                 title=f"IK Solve Method — {toolpath_name}",
                 traj_index=f"T{traj_num}"
             )
+
+        # Raw CSV export for benchmark comparison
+        save_reachability_csv(
+            traj_result,
+            str(combo_output / f"raw_reachability_T{traj_num}.csv")
+        )
 
     # Multi-trajectory summary plot
     if len(result.trajectories) > 1:

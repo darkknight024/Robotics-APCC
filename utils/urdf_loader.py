@@ -376,6 +376,7 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
     
     try:
         # Parse URDF with urchin
+        # lazy_load_meshes=True is used to speed up the loading process since setting it true means meshes are not loaded.
         robot = URDF.load(urdf_path_str, lazy_load_meshes=True)
         joints = robot._sort_joints(robot.actuated_joints)
         n_joints = len(joints)

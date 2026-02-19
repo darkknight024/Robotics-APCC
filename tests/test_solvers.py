@@ -35,6 +35,10 @@ from utils import (
     plot_ik_success_failure,
     plot_ik_solve_methods,
     plot_eaik_solve_outcome,
+    plot_joint_limits_violated_per_waypoint,
+    plot_joint_violation_graph,
+    plot_detailed_violation_debug,
+    plot_all_eaik_solutions,
     load_ik_config_as_object
 )
 
@@ -235,10 +239,14 @@ def process_single_csv(
     csv_path: str,
     fk_solver,
     ik_solver,
+    robot_data,
     output_dir: str,
     adaptive_scale: bool = False,
     generate_fk_plots: bool = True,
-    generate_ik_plots: bool = True
+    generate_ik_plots: bool = True,
+    use_robostudio_seed: bool = True,
+    generate_eaik_solutions_graph: bool = True,
+    eaik_solutions_max_waypoints: int = 20
 ) -> dict:
     """Process a single RobotStudio CSV file."""
     csv_name = Path(csv_path).stem
@@ -314,22 +322,50 @@ def process_single_csv(
     ik_joints_rad = np.full((n_waypoints, 6), np.nan)
     ik_success = np.zeros(n_waypoints, dtype=bool)
     ik_solve_methods = np.empty(n_waypoints, dtype=object)
-    # Seed with the first reference joint angles — in real operation the
-    # robot's starting configuration is always known.
+    ik_violated_joints = [None] * n_waypoints  # For EAIK joint limit violations
+    ik_joint_limit_violated = np.zeros(n_waypoints, dtype=bool)  # Track EAIK joint-limit failures
+    ik_all_solutions = []
+    
+    # Seed with the first reference joint angles if we aren't seeding every step
+    # This prevents total tracking failure if waypoint 0 fails to solve
     q_prev = rs_data.joint_positions_rad[0]
     
+    # Conditional Reference Tracking
     for i in range(n_waypoints):
+        
+        # Decide which seed to feed to the solver
+        if use_robostudio_seed:
+            # Strictly seed from RS every time via config
+            current_q_ref = rs_data.joint_positions_rad[i]
+        else:
+            # First waypoint already seeded via q_prev init above
+            # Subsequent waypoints use the previous IK solution 
+            current_q_ref = q_prev
+        
         success, q, info = ik_solver.solve_with_retries(
             rs_data.tcp_positions_m[i],
             rs_data.tcp_quaternions[i],
-            q_prev
+            current_q_ref
         )
         ik_success[i] = success
-        ik_solve_methods[i] = info.get('solve_method', 'failed')
+        
+        # Override solve_method to explicitly show we seeded with RS tracking if enabled mathematically
+        solve_method = info.get('solve_method', 'failed')
+        if use_robostudio_seed and solve_method == 'initial_guess':
+            solve_method = 'robostudio_seed'
+            
+        ik_solve_methods[i] = solve_method
+        ik_violated_joints[i] = info.get('violated_joints', None)
+        ik_all_solutions.append(info.get('all_solutions', []))
         if success:
             ik_joints_rad[i] = q
             q_prev = q
-        # Failed waypoints stay NaN — no deceptive fallback
+        elif info.get('solve_method') == 'joint_limits':
+            # EAIK: solution exists but violates joint limits — keep it
+            # for visualization instead of leaving as NaN
+            ik_joints_rad[i] = q
+            ik_joint_limit_violated[i] = True
+        # Other failures (no_solutions, etc.) stay NaN
     
     rs_joints_deg = np.degrees(rs_data.joint_positions_rad)
     ik_joints_deg = np.degrees(ik_joints_rad)
@@ -361,13 +397,36 @@ def process_single_csv(
     
     # IK Plots
     if generate_ik_plots:
+        # Prepare joint limits data for plotting
+        joint_limits_deg = None
+        if hasattr(robot_data, 'lower_position_limit') and hasattr(robot_data, 'upper_position_limit'):
+            # EAIK case
+            lower_rad = robot_data.lower_position_limit[:6]
+            upper_rad = robot_data.upper_position_limit[:6]
+            lower_deg = np.degrees(lower_rad)
+            upper_deg = np.degrees(upper_rad)
+            joint_limits_deg = (lower_deg, upper_deg)
+        elif hasattr(robot_data, '__len__') and len(robot_data) >= 2:
+            # Pinocchio case: (pin.Model, pin.Data)
+            try:
+                import pinocchio as pin
+                model = robot_data[0]
+                lower_rad = model.lowerPositionLimit[:6]
+                upper_rad = model.upperPositionLimit[:6]
+                lower_deg = np.degrees(lower_rad)
+                upper_deg = np.degrees(upper_rad)
+                joint_limits_deg = (lower_deg, upper_deg)
+            except (ImportError, AttributeError, IndexError):
+                pass
+        
         plot_joint_comparison(
             rs_joints_deg, ik_joints_deg,
             str(out_path / "ik_joint_comparison.png"),
             title=f"Joint Angle Comparison - RobotStudio vs IK\n{csv_name}",
             ref_label="RobotStudio", computed_label=f"IK ({solver_label})",
             adaptive_scale=adaptive_scale,
-            mask=ik_success
+            mask=ik_success,
+            joint_limits_deg=joint_limits_deg
         )
         
         plot_joint_deltas(
@@ -395,6 +454,67 @@ def process_single_csv(
                 title=f"EAIK Solve Outcome per Waypoint",
                 traj_index=csv_name
             )
+            
+            all_sols_dir = out_path / "all_solutions"
+            if generate_eaik_solutions_graph:
+                plot_all_eaik_solutions(
+                    rs_joints_deg, ik_all_solutions, ik_success, ik_joints_deg, str(all_sols_dir), 
+                    joint_limits_deg=joint_limits_deg, limit_waypoints=eaik_solutions_max_waypoints, traj_index=csv_name
+                )
+            
+            # Plot joint limits violations for EAIK
+            plot_joint_limits_violated_per_waypoint(
+                ik_violated_joints,
+                ik_success,
+                robot_data,
+                str(out_path / "ik_joint_limits_violated.png"),
+                title=f"Joint Limits Violated per Waypoint",
+                traj_index=csv_name
+            )
+            
+            # Joint violation graph — only created if violations exist
+            if joint_limits_deg is not None:
+                plot_joint_violation_graph(
+                    ik_joints_deg,
+                    ik_joint_limit_violated,
+                    joint_limits_deg,
+                    str(out_path / "ik_joint_violation_graph.png"),
+                    title="Joint Limit Violations",
+                    traj_index=csv_name
+                )
+                
+                # Detailed Debug Plot (Joints, Pos, Quat for violations)
+                violated_indices = np.where(ik_joint_limit_violated)[0]
+                
+                # Extract subsets
+                rs_joints_subset_deg = rs_joints_deg[violated_indices]
+                ik_joints_subset_deg = ik_joints_deg[violated_indices]
+                rs_pos_subset = rs_data.tcp_positions_m[violated_indices]
+                rs_quat_subset = rs_data.tcp_quaternions[violated_indices]
+                
+                # Compute FK for IK solutions to get actual TCP
+                ik_pos_subset = np.zeros((len(violated_indices), 3))
+                ik_quat_subset = np.zeros((len(violated_indices), 4))
+                ik_joints_subset_rad = ik_joints_rad[violated_indices]
+                
+                for k in range(len(violated_indices)):
+                    pos, quat = fk_solver.solve_fk(ik_joints_subset_rad[k])
+                    ik_pos_subset[k] = pos
+                    ik_quat_subset[k] = quat
+
+                plot_detailed_violation_debug(
+                    violated_indices,
+                    rs_joints_subset_deg,
+                    ik_joints_subset_deg,
+                    rs_pos_subset * 1000.0, # Convert m to mm
+                    ik_pos_subset * 1000.0,
+                    rs_quat_subset,
+                    ik_quat_subset,
+                    joint_limits_deg,
+                    str(out_path / "ik_violation_debug_details.png"),
+                    title="Detailed Violation Analysis",
+                    traj_index=csv_name
+                )
         else:
             plot_ik_solve_methods(
                 ik_solve_methods,
@@ -487,6 +607,8 @@ def main():
                         help="Override solver backend (pin or eaik)")
     parser.add_argument('--ee-frame',
                         help="Override end-effector frame name (e.g. ee_link, Link_6)")
+    parser.add_argument('--use-robostudio-seed', action='store_true',
+                        help="Force use_robostudio_seed to true, overriding config")
     
     args = parser.parse_args()
     
@@ -502,7 +624,10 @@ def main():
         adaptive_scale = options.get('adaptive_scale', False)
         generate_fk_plots = options.get('generate_fk_plots', True)
         generate_ik_plots = options.get('generate_ik_plots', True)
+        use_robostudio_seed = options.get('use_robostudio_seed', True)
         solver_type = options.get('solver', 'pin')
+        generate_eaik_solutions_graph = options.get('generate_eaik_solutions_graph', True)
+        eaik_solutions_max_waypoints = options.get('eaik_solutions_max_waypoints', 20)
         
         print(f"Robot: {config['robot_name']}")
         
@@ -517,6 +642,8 @@ def main():
             adaptive_scale = True
         if args.solver:
             solver_type = args.solver
+        if args.use_robostudio_seed:
+            use_robostudio_seed = True
     else:
         # CLI mode
         if not args.urdf:
@@ -530,7 +657,10 @@ def main():
         adaptive_scale = args.adaptive_scale
         generate_fk_plots = True
         generate_ik_plots = True
+        use_robostudio_seed = True
         solver_type = args.solver or 'pin'
+        generate_eaik_solutions_graph = True
+        eaik_solutions_max_waypoints = 20
     
     # Load IK config for the chosen solver
     ik_config = load_ik_config_as_object(args.ik_config, solver=solver_type)
@@ -582,8 +712,9 @@ def main():
     for csv_file in valid_files:
         csv_output = Path(output_folder) / csv_file.stem
         result = process_single_csv(
-            str(csv_file), fk_solver, ik_solver, str(csv_output),
-            adaptive_scale, generate_fk_plots, generate_ik_plots
+            str(csv_file), fk_solver, ik_solver, robot_data, str(csv_output),
+            adaptive_scale, generate_fk_plots, generate_ik_plots, use_robostudio_seed,
+            generate_eaik_solutions_graph, eaik_solutions_max_waypoints
         )
         results.append(result)
     

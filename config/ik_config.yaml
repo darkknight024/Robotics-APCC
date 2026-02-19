@@ -33,9 +33,10 @@ ik_parameters:
   ee_frame_name: "ee_link"
 
   # =========================================================================
-  # EAIK-Specific Parameters (ignored when using Pinocchio)
-  # =========================================================================
-  # Solution selection strategy: "closest" (to previous config) or "min_norm"
+  # --- EAIK-specific parameters ---
+  # Solution selection strategy when multiple IK solutions exist:
+  #   "closest"  - Pick solution closest to q_init (best for trajectory continuity)
+  #   "min_norm" - Pick solution with smallest joint norm (best for neutral poses)
   solution_selection: "closest"
 
   # =========================================================================

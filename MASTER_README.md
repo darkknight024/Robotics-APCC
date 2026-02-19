@@ -290,6 +290,47 @@ python tests/test_toolpaths.py \
 
 ---
 
+### 4. **compare_solver_results.py** – Batched Solver Results Comparison
+
+Compares results from two solver runs (e.g., Pinocchio vs EAIK) across multiple batches.
+
+**Purpose:**
+- Compare Pinocchio and EAIK numerical/analytical accuracy directly against each other and RobotStudio ground truth.
+- Validate ground truth alignment across experiment batches.
+- Generate aggregate visual and statistical comparisons for whole experiments.
+
+**Features:**
+- Automatically matches batch subfolders between two solver result directories.
+- Visualizes FK positions, quaternions, and Euclidean errors.
+- Visualizes IK joint angles, joint errors, and solver success rates.
+- Generates detailed per-batch `batch_report.txt` and an overall `batch_summary.txt`.
+- Optional `--adaptive-scale` parameter for uniform or adaptive graph scaling.
+
+**Usage:**
+```bash
+python utils/compare_solver_results.py \
+    --pin-folder Robot_APCC/Results/Experiment_7/Pinocchio \
+    --eaik-folder Robot_APCC/Results/Experiment_7/EAIK \
+    --output Robot_APCC/Results/Experiment_7/Three_Solver_Comparison \
+```
+
+**Output:**
+```
+output_folder/
+├── batch_summary.txt            # Overall summary across all batches
+└── batch_name/                  # Subfolder per batch
+    ├── batch_report.txt         # Detailed report for this batch
+    ├── fk_positions.png
+    ├── fk_quaternions.png
+    ├── fk_error_comparison.png
+    ├── fk_error_distribution.png
+    ├── ik_joint_angles.png
+    ├── ik_joint_errors.png
+    └── ik_success_comparison.png
+```
+
+---
+
 ## Automated Experiments
 
 ### Overview
@@ -325,6 +366,18 @@ python tests/run_experiments.py --config tests/configs/experiments_config.yaml \
 # Dry run (print commands without executing)
 python tests/run_experiments.py --config tests/configs/experiments_config.yaml --dry-run
 ```
+
+### Benchmark Inverse Kinematics Compute Times
+
+A standalone script is included specifically to strictly time and benchmark Pinocchio versus EAIK solvers continuously across hundreds of waypoints. It measures isolated execution time in milliseconds and outputs comparison graphs (Total time, MS time/waypoint, and Descriptive Statistics).
+
+```bash
+python tests/timebenchmarking.py \
+    --input Robot_APCC/Experiments/Experiment_8/square_profile_trajectories_sampled \
+    --output Robot_APCC/Results/Experiment_8/Benchmarking \
+    --robot "IRB 1300-7/1.4"
+```
+
 
 ### Config: `tests/configs/experiments_config.yaml`
 
@@ -483,6 +536,7 @@ class BaseIKSolver(ABC):
 | **Reachability test** | `python tests/test_reachability.py --config tests/configs/test_reachability_config.yaml` |
 | **Toolpath validation** | `python tests/test_toolpaths.py --config config/toolpath_config.yaml` |
 | **Automated experiments** | `python tests/run_experiments.py --config tests/configs/experiments_config.yaml` |
+| **Time benchmark IK** | `python tests/timebenchmarking.py --input <csv_folder> --output <dir>` |
 
 | Config | Purpose |
 |--------|---------|

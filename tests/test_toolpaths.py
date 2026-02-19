@@ -190,6 +190,7 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
         n_waypoints = len(task.trajectory_t_b_p)
         computed_joints_rad = np.zeros((n_waypoints, 6))
         success_flags = np.zeros(n_waypoints, dtype=bool)
+        solve_methods = np.empty(n_waypoints, dtype=object)
         q_prev = None
         
         for i in range(n_waypoints):
@@ -198,6 +199,7 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
             
             success, q, info = ik_solver.solve_with_retries(pos, quat, q_prev)
             success_flags[i] = success
+            solve_methods[i] = info.get('solve_method', 'failed')
             
             if success:
                 computed_joints_rad[i] = q
@@ -213,9 +215,10 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
         out_path = Path(task.output_dir) / traj_name
         out_path.mkdir(parents=True, exist_ok=True)
         
-        # Save computed joints
+        # Save computed joints with success/method info
         if task.save_csv:
-            save_joints_csv(computed_joints_rad, str(out_path / "q_computed.csv"))
+            save_joints_csv(computed_joints_rad, success_flags, solve_methods,
+                            str(out_path / "raw_comparison.csv"))
         
         # Compare with reference
         ref_deg = np.degrees(task.reference_joints_rad)
@@ -249,10 +252,17 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
     return result
 
 
-def save_joints_csv(joint_positions_rad: np.ndarray, output_path: str) -> None:
-    """Save computed joint positions to CSV."""
+def save_joints_csv(
+    joint_positions_rad: np.ndarray,
+    success_flags: np.ndarray,
+    solve_methods: np.ndarray,
+    output_path: str
+) -> None:
+    """Save computed joint positions with IK status to CSV for benchmark comparison."""
     df = pd.DataFrame({
         'waypoint': np.arange(len(joint_positions_rad)),
+        'ik_success': success_flags,
+        'ik_solve_method': solve_methods,
         'j1_rad': joint_positions_rad[:, 0],
         'j2_rad': joint_positions_rad[:, 1],
         'j3_rad': joint_positions_rad[:, 2],

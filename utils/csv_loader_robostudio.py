@@ -55,6 +55,11 @@ def load_robostudio_full(csv_path: str) -> RobotStudioData:
     
     df = pd.read_csv(csv_path)
     
+    if 'is_reachable' in df.columns:
+        # Keep only reachable rows, ignoring False or string 'False'/'false'
+        reachable_mask = df['is_reachable'].isin([True, 'True', 'true'])
+        df = df[reachable_mask]
+    
     # Validate columns
     is_valid, error = _validate_columns(df, require_joints=True, require_tcp=True)
     if not is_valid:
@@ -97,6 +102,11 @@ def load_robostudio_joints_only(csv_path: str) -> Dict[str, np.ndarray]:
         raise FileNotFoundError(f"RobotStudio CSV not found: {csv_path}")
     
     df = pd.read_csv(csv_path)
+    
+    if 'is_reachable' in df.columns:
+        # Keep only reachable rows, ignoring False or string 'False'/'false'
+        reachable_mask = df['is_reachable'].isin([True, 'True', 'true'])
+        df = df[reachable_mask]
     
     # Validate columns
     is_valid, error = _validate_columns(df, require_joints=True, require_tcp=False)

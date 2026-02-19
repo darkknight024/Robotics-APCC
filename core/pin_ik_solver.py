@@ -224,6 +224,8 @@ class PinocchioIKSolver(BaseIKSolver):
             H = JW @ J + (lam**2) * np.eye(nv)
             g = JW @ e
             
+
+            
             try:
                 dq = np.linalg.solve(H, g)
             except np.linalg.LinAlgError:

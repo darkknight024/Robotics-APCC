@@ -42,7 +42,11 @@ from .generate_plot_ik import (
     plot_joint_deltas,
     plot_ik_success_failure,
     plot_ik_solve_methods,
-    plot_eaik_solve_outcome
+    plot_eaik_solve_outcome,
+    plot_joint_limits_violated_per_waypoint,
+    plot_joint_violation_graph,
+    plot_detailed_violation_debug,
+    plot_all_eaik_solutions
 )
 
 from .generate_plot_fk import (
@@ -138,6 +142,10 @@ __all__ = [
     'plot_ik_success_failure',
     'plot_ik_solve_methods',
     'plot_eaik_solve_outcome',
+    'plot_joint_limits_violated_per_waypoint',
+    'plot_joint_violation_graph',
+    'plot_detailed_violation_debug',
+    'plot_all_eaik_solutions',
     'plot_singularity_per_waypoint',
     'plot_reachability_per_waypoint',
     'plot_manipulability_per_waypoint',
