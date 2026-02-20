@@ -28,12 +28,16 @@ Output Structure:
 Usage:
     python combinatorial_search.py --config config/batch_feasibility_config.yaml
     python combinatorial_search.py --config config/batch_feasibility_config.yaml --output output/ranking --workers 8
+    python combinatorial_search.py --config config/batch_feasibility_config.yaml --solver eaik
+    python combinatorial_search.py --config config/batch_feasibility_config.yaml --feasibility_only
 
 Command-line Arguments:
     --config, -c    Path to batch feasibility config YAML (required)
     --output, -o    Base output directory (overrides config)
     --workers, -w   Number of parallel workers (default: 1)
     --knife-config  Path to knife poses YAML (default: config/sparse_generated_knife_poses.yaml)
+    --solver        IK solver backend: "pin" or "eaik" (overrides config)
+    --feasibility_only  IK feasibility check only (no ranking), outputs Feasibility-report.md
     --debug         Enable debug logging
     --detailed_per_trajectory_report  Generate detailed plots for each trajectory (default: only 4 aggregated plots)
 """
@@ -100,6 +104,7 @@ class FeasibilityTask:
     detailed_per_trajectory_report: bool = False
     skip_plots: bool = False
     max_ik_failures_per_trajectory: Optional[int] = None
+    feasibility_only: bool = False
 
 
 @dataclass
@@ -567,7 +572,7 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
             use_flat_output_structure=True,
             skip_plots=task.skip_plots,
-            level1_only=False,
+            level1_only=task.feasibility_only,
             max_ik_failures_per_trajectory=task.max_ik_failures_per_trajectory,
             solver_type=task.solver_type
         )
@@ -1689,7 +1694,8 @@ def _build_task_list(
     feas_config: Dict,
     detailed_per_trajectory_report: bool = False,
     skip_plots: bool = False,
-    solver_type: str = "pin"
+    solver_type: str = "pin",
+    feasibility_only: bool = False
 ) -> List[FeasibilityTask]:
     """
     Build list of tasks for all combinations.
@@ -1702,6 +1708,8 @@ def _build_task_list(
         feas_config: Feasibility configuration
         detailed_per_trajectory_report: Whether to generate detailed per-trajectory plots
         skip_plots: Whether to skip saving PNG plots
+        solver_type: IK solver backend ("pin" or "eaik")
+        feasibility_only: If True, only check IK feasibility (no continuity, no ranking)
         
     Returns:
         List of FeasibilityTask objects
@@ -1715,6 +1723,10 @@ def _build_task_list(
     continuity_config = feas_config.get('continuity', {})
     run_continuity = continuity_config.get('enabled', True)
     speed_mm_s = continuity_config.get('default_speed_mm_s', 100.0)
+    
+    if feasibility_only:
+        run_continuity = False
+        logger.info("Feasibility-only mode: C0/C1 continuity analysis disabled")
     
     # Get early termination parameter
     performance_config = feas_config.get('performance', {})
@@ -1772,7 +1784,8 @@ def _build_task_list(
                     save_analysis=False,
                     detailed_per_trajectory_report=detailed_per_trajectory_report,
                     skip_plots=skip_plots,
-                    max_ik_failures_per_trajectory=max_ik_failures
+                    max_ik_failures_per_trajectory=max_ik_failures,
+                    feasibility_only=feasibility_only
                 ))
     
     return tasks
@@ -2224,6 +2237,207 @@ def _print_summary(
 
 
 # =============================================================================
+# Feasibility-Only Mode: Report Generation
+# =============================================================================
+
+def generate_feasibility_report(
+    all_results: List[CombinationResult],
+    output_path: Path,
+    knife_poses: Dict[str, KnifePose],
+    toolpath_files: List[Path],
+    solver_type: str
+) -> None:
+    """
+    Generate Feasibility-report.md for feasibility_only mode.
+    
+    Aggregates IK feasibility across toolpaths for each (robot, knife_pose) combination.
+    A combination is marked feasible only if every waypoint of every toolpath is IK solvable.
+    
+    Args:
+        all_results: List of all CombinationResult objects
+        output_path: Path to write Feasibility-report.md
+        knife_poses: Dictionary of knife poses
+        toolpath_files: List of toolpath file paths
+        solver_type: IK solver backend used ("pin" or "eaik")
+    """
+    # Collect unique robots and knife poses
+    robot_names = sorted(set(r.robot_name for r in all_results))
+    knife_pose_ids = sorted(set(r.knife_pose_id for r in all_results))
+    toolpath_names = sorted(set(r.toolpath_name for r in all_results))
+    
+    # Aggregate per (robot, knife_pose) across all toolpaths
+    combo_stats: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    
+    for r in all_results:
+        key = (r.robot_name, r.knife_pose_id)
+        if key not in combo_stats:
+            combo_stats[key] = {
+                'total_waypoints': 0,
+                'reachable_waypoints': 0,
+                'all_toolpaths_success': True,
+            }
+        
+        stats = combo_stats[key]
+        
+        if not r.success:
+            stats['all_toolpaths_success'] = False
+            continue
+        
+        for tm in r.trajectory_metrics:
+            stats['total_waypoints'] += tm.num_waypoints
+            stats['reachable_waypoints'] += tm.reachable_count
+    
+    # Build sorted rows: (robot, knife, rate, verdict)
+    rows = []
+    for (robot_name, knife_id), stats in sorted(combo_stats.items()):
+        total_wp = stats['total_waypoints']
+        reachable_wp = stats['reachable_waypoints']
+        
+        if total_wp > 0:
+            rate_pct = (reachable_wp / total_wp) * 100.0
+        else:
+            rate_pct = 0.0
+        
+        is_feasible = stats['all_toolpaths_success'] and (rate_pct == 100.0)
+        verdict = "Yes" if is_feasible else "No"
+        
+        rows.append({
+            'robot': robot_name,
+            'knife': knife_id,
+            'rate': rate_pct,
+            'verdict': verdict,
+            'total_wp': total_wp,
+            'reachable_wp': reachable_wp,
+        })
+    
+    feasible_count = sum(1 for r in rows if r['verdict'] == "Yes")
+    infeasible_count = len(rows) - feasible_count
+    
+    lines = []
+    lines.append("# IK Feasibility Report")
+    lines.append("")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+    lines.append("## Analysis Summary")
+    lines.append("")
+    lines.append(f"- **Robot Models**: {len(robot_names)}")
+    lines.append(f"- **Knife Poses**: {len(knife_pose_ids)}")
+    lines.append(f"- **Toolpaths**: {len(toolpath_names)}")
+    lines.append(f"- **Total Combinations (Robot x Knife Pose)**: {len(rows)}")
+    lines.append(f"- **IK Solver**: {solver_type}")
+    lines.append(f"- **Mode**: Feasibility-only (IK reachability per waypoint, no continuity or ranking)")
+    lines.append("")
+    
+    lines.append("### Robot Models Used")
+    for rn in robot_names:
+        lines.append(f"- {rn}")
+    lines.append("")
+    
+    lines.append("### Knife Poses Used")
+    for kp in knife_pose_ids:
+        lines.append(f"- {kp}")
+    lines.append("")
+    
+    lines.append("### Toolpaths Used")
+    for tn in toolpath_names:
+        lines.append(f"- {tn}")
+    lines.append("")
+    
+    # Sort rows by IK feasibility rate descending (feasible combinations on top)
+    rows.sort(key=lambda r: (-r['rate'], r['robot'], r['knife']))
+    
+    lines.append("## Feasibility Results")
+    lines.append("")
+    lines.append("| # | Robot Model | Knife Pose | IK Feasibility Rate (%) | Verdict |")
+    lines.append("|---|-------------|------------|-------------------------|---------|")
+    
+    for idx, row in enumerate(rows, 1):
+        lines.append(
+            f"| {idx} | {row['robot']} | {row['knife']} | "
+            f"{row['rate']:.2f}% | {row['verdict']} |"
+        )
+    
+    lines.append("")
+    lines.append("## Summary Statistics")
+    lines.append("")
+    lines.append(f"- **Feasible Combinations**: {feasible_count} out of {len(rows)} "
+                 f"({100.0 * feasible_count / len(rows):.1f}%)" if rows else "- **Feasible Combinations**: 0")
+    lines.append(f"- **Infeasible Combinations**: {infeasible_count} out of {len(rows)} "
+                 f"({100.0 * infeasible_count / len(rows):.1f}%)" if rows else "- **Infeasible Combinations**: 0")
+    lines.append("")
+    
+    # Per-robot breakdown
+    lines.append("## Per-Robot Breakdown")
+    lines.append("")
+    for rn in robot_names:
+        robot_rows = [r for r in rows if r['robot'] == rn]
+        robot_feasible = sum(1 for r in robot_rows if r['verdict'] == "Yes")
+        lines.append(f"### {rn}")
+        lines.append(f"- Knife poses evaluated: {len(robot_rows)}")
+        lines.append(f"- Feasible: {robot_feasible} / {len(robot_rows)}")
+        if robot_rows:
+            best_row = max(robot_rows, key=lambda r: r['rate'])
+            lines.append(f"- Best IK rate: {best_row['rate']:.2f}% ({best_row['knife']})")
+        lines.append("")
+    
+    lines.append("---")
+    lines.append("")
+    lines.append("> **Note**: A combination is marked **feasible** only if 100% of waypoints across "
+                 "all toolpaths are IK solvable. This report does NOT evaluate continuity (C0/C1), "
+                 "singularity proximity, manipulability, or any ranking metrics.")
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    
+    logger.info(f"Saved feasibility report: {output_path}")
+
+
+def _print_feasibility_only_summary(
+    all_results: List[CombinationResult],
+    output_dir: Path,
+    toolpath_files: List[Path],
+    solver_type: str
+) -> None:
+    """
+    Print console summary for feasibility-only mode.
+    
+    Args:
+        all_results: List of all combination results
+        output_dir: Output directory
+        toolpath_files: List of toolpath file paths
+        solver_type: IK solver backend used
+    """
+    robot_names = sorted(set(r.robot_name for r in all_results))
+    knife_pose_ids = sorted(set(r.knife_pose_id for r in all_results))
+    
+    # Count unique (robot, knife) combinations and their feasibility
+    combo_feasibility: Dict[Tuple[str, str], bool] = {}
+    for r in all_results:
+        key = (r.robot_name, r.knife_pose_id)
+        if key not in combo_feasibility:
+            combo_feasibility[key] = True
+        if not r.success or r.max_ik_failure_rate > 0.0:
+            combo_feasibility[key] = False
+    
+    feasible = sum(1 for v in combo_feasibility.values() if v)
+    total = len(combo_feasibility)
+    
+    print("\n" + "=" * 80)
+    print("IK FEASIBILITY CHECK COMPLETE")
+    print("=" * 80)
+    print(f"MODE: Feasibility-only (no ranking)")
+    print(f"SOLVER: {solver_type}")
+    print(f"ROBOTS: {len(robot_names)}")
+    print(f"KNIFE POSES: {len(knife_pose_ids)}")
+    print(f"TOOLPATHS: {len(toolpath_files)}")
+    print(f"COMBINATIONS (Robot x Knife): {total}")
+    print(f"FEASIBLE: {feasible} / {total} ({100.0 * feasible / total:.1f}%)" if total > 0 else "FEASIBLE: 0 / 0")
+    print(f"OUTPUT: {output_dir}")
+    print(f"REPORT: {output_dir / 'Feasibility-report.md'}")
+    print("=" * 80)
+
+
+# =============================================================================
 # Main Processing Function (Refactored)
 # =============================================================================
 
@@ -2233,7 +2447,9 @@ def process_ranking_batch(
     num_workers: int = 1,
     knife_config_path: str = None,
     detailed_per_trajectory_report: bool = False,
-    skip_plots: bool = False
+    skip_plots: bool = False,
+    solver_type_override: str = None,
+    feasibility_only: bool = False
 ) -> Dict[str, Any]:
     """
     Run feasibility ranking on all combinations.
@@ -2248,6 +2464,8 @@ def process_ranking_batch(
         knife_config_path: Path to knife poses YAML
         detailed_per_trajectory_report: Whether to generate detailed per-trajectory plots
         skip_plots: Whether to skip saving PNG plots
+        solver_type_override: CLI override for solver type ("pin" or "eaik"); None = use config
+        feasibility_only: If True, only check IK feasibility (skip ranking, generate Feasibility-report.md)
         
     Returns:
         Dictionary with batch results
@@ -2263,24 +2481,57 @@ def process_ranking_batch(
     # Step 3: Find toolpath files
     toolpath_files = _find_toolpath_files(config)
     
-    # Step 4: Build task list
-    solver_type = config.get('solver', 'pin')
-    tasks = _build_task_list(config, knife_poses, toolpath_files, output_dir, feas_config, detailed_per_trajectory_report, skip_plots, solver_type=solver_type)
+    # Step 4: Resolve solver type (CLI override > config > default)
+    solver_type = solver_type_override or config.get('solver', 'pin')
+    logger.info(f"IK solver backend: {solver_type}")
     
-    # Step 5: Execute tasks
+    if feasibility_only:
+        logger.info("MODE: Feasibility-only (IK reachability check, no ranking)")
+    
+    # Step 5: Build task list
+    tasks = _build_task_list(
+        config, knife_poses, toolpath_files, output_dir, feas_config,
+        detailed_per_trajectory_report, skip_plots,
+        solver_type=solver_type, feasibility_only=feasibility_only
+    )
+    
+    # Step 6: Execute tasks
     logger.info(f"Prepared {len(tasks)} analysis tasks")
     
     if len(tasks) == 0:
         logger.warning("No tasks to process!")
         return {'total_combinations': 0, 'successful': 0, 'failed': 0, 'results': []}
     
-    # Execute tasks
     all_results = _execute_tasks(tasks, num_workers)
     
-    # Step 6: Organize results by robot
+    # =========================================================================
+    # Feasibility-only mode: generate report and return early
+    # =========================================================================
+    if feasibility_only:
+        report_path = output_dir / "Feasibility-report.md"
+        generate_feasibility_report(
+            all_results, report_path, knife_poses, toolpath_files, solver_type
+        )
+        _print_feasibility_only_summary(all_results, output_dir, toolpath_files, solver_type)
+        
+        successful_count = sum(1 for r in all_results if r.success)
+        return {
+            'total_combinations': len(all_results),
+            'successful': successful_count,
+            'failed': len(all_results) - successful_count,
+            'results': all_results,
+            'output_dir': str(output_dir),
+            'feasibility_only': True,
+        }
+    
+    # =========================================================================
+    # Full ranking mode (existing pipeline)
+    # =========================================================================
+    
+    # Step 7: Organize results by robot
     results_by_robot = _organize_results_by_robot(all_results)
     
-    # Step 7: Process each robot (aggregate, rank, save)
+    # Step 8: Process each robot (aggregate, rank, save)
     all_robot_results: Dict[str, List[AggregatedKnifePoseResult]] = {}
     
     for robot_name, knife_results in results_by_robot.items():
@@ -2289,10 +2540,10 @@ def process_ranking_batch(
         )
         all_robot_results[robot_name] = aggregated_list
     
-    # Step 8: Save global outputs and get robot rankings
+    # Step 9: Save global outputs and get robot rankings
     robot_rankings = _save_all_outputs(all_robot_results, all_results, output_dir, knife_poses)
     
-    # Step 9: Print summary
+    # Step 10: Print summary
     _print_summary(all_results, all_robot_results, robot_rankings, output_dir)
     
     # Compute final statistics
@@ -2305,8 +2556,8 @@ def process_ranking_batch(
         'failed': failed_count,
         'results': all_results,
         'robot_results': all_robot_results,
-        'robot_rankings': robot_rankings,  # NEW: Robot-level rankings
-        'output_dir': str(output_dir),  # Return the actual output directory path
+        'robot_rankings': robot_rankings,
+        'output_dir': str(output_dir),
     }
 
 
@@ -2449,6 +2700,10 @@ def main():
                         help="Generate detailed plots for each trajectory (default: only 4 aggregated plots)")
     parser.add_argument('--plots', action='store_true',
                         help="Enable saving PNG plots (default: disabled)")
+    parser.add_argument('--solver', choices=['pin', 'eaik'], default=None,
+                        help="IK solver backend: 'pin' (Pinocchio) or 'eaik' (EAIK analytical). Overrides config file.")
+    parser.add_argument('--feasibility_only', action='store_true',
+                        help="Run IK feasibility check only (no ranking). Produces Feasibility-report.md.")
     
     args = parser.parse_args()
     
@@ -2473,14 +2728,16 @@ def main():
             num_workers=args.workers,
             knife_config_path=args.knife_config,
             detailed_per_trajectory_report=args.detailed_per_trajectory_report,
-            skip_plots=not args.plots
+            skip_plots=not args.plots,
+            solver_type_override=args.solver,
+            feasibility_only=args.feasibility_only
         )
         
-        # Validate outputs
-        print("\nValidating outputs...")
-        # Use the actual output directory from the result
-        actual_output_dir = result.get('output_dir', args.output)
-        validate_ranking_outputs(actual_output_dir)
+        # Validate outputs (skip in feasibility_only mode — different output structure)
+        if not args.feasibility_only:
+            print("\nValidating outputs...")
+            actual_output_dir = result.get('output_dir', args.output)
+            validate_ranking_outputs(actual_output_dir)
         
     except Exception as e:
         logger.exception(f"Batch processing failed: {e}")

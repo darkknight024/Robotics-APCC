@@ -33,6 +33,14 @@ python combinatorial_search.py --config config/combinatorial_search_config.yaml
 # With parallel workers (recommended: 4–8)
 python combinatorial_search.py --config config/combinatorial_search_config.yaml --workers 8
 
+# Choose IK solver (overrides config file)
+python combinatorial_search.py --config config/combinatorial_search_config.yaml --solver eaik
+python combinatorial_search.py --config config/combinatorial_search_config.yaml --solver pin
+
+# Feasibility-only mode: IK reachability check only (no ranking, no continuity)
+python combinatorial_search.py --config config/combinatorial_search_config.yaml --feasibility_only
+python combinatorial_search.py --config config/combinatorial_search_config.yaml --feasibility_only --solver eaik
+
 # Custom output
 python combinatorial_search.py --config config/combinatorial_search_config.yaml --output output/ranking
 
@@ -60,6 +68,8 @@ python combinatorial_search.py --config config/combinatorial_search_config.yaml 
 | `--output`, `-o` | output/feasibility_ranking | Output directory |
 | `--workers`, `-w` | 1 | Parallel workers |
 | `--knife-config` | sparse_generated_knife_poses.yaml | Knife poses YAML |
+| `--solver` | From config (default: `pin`) | IK solver: `pin` (Pinocchio) or `eaik` (EAIK analytical). Overrides config file. |
+| `--feasibility_only` | False | IK feasibility check only (no ranking). Outputs `Feasibility-report.md`. |
 | `--debug` | False | Enable debug logging |
 | `--validate` | False | Only validate existing outputs |
 | `--detailed_per_trajectory_report` | False | Per-trajectory plots |
@@ -179,6 +189,44 @@ output/feasibility_ranking/<HH_MM_SS>/
 | `robot_ranking.csv` | One row per robot (best knife pose) for cross-robot comparison |
 | `batch_ranking_summary.json` | Run summary: counts, timestamps, top poses |
 | `feasibility_ranking_report.md` | Text report with top/bottom poses and failure analysis |
+
+---
+
+## IK Solver Selection
+
+The `--solver` CLI flag selects which IK backend to use. It overrides the `solver` field in the config YAML.
+
+| Solver | Backend | Description |
+|--------|---------|-------------|
+| `pin` | Pinocchio | Numerical damped least-squares IK with multi-strategy retries |
+| `eaik` | EAIK | Analytical IK returning all solutions, filtered by joint limits |
+
+Both solvers implement the same `BaseIKSolver` / `BaseFKSolver` interfaces. All downstream metrics (manipulability, singularity proximity, condition number, smoothness, dexterity) are computed from the solver-provided Jacobian and joint solutions, so results are comparable across backends.
+
+---
+
+## Feasibility-Only Mode (`--feasibility_only`)
+
+When `--feasibility_only` is set, the script runs a lightweight IK reachability check instead of the full 4-level ranking pipeline:
+
+- **What it checks**: Whether each waypoint in every toolpath is individually IK solvable for each (robot, knife pose) combination.
+- **What it skips**: C0/C1 continuity analysis, Level 2–4 scoring (safety tier, smoothness, dexterity), ranking, and weighted scoring.
+- **Verdict**: A combination is **feasible** (`Yes`) only if 100% of waypoints across all toolpaths are IK reachable. Even one failed waypoint marks it as **infeasible** (`No`).
+
+### Output
+
+Instead of the full ranking output, feasibility-only mode produces a single report:
+
+```
+output/feasibility_ranking/<timestamp>/
+└── Feasibility-report.md
+```
+
+The report contains:
+- Total robot models, knife poses, toolpaths, and combinations
+- IK solver used
+- A table of every (robot, knife pose) combination with IK feasibility rate and verdict
+- Per-robot breakdown with best IK rate
 
 ---
 

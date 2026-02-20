@@ -45,6 +45,14 @@ class EAIKIKSolver(BaseIKSolver):
     def solver_name(self) -> str:
         return "EAIK"
 
+    # FK verification tolerance for least-squares solutions.
+    # EAIK flags solutions as LS when the target is not exactly reachable.
+    # We allow LS solutions only if their FK error is within this tolerance,
+    # which handles numerical edge cases at the workspace boundary.
+    # All IK/FK operates in meters (toolpath mm → m in csv_loader, knife mm → m in config_loader).
+    LS_POSITION_TOL_M = 1e-3              # 1 mm
+    LS_ROTATION_TOL_RAD = np.deg2rad(1)   # 1 deg
+
     def solve(
         self,
         target_position: np.ndarray,
@@ -56,6 +64,10 @@ class EAIKIKSolver(BaseIKSolver):
 
         EAIK returns all analytical solutions. Solutions are filtered by joint
         limits and then the best is selected based on the configured strategy.
+
+        Least-squares (approximate) solutions are rejected unless their FK error
+        is within tolerance, which catches unreachable targets that EAIK would
+        otherwise report as solvable.
         """
         rotation = self._quat_to_rotation(target_quaternion)
         target_pose_ee = np.eye(4)
@@ -112,9 +124,30 @@ class EAIKIKSolver(BaseIKSolver):
             best_idx = self._select_min_norm(valid_solutions)
 
         selected_q = valid_solutions[best_idx]
+
+        # ------------------------------------------------------------------
+        # LS guard: when EAIK flags the result as least-squares, the target
+        # may not be exactly reachable.  Verify with FK before accepting.
+        # ------------------------------------------------------------------
+        if is_ls:
+            fk_pose = self.robot_model.eaik_robot.fwdkin(selected_q) @ ee_T
+            pos_err = float(np.linalg.norm(fk_pose[:3, 3] - target_pose_ee[:3, 3]))
+            R_err = fk_pose[:3, :3].T @ target_pose_ee[:3, :3]
+            rot_err = float(np.arccos(np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)))
+
+            info['ls_position_error_m'] = pos_err
+            info['ls_rotation_error_rad'] = rot_err
+
+            if pos_err > self.LS_POSITION_TOL_M or rot_err > self.LS_ROTATION_TOL_RAD:
+                info['reason'] = 'ls_fk_error_too_large'
+                info['solve_method'] = 'ls_rejected'
+                info['converged'] = False
+                return False, selected_q, info
+
+            info['reason'] = 'converged_ls_verified'
+
         info['selected_index'] = best_idx
         info['converged'] = True
-        info['reason'] = 'converged'
         info['solve_method'] = 'converged'
 
         return True, selected_q, info

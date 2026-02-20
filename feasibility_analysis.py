@@ -712,14 +712,23 @@ def process_toolpath(
         # ---------------------------------------------------------------------
         feasibility_flags = traj_result.get('feasibility_flags', {})
         
-        # Level 1: Feasibility Gate (IK 100%, C0 and C1 continuity)
-        level1_valid = all(feasibility_flags.values())
+        if level1_only:
+            # Feasibility-only: only IK reachability matters (skip C0/C1)
+            level1_valid = feasibility_flags.get('reachability_ok', False)
+            print(f"    IK Feasibility: {'PASS' if level1_valid else 'FAIL'} "
+                  f"(reachability: {feasibility_flags.get('reachability_ok', False)})")
+        else:
+            # Full Level 1: IK 100% + C0 + C1 continuity
+            level1_valid = all(feasibility_flags.values())
+            print(f"    Level 1 (Feasibility Gate): {'VALID' if level1_valid else 'INVALID'} "
+                  f"(reachability: {feasibility_flags.get('reachability_ok', False)}, "
+                  f"C0: {feasibility_flags.get('c0_ok', False)}, C1: {feasibility_flags.get('c1_ok', False)})")
         
         # Level 2-4: Only computed when level1_only=False
         safety_tier = 0
         smoothness_cost = 0.0
         dexterity_score = 0.0
-        max_condition_number = np.inf  # For traj_data['safety_score'] when level1_only
+        max_condition_number = np.inf
         if not level1_only:
             # Level 2: Safety Tier
             max_condition_number = traj_result.get('safety_score', traj_result.get('max_condition_number', np.inf))
@@ -737,9 +746,6 @@ def process_toolpath(
             # Level 4: Dexterity Score
             dexterity_score = traj_result.get('dexterity_score', 0.0)
         
-        print(f"    Level 1 (Feasibility Gate): {'VALID' if level1_valid else 'INVALID'} "
-              f"(reachability: {feasibility_flags.get('reachability_ok', False)}, "
-              f"C0: {feasibility_flags.get('c0_ok', False)}, C1: {feasibility_flags.get('c1_ok', False)})")
         if not level1_only:
             print(f"    Level 2 (Safety Tier): Tier {safety_tier}")
             print(f"    Level 3 (Smoothness Cost): {smoothness_cost:.4f}")
