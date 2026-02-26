@@ -11,17 +11,20 @@ Each trajectory is in T_P_K frame and gets converted to base frame via knife pos
 Output Structure:
     output_folder/
     └── <robot_name>/
-        └── <knife_name>/
+        └── <knife_name>/          (omitted when using --base_frame)
             └── <toolpath_name>/
                 ├── reachability_per_waypoint_T1.png
-                ├── reachability_per_waypoint_T2.png
                 ├── ...
                 └── reachability_rate_per_trajectory.png
     └── reachability_analysis.txt
 
+With --base_frame: toolpath CSV is already in robot base frame; knife pose is not loaded or used;
+output is output_folder/<robot_name>/<toolpath_name>/ (no knife level).
+
 Usage:
     python tests/test_reachability.py
     python tests/test_reachability.py --config tests/configs/reachability_config.yaml
+    python tests/test_reachability.py --base_frame   # toolpath in base frame; no knife pose
 """
 
 import argparse
@@ -409,9 +412,7 @@ def generate_report(all_results: List[ToolpathResult], output_path: Path) -> Non
             lines.append(f"  {flag} Trajectory {t.trajectory_index}: "
                           f"{t.reachable_count}/{t.num_waypoints} ({t.reachability_pct:.1f}%)")
             if not t.is_fully_reachable:
-                wp_str = ", ".join(str(w) for w in t.unreachable_waypoints[:20])
-                if len(t.unreachable_waypoints) > 20:
-                    wp_str += f" ... (+{len(t.unreachable_waypoints) - 20} more)"
+                wp_str = ", ".join(str(w) for w in t.unreachable_waypoints)
                 lines.append(f"    Unreachable waypoints: [{wp_str}]")
         lines.append("")
 
@@ -431,15 +432,18 @@ def generate_report(all_results: List[ToolpathResult], output_path: Path) -> Non
 def process_combination(
     robot_name: str,
     urdf_path: str,
-    knife_name: str,
-    knife_translation_m: np.ndarray,
-    knife_quaternion: np.ndarray,
     toolpath_path: str,
     output_dir: Path,
     solver_type: str = "pin",
-    ee_frame_override: str = None
+    ee_frame_override: str = None,
+    use_base_frame: bool = False,
+    knife_name: Optional[str] = None,
+    knife_translation_m: Optional[np.ndarray] = None,
+    knife_quaternion: Optional[np.ndarray] = None
 ) -> ToolpathResult:
-    """Process one robot/knife/toolpath combination."""
+    """Process one robot/toolpath combination (optionally with knife pose when not base_frame)."""
+    if not use_base_frame and (knife_name is None or knife_translation_m is None or knife_quaternion is None):
+        raise ValueError("knife_name, knife_translation_m, knife_quaternion required when use_base_frame is False")
     toolpath_name = Path(toolpath_path).stem
     print(f"\n  Toolpath: {toolpath_name}")
 
@@ -453,19 +457,23 @@ def process_combination(
     )
 
     use_robostudio_seed = ik_config.use_robostudio_seed if hasattr(ik_config, 'use_robostudio_seed') else False
-    
-    # Load and transform trajectories
+
+    # Load trajectories; if --base_frame: treat CSV as already in robot base frame (no knife)
     trajectories_t_p_k, speeds = load_toolpath_trajectories(toolpath_path)
-    trajectories_t_b_p = transform_trajectories_to_base_frame(
-        trajectories_t_p_k, knife_translation_m, knife_quaternion
-    )
+    if use_base_frame:
+        trajectories_t_b_p = trajectories_t_p_k
+    else:
+        trajectories_t_b_p = transform_trajectories_to_base_frame(
+            trajectories_t_p_k, knife_translation_m, knife_quaternion
+        )
 
     print(f"    Loaded {len(trajectories_t_b_p)} trajectory(ies)")
 
+    display_knife = "—" if use_base_frame else knife_name
     result = ToolpathResult(
         toolpath_name=toolpath_name,
         robot_name=robot_name,
-        knife_name=knife_name
+        knife_name=display_knife
     )
 
     # Create output dir for plots
@@ -494,7 +502,7 @@ def process_combination(
         plot_reachability_per_waypoint(
             traj_result.reachable_flags,
             str(combo_output / f"reachability_per_waypoint_T{traj_num}.png"),
-            title=f"Reachability — {toolpath_name} — T{traj_num}\n{robot_name} / {knife_name}"
+            title=f"Reachability — {toolpath_name} — T{traj_num}\n{robot_name}" + (f" / {display_knife}" if not use_base_frame else "")
         )
 
         # IK success/failure plot
@@ -550,7 +558,7 @@ def process_combination(
         plot_reachability_rate_per_trajectory(
             traj_dicts,
             str(combo_output / "reachability_rate_per_trajectory.png"),
-            title=f"Reachability Rate — {toolpath_name}\n{robot_name} / {knife_name}"
+            title=f"Reachability Rate — {toolpath_name}\n{robot_name}" + (f" / {display_knife}" if not use_base_frame else "")
         )
 
     status = "VALID" if result.is_valid else "INVALID"
@@ -572,12 +580,16 @@ def main():
     parser.add_argument('--output', '-o', help="Override output directory")
     parser.add_argument('--solver', choices=['pin', 'eaik'], help="Override solver backend")
     parser.add_argument('--ee-frame', help="Override end-effector frame name")
+    parser.add_argument('--base_frame', action='store_true',
+                        help="Toolpath CSV is already in robot base frame; skip knife transform")
     args = parser.parse_args()
 
     # Load config
     print(f"Loading config: {args.config}")
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+
+    use_base_frame = args.base_frame
 
     # Resolve robots from central config
     robots_db = load_robots_config()
@@ -606,13 +618,16 @@ def main():
         print("ERROR: No valid robots configured")
         sys.exit(1)
 
-    # Load knife config
-    knife_config_path = str(Path(__file__).parent.parent / "config" / "knife_config.yaml")
-    knife_poses = load_knife_config(knife_config_path)
-    if args.knife_pose:
-        knife_names = [args.knife_pose]
-    else:
-        knife_names = config.get('knife_poses_to_use', [])
+    # Load knife config only when not in base_frame mode (knife pose irrelevant then)
+    knife_poses = {}
+    knife_names: List[str] = []
+    if not use_base_frame:
+        knife_config_path = str(Path(__file__).parent.parent / "config" / "knife_config.yaml")
+        knife_poses = load_knife_config(knife_config_path)
+        if args.knife_pose:
+            knife_names = [args.knife_pose]
+        else:
+            knife_names = config.get('knife_poses_to_use', [])
 
     # Discover toolpath files
     if args.toolpaths_folder:
@@ -632,10 +647,13 @@ def main():
     ee_frame_override = args.ee_frame
 
     print(f"\nSolver:     {solver_type}")
+    if use_base_frame:
+        print("Base frame: toolpaths used as-is (no knife pose)")
     print(f"Robots:     {len(robots)}")
-    print(f"Knives:     {len(knife_names)}")
+    if not use_base_frame:
+        print(f"Knives:     {len(knife_names)}")
     print(f"Toolpaths:  {len(toolpath_files)}")
-    total_combos = len(robots) * len(knife_names) * len(toolpath_files)
+    total_combos = len(robots) * len(toolpath_files) if use_base_frame else len(robots) * len(knife_names) * len(toolpath_files)
     print(f"Total Combinations: {total_combos}")
 
     if total_combos == 0:
@@ -652,32 +670,49 @@ def main():
         print(f"ROBOT: {robot.name}")
         print(f"{'='*60}")
 
-        for knife_name in knife_names:
-            if knife_name not in knife_poses:
-                print(f"  Warning: Knife pose '{knife_name}' not found, skipping")
-                continue
-
-            knife = knife_poses[knife_name]
-            print(f"\n  Knife: {knife_name}")
-
-            robot_knife_output = output_dir / robot_name_clean / knife_name
-
+        if use_base_frame:
+            robot_output = output_dir / robot_name_clean
             for toolpath_file in toolpath_files:
                 combo_count += 1
                 print(f"\n  [{combo_count}/{total_combos}]", end="")
-
                 result = process_combination(
                     robot_name=robot.name,
                     urdf_path=robot.urdf_path,
-                    knife_translation_m=knife.translation_m,
-                    knife_quaternion=knife.quaternion,
                     toolpath_path=str(toolpath_file),
-                    knife_name=knife_name,
-                    output_dir=robot_knife_output,
+                    output_dir=robot_output,
                     solver_type=solver_type,
-                    ee_frame_override=ee_frame_override
+                    ee_frame_override=ee_frame_override,
+                    use_base_frame=True
                 )
                 all_results.append(result)
+        else:
+            for knife_name in knife_names:
+                if knife_name not in knife_poses:
+                    print(f"  Warning: Knife pose '{knife_name}' not found, skipping")
+                    continue
+
+                knife = knife_poses[knife_name]
+                print(f"\n  Knife: {knife_name}")
+
+                robot_knife_output = output_dir / robot_name_clean / knife_name
+
+                for toolpath_file in toolpath_files:
+                    combo_count += 1
+                    print(f"\n  [{combo_count}/{total_combos}]", end="")
+
+                    result = process_combination(
+                        robot_name=robot.name,
+                        urdf_path=robot.urdf_path,
+                        toolpath_path=str(toolpath_file),
+                        output_dir=robot_knife_output,
+                        solver_type=solver_type,
+                        ee_frame_override=ee_frame_override,
+                        use_base_frame=False,
+                        knife_name=knife_name,
+                        knife_translation_m=knife.translation_m,
+                        knife_quaternion=knife.quaternion
+                    )
+                    all_results.append(result)
 
     # Generate report
     report_path = output_dir / "reachability_analysis.txt"
