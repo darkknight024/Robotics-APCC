@@ -39,6 +39,12 @@ ik_parameters:
   #   "min_norm" - Pick solution with smallest joint norm (best for neutral poses)
   solution_selection: "closest"
 
+  # FK verification tolerances — after EAIK finds candidate IK solutions,
+  # each one is forward-kinematically verified against the original target.
+  # Solutions whose FK pose exceeds these thresholds are rejected.
+  fk_pos_tolerance_m: 1.0e-3     # 1 mm position tolerance
+  fk_rot_tolerance_deg: 0.02     # 0.02 degrees orientation tolerance
+
   # =========================================================================
   # IK Initialization Strategies
   # =========================================================================

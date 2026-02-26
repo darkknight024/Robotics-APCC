@@ -7,7 +7,7 @@ Uses analytical subproblem decomposition for exact, multi-solution IK.
 """
 
 import numpy as np
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from dataclasses import dataclass
 
 from core.base_solvers import BaseIKSolver, BaseIKConfig
@@ -21,6 +21,12 @@ class EAIKConfig(BaseIKConfig):
     Only end-effector frame name and solution selection strategy are needed.
     """
     solution_selection: str = "closest"  # "closest" | "min_norm"
+
+    # FK verification tolerances — every candidate IK solution is forward-
+    # kinematically verified against the original target.  Solutions whose
+    # FK pose exceeds these thresholds are rejected.
+    fk_pos_tolerance_m: float = 1e-3      # 1 mm
+    fk_rot_tolerance_deg: float = 0.02    # 0.02 degrees
 
 
 class EAIKIKSolver(BaseIKSolver):
@@ -54,9 +60,11 @@ class EAIKIKSolver(BaseIKSolver):
         """
         Solve IK for a single target pose.
 
-        EAIK returns all analytical solutions. Solutions are filtered by joint
-        limits and then the best is selected based on the configured strategy.
-
+        EAIK returns all analytical solutions.  Each solution is:
+          1. Angle-normalised to fall within URDF joint limits.
+          2. Checked against joint limits.
+          3. FK-verified against the original Cartesian target.
+        The best passing solution is returned.
         """
         rotation = self._quat_to_rotation(target_quaternion)
         target_pose_ee = np.eye(4)
@@ -74,7 +82,7 @@ class EAIKIKSolver(BaseIKSolver):
         is_ls_raw = ik_result.is_LS
         n_sol = ik_result.num_solutions()
 
-        info = {
+        info: Dict[str, Any] = {
             'n_solutions': n_sol,
             'n_valid': 0,
             'is_ls': False,
@@ -83,7 +91,8 @@ class EAIKIKSolver(BaseIKSolver):
             'reason': None,
             'solve_method': None,
             'violated_joints': None,
-            'all_solutions': []
+            'all_solutions': [],
+            'fk_errors': [],
         }
 
         if n_sol == 0:
@@ -91,45 +100,41 @@ class EAIKIKSolver(BaseIKSolver):
             info['solve_method'] = 'no_solution'
             return False, np.zeros(self.n_joints), info
 
-        exact_sols = []
-        ls_sols = []
-        
-        info['all_solutions'] = [Q[i, :] for i in range(n_sol)]
+        # --- Phase 1: normalise raw EAIK angles into URDF joint ranges ---
+        raw_solutions = [Q[i, :] for i in range(n_sol)]
+        normalized_solutions = [self._normalize_to_joint_limits(s) for s in raw_solutions]
+        info['all_solutions'] = normalized_solutions
+
+        # --- Phase 2: classify exact vs least-squares ---
+        exact_sols: List[np.ndarray] = []
+        ls_sols: List[np.ndarray] = []
 
         for i in range(n_sol):
             if hasattr(is_ls_raw, '__len__'):
                 is_this_ls = bool(is_ls_raw[i])
             else:
                 is_this_ls = bool(is_ls_raw)
-            
+
+            sol = normalized_solutions[i]
             if is_this_ls:
-                ls_sols.append(Q[i, :])
+                ls_sols.append(sol)
             else:
-                exact_sols.append(Q[i, :])
+                exact_sols.append(sol)
 
-        # Find within-limit valid solutions starting ONLY from exact solutions
-        valid_exact = []
-        for q in exact_sols:
-            if self._within_joint_limits(q):
-                valid_exact.append(q)
-
+        # --- Phase 3: filter by joint limits, then FK-verify ---
+        valid_exact = self._filter_valid(exact_sols, target_position, rotation, info)
         info['n_valid'] = len(valid_exact)
 
-        # Case 1: We have exact solutions that satisfy joint limits natively
+        # Case 1: valid exact solutions
         if len(valid_exact) > 0:
-            if self.config.solution_selection == "closest" and q_init is not None:
-                best_idx = self._select_closest(valid_exact, q_init)
-            else:
-                best_idx = self._select_min_norm(valid_exact)
-
-            selected_q = valid_exact[best_idx]
+            selected_q = self._pick_best(valid_exact, q_init)
             info['is_ls'] = False
             info['converged'] = True
             info['reason'] = 'converged'
             info['solve_method'] = 'converged'
             return True, selected_q, info
 
-        # Case 2: We have exact solutions, but they violate limits
+        # Case 2: exact solutions exist but all violate limits or FK check
         if len(exact_sols) > 0:
             best_sol = self._select_least_violation(exact_sols, q_init)
             info['reason'] = 'no_valid_solutions_within_limits'
@@ -138,26 +143,17 @@ class EAIKIKSolver(BaseIKSolver):
             info['is_ls'] = False
             return False, best_sol, info
 
-        # Case 3: We strictly only have LS solutions
-        # To avoid failure flags entirely hiding LS, we check if they satisfy limits
-        valid_ls = []
-        for q in ls_sols:
-            if self._within_joint_limits(q):
-                valid_ls.append(q)
-                
+        # Case 3: only LS solutions — check if any satisfy limits + FK
+        valid_ls = self._filter_valid(ls_sols, target_position, rotation, info)
         if len(valid_ls) > 0:
-            if self.config.solution_selection == "closest" and q_init is not None:
-                best_idx = self._select_closest(valid_ls, q_init)
-            else:
-                best_idx = self._select_min_norm(valid_ls)
-            selected_q = valid_ls[best_idx]
+            selected_q = self._pick_best(valid_ls, q_init)
             info['is_ls'] = True
-            info['converged'] = False # Marked as False for explicit least_squares handling up stream
+            info['converged'] = False
             info['reason'] = 'least_squares'
             info['solve_method'] = 'least_squares'
             return False, selected_q, info
 
-        # Case 4: We only have LS solutions, AND they violate limits
+        # Case 4: only LS solutions AND they violate limits
         best_sol = self._select_least_violation(ls_sols, q_init)
         info['reason'] = 'least_squares_and_joint_limits'
         info['solve_method'] = 'least_squares'
@@ -179,30 +175,119 @@ class EAIKIKSolver(BaseIKSolver):
     # Private helpers
     # ------------------------------------------------------------------
 
+    def _normalize_to_joint_limits(self, q: np.ndarray) -> np.ndarray:
+        """Normalize joint angles to fall within the valid joint limit range.
+
+        EAIK's analytical solver returns raw angles that may lie outside the
+        URDF joint limits even though an equivalent angle (offset by ±2π)
+        would be valid.  For example, J3 = +157° and J3 = -203° represent
+        the same physical configuration, but only -203° falls within the
+        IRB 1300's J3 range [-210°, +69°].
+
+        For each joint independently, this function shifts the angle by
+        multiples of 2π until it lands inside [lower, upper] (if possible).
+        Shifts are tried in order of smallest magnitude first (±1, ±2, ±3
+        full turns) so the result stays as close to the raw EAIK angle as
+        possible.
+        """
+        q_out = np.array(q, dtype=float).flatten()
+        lower = self.robot_model.lower_position_limit
+        upper = self.robot_model.upper_position_limit
+        two_pi = 2.0 * np.pi
+
+        for i in range(len(q_out)):
+            if lower[i] <= q_out[i] <= upper[i]:
+                continue
+
+            # Try shifts in ascending magnitude: ±1, ±2, ±3 full turns.
+            # k=0 is skipped because we already know the raw angle is outside.
+            found = False
+            for abs_k in range(1, 4):
+                for sign in (+1, -1):
+                    candidate = q_out[i] + sign * abs_k * two_pi
+                    if lower[i] <= candidate <= upper[i]:
+                        q_out[i] = candidate
+                        found = True
+                        break
+                if found:
+                    break
+
+        return q_out
+
+    def _compute_fk_pose(self, q: np.ndarray) -> np.ndarray:
+        """Compute 4x4 FK pose for the end-effector at configuration *q*."""
+        T_link = self.robot_model.eaik_robot.fwdkin(q)
+        return T_link @ self.robot_model.ee_transform_4x4
+
+    def _verify_fk(
+        self,
+        q: np.ndarray,
+        target_position: np.ndarray,
+        target_rotation: np.ndarray
+    ) -> Tuple[bool, float, float]:
+        """FK-verify an IK solution against the Cartesian target.
+
+        Returns:
+            (passes, pos_error_m, rot_error_deg)
+        """
+        T = self._compute_fk_pose(q)
+        fk_pos = T[:3, 3]
+        fk_rot = T[:3, :3]
+
+        pos_err = float(np.linalg.norm(fk_pos - target_position))
+
+        R_err = target_rotation.T @ fk_rot
+        cos_angle = np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)
+        rot_err_deg = float(np.degrees(np.arccos(cos_angle)))
+
+        passes = (pos_err <= self.config.fk_pos_tolerance_m and
+                  rot_err_deg <= self.config.fk_rot_tolerance_deg)
+        return passes, pos_err, rot_err_deg
+
+    def _filter_valid(
+        self,
+        solutions: List[np.ndarray],
+        target_position: np.ndarray,
+        target_rotation: np.ndarray,
+        info: Dict[str, Any],
+    ) -> List[np.ndarray]:
+        """Return the subset of solutions within joint limits AND passing FK."""
+        valid = []
+        for q in solutions:
+            if not self._within_joint_limits(q):
+                continue
+            passes, pos_err, rot_err = self._verify_fk(q, target_position, target_rotation)
+            info['fk_errors'].append({
+                'q_deg': np.degrees(q).tolist(),
+                'pos_err_mm': pos_err * 1000.0,
+                'rot_err_deg': rot_err,
+                'fk_pass': passes,
+            })
+            if passes:
+                valid.append(q)
+        return valid
+
+    def _pick_best(self, solutions: List[np.ndarray], q_init: Optional[np.ndarray]) -> np.ndarray:
+        """Pick the best solution from a validated list using the configured strategy."""
+        if self.config.solution_selection == "closest" and q_init is not None:
+            idx = self._select_closest(solutions, q_init)
+        else:
+            idx = self._select_min_norm(solutions)
+        return solutions[idx]
+
     def _within_joint_limits(self, q: np.ndarray, tolerance: float = 1e-6) -> bool:
         return bool(np.all(q >= self.robot_model.lower_position_limit - tolerance) and
                      np.all(q <= self.robot_model.upper_position_limit + tolerance))
 
     def _get_violated_joints(self, q: np.ndarray, tolerance: float = 1e-6) -> list:
-        """
-        Return list of joint indices that violated their limits for solution q.
-        
-        Args:
-            q: Joint configuration vector
-            tolerance: Tolerance for limit checking
-            
-        Returns:
-            List of joint indices (0-based) that violated limits
-        """
+        """Return 0-based indices of joints that violate their limits."""
         violated = []
         lower = self.robot_model.lower_position_limit
         upper = self.robot_model.upper_position_limit
         q = np.asarray(q).flatten()
-        
         for i in range(len(q)):
             if q[i] < lower[i] - tolerance or q[i] > upper[i] + tolerance:
                 violated.append(i)
-        
         return violated
 
     def _wrapped_dist_debug(self, q: np.ndarray, q_ref: np.ndarray) -> float:

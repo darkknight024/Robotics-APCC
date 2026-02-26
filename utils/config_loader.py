@@ -26,6 +26,8 @@ _DEFAULT_IK_CONFIG = {
     'ee_frame_name': 'ee_link',
     # EAIK-specific
     'solution_selection': 'closest',
+    'fk_pos_tolerance_m': 1e-3,
+    'fk_rot_tolerance_deg': 0.02,
     # Pinocchio-specific
     'max_iterations': 50,
     'tolerance': 1e-4,
@@ -398,7 +400,9 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
         from core.eaik_ik_solver import EAIKConfig
         return EAIKConfig(
             ee_frame_name=ee_frame_name,
-            solution_selection=str(params.get('solution_selection', _DEFAULT_IK_CONFIG['solution_selection']))
+            solution_selection=str(params.get('solution_selection', _DEFAULT_IK_CONFIG['solution_selection'])),
+            fk_pos_tolerance_m=float(params.get('fk_pos_tolerance_m', _DEFAULT_IK_CONFIG['fk_pos_tolerance_m'])),
+            fk_rot_tolerance_deg=float(params.get('fk_rot_tolerance_deg', _DEFAULT_IK_CONFIG['fk_rot_tolerance_deg'])),
         )
 
 
