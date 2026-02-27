@@ -74,6 +74,7 @@ class TrajectoryResult:
     violated_joints_per_wp: List[Optional[List[int]]] = field(default_factory=list)
     joint_angles_rad: Optional[np.ndarray] = None
     target_poses: Optional[np.ndarray] = None
+    unreachability_reasons: Dict[int, str] = field(default_factory=dict)  # waypoint_idx -> reason
 
     @property
     def reachability_pct(self) -> float:
@@ -118,12 +119,47 @@ class ToolpathResult:
 # Core Reachability Check
 # =============================================================================
 
+def estimate_unreachability_reason(
+    waypoint_idx: int,
+    solve_method: str,
+    violated_joints: Optional[List[int]],
+    robot_data: Optional[object] = None
+) -> str:
+    """
+    Estimate the reason for waypoint unreachability based on solve method and joint violations.
+    
+    Args:
+        waypoint_idx: Index of the waypoint
+        solve_method: The solve method that failed (from IK solver)
+        violated_joints: List of joint indices that violated limits (if applicable)
+        robot_data: Optional robot data object for joint name lookup
+        
+    Returns:
+        String describing the estimated reason for unreachability
+    """
+    if solve_method == 'self_collision':
+        return "Self-collision detected in solution"
+    elif solve_method == 'least_squares':
+        return "Only least-squares approximation available (not exact IK)"
+    elif violated_joints and len(violated_joints) > 0:
+        joint_names = []
+        if robot_data is not None and hasattr(robot_data, 'joint_names'):
+            joint_names = [robot_data.joint_names[j] if j < len(robot_data.joint_names) else f"J{j+1}" 
+                          for j in violated_joints]
+        joint_str = ", ".join(joint_names) if joint_names else f"J{[j+1 for j in violated_joints]}"
+        return f"Joint limits violated: {joint_str}"
+    else:
+        return "No valid IK solution found (kinematic limits exceeded or singularity)"
+
+
 def check_trajectory_reachability(
     trajectory_t_b_p: np.ndarray,
     ik_solver,
     trajectory_index: int,
     rs_data_seed: Optional[np.ndarray] = None,
-    use_robostudio_seed: bool = False
+    use_robostudio_seed: bool = False,
+    collision_checker=None,
+    robot_data: Optional[object] = None,
 ) -> TrajectoryResult:
     """
     Check reachability of each waypoint in a transformed trajectory.
@@ -134,6 +170,10 @@ def check_trajectory_reachability(
         trajectory_index: 1-based trajectory index
         rs_data_seed: Optional (n_waypoints, 6) array of joint angles from RobotStudio to use for seeding
         use_robostudio_seed: Whether to seed every waypoint with rs_data_seed
+        collision_checker: Optional SelfCollisionChecker. When provided,
+            IK solutions are also checked for self-collision — a waypoint is
+            only marked reachable if IK succeeds *and* no collision is found.
+        robot_data: Optional robot data object for detailed joint information
         
     Returns:
         TrajectoryResult with per-waypoint reachability flags and EAIK joint violations
@@ -146,6 +186,7 @@ def check_trajectory_reachability(
     joint_angles_rad = np.full((n_waypoints, n_joints), np.nan)
     violated_joints_per_wp = [None] * n_waypoints
     unreachable_waypoints = []
+    unreachability_reasons = {}
 
     q_prev = None
     if rs_data_seed is not None and len(rs_data_seed) > 0:
@@ -169,6 +210,12 @@ def check_trajectory_reachability(
             success = False
             info['solve_method'] = 'least_squares'
 
+        # Self-collision gate: reject IK solutions that cause collision
+        if success and collision_checker is not None:
+            if collision_checker.has_self_collision(q):
+                success = False
+                info['solve_method'] = 'self_collision'
+
         reachable_flags[i] = success
         
         # Override solve_method to explicitly show we seeded with RS tracking
@@ -183,6 +230,10 @@ def check_trajectory_reachability(
             q_prev = q
         else:
             unreachable_waypoints.append(i)
+            reason = estimate_unreachability_reason(
+                i, solve_method, info.get('violated_joints', None), robot_data
+            )
+            unreachability_reasons[i] = reason
 
     reachable_count = int(np.sum(reachable_flags))
     return TrajectoryResult(
@@ -195,7 +246,8 @@ def check_trajectory_reachability(
         solve_methods=solve_methods,
         violated_joints_per_wp=violated_joints_per_wp,
         joint_angles_rad=joint_angles_rad,
-        target_poses=trajectory_t_b_p
+        target_poses=trajectory_t_b_p,
+        unreachability_reasons=unreachability_reasons
     )
 
 
@@ -342,7 +394,7 @@ def save_reachability_csv(traj_result: TrajectoryResult, output_path: str) -> No
 # =============================================================================
 
 def generate_report(all_results: List[ToolpathResult], output_path: Path) -> None:
-    """Generate reachability_analysis.txt report."""
+    """Generate reachability_analysis.txt report with summary and unreachability analysis."""
     sep_heavy = "=" * 80
     sep_light = "-" * 80
 
@@ -377,7 +429,34 @@ def generate_report(all_results: List[ToolpathResult], output_path: Path) -> Non
         lines.append(f">>> RESULT: {invalid_combos} COMBINATION(S) HAVE UNREACHABLE WAYPOINTS <<<")
     lines.append("")
 
+    # Global reachable/unreachable summary across all results
+    lines.append(sep_light)
+    lines.append("GLOBAL WAYPOINT SUMMARY (Across All Combinations)")
+    lines.append(sep_light)
+    
+    # Collect all reachable and unreachable waypoints across all combinations
+    all_reachable_wps = set()
+    all_unreachable_wps = set()
+    for r in all_results:
+        for t in r.trajectories:
+            for i in range(t.num_waypoints):
+                if t.reachable_flags[i]:
+                    all_reachable_wps.add(i)
+                else:
+                    all_unreachable_wps.add(i)
+    
+    reachable_indices = sorted(list(all_reachable_wps))
+    unreachable_indices = sorted(list(all_unreachable_wps))
+    
+    lines.append(f"Reachable Waypoints: {len(reachable_indices)}")
+    lines.append(f"Indices: {reachable_indices}")
+    lines.append("")
+    lines.append(f"Unreachable Waypoints: {len(unreachable_indices)}")
+    lines.append(f"Indices: {unreachable_indices}")
+    lines.append("")
+
     # Combination summary table
+    lines.append(sep_light)
     lines.append("COMBINATION SUMMARY")
     lines.append(sep_light)
     header = f"  {'Robot':<25} {'Knife':<12} {'Toolpath':<30} {'Traj':>5} {'WPs':>6} {'Reach':>10} {'Status':>8}"
@@ -416,6 +495,45 @@ def generate_report(all_results: List[ToolpathResult], output_path: Path) -> Non
                 lines.append(f"    Unreachable waypoints: [{wp_str}]")
         lines.append("")
 
+    # Unreachability analysis section
+    lines.append(sep_heavy)
+    lines.append("UNREACHABLE WAYPOINTS - DETAILED ANALYSIS")
+    lines.append(sep_heavy)
+    lines.append("")
+    
+    unreachability_summary = {}  # reason -> count
+    
+    for r in all_results:
+        for t in r.trajectories:
+            if not t.is_fully_reachable:
+                for wp_idx in t.unreachable_waypoints:
+                    reason = t.unreachability_reasons.get(wp_idx, "Unknown reason")
+                    unreachability_summary[reason] = unreachability_summary.get(reason, 0) + 1
+    
+    if unreachability_summary:
+        lines.append("Unreachability Reason Summary:")
+        lines.append(sep_light)
+        for reason, count in sorted(unreachability_summary.items(), key=lambda x: -x[1]):
+            lines.append(f"  [{count:3d}x] {reason}")
+        lines.append("")
+        
+        # Detailed breakdown by combination
+        lines.append(sep_light)
+        lines.append("Detailed Unreachable Waypoints by Combination:")
+        lines.append(sep_light)
+        for r in all_results:
+            for t in r.trajectories:
+                if not t.is_fully_reachable:
+                    lines.append("")
+                    lines.append(f"  {r.robot_name} / {r.knife_name} / {r.toolpath_name} - T{t.trajectory_index}")
+                    lines.append("  " + "-" * 76)
+                    for wp_idx in sorted(t.unreachable_waypoints):
+                        reason = t.unreachability_reasons.get(wp_idx, "Unknown reason")
+                        lines.append(f"    Waypoint {wp_idx}: {reason}")
+    else:
+        lines.append("No unreachable waypoints detected!")
+    
+    lines.append("")
     lines.append(sep_heavy)
     lines.append("End of Reachability Analysis Report")
     lines.append(sep_heavy)
@@ -439,7 +557,8 @@ def process_combination(
     use_base_frame: bool = False,
     knife_name: Optional[str] = None,
     knife_translation_m: Optional[np.ndarray] = None,
-    knife_quaternion: Optional[np.ndarray] = None
+    knife_quaternion: Optional[np.ndarray] = None,
+    collision_checker=None,
 ) -> ToolpathResult:
     """Process one robot/toolpath combination (optionally with knife pose when not base_frame)."""
     if not use_base_frame and (knife_name is None or knife_translation_m is None or knife_quaternion is None):
@@ -491,7 +610,9 @@ def process_combination(
         traj_result = check_trajectory_reachability(
             traj, ik_solver, traj_num, 
             rs_data_seed=rs_data_seed, 
-            use_robostudio_seed=use_robostudio_seed
+            use_robostudio_seed=use_robostudio_seed,
+            collision_checker=collision_checker,
+            robot_data=robot_data,
         )
         result.trajectories.append(traj_result)
 
@@ -582,6 +703,8 @@ def main():
     parser.add_argument('--ee-frame', help="Override end-effector frame name")
     parser.add_argument('--base_frame', action='store_true',
                         help="Toolpath CSV is already in robot base frame; skip knife transform")
+    parser.add_argument('--check_self_collision', action='store_true',
+                        help="Reject IK solutions that cause self-collision (off by default)")
     args = parser.parse_args()
 
     # Load config
@@ -646,9 +769,13 @@ def main():
     solver_type = args.solver or options.get('solver', 'pin')
     ee_frame_override = args.ee_frame
 
+    check_self_collision = args.check_self_collision
+
     print(f"\nSolver:     {solver_type}")
     if use_base_frame:
         print("Base frame: toolpaths used as-is (no knife pose)")
+    if check_self_collision:
+        print("Self-collision check: ENABLED")
     print(f"Robots:     {len(robots)}")
     if not use_base_frame:
         print(f"Knives:     {len(knife_names)}")
@@ -670,6 +797,17 @@ def main():
         print(f"ROBOT: {robot.name}")
         print(f"{'='*60}")
 
+        # Build a collision checker for this robot (once per robot, reused
+        # across all toolpaths / knife combos).
+        coll_checker = None
+        if check_self_collision:
+            from core.collision_checker import SelfCollisionChecker
+            print("  Initializing self-collision checker...")
+            coll_checker = SelfCollisionChecker(urdf_path=robot.urdf_path)
+            excluded = coll_checker.calibrate()
+            print(f"  Calibrated: excluded {len(excluded)} mesh-artifact pairs, "
+                  f"{coll_checker.active_pair_count} active pairs remaining")
+
         if use_base_frame:
             robot_output = output_dir / robot_name_clean
             for toolpath_file in toolpath_files:
@@ -682,7 +820,8 @@ def main():
                     output_dir=robot_output,
                     solver_type=solver_type,
                     ee_frame_override=ee_frame_override,
-                    use_base_frame=True
+                    use_base_frame=True,
+                    collision_checker=coll_checker,
                 )
                 all_results.append(result)
         else:
@@ -710,7 +849,8 @@ def main():
                         use_base_frame=False,
                         knife_name=knife_name,
                         knife_translation_m=knife.translation_m,
-                        knife_quaternion=knife.quaternion
+                        knife_quaternion=knife.quaternion,
+                        collision_checker=coll_checker,
                     )
                     all_results.append(result)
 

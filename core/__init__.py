@@ -31,6 +31,9 @@ from .feasibility_checks import (
     check_reachability
 )
 
+# --- Self-collision ---
+from .collision_checker import SelfCollisionChecker, CollisionResult
+
 
 def create_solvers(urdf_path: str, solver: str = "eaik",
                    ik_config=None, ee_frame_name: str = "ee_link"):
@@ -99,4 +102,6 @@ __all__ = [
     'compute_manipulability', 'compute_singularity_proximity',
     'compute_max_singular_value', 'compute_condition_number',
     'check_reachability',
+    # Self-collision
+    'SelfCollisionChecker', 'CollisionResult',
 ]
