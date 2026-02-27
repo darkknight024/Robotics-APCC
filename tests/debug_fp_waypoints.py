@@ -1,19 +1,32 @@
 #!/usr/bin/env python3
 """
-FP Waypoint Debugging Evidence Generator
-=========================================
+Experiment 14 — False-Positive Waypoint Debugging
+==================================================
+
 Generates comprehensive evidence that FP waypoints (15, 16, 17) from
 Experiment 14 are kinematically valid IK solutions, and that the
-discrepancy with RobotStudio is most likely due to self-collision
-constraints not modelled in our kinematic solvers.
+discrepancy with RobotStudio is most likely due to:
+  * Self-collision constraints not modelled in our kinematic solvers
+  * Wider URDF J2 limit (155 deg) vs ABB datasheet (85 deg)
 
-Outputs:
-  - Detailed text report (to stdout and file)
-  - Workspace scatter plot showing FP vs reachable waypoint positions
-  - Joint angle bar chart showing margin to limits for FP waypoints
-  - Collision detection analysis
+The script runs the EAIK analytical solver on each FP waypoint, performs
+FK verification, checks joint-limit margins against both URDF and ABB
+datasheet limits, and runs the STL-based self-collision checker.
 
-Usage:
+Outputs  (saved to ``Robot_APCC/Experiments/Experiment_14/Results/fp_debug/``)
+-------
+  * ``fp_debug_report.txt``          — Detailed text report
+  * ``fp_workspace_3d.png``          — 3D scatter: FP vs reachable positions
+  * ``fp_workspace_xy.png``          — Top-down (XY) workspace view
+  * ``fp_joint_margins.png``         — Joint-limit margin bar chart per FP
+  * ``fp_solutions_vs_limits.png``   — IK solution angles vs URDF limits
+
+Robot:  ABB IRB 1300-7/1.4
+URDF :  Assets/Robot APCC/IRB_1300_1400_URDF/urdf/
+                          IRB_1300_1400_URDF_with_fixture.urdf
+
+Usage
+-----
     python tests/debug_fp_waypoints.py
 """
 
