@@ -29,6 +29,7 @@ Usage:
 
 import argparse
 import sys
+import re
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -393,7 +394,11 @@ def save_reachability_csv(traj_result: TrajectoryResult, output_path: str) -> No
 # Report Generation
 # =============================================================================
 
-def generate_report(all_results: List[ToolpathResult], output_path: Path) -> None:
+def generate_report(
+    all_results: List[ToolpathResult], 
+    output_path: Path,
+    cli_args: Optional[Dict] = None
+) -> None:
     """Generate reachability_analysis.txt report with summary and unreachability analysis."""
     sep_heavy = "=" * 80
     sep_light = "-" * 80
@@ -403,6 +408,21 @@ def generate_report(all_results: List[ToolpathResult], output_path: Path) -> Non
     lines.append("REACHABILITY ANALYSIS REPORT")
     lines.append(sep_heavy)
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Add CLI arguments section if provided
+    if cli_args:
+        lines.append("")
+        lines.append("CLI ARGUMENTS USED:")
+        lines.append(sep_light)
+        for arg_name, arg_value in sorted(cli_args.items()):
+            if arg_value is not None:
+                if isinstance(arg_value, bool):
+                    if arg_value:
+                        lines.append(f"  --{arg_name.replace('_', '-')}")
+                else:
+                    lines.append(f"  --{arg_name.replace('_', '-')}: {arg_value}")
+        lines.append("")
+    
     lines.append("")
 
     # Overall summary
@@ -541,6 +561,61 @@ def generate_report(all_results: List[ToolpathResult], output_path: Path) -> Non
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines))
+
+
+# =============================================================================
+# Utility Functions for Path Management
+# =============================================================================
+
+def extract_experiment_number(toolpaths_folder: str) -> Optional[str]:
+    """
+    Extract experiment number from toolpaths folder path.
+    
+    Searches for pattern "Experiment_N" where N is a number.
+    
+    Args:
+        toolpaths_folder: Path to toolpaths folder
+        
+    Returns:
+        Experiment number string (e.g., "15") or None if not found
+    """
+    match = re.search(r'Experiment_(\d+)', toolpaths_folder)
+    if match:
+        return match.group(1)
+    return None
+
+
+def determine_output_directory(
+    cli_output: Optional[str],
+    toolpaths_folder: str,
+    config_output_folder: str,
+    solver_type: str
+) -> Path:
+    """
+    Determine the output directory based on CLI args and toolpaths folder.
+    
+    Priority:
+    1. If --output CLI arg provided, use it
+    2. If toolpaths folder contains Experiment_N, use Robot_APCC/Results/Experiment_N/<solver>
+    3. Otherwise, use config default + solver subfolder
+    
+    Args:
+        cli_output: Output path from CLI args (or None)
+        toolpaths_folder: Toolpaths folder path
+        config_output_folder: Default from config
+        solver_type: Solver type ("pin" or "eaik")
+        
+    Returns:
+        Path object for output directory
+    """
+    if cli_output:
+        return Path(cli_output) / solver_type
+    
+    exp_num = extract_experiment_number(toolpaths_folder)
+    if exp_num:
+        return Path("Robot_APCC") / "Results" / f"Experiment_{exp_num}" / solver_type
+    
+    return Path(config_output_folder) / solver_type
 
 
 # =============================================================================
@@ -759,15 +834,18 @@ def main():
         toolpaths_folder = Path(config.get('toolpaths_folder', 'input/toolpaths'))
     toolpath_files = sorted(toolpaths_folder.glob("*.csv")) if toolpaths_folder.exists() else []
 
-    if args.output:
-        output_dir = Path(args.output)
-    else:
-        output_dir = Path(config.get('output_folder', 'output/reachability_test'))
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     options = config.get('options', {})
     solver_type = args.solver or options.get('solver', 'pin')
     ee_frame_override = args.ee_frame
+
+    # Determine output directory intelligently
+    output_dir = determine_output_directory(
+        cli_output=args.output,
+        toolpaths_folder=str(toolpaths_folder),
+        config_output_folder=config.get('output_folder', 'output/reachability_test'),
+        solver_type=solver_type
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     check_self_collision = args.check_self_collision
 
@@ -854,9 +932,23 @@ def main():
                     )
                     all_results.append(result)
 
+    # Prepare CLI arguments dictionary for report
+    cli_args_dict = {
+        'config': args.config,
+        'robot': args.robot,
+        'urdf': args.urdf,
+        'knife_pose': args.knife_pose,
+        'toolpaths_folder': str(toolpaths_folder),
+        'output': str(args.output) if args.output else None,
+        'solver': solver_type,
+        'ee_frame': ee_frame_override,
+        'base_frame': use_base_frame,
+        'check_self_collision': check_self_collision,
+    }
+    
     # Generate report
     report_path = output_dir / "reachability_analysis.txt"
-    generate_report(all_results, report_path)
+    generate_report(all_results, report_path, cli_args=cli_args_dict)
     print(f"\n✓ Report saved: {report_path}")
 
     # Print final summary
