@@ -1,8 +1,38 @@
 #!/usr/bin/env python3
 """
-Feasibility Checks Module
+Feasibility Checks Module — Multi-Objective Validation Pipeline
+================================================================
 
-Provides kinematic feasibility analysis functions:
+Implements the per-waypoint and trajectory-level kinematic feasibility
+analysis described in the IK Solver Analysis document (Section 7).
+
+Validation stages mapped to this module:
+
+* **Stage 1 — FK Round-Trip Verification**: performed inside
+  ``EAIKIKSolver._verify_fk()`` (see ``core/eaik_ik_solver.py``);
+  for Pinocchio, convergence tolerance serves the same role.
+* **Stage 2 — Singularity Margin Evaluation**: ``compute_singularity_proximity()``
+  (σ_min) and ``compute_condition_number()`` (κ = σ_max / σ_min).
+  Configurations where σ_min < ``singularity_threshold`` are flagged.
+* **Stage 3 — Manipulability Optimisation**: ``compute_manipulability()``
+  (Yoshikawa measure √det(JJᵀ), normalised by characteristic length).
+  Used for ranking candidate trajectories by dexterous capability.
+* **Stage 4 — Continuity & Branch Consistency**: C0 check via
+  ``compute_joint_space_distance()`` and C1 check via
+  ``compute_joint_velocity_ratio()`` (both in ``utils/math.py``).
+  Trajectories violating ``joint_jump_limit_rad`` or velocity limits
+  are flagged.
+
+Additional features beyond the document's proposal:
+
+* **Speed-driven physics** — per-waypoint variable dt = distance / speed,
+  preventing arbitrary time-step assumptions.
+* **Time-weighted scoring** — manipulability and smoothness scores are
+  weighted by segment duration to prevent sampling-rate bias.
+* **Early termination** — configurable max IK failures threshold to abort
+  analysis of clearly infeasible trajectories.
+
+Provides:
 - Manipulability (Yoshikawa measure)
 - Singularity proximity (minimum and maximum singular values)
 - Condition number

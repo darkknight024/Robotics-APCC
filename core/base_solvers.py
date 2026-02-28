@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
 """
 Base Solver Interfaces
+======================
 
-Defines abstract base classes for FK/IK solvers and shared data types.
-All solver backends (EAIK, Pinocchio, etc.) must implement these interfaces.
+Abstract base classes that define the **unified solver contract** for all
+FK and IK backends (EAIK analytical, Pinocchio numerical, and any future
+additions).
+
+This abstraction enables:
+
+* **Transparent solver switching** — the ``create_solvers()`` factory in
+  ``core/__init__.py`` instantiates the correct backend from a single
+  config string (``"eaik"`` or ``"pin"``); all downstream scripts
+  interact exclusively through the base interfaces.
+* **Hybrid architectures** — because both solvers expose the same
+  ``solve()`` / ``solve_with_retries()`` API, a sequential hybrid
+  (analytical seed → numerical refinement) or concurrent hybrid
+  (race both, take first success) can be composed without modifying
+  calling code.
+
+All solver backends must implement these interfaces.
 """
 
 import numpy as np

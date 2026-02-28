@@ -1,9 +1,66 @@
 #!/usr/bin/env python3
 """
-IK Solver Module - EAIK Analytical Inverse Kinematics
+IK Solver Module — EAIK Analytical Inverse Kinematics
+======================================================
 
-Provides inverse kinematics solving using EAIK.
-Uses analytical subproblem decomposition for exact, multi-solution IK.
+Closed-form IK solver powered by the EAIK (Efficient Analytical Inverse
+Kinematics) library from TU Munich.
+
+Algorithm
+---------
+EAIK scans the robot's kinematic chain for intersecting and parallel
+joint axes, then maps the full 6-DOF IK problem onto a sequence of
+canonical geometric sub-problems (Paden–Kahan / IK-Geo).  This yields
+the **complete solution manifold** — all valid joint configurations for
+a given end-effector pose — in a single O(1) pass, with no iterative
+approximation.
+
+Post-processing pipeline (this wrapper):
+
+1. **Angle normalisation** — raw EAIK angles are shifted by ±2π (up to
+   ±3 full turns) to land inside URDF joint limits.
+2. **Joint-limit filtering** — solutions outside limits after
+   normalisation are separated from valid ones.
+3. **FK round-trip verification** — every candidate is forward-
+   kinematically checked against the original Cartesian target
+   (tolerances: 1 mm position, 0.02° orientation) to catch
+   floating-point edge cases.
+4. **Solution selection** — ``"closest"`` picks the solution nearest to
+   the previous configuration (angle-wrapped L2 distance) for trajectory
+   continuity; ``"min_norm"`` picks the smallest-magnitude joint vector.
+
+When no exact solution exists (target at workspace boundary), EAIK
+returns least-squares approximations which are processed through the
+same pipeline but flagged as ``is_ls=True``.
+
+Strengths (vs. numerical solvers)
+---------------------------------
+* Deterministic, constant-time execution — no iteration count variance.
+* Returns **all** branches (shoulder-left/right, elbow-up/down, wrist-
+  flip/no-flip) simultaneously, enabling higher-level planners to select
+  the optimal branch for collision avoidance or energy minimisation.
+* No seed dependence — eliminates local-minima entrapment entirely.
+
+Limitations
+-----------
+* Derived under ideal axis-intersection assumptions (Pieper criterion).
+  Factory calibration offsets that break these assumptions produce
+  systematic TCP errors that cannot be corrected without re-derivation.
+* Singularity handling relies on the sub-problem structure; near
+  degenerate configurations the solution count may collapse and LS
+  fallback is the only recourse.
+* Angle normalisation is bounded to ±3 full turns — exotic URDF ranges
+  beyond ±6π will not be covered.
+* Jacobian computation in the companion ``EAIKFKSolver`` is numerical
+  (central finite differences), not analytical.
+* ``solve_with_retries()`` is a no-op — the analytical solver is
+  deterministic, so retries with different seeds have no effect.
+
+See Also
+--------
+* ``core/pin_ik_solver.py`` — numerical (iterative) alternative.
+* ``core/base_solvers.py``  — abstract ``BaseIKSolver`` interface.
+* ``core/eaik_fk_solver.py``— companion FK solver + numerical Jacobian.
 """
 
 import numpy as np

@@ -1,11 +1,58 @@
 #!/usr/bin/env python3
 """
-IK Solver Module - Pinocchio Inverse Kinematics
+IK Solver Module — Pinocchio Numerical Inverse Kinematics
+=========================================================
 
-Provides inverse kinematics solving using Pinocchio.
-Uses damped least-squares with adaptive damping for robust convergence.
+Numerical IK solver built on the Pinocchio rigid-body dynamics library.
 
-Restored from commit d78ff39, adapted to inherit from BaseIKSolver.
+Algorithm
+---------
+Damped Least-Squares (Levenberg–Marquardt variant) operating in SE(3):
+
+    Δq = (JᵀWJ + λ²I)⁻¹ JᵀW·e
+
+where *J* is the local-frame Jacobian (``pin.computeFrameJacobian``),
+*W* = diag(rot_weight, trans_weight) weights orientation vs. position
+error, *e* = log(T_current⁻¹ · T_target) is the SE(3) error, and *λ*
+is adaptively set from the Jacobian's minimum singular value σ_min.
+
+Key robustness features beyond vanilla DLS:
+
+* **Adaptive damping** — λ scales with 1/σ_min, clamped to [λ₀, λ_max],
+  providing intrinsic singularity resilience without manual patching.
+* **Backtracking line search** — up to 10 half-step reductions when the
+  residual increases, preventing divergence near local minima.
+* **Multi-strategy retries** — sequentially tries the user-supplied seed,
+  the neutral configuration, and random configurations before reporting
+  failure.  Controlled by ``use_initial_guess``, ``use_neutral``,
+  ``use_random`` flags.
+* **Joint-limit clipping** — solution is projected back into URDF limits
+  after each iteration.
+
+Strengths (vs. analytical solvers)
+----------------------------------
+* Absorbs factory calibration offsets by simply updating the URDF/DH
+  parameters — no re-derivation of closed-form equations required.
+* Works on any kinematic topology (6R, 7-DOF, offset-wrist) unchanged.
+* Natively handles weighted cost functions and can be extended with
+  hard/soft constraints (joint limits, collision penalties).
+
+Limitations
+-----------
+* Non-deterministic execution time — convergence depends on seed quality
+  and proximity to singularities.
+* Returns a single solution per seed; deliberate branch switching
+  (e.g., elbow-up ↔ elbow-down) requires external logic or random
+  restarts.
+* Local-minima entrapment on the non-convex 6-DOF landscape can cause
+  false infeasibility reports.
+
+See Also
+--------
+* ``core/eaik_ik_solver.py`` — analytical (closed-form) alternative.
+* ``core/base_solvers.py``   — abstract ``BaseIKSolver`` interface.
+* ``core/feasibility_checks.py`` — downstream singularity / manipulability
+  analysis that consumes this solver's output.
 """
 
 import numpy as np

@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
 """
-FK Solver Module - EAIK Forward Kinematics
+FK Solver Module — EAIK Forward Kinematics
+===========================================
 
-Provides forward kinematics computation using the EAIK analytical solver.
-Includes numerical Jacobian computation via central finite differences.
+Forward kinematics using the EAIK product-of-exponentials formulation.
+
+EAIK computes FK to the last actuated link; the fixed ``ee_transform_4x4``
+(from ``RobotModel``) is applied as post-processing to reach the
+configured end-effector frame.
+
+Jacobian computation uses **central finite differences** (ε = 1e-8)
+rather than an analytical derivative.  This is adequate for feasibility
+analysis and manipulability scoring but introduces a small numerical
+error compared to Pinocchio's analytical Jacobian.  If high-fidelity
+Jacobian-dependent operations are required (e.g., optimal control with
+Crocoddyl), prefer the Pinocchio FK backend.
+
+See Also
+--------
+* ``core/pin_fk_solver.py`` — Pinocchio FK with analytical Jacobian.
+* ``core/base_solvers.py``  — abstract ``BaseFKSolver`` interface.
 """
 
 import numpy as np

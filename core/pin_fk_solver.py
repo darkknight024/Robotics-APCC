@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """
-FK Solver Module - Pinocchio Forward Kinematics
+FK Solver Module — Pinocchio Forward Kinematics
+================================================
 
-Provides a clean abstraction for forward kinematics computation using Pinocchio.
+Forward kinematics and **analytical Jacobian** computation via Pinocchio's
+spatial-algebra engine (Recursive Newton–Euler / Articulated-Body).
 
-Restored from commit d78ff39, adapted to inherit from BaseFKSolver.
+Pinocchio natively provides ``computeFrameJacobian`` in both LOCAL and
+WORLD reference frames, yielding exact 6×n Jacobians without finite-
+difference approximation.  This makes the Pinocchio FK backend the
+preferred choice when downstream tasks require high-fidelity Jacobians
+(singularity analysis, optimal control, Crocoddyl integration).
+
+See Also
+--------
+* ``core/eaik_fk_solver.py`` — EAIK FK with numerical Jacobian.
+* ``core/base_solvers.py``   — abstract ``BaseFKSolver`` interface.
 """
 
 import numpy as np

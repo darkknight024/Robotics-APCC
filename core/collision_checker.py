@@ -1,14 +1,31 @@
 #!/usr/bin/env python3
 """
-Solver-agnostic self-collision checker using Pinocchio + hpp-fcl.
+Self-Collision Checker — Pinocchio + hpp-fcl
+=============================================
 
-Loads the robot URDF with its collision STL meshes and checks whether a
-given joint configuration causes non-adjacent links to penetrate each other.
+Solver-agnostic self-collision detection using Pinocchio's geometry
+module and the hpp-fcl collision library.
+
+This module extends the multi-objective validation pipeline (see
+``core/feasibility_checks.py``) with a **collision feasibility gate**:
+candidate IK solutions that cause non-adjacent links to penetrate each
+other are rejected before being committed to the servo layer.
 
 The checker is intentionally decoupled from any particular IK solver —
 it accepts a raw joint-angle vector (radians) and returns whether
 self-collision exists.  This allows it to work identically with EAIK,
 Pinocchio IK, or any future solver backend.
+
+Key design decisions:
+
+* **Calibration step** — URDF ``<collision>`` meshes (SolidWorks STL
+  exports) often overlap at joint boundaries.  ``calibrate()`` probes
+  multiple random configurations and automatically excludes pairs that
+  collide in *every* test pose, treating them as mesh artifacts rather
+  than real collisions.
+* **Adjacent-pair filtering** — link pairs whose parent joints differ by
+  ≤ ``min_joint_gap`` in the kinematic chain are excluded, since they
+  can never physically collide.
 
 Typical usage::
 
