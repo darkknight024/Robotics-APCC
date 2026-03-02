@@ -63,6 +63,7 @@ class FeasibilityTask:
     solver_type: str = "pin"
     level1_only: bool = True
     detailed_per_trajectory_report: bool = False
+    export_waypoint_validity: bool = False
 
 
 def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
@@ -87,7 +88,8 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             save_analysis=True,
             level1_only=task.level1_only,
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
-            solver_type=task.solver_type
+            solver_type=task.solver_type,
+            export_waypoint_validity=task.export_waypoint_validity,
         )
         
         return {
@@ -172,7 +174,8 @@ def process_batch(
     output_base: str = None,
     num_workers: int = 1,
     level1_only: bool = None,
-    detailed_per_trajectory_report: bool = None
+    detailed_per_trajectory_report: bool = None,
+    export_waypoint_validity: bool = False,
 ) -> dict:
     """
     Run feasibility analysis on all combinations defined in config.
@@ -181,6 +184,7 @@ def process_batch(
         config_path: Path to toolpath config YAML
         output_base: Base output directory (overrides config if provided)
         num_workers: Number of parallel workers (1 = sequential)
+        export_waypoint_validity: If True, export per-waypoint IK validity CSV
         
     Returns:
         Dictionary with batch results
@@ -277,7 +281,8 @@ def process_batch(
                     run_continuity=run_continuity,
                     solver_type=solver_type,
                     level1_only=level1_only,
-                    detailed_per_trajectory_report=detailed_per_trajectory_report
+                    detailed_per_trajectory_report=detailed_per_trajectory_report,
+                    export_waypoint_validity=export_waypoint_validity,
                 ))
     
     print(f"\nPrepared {len(tasks)} analysis tasks")
@@ -348,13 +353,16 @@ def main():
                         help="Compute Level 2-4 metrics (overrides config)")
     parser.add_argument('--per-trajectory-plots', action='store_true',
                         help="Save per-trajectory plots (overrides config)")
+    parser.add_argument('--export-waypoint-validity', action='store_true',
+                        help="Export per-waypoint IK validity CSV for each combination.")
     
     args = parser.parse_args()
     
     process_batch(
         args.config, args.output, args.workers,
         level1_only=False if args.full_analysis else None,
-        detailed_per_trajectory_report=True if args.per_trajectory_plots else None
+        detailed_per_trajectory_report=True if args.per_trajectory_plots else None,
+        export_waypoint_validity=args.export_waypoint_validity,
     )
 
 

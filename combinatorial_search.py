@@ -105,6 +105,7 @@ class FeasibilityTask:
     skip_plots: bool = False
     max_ik_failures_per_trajectory: Optional[int] = None
     feasibility_only: bool = False
+    export_waypoint_validity: bool = False
 
 
 @dataclass
@@ -574,7 +575,8 @@ def run_single_analysis(task: FeasibilityTask) -> CombinationResult:
             skip_plots=task.skip_plots,
             level1_only=task.feasibility_only,
             max_ik_failures_per_trajectory=task.max_ik_failures_per_trajectory,
-            solver_type=task.solver_type
+            solver_type=task.solver_type,
+            export_waypoint_validity=task.export_waypoint_validity,
         )
         
         # Extract per-trajectory metrics
@@ -1695,7 +1697,8 @@ def _build_task_list(
     detailed_per_trajectory_report: bool = False,
     skip_plots: bool = False,
     solver_type: str = "pin",
-    feasibility_only: bool = False
+    feasibility_only: bool = False,
+    export_waypoint_validity: bool = False,
 ) -> List[FeasibilityTask]:
     """
     Build list of tasks for all combinations.
@@ -1710,6 +1713,7 @@ def _build_task_list(
         skip_plots: Whether to skip saving PNG plots
         solver_type: IK solver backend ("pin" or "eaik")
         feasibility_only: If True, only check IK feasibility (no continuity, no ranking)
+        export_waypoint_validity: If True, export per-waypoint IK validity CSV
         
     Returns:
         List of FeasibilityTask objects
@@ -1785,7 +1789,8 @@ def _build_task_list(
                     detailed_per_trajectory_report=detailed_per_trajectory_report,
                     skip_plots=skip_plots,
                     max_ik_failures_per_trajectory=max_ik_failures,
-                    feasibility_only=feasibility_only
+                    feasibility_only=feasibility_only,
+                    export_waypoint_validity=export_waypoint_validity,
                 ))
     
     return tasks
@@ -2449,7 +2454,8 @@ def process_ranking_batch(
     detailed_per_trajectory_report: bool = False,
     skip_plots: bool = False,
     solver_type_override: str = None,
-    feasibility_only: bool = False
+    feasibility_only: bool = False,
+    export_waypoint_validity: bool = False,
 ) -> Dict[str, Any]:
     """
     Run feasibility ranking on all combinations.
@@ -2466,6 +2472,7 @@ def process_ranking_batch(
         skip_plots: Whether to skip saving PNG plots
         solver_type_override: CLI override for solver type ("pin" or "eaik"); None = use config
         feasibility_only: If True, only check IK feasibility (skip ranking, generate Feasibility-report.md)
+        export_waypoint_validity: If True, export per-waypoint IK validity CSV for each combination
         
     Returns:
         Dictionary with batch results
@@ -2492,7 +2499,8 @@ def process_ranking_batch(
     tasks = _build_task_list(
         config, knife_poses, toolpath_files, output_dir, feas_config,
         detailed_per_trajectory_report, skip_plots,
-        solver_type=solver_type, feasibility_only=feasibility_only
+        solver_type=solver_type, feasibility_only=feasibility_only,
+        export_waypoint_validity=export_waypoint_validity,
     )
     
     # Step 6: Execute tasks
@@ -2704,6 +2712,8 @@ def main():
                         help="IK solver backend: 'pin' (Pinocchio) or 'eaik' (EAIK analytical). Overrides config file.")
     parser.add_argument('--feasibility_only', action='store_true',
                         help="Run IK feasibility check only (no ranking). Produces Feasibility-report.md.")
+    parser.add_argument('--export-waypoint-validity', action='store_true',
+                        help="Export per-waypoint IK validity CSV for each (robot, knife, toolpath) combination.")
     
     args = parser.parse_args()
     
@@ -2730,7 +2740,8 @@ def main():
             detailed_per_trajectory_report=args.detailed_per_trajectory_report,
             skip_plots=not args.plots,
             solver_type_override=args.solver,
-            feasibility_only=args.feasibility_only
+            feasibility_only=args.feasibility_only,
+            export_waypoint_validity=args.export_waypoint_validity,
         )
         
         # Validate outputs (skip in feasibility_only mode — different output structure)

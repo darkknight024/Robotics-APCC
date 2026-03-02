@@ -82,6 +82,10 @@ from .generate_combinatorial_plots import (
     generate_ranking_plot
 )
 
+from .csv_export_validity import (
+    export_waypoint_validity_csv
+)
+
 from .config_loader import (
     load_ik_config,
     load_knife_config,
@@ -136,6 +140,8 @@ __all__ = [
     'validate_robostudio_csv',
     'find_robostudio_csvs',
     'RobotStudioData',
+    # CSV Export
+    'export_waypoint_validity_csv',
     # Plotting
     'plot_joint_comparison',
     'plot_joint_deltas',

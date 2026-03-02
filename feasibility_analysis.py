@@ -503,7 +503,8 @@ def process_toolpath(
     traj_id: Optional[int] = None,
     waypoint_idx: Optional[int] = None,
     max_ik_failures_per_trajectory: Optional[int] = None,
-    solver_type: str = "pin"
+    solver_type: str = "pin",
+    export_waypoint_validity: bool = False
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -529,6 +530,8 @@ def process_toolpath(
         skip_plots: If True, skip saving PNG plots (default: False)
         level1_only: If True (default), only compute Level 1 gate; skip Level 2-4 scoring
         max_ik_failures_per_trajectory: Max IK failures before early termination (optional)
+        export_waypoint_validity: If True, write an annotated copy of the input CSV
+            with an ``ik_feasible`` column appended to each waypoint row.
         
     Returns:
         Dictionary with analysis results
@@ -830,7 +833,8 @@ def process_toolpath(
             'safety_score': max_condition_number,  # Store for tier explanation
             'continuity': None,
             'failed_waypoints': failed_indices,
-            'failure_details': failure_details
+            'failure_details': failure_details,
+            'reachable_flags': reachable.tolist(),
         }
         
         if continuity_result:
@@ -910,6 +914,26 @@ def process_toolpath(
     if save_analysis:
         generate_analysis_report(results, out_path / "analysis_report.txt")
         print(f"\n  Report saved: {out_path / 'analysis_report.txt'}")
+    
+    # Export waypoint validity CSV (optional)
+    if export_waypoint_validity:
+        from utils.csv_export_validity import export_waypoint_validity_csv
+
+        per_traj_flags = [
+            np.array(t['reachable_flags'], dtype=bool)
+            for t in results['trajectory_results']
+        ]
+        validity_csv_path = out_path / f"{toolpath_name}_waypoint_validity.csv"
+        export_waypoint_validity_csv(
+            toolpath_csv_path=toolpath_path,
+            per_trajectory_reachable_flags=per_traj_flags,
+            output_path=str(validity_csv_path),
+            robot_model=robot_model_name,
+            knife_pose=knife_pose_name,
+            solver_type=solver_type,
+        )
+        if verbose:
+            print(f"  Waypoint validity CSV saved: {validity_csv_path}")
     
     return results
 
