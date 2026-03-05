@@ -27,8 +27,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# Project root for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Ensure project root (parent of this scripts/ directory) is on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.collision_checker import SelfCollisionChecker
 
@@ -133,6 +135,7 @@ def main():
     # Initialize collision checker
     checker = SelfCollisionChecker(urdf_path=args.urdf_path)
     if not args.no_calibrate:
+        print("Calibrating...")
         checker.calibrate()
 
     # Process each row

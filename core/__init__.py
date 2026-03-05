@@ -32,7 +32,7 @@ from .feasibility_checks import (
 )
 
 # --- Self-collision ---
-from .collision_checker import SelfCollisionChecker, CollisionResult
+from .collision_checker import SelfCollisionChecker, CollisionResult, CollisionCalibrator, CalibrationReport
 
 
 def create_solvers(urdf_path: str, solver: str = "eaik",
@@ -103,5 +103,5 @@ __all__ = [
     'compute_max_singular_value', 'compute_condition_number',
     'check_reachability',
     # Self-collision
-    'SelfCollisionChecker', 'CollisionResult',
+    'SelfCollisionChecker', 'CollisionResult', 'CollisionCalibrator', 'CalibrationReport',
 ]

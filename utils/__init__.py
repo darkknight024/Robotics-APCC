@@ -105,6 +105,17 @@ from .urdf_loader import (
     RobotModel
 )
 
+from .collision_debug import (
+    generate_collision_debug_report,
+    diagnose_colliding_pairs,
+    plot_pair_frequency,
+    sweep_security_margin,
+    plot_mesh_bounding_boxes,
+    plot_before_after_comparison,
+    plot_experiment_accuracy_impact,
+    export_positioned_meshes,
+)
+
 from .math import (
     shortest_angular_distance,
     compute_joint_space_distance,
@@ -189,5 +200,14 @@ __all__ = [
     'compute_joint_velocity_metrics',
     'compute_joint_limit_violations',
     'compute_normalized_joint_energy',
-    'compute_safety_tier'
+    'compute_safety_tier',
+    # Collision debug
+    'generate_collision_debug_report',
+    'diagnose_colliding_pairs',
+    'plot_pair_frequency',
+    'sweep_security_margin',
+    'plot_mesh_bounding_boxes',
+    'plot_before_after_comparison',
+    'plot_experiment_accuracy_impact',
+    'export_positioned_meshes',
 ]
