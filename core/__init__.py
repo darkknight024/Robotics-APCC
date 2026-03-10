@@ -37,6 +37,10 @@ from .singularity_analysis import (
     SingularityReport,
     SingularityType,
 )
+from .unified_singularity import (
+    UnifiedSingularity,
+    UnifiedSingularityReport,
+)
 
 # --- Self-collision ---
 from .collision_checker import SelfCollisionChecker, CollisionResult
@@ -111,6 +115,7 @@ __all__ = [
     'check_reachability',
     # Singularity analysis
     'SingularityAnalyzer', 'SingularityReport', 'SingularityType',
+    'UnifiedSingularity', 'UnifiedSingularityReport',
     # Self-collision
     'SelfCollisionChecker', 'CollisionResult',
 ]

@@ -39,12 +39,21 @@ options:
 # =============================================================================
 # Singularity Analysis
 # =============================================================================
-# Used by: tests/test_reachability_singularity.py
+# Used by: tests/test_reachability_singularity.py, feasibility_analysis.py
 singularity_analysis:
+  # Singularity mode: which analyzer to use.
+  #   "classified" — SingularityAnalyzer (shoulder / elbow / wrist decomposition)
+  #   "unified"    — UnifiedSingularity  (full-Jacobian σ_min only, no type split)
+  #   "none"       — skip singularity analysis entirely
+  mode: "classified"
+
   # Generate singularity PNG plots (CSV reports are ALWAYS saved)
   export_singularity_graphs: true
 
-  # Sub-Jacobian σ_min thresholds for type classification.
+  # Unified-mode threshold: σ_min below this flags the waypoint as singular.
+  unified_threshold: 0.01
+
+  # Sub-Jacobian σ_min thresholds for type classification (classified mode).
   # A waypoint is flagged as that singularity type when its
   # sub-Jacobian σ_min drops below the threshold.
   thresholds:

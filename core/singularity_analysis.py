@@ -303,15 +303,29 @@ class SingularityAnalyzer:
         self,
         J: np.ndarray,
         q: np.ndarray,
+        check_j5_only: bool = True,
     ) -> tuple:
         """
         Detect wrist singularity.
 
-        Uses two complementary signals:
-        1. Determinant of the 3×3 wrist orientation sub-Jacobian
-           ``J[0:3, 3:6]``.
-        2. Proximity of q₅ (0-indexed: q[4]) to 0 or π.
+        Two modes:
+
+        * ``check_j5_only=True`` (default) — fast geometric check.
+          Joint 5 (q[4]) is compared against a ±0.76° dead-band
+          (matching ABB RobotWare's empirical boundary).  If
+          ``|q[4]|`` is within [-0.76°, +0.76°] the configuration
+          is flagged as wrist-singular.
+
+        * ``check_j5_only=False`` — SVD of the 3×3 wrist orientation
+          sub-Jacobian ``J[0:3, 3:6]``.  Flagged when σ_min of that
+          sub-Jacobian drops below ``type_thresholds['wrist']``.
+
+        In both modes the full set of diagnostic metrics is always
+        computed and returned.
         """
+        _J5_SINGULARITY_THRESHOLD_RAD = np.radians(0.76)
+        # This is based on Experiment 17 data
+
         metrics: Dict[str, float] = {}
 
         # Sub-Jacobian for wrist orientation (angular rows, wrist columns)
@@ -323,18 +337,21 @@ class SingularityAnalyzer:
         sv_w = np.linalg.svd(J_wrist_orient, compute_uv=False)
         sigma_min_w = float(np.min(sv_w))
 
-        # q5 proximity to 0 or π
+        # q5 proximity to 0 or π  (works correctly for negative angles)
         q5 = float(q[4]) if len(q) > 4 else 0.0
-        q5_mod = q5 % np.pi
-        dist_to_singularity = min(abs(q5_mod), abs(q5_mod - np.pi))
+        dist_to_singularity = abs(np.sin(q5))
 
         metrics["det_wrist_jacobian"] = det_w
         metrics["sigma_min"] = sigma_min_w
         metrics["j5_angle_rad"] = q5
+        metrics["j5_angle_deg"] = np.degrees(q5)
         metrics["j5_distance_to_singularity_rad"] = dist_to_singularity
 
-        threshold = self.type_thresholds.get("wrist", 0.01)
-        is_active = sigma_min_w < threshold
+        if check_j5_only:
+            is_active = abs(q5) < _J5_SINGULARITY_THRESHOLD_RAD
+        else:
+            threshold = self.type_thresholds.get("wrist", 0.01)
+            is_active = sigma_min_w < threshold
 
         return is_active, metrics
 

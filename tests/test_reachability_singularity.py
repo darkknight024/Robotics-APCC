@@ -45,7 +45,7 @@ import yaml
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from core import create_solvers, SingularityAnalyzer
+from core import create_solvers, SingularityAnalyzer, UnifiedSingularity
 from utils import (
     load_toolpath_trajectories,
     transform_trajectories_to_base_frame,
@@ -171,7 +171,7 @@ def check_trajectory_reachability(
     collision_checker=None,
     robot_data: Optional[object] = None,
     fk_solver=None,
-    singularity_analyzer: Optional[SingularityAnalyzer] = None,
+    singularity_analyzer=None,
 ) -> TrajectoryResult:
     """
     Check reachability of each waypoint in a transformed trajectory,
@@ -188,7 +188,8 @@ def check_trajectory_reachability(
             only marked reachable if IK succeeds *and* no collision is found.
         robot_data: Optional robot data object for detailed joint information
         fk_solver: FK solver instance (needed to compute Jacobian for singularity analysis)
-        singularity_analyzer: Optional SingularityAnalyzer instance
+        singularity_analyzer: Optional SingularityAnalyzer or UnifiedSingularity instance.
+            Pass None to skip singularity analysis entirely.
         
     Returns:
         TrajectoryResult with per-waypoint reachability flags, EAIK joint violations,
@@ -257,24 +258,40 @@ def check_trajectory_reachability(
     singularity_reports = []
     if singularity_analyzer is not None and fk_solver is not None:
         from core.singularity_analysis import SingularityReport, SingularityType
+        from core.unified_singularity import UnifiedSingularityReport
+
+        use_classified = isinstance(singularity_analyzer, SingularityAnalyzer)
+
         for i in range(n_waypoints):
             if reachable_flags[i]:
                 q = joint_angles_rad[i]
                 try:
                     jacobian = fk_solver.get_jacobian(q)
-                    report = singularity_analyzer.analyze(jacobian, q, fk_solver=fk_solver)
+                    if use_classified:
+                        report = singularity_analyzer.analyze(jacobian, q, fk_solver=fk_solver)
+                    else:
+                        report = singularity_analyzer.analyze(jacobian)
                 except Exception as e:
                     print(f"\n    Warning: singularity analysis failed at waypoint {i}: {e}")
+                    if use_classified:
+                        report = SingularityReport(
+                            singularity_type=SingularityType.NONE,
+                            is_singular=False,
+                        )
+                    else:
+                        report = UnifiedSingularityReport(is_singular=False)
+            else:
+                if use_classified:
                     report = SingularityReport(
                         singularity_type=SingularityType.NONE,
                         is_singular=False,
+                        is_reachable=False,
                     )
-            else:
-                report = SingularityReport(
-                    singularity_type=SingularityType.NONE,
-                    is_singular=False,
-                    is_reachable=False,
-                )
+                else:
+                    report = UnifiedSingularityReport(
+                        is_singular=False,
+                        is_reachable=False,
+                    )
             singularity_reports.append(report)
 
     return TrajectoryResult(
@@ -606,6 +623,7 @@ def generate_report(
     total_unreachable = 0
     total_singular = 0
     type_counts: Dict[str, int] = {}
+    has_typed_reports = False
 
     for r in all_results:
         for t in r.trajectories:
@@ -615,10 +633,12 @@ def generate_report(
                     total_unreachable += 1
                     continue
                 total_reachable += 1
-                stype = report.singularity_type.value
                 if report.is_singular:
                     total_singular += 1
-                type_counts[stype] = type_counts.get(stype, 0) + 1
+                if hasattr(report, 'singularity_type'):
+                    has_typed_reports = True
+                    stype = report.singularity_type.value
+                    type_counts[stype] = type_counts.get(stype, 0) + 1
 
     if total_waypoints > 0:
         lines.append(f"  Total waypoints:      {total_waypoints}")
@@ -627,9 +647,12 @@ def generate_report(
         lines.append(f"  Singular waypoints:   {total_singular}")
         lines.append(f"  Non-singular:         {total_reachable - total_singular}")
         lines.append("")
-        lines.append("  Type Distribution:")
-        for stype, cnt in sorted(type_counts.items(), key=lambda x: -x[1]):
-            lines.append(f"    {stype:<25} {cnt:>5}  ({100*cnt/total_reachable:.1f}%)")
+        if has_typed_reports and type_counts:
+            lines.append("  Type Distribution:")
+            for stype, cnt in sorted(type_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"    {stype:<25} {cnt:>5}  ({100*cnt/total_reachable:.1f}%)")
+        else:
+            lines.append("  Mode: unified (no per-type classification)")
     else:
         lines.append("  No singularity analysis data available (no reachable waypoints or analysis disabled).")
 
@@ -734,20 +757,30 @@ def process_combination(
 
     use_robostudio_seed = ik_config.use_robostudio_seed if hasattr(ik_config, 'use_robostudio_seed') else False
 
-    # Build SingularityAnalyzer from config thresholds
-    sing_type_thresholds = None
-    if singularity_config:
-        thresholds_cfg = singularity_config.get('thresholds', {})
-        if thresholds_cfg:
-            sing_type_thresholds = {
-                'wrist': thresholds_cfg.get('wrist', 0.1),
-                'shoulder': thresholds_cfg.get('shoulder', 0.1),
-                'elbow': thresholds_cfg.get('elbow', 0.1),
-            }
-    singularity_analyzer = SingularityAnalyzer(
-        n_joints=6,
-        type_thresholds=sing_type_thresholds,
-    )
+    # Build singularity analyzer based on configured mode
+    singularity_mode = (singularity_config or {}).get('mode', 'classified')
+    singularity_analyzer = None
+
+    if singularity_mode == 'classified':
+        sing_type_thresholds = None
+        if singularity_config:
+            thresholds_cfg = singularity_config.get('thresholds', {})
+            if thresholds_cfg:
+                sing_type_thresholds = {
+                    'wrist': thresholds_cfg.get('wrist', 0.1),
+                    'shoulder': thresholds_cfg.get('shoulder', 0.1),
+                    'elbow': thresholds_cfg.get('elbow', 0.1),
+                }
+        singularity_analyzer = SingularityAnalyzer(
+            n_joints=6,
+            type_thresholds=sing_type_thresholds,
+        )
+    elif singularity_mode == 'unified':
+        unified_threshold = (singularity_config or {}).get('unified_threshold', 0.01)
+        singularity_analyzer = UnifiedSingularity(
+            singularity_threshold=unified_threshold,
+        )
+    # singularity_mode == 'none' → singularity_analyzer stays None
 
     # Load trajectories; if --base_frame: treat CSV as already in robot base frame (no knife)
     trajectories_t_p_k, speeds = load_toolpath_trajectories(toolpath_path)
@@ -844,15 +877,21 @@ def process_combination(
             str(combo_output / f"raw_reachability_T{traj_num}.csv")
         )
 
-        # Singularity CSV — ALWAYS saved
+        # Singularity CSV — ALWAYS saved (when analysis was performed)
         if traj_result.singularity_reports:
-            SingularityAnalyzer.export_csv(
-                traj_result.singularity_reports,
-                str(combo_output / f"T{traj_num}_singularity_report.csv"),
-            )
+            if singularity_mode == 'classified':
+                SingularityAnalyzer.export_csv(
+                    traj_result.singularity_reports,
+                    str(combo_output / f"T{traj_num}_singularity_report.csv"),
+                )
+            elif singularity_mode == 'unified':
+                UnifiedSingularity.export_csv(
+                    traj_result.singularity_reports,
+                    str(combo_output / f"T{traj_num}_singularity_report.csv"),
+                )
 
-            # Singularity plots — only when flag is set
-            if export_singularity_graphs:
+            # Singularity plots — only for classified mode and when flag is set
+            if export_singularity_graphs and singularity_mode == 'classified':
                 traj_label = f"{toolpath_name} — T{traj_num}\n{robot_name}" + (f" / {display_knife}" if not use_base_frame else "")
                 try:
                     plot_singularity_type_classification(
@@ -939,6 +978,7 @@ def main():
 
     # Singularity analysis settings
     singularity_config = config.get('singularity_analysis', {})
+    singularity_mode = singularity_config.get('mode', 'classified')
     export_singularity_graphs = args.export_singularity_graphs or singularity_config.get('export_singularity_graphs', False)
 
     # Resolve robots from central config
@@ -1002,6 +1042,7 @@ def main():
     check_self_collision = args.check_self_collision
 
     print(f"\nSolver:     {solver_type}")
+    print(f"Singularity mode: {singularity_mode}")
     print(f"Singularity graphs: {'ENABLED' if export_singularity_graphs else 'DISABLED (CSV always saved)'}")
     if use_base_frame:
         print("Base frame: toolpaths used as-is (no knife pose)")

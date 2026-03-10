@@ -954,6 +954,9 @@ def main():
                         help="Robot reach in meters")
     parser.add_argument('--singularity-threshold', type=float, default=0.01,
                         help="Singularity warning threshold")
+    parser.add_argument('--singularity-mode', choices=['unified', 'none'],
+                        default='unified',
+                        help="Singularity mode: 'unified' (full-Jacobian σ_min) or 'none' (skip)")
     parser.add_argument('--speed', type=float, default=100.0,
                         help="End-effector speed in mm/s")
     parser.add_argument('--no-continuity', action='store_true',
@@ -981,6 +984,12 @@ def main():
     robot_model_name = extract_robot_model_name(args.urdf)
     print(f"Robot model: {robot_model_name}")
     print(f"Knife pose: {args.knife_pose}")
+    print(f"Singularity mode: {args.singularity_mode}")
+
+    # When singularity mode is 'none', set threshold to 0 to skip all flagging
+    singularity_threshold = args.singularity_threshold
+    if args.singularity_mode == 'none':
+        singularity_threshold = 0.0
     
     # Default velocity limits for IRB 1300-7/1.4
     velocity_limits = np.array([4.443, 3.142, 4.312, 8.727, 7.245, 12.566])
@@ -995,7 +1004,7 @@ def main():
         robot_model_name=robot_model_name,
         knife_pose_name=args.knife_pose,
         robot_reach_m=args.reach,
-        singularity_threshold=args.singularity_threshold,
+        singularity_threshold=singularity_threshold,
         velocity_limits_rad_s=velocity_limits,
         speed_mm_s=args.speed,
         run_continuity=not args.no_continuity,
