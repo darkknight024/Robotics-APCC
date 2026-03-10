@@ -24,10 +24,10 @@ knife_poses_to_use:
 # I/O Directories
 # =============================================================================
 # Folder containing toolpath CSVs (T_P_K format, positions in mm)
-toolpaths_folder: "Robot_APCC/Experiments/Experiment_12/Toolpaths"
+toolpaths_folder: "Robot_APCC/Experiments/Experiment_15/Waypoints_Base_Frame"
 
 # Output directory for results
-output_folder: "Robot_APCC/Results/Experiment_12/"
+output_folder: "Robot_APCC/Results/Experiment_15/Eaik_Reachability_Singularity"
 
 # =============================================================================
 # Processing Options
@@ -35,3 +35,19 @@ output_folder: "Robot_APCC/Results/Experiment_12/"
 options:
   # Solver backend: "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
   solver: "eaik"
+
+# =============================================================================
+# Singularity Analysis
+# =============================================================================
+# Used by: tests/test_reachability_singularity.py
+singularity_analysis:
+  # Generate singularity PNG plots (CSV reports are ALWAYS saved)
+  export_singularity_graphs: true
+
+  # Sub-Jacobian σ_min thresholds for type classification.
+  # A waypoint is flagged as that singularity type when its
+  # sub-Jacobian σ_min drops below the threshold.
+  thresholds:
+    wrist: 0.1
+    shoulder: 0.1
+    elbow: 0.1

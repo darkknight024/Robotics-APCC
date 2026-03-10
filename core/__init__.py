@@ -31,6 +31,13 @@ from .feasibility_checks import (
     check_reachability
 )
 
+# --- Singularity analysis ---
+from .singularity_analysis import (
+    SingularityAnalyzer,
+    SingularityReport,
+    SingularityType,
+)
+
 # --- Self-collision ---
 from .collision_checker import SelfCollisionChecker, CollisionResult
 
@@ -102,6 +109,8 @@ __all__ = [
     'compute_manipulability', 'compute_singularity_proximity',
     'compute_max_singular_value', 'compute_condition_number',
     'check_reachability',
+    # Singularity analysis
+    'SingularityAnalyzer', 'SingularityReport', 'SingularityType',
     # Self-collision
     'SelfCollisionChecker', 'CollisionResult',
 ]

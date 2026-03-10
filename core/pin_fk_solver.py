@@ -122,18 +122,23 @@ class PinocchioFKSolver(BaseFKSolver):
     def get_jacobian(self, q: np.ndarray, local_frame: bool = True) -> np.ndarray:
         """
         Compute Jacobian at given configuration.
-        
+
+        Convention: [angular(3); linear(3)]  — matches EAIK and SingularityAnalyzer.
+        Pinocchio natively returns [linear; angular], so rows are swapped here.
+
         Args:
             q: Joint configuration
             local_frame: If True, use LOCAL frame; else use WORLD frame
-            
+
         Returns:
-            jacobian: 6xn Jacobian matrix
+            jacobian: 6xn Jacobian matrix  [angular(3); linear(3)]
         """
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
-        
+
         frame_type = pin.LOCAL if local_frame else pin.WORLD
-        return pin.computeFrameJacobian(
+        J_pin = pin.computeFrameJacobian(
             self.model, self.data, q, self.ee_frame_id, frame_type
         )
+        # Pinocchio: [linear(3); angular(3)] → swap to [angular(3); linear(3)]
+        return np.vstack([J_pin[3:6, :], J_pin[0:3, :]])

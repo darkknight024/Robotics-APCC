@@ -15,6 +15,22 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 
+def _add_threshold_yticks(ax, threshold_values: List[float], color: str = "red") -> None:
+    """Merge *threshold_values* into the y-axis ticks so readers see the exact numbers."""
+    ymin, ymax = ax.get_ylim()
+    existing = [t for t in ax.get_yticks() if ymin <= t <= ymax]
+    thresh_set = set(threshold_values)
+    merged = sorted(set(existing) | thresh_set)
+    ax.set_yticks(merged)
+    labels_text = [f"{v:g}" for v in merged]
+    clrs = [color if v in thresh_set else "black" for v in merged]
+    ax.set_yticklabels(labels_text)
+    for ticklabel, c in zip(ax.yaxis.get_ticklabels(), clrs):
+        ticklabel.set_color(c)
+        if c == color:
+            ticklabel.set_fontweight("bold")
+
+
 def plot_singularity_per_waypoint(
     singularity_values: np.ndarray,
     output_path: str,
@@ -46,7 +62,10 @@ def plot_singularity_per_waypoint(
     ax.set_ylabel('Minimum Singular Value', fontweight='bold')
     ax.set_title(title, fontweight='bold')
     ax.grid(True, alpha=0.3)
-    
+
+    if threshold is not None:
+        _add_threshold_yticks(ax, [threshold])
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
@@ -512,7 +531,10 @@ def plot_singularity_per_trajectory(
     ax.text(0.02, 0.98, summary_text, transform=ax.transAxes, 
             fontweight='bold', va='top', fontsize=10,
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-    
+
+    if threshold is not None:
+        _add_threshold_yticks(ax, [threshold])
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
@@ -1931,4 +1953,325 @@ def plot_combination_feasibility_levels(
     
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+# =============================================================================
+# Singularity Classification Plots
+# =============================================================================
+
+_SINGULARITY_TYPE_COLORS = {
+    "none": "#2ecc71",
+    "shoulder": "#e67e22",
+    "elbow": "#3498db",
+    "wrist": "#e74c3c",
+    "shoulder+elbow": "#9b59b6",
+    "shoulder+wrist": "#e91e63",
+    "elbow+wrist": "#00bcd4",
+    "shoulder+elbow+wrist": "#1a1a2e",
+}
+
+def plot_singularity_type_classification(
+    reports: List,
+    output_path: str,
+    title: str = "Singularity Type Classification",
+) -> None:
+    """Color-coded bar chart of singularity type at each waypoint."""
+    from core.singularity_analysis import SingularityReport  # deferred to avoid circular import at module level
+
+    n = len(reports)
+    waypoints = np.arange(n)
+    types = [r.singularity_type.value for r in reports]
+    colors = [_SINGULARITY_TYPE_COLORS.get(t, "#999999") for t in types]
+
+    fig, ax = plt.subplots(figsize=(14, 4))
+    ax.bar(waypoints, 1, color=colors, edgecolor="none", width=1.0)
+
+    unique_types = sorted(set(types), key=lambda t: list(_SINGULARITY_TYPE_COLORS.keys()).index(t) if t in _SINGULARITY_TYPE_COLORS else 99)
+    handles = [plt.Rectangle((0, 0), 1, 1, color=_SINGULARITY_TYPE_COLORS.get(t, "#999")) for t in unique_types]
+    ax.legend(handles, unique_types, loc="upper right", fontsize=9, ncol=min(len(unique_types), 4))
+
+    ax.set_xlabel("Waypoint Index", fontweight="bold")
+    ax.set_ylabel("")
+    ax.set_yticks([])
+    ax.set_title(title, fontweight="bold")
+    ax.set_xlim(-0.5, n - 0.5)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_sub_jacobian_metrics(
+    reports: List,
+    output_path: str,
+    title: str = "Sub-Jacobian σ_min",
+    type_thresholds: Optional[Dict[str, float]] = None,
+) -> None:
+    """σ_min for wrist / shoulder / elbow sub-Jacobians with threshold lines."""
+    n = len(reports)
+    waypoints = np.arange(n)
+
+    wrist_sigma = [r.wrist_metrics.get("sigma_min", np.nan) for r in reports]
+    shoulder_sigma = [r.shoulder_metrics.get("sigma_min", np.nan) for r in reports]
+    elbow_sigma = [r.elbow_metrics.get("sigma_min", np.nan) for r in reports]
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.plot(waypoints, wrist_sigma, label="Wrist σ_min", color="#e74c3c", linewidth=1.5)
+    ax.plot(waypoints, shoulder_sigma, label="Shoulder σ_min", color="#e67e22", linewidth=1.5)
+    ax.plot(waypoints, elbow_sigma, label="Elbow σ_min", color="#3498db", linewidth=1.5)
+
+    if type_thresholds is not None:
+        vals = set(type_thresholds.values())
+        if len(vals) == 1:
+            tv = vals.pop()
+            ax.axhline(y=tv, color="gray", linestyle="--", linewidth=1.5, alpha=0.7,
+                        label=f"All thresholds ({tv})")
+        else:
+            for name, tv in type_thresholds.items():
+                clr = {"wrist": "#e74c3c", "shoulder": "#e67e22", "elbow": "#3498db"}.get(name, "gray")
+                ax.axhline(y=tv, color=clr, linestyle="--", linewidth=1, alpha=0.6,
+                            label=f"{name} threshold ({tv})")
+
+    ax.set_xlabel("Waypoint Index", fontweight="bold")
+    ax.set_ylabel("Minimum Singular Value", fontweight="bold")
+    ax.set_title(title, fontweight="bold")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    if type_thresholds is not None:
+        _add_threshold_yticks(ax, list(set(type_thresholds.values())))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_sub_jacobian_determinants(
+    reports: List,
+    output_path: str,
+    title: str = "Sub-Jacobian Determinants",
+) -> None:
+    """Determinants of all three sub-Jacobians (wrist, shoulder, elbow) as 3 subplots."""
+    n = len(reports)
+    waypoints = np.arange(n)
+
+    wrist_det = [r.wrist_metrics.get("det_wrist_jacobian", np.nan) for r in reports]
+    shoulder_det = [r.shoulder_metrics.get("det_arm_jacobian", np.nan) for r in reports]
+    elbow_col = [r.elbow_metrics.get("j2_j3_collinearity", np.nan) for r in reports]
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+
+    ax = axes[0]
+    ax.plot(waypoints, wrist_det, color="#e74c3c", linewidth=1.5)
+    ax.axhline(y=0, color="gray", linestyle="--", linewidth=1)
+    ax.set_ylabel("Determinant", fontweight="bold")
+    ax.set_title("Wrist Sub-Jacobian det(J[0:3, 3:6])", fontweight="bold", fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    ax.plot(waypoints, shoulder_det, color="#e67e22", linewidth=1.5)
+    ax.axhline(y=0, color="gray", linestyle="--", linewidth=1)
+    ax.set_ylabel("Determinant", fontweight="bold")
+    ax.set_title("Shoulder Sub-Jacobian det(J[3:6, 0:3])", fontweight="bold", fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[2]
+    ax.plot(waypoints, elbow_col, color="#3498db", linewidth=1.5)
+    ax.axhline(y=0, color="gray", linestyle="--", linewidth=1)
+    ax.set_xlabel("Waypoint Index", fontweight="bold")
+    ax.set_ylabel("Collinearity (1 − |cos θ|)", fontweight="bold")
+    ax.set_title("Elbow J2-J3 Collinearity (0 = fully collinear)", fontweight="bold", fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle(title, fontweight="bold", fontsize=13, y=1.01)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_joint_angles_trajectory(
+    joint_angles: np.ndarray,
+    output_path: str,
+    title: str = "Joint Angles over Trajectory",
+) -> None:
+    """Plot all joint angles (degrees) over the trajectory."""
+    n = len(joint_angles)
+    n_joints = joint_angles.shape[1] if joint_angles.ndim == 2 else 1
+    waypoints = np.arange(n)
+
+    joint_colors = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#3498db", "#9b59b6"]
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    for j in range(n_joints):
+        clr = joint_colors[j % len(joint_colors)]
+        ax.plot(waypoints, np.degrees(joint_angles[:, j]), linewidth=1.3,
+                label=f"J{j+1}", color=clr)
+
+    ax.set_xlabel("Waypoint Index", fontweight="bold")
+    ax.set_ylabel("Joint Angle (deg)", fontweight="bold")
+    ax.set_title(title, fontweight="bold")
+    ax.legend(loc="upper right", fontsize=9, ncol=n_joints)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_singular_value_spectrum(
+    reports: List,
+    output_path: str,
+    title: str = "Singular Value Spectrum",
+) -> None:
+    """All 6 singular values per waypoint as overlaid lines."""
+    n = len(reports)
+    waypoints = np.arange(n)
+
+    n_sv = next((len(r.singular_values) for r in reports if len(r.singular_values) > 0), 6)
+    sv_matrix = np.full((n, n_sv), np.nan)
+    for i, r in enumerate(reports):
+        svs = r.singular_values
+        k = min(len(svs), n_sv)
+        if k > 0:
+            sv_matrix[i, :k] = svs[:k]
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    cmap = plt.cm.viridis  # type: ignore[attr-defined]
+    for j in range(n_sv):
+        color = cmap(j / max(n_sv - 1, 1))
+        ax.plot(waypoints, sv_matrix[:, j], linewidth=1.5, label=f"σ_{j+1}", color=color)
+
+    ax.set_xlabel("Waypoint Index", fontweight="bold")
+    ax.set_ylabel("Singular Value", fontweight="bold")
+    ax.set_title(title, fontweight="bold")
+    if n_sv > 0:
+        ax.legend(loc="upper right", fontsize=9, ncol=n_sv)
+    ax.grid(True, alpha=0.3)
+    ax.set_yscale("log")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_singularity_dashboard(
+    reports: List,
+    joint_angles: np.ndarray,
+    output_path: str,
+    title: str = "Singularity Analysis Dashboard",
+    threshold: float = 0.01,
+    type_thresholds: Optional[Dict[str, float]] = None,
+) -> None:
+    """Combined 2×3 subplot dashboard aggregating all singularity views."""
+    from core.singularity_analysis import SingularityReport  # deferred
+
+    n = len(reports)
+    waypoints = np.arange(n)
+
+    fig, axes = plt.subplots(2, 3, figsize=(22, 10))
+    fig.suptitle(title, fontweight="bold", fontsize=14)
+
+    # (0,0) Type classification strip
+    ax = axes[0, 0]
+    types = [r.singularity_type.value for r in reports]
+    colors = [_SINGULARITY_TYPE_COLORS.get(t, "#999") for t in types]
+    ax.bar(waypoints, 1, color=colors, edgecolor="none", width=1.0)
+    unique_types = sorted(set(types), key=lambda t: list(_SINGULARITY_TYPE_COLORS.keys()).index(t) if t in _SINGULARITY_TYPE_COLORS else 99)
+    handles = [plt.Rectangle((0, 0), 1, 1, color=_SINGULARITY_TYPE_COLORS.get(t, "#999")) for t in unique_types]
+    ax.legend(handles, unique_types, loc="upper right", fontsize=7, ncol=2)
+    ax.set_yticks([])
+    ax.set_title("Type Classification", fontweight="bold", fontsize=11)
+    ax.set_xlim(-0.5, n - 0.5)
+
+    # (0,1) Overall σ_min
+    ax = axes[0, 1]
+    overall_sigma = [r.overall_sigma_min for r in reports]
+    ax.plot(waypoints, overall_sigma, "b-", linewidth=1.5)
+    ax.fill_between(waypoints, 0, overall_sigma, alpha=0.2, color="blue")
+    ax.axhline(y=threshold, color="red", linestyle="--", linewidth=1.5,
+               label=f"Threshold ({threshold})")
+    ax.legend(fontsize=8)
+    ax.set_title("Overall σ_min", fontweight="bold", fontsize=11)
+    ax.set_xlim(-0.5, n - 0.5)
+    ax.grid(True, alpha=0.3)
+    _add_threshold_yticks(ax, [threshold])
+
+    # (0,2) Sub-Jacobian sigma_min with thresholds
+    ax = axes[0, 2]
+    wrist_s = [r.wrist_metrics.get("sigma_min", np.nan) for r in reports]
+    shoulder_s = [r.shoulder_metrics.get("sigma_min", np.nan) for r in reports]
+    elbow_s = [r.elbow_metrics.get("sigma_min", np.nan) for r in reports]
+    ax.plot(waypoints, wrist_s, color="#e74c3c", linewidth=1.2, label="Wrist")
+    ax.plot(waypoints, shoulder_s, color="#e67e22", linewidth=1.2, label="Shoulder")
+    ax.plot(waypoints, elbow_s, color="#3498db", linewidth=1.2, label="Elbow")
+    if type_thresholds is not None:
+        vals = set(type_thresholds.values())
+        if len(vals) == 1:
+            ax.axhline(y=vals.pop(), color="gray", linestyle="--", linewidth=1, alpha=0.6,
+                        label=f"Threshold")
+        else:
+            for tn, tv in type_thresholds.items():
+                tc = {"wrist": "#e74c3c", "shoulder": "#e67e22", "elbow": "#3498db"}.get(tn, "gray")
+                ax.axhline(y=tv, color=tc, linestyle="--", linewidth=1, alpha=0.5)
+    else:
+        ax.axhline(y=threshold, color="gray", linestyle="--", linewidth=1, alpha=0.6)
+    ax.legend(fontsize=7)
+    ax.set_title("Sub-Jacobian σ_min", fontweight="bold", fontsize=11)
+    ax.grid(True, alpha=0.3)
+    if type_thresholds is not None:
+        _add_threshold_yticks(ax, list(set(type_thresholds.values())))
+    else:
+        _add_threshold_yticks(ax, [threshold])
+
+    # (1,0) All joint angles
+    ax = axes[1, 0]
+    n_joints = joint_angles.shape[1] if joint_angles.ndim == 2 else 1
+    jcolors = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#3498db", "#9b59b6"]
+    for j in range(n_joints):
+        ax.plot(waypoints, np.degrees(joint_angles[:, j]), linewidth=1,
+                label=f"J{j+1}", color=jcolors[j % len(jcolors)])
+    ax.set_ylabel("Angle (deg)", fontsize=9)
+    ax.set_title("Joint Angles", fontweight="bold", fontsize=11)
+    ax.legend(fontsize=7, ncol=n_joints)
+    ax.grid(True, alpha=0.3)
+
+    # (1,1) Singular value spectrum
+    ax = axes[1, 1]
+    n_sv = next((len(r.singular_values) for r in reports if len(r.singular_values) > 0), 6)
+    sv_matrix = np.full((n, n_sv), np.nan)
+    for i, r in enumerate(reports):
+        svs = r.singular_values
+        k = min(len(svs), n_sv)
+        if k > 0:
+            sv_matrix[i, :k] = svs[:k]
+    cmap = plt.cm.viridis  # type: ignore[attr-defined]
+    for j in range(n_sv):
+        color = cmap(j / max(n_sv - 1, 1))
+        ax.plot(waypoints, sv_matrix[:, j], linewidth=1.2, label=f"σ_{j+1}", color=color)
+    ax.set_yscale("log")
+    if n_sv > 0:
+        ax.legend(fontsize=7, ncol=n_sv)
+    ax.set_title("Singular Value Spectrum", fontweight="bold", fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    # (1,2) Sub-Jacobian determinants
+    ax = axes[1, 2]
+    wrist_det = [r.wrist_metrics.get("det_wrist_jacobian", np.nan) for r in reports]
+    shoulder_det = [r.shoulder_metrics.get("det_arm_jacobian", np.nan) for r in reports]
+    elbow_col = [r.elbow_metrics.get("j2_j3_collinearity", np.nan) for r in reports]
+    ax.plot(waypoints, wrist_det, color="#e74c3c", linewidth=1.2, label="Wrist det")
+    ax.plot(waypoints, shoulder_det, color="#e67e22", linewidth=1.2, label="Shoulder det")
+    ax.plot(waypoints, elbow_col, color="#3498db", linewidth=1.2, label="Elbow collin.")
+    ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.legend(fontsize=7)
+    ax.set_title("Sub-Jacobian Determinants", fontweight="bold", fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    for ax_row in axes:
+        for ax in ax_row:
+            ax.set_xlabel("Waypoint Index", fontsize=9)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()

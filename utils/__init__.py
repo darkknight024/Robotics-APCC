@@ -75,7 +75,14 @@ from .feasibility_plot import (
     # 4-Level feasibility plots
     plot_feasibility_levels,
     plot_feasibility_levels_detailed,
-    plot_combination_feasibility_levels
+    plot_combination_feasibility_levels,
+    # Singularity classification plots
+    plot_singularity_type_classification,
+    plot_sub_jacobian_metrics,
+    plot_sub_jacobian_determinants,
+    plot_joint_angles_trajectory,
+    plot_singular_value_spectrum,
+    plot_singularity_dashboard,
 )
 
 from .generate_combinatorial_plots import (
@@ -174,6 +181,13 @@ __all__ = [
     'plot_feasibility_levels',
     'plot_feasibility_levels_detailed',
     'plot_combination_feasibility_levels',
+    # Singularity classification plots
+    'plot_singularity_type_classification',
+    'plot_sub_jacobian_metrics',
+    'plot_sub_jacobian_determinants',
+    'plot_joint_angles_trajectory',
+    'plot_singular_value_spectrum',
+    'plot_singularity_dashboard',
     # Config
     'load_ik_config',
     'load_knife_config',
