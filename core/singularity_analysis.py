@@ -84,7 +84,6 @@ class SingularityReport:
         d: Dict[str, Any] = {
             "singularity_type": self.singularity_type.value if self.is_reachable else "unreachable",
             "is_singular": "unreachable" if not self.is_reachable else self.is_singular,
-            "active_types": ";".join(self.active_types) if self.active_types else "",
             "overall_sigma_min": self.overall_sigma_min,
             "overall_condition_number": self.overall_condition_number,
             "overall_manipulability": self.overall_manipulability,
@@ -147,11 +146,15 @@ class SingularityAnalyzer:
         self,
         n_joints: int = 6,
         type_thresholds: Optional[Dict[str, float]] = None,
+        check_j5_only: bool = False,
+        j5_threshold_deg: float = 0.76,
     ):
         self.n_joints = n_joints
         self.type_thresholds = dict(_DEFAULT_TYPE_THRESHOLDS)
         if type_thresholds:
             self.type_thresholds.update(type_thresholds)
+        self.check_j5_only = check_j5_only
+        self.j5_threshold_deg = j5_threshold_deg
 
     # ------------------------------------------------------------------
     # Public API
@@ -190,7 +193,9 @@ class SingularityAnalyzer:
         manip = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
 
         # Per-type classification
-        wrist_active, wrist_metrics = self._classify_wrist(J, q)
+        wrist_active, wrist_metrics = self._classify_wrist(
+            J, q, check_j5_only=self.check_j5_only,
+        )
         shoulder_active, shoulder_metrics = self._classify_shoulder(J, q, fk_solver)
         elbow_active, elbow_metrics = self._classify_elbow(J, q)
 
@@ -303,28 +308,28 @@ class SingularityAnalyzer:
         self,
         J: np.ndarray,
         q: np.ndarray,
-        check_j5_only: bool = True,
+        check_j5_only: bool = False,
     ) -> tuple:
         """
         Detect wrist singularity.
 
         Two modes:
 
-        * ``check_j5_only=True`` (default) — fast geometric check.
-          Joint 5 (q[4]) is compared against a ±0.76° dead-band
-          (matching ABB RobotWare's empirical boundary).  If
-          ``|q[4]|`` is within [-0.76°, +0.76°] the configuration
-          is flagged as wrist-singular.
+        * ``check_j5_only=True`` — fast geometric check.
+          Joint 5 (q[4]) is compared against a configurable dead-band
+          (default ±0.76°, matching ABB RobotWare's empirical boundary).
+          If ``|q[4]|`` < ``j5_threshold_deg`` the configuration is
+          flagged as wrist-singular.
 
-        * ``check_j5_only=False`` — SVD of the 3×3 wrist orientation
-          sub-Jacobian ``J[0:3, 3:6]``.  Flagged when σ_min of that
-          sub-Jacobian drops below ``type_thresholds['wrist']``.
+        * ``check_j5_only=False`` (default) — SVD of the 3×3 wrist
+          orientation sub-Jacobian ``J[0:3, 3:6]``.  Flagged when
+          σ_min of that sub-Jacobian drops below
+          ``type_thresholds['wrist']``.
 
         In both modes the full set of diagnostic metrics is always
         computed and returned.
         """
-        _J5_SINGULARITY_THRESHOLD_RAD = np.radians(0.76)
-        # This is based on Experiment 17 data
+        _J5_SINGULARITY_THRESHOLD_RAD = np.radians(self.j5_threshold_deg)
 
         metrics: Dict[str, float] = {}
 

@@ -13,8 +13,12 @@ Two analysis modes are available (configured via `singularity_analysis.mode` in
 | `unified` | `UnifiedSingularity` | `core/unified_singularity.py` | Full-Jacobian σ_min only (no type split) |
 | `none` | — | — | Skips singularity analysis entirely |
 
-Orchestrated from `tests/test_reachability_singularity.py` and
-`feasibility_analysis.py`.
+Orchestrated from `tests/test_reachability.py`, `tests/test_singularity_only.py`,
+and `feasibility_analysis.py`.
+
+**Note:** The `active_types` column was removed from the CSV export.
+The `singularity_type` column already encodes compound types (e.g.
+`shoulder+wrist`), so `active_types` was redundant.
 
 ---
 
@@ -76,10 +80,10 @@ columns = joints 1–6) and the joint-angle vector q.
 
 Occurs when **joints 4 and 6 axes align** (joint 5 ≈ 0 or π).
 
-Two detection modes are supported (controlled by `check_j5_only` flag on
-`_classify_wrist`, default `True`):
+Two detection modes are supported (controlled by `check_j5_only` in the config
+or `SingularityAnalyzer(check_j5_only=...)`, default `False`):
 
-**J5-only mode** (default, `check_j5_only=True`):
+**J5-only mode** (`check_j5_only=True`):
 
 | What | Formula |
 |------|--------|
@@ -90,7 +94,7 @@ Two detection modes are supported (controlled by `check_j5_only` flag on
 This is a fast geometric check that exactly replicates the empirically observed
 ABB RobotWare singularity boundary.
 
-**Sub-Jacobian mode** (`check_j5_only=False`):
+**Sub-Jacobian mode** (default, `check_j5_only=False`):
 
 | What | Formula |
 |------|--------|
@@ -192,7 +196,9 @@ singularity_analysis:
   mode: "classified"          # "classified", "unified", or "none"
   export_singularity_graphs: true
   unified_threshold: 0.01     # σ_min (smallest singular value) threshold for unified mode
-  thresholds:                 # per-type thresholds for classified mode
+  check_j5_only: false        # true → wrist singularity uses |q5| < j5_threshold_deg
+  j5_threshold_deg: 0.76      # J5 angle threshold (degrees); used when check_j5_only is true
+  thresholds:                 # per-type σ_min thresholds for classified mode
     wrist: 0.1
     shoulder: 0.1
     elbow: 0.1

@@ -39,12 +39,13 @@ options:
 # =============================================================================
 # Singularity Analysis
 # =============================================================================
-# Used by: tests/test_reachability_singularity.py, feasibility_analysis.py
+# Used by: tests/test_reachability.py, tests/test_singularity_only.py, feasibility_analysis.py
+# This config is the ONLY place to turn singularity analysis on/off for reachability tests.
 singularity_analysis:
   # Singularity mode: which analyzer to use.
   #   "classified" — SingularityAnalyzer (shoulder / elbow / wrist decomposition)
-  #   "unified"    — UnifiedSingularity  (full-Jacobian σ_min only, no type split)
-  #   "none"       — skip singularity analysis entirely
+  #   "unified"    — UnifiedSingularity  (full-Jacobian σ_min only (legacy approach), no type split)
+  #   "none"  — skip singularity analysis entirely
   mode: "classified"
 
   # Generate singularity PNG plots (CSV reports are ALWAYS saved)
@@ -52,6 +53,15 @@ singularity_analysis:
 
   # Unified-mode threshold: σ_min below this flags the waypoint as singular.
   unified_threshold: 0.01
+
+  # Wrist-singularity J5 geometric check (classified mode only).
+  # When true, wrist singularity is detected by checking if |q5| < j5_threshold_deg
+  # instead of using the wrist sub-Jacobian σ_min. Matches ABB RobotWare dead-band.
+  check_j5_only: true
+
+  # J5 angle threshold in degrees (used only when check_j5_only is true).
+  # Waypoint is flagged wrist-singular when |q5| < this value.
+  j5_threshold_deg: 0.76
 
   # Sub-Jacobian σ_min thresholds for type classification (classified mode).
   # A waypoint is flagged as that singularity type when its

@@ -1,30 +1,45 @@
 #!/usr/bin/env python3
 """
-test_reachability.py — Reachability Test
+test_reachability.py — Reachability + Singularity Test
 
-Tests if robot end-effector can reach all waypoints in toolpaths
-across robot/knife/toolpath combinations.
+Tests if robot end-effector can reach all waypoints in toolpath CSVs
+across robot/knife/toolpath combinations. Optionally performs singularity
+analysis (shoulder/elbow/wrist or unified) for each reachable waypoint.
+Singularity is controlled solely via the ``singularity_analysis`` section
+in ``reachability_config.yaml``; set mode to "none" to skip.
 
-A toolpath CSV can contain multiple trajectories (separated by T0 markers).
-Each trajectory is in T_P_K frame and gets converted to base frame via knife pose.
+INPUT CSV FORMAT (TCP poses)
+============================
+Each toolpath CSV must contain **TCP poses** — NOT joint angles.
 
-Output Structure:
+  Without --base_frame (T_P_K frame):
+      x, y, z, qw, qx, qy, qz [, roll_deg, pitch_deg, yaw_deg, ...]
+      Positions in **millimetres**.  Extra columns after qz are ignored.
+      A row beginning with ``T0`` marks the start of a new trajectory.
+
+  With --base_frame (robot base frame):
+      Same column layout.  Poses are already in the robot base frame;
+      no knife transform is applied.
+
+For joint-space singularity analysis (J1–J6 in degrees), use the
+companion script ``tests/test_singularity_only.py`` instead.
+
+OUTPUT STRUCTURE
+================
     output_folder/
     └── <robot_name>/
-        └── <knife_name>/          (omitted when using --base_frame)
+        └── <knife_name>/              (omitted with --base_frame)
             └── <toolpath_name>/
                 ├── reachability_per_waypoint_T1.png
+                ├── T1_singularity_report.csv   (when singularity enabled)
                 ├── ...
                 └── reachability_rate_per_trajectory.png
     └── reachability_analysis.txt
 
-With --base_frame: toolpath CSV is already in robot base frame; knife pose is not loaded or used;
-output is output_folder/<robot_name>/<toolpath_name>/ (no knife level).
-
 Usage:
     python tests/test_reachability.py
     python tests/test_reachability.py --config tests/configs/reachability_config.yaml
-    python tests/test_reachability.py --base_frame   # toolpath in base frame; no knife pose
+    python tests/test_reachability.py --base_frame
 """
 
 import argparse
@@ -43,7 +58,7 @@ import yaml
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from core import create_solvers
+from core import create_solvers, SingularityAnalyzer, UnifiedSingularity
 from utils import (
     load_toolpath_trajectories,
     transform_trajectories_to_base_frame,
@@ -54,6 +69,12 @@ from utils import (
     plot_ik_success_failure,
     plot_eaik_solve_outcome,
     plot_joint_limits_violated_per_waypoint,
+    plot_singularity_type_classification,
+    plot_sub_jacobian_metrics,
+    plot_sub_jacobian_determinants,
+    plot_joint_angles_trajectory,
+    plot_singular_value_spectrum,
+    plot_singularity_dashboard,
 )
 from utils.config_loader import load_robots_config
 
@@ -76,6 +97,7 @@ class TrajectoryResult:
     joint_angles_rad: Optional[np.ndarray] = None
     target_poses: Optional[np.ndarray] = None
     unreachability_reasons: Dict[int, str] = field(default_factory=dict)  # waypoint_idx -> reason
+    singularity_reports: List = field(default_factory=list)  # List[SingularityReport] or List[UnifiedSingularityReport]
 
     @property
     def reachability_pct(self) -> float:
@@ -161,9 +183,12 @@ def check_trajectory_reachability(
     use_robostudio_seed: bool = False,
     collision_checker=None,
     robot_data: Optional[object] = None,
+    fk_solver=None,
+    singularity_analyzer=None,
 ) -> TrajectoryResult:
     """
-    Check reachability of each waypoint in a transformed trajectory.
+    Check reachability of each waypoint in a transformed trajectory,
+    and optionally run singularity analysis for reachable waypoints.
     
     Args:
         trajectory_t_b_p: (n_waypoints, 7) array [x, y, z, qw, qx, qy, qz] in base frame (meters)
@@ -175,9 +200,13 @@ def check_trajectory_reachability(
             IK solutions are also checked for self-collision — a waypoint is
             only marked reachable if IK succeeds *and* no collision is found.
         robot_data: Optional robot data object for detailed joint information
+        fk_solver: FK solver instance (needed to compute Jacobian for singularity analysis)
+        singularity_analyzer: Optional SingularityAnalyzer or UnifiedSingularity instance.
+            Pass None to skip singularity analysis entirely.
         
     Returns:
-        TrajectoryResult with per-waypoint reachability flags and EAIK joint violations
+        TrajectoryResult with per-waypoint reachability flags, EAIK joint violations,
+        and singularity reports for reachable waypoints (when analyzer provided)
     """
     n_waypoints = len(trajectory_t_b_p)
     n_joints = getattr(ik_solver, 'n_joints', None) or getattr(
@@ -237,6 +266,47 @@ def check_trajectory_reachability(
             unreachability_reasons[i] = reason
 
     reachable_count = int(np.sum(reachable_flags))
+
+    # Singularity analysis for reachable waypoints (when enabled via config)
+    singularity_reports = []
+    if singularity_analyzer is not None and fk_solver is not None:
+        from core.singularity_analysis import SingularityReport, SingularityType
+        from core.unified_singularity import UnifiedSingularityReport
+
+        use_classified = isinstance(singularity_analyzer, SingularityAnalyzer)
+
+        for i in range(n_waypoints):
+            if reachable_flags[i]:
+                q = joint_angles_rad[i]
+                try:
+                    jacobian = fk_solver.get_jacobian(q)
+                    if use_classified:
+                        report = singularity_analyzer.analyze(jacobian, q, fk_solver=fk_solver)
+                    else:
+                        report = singularity_analyzer.analyze(jacobian)
+                except Exception as e:
+                    print(f"\n    Warning: singularity analysis failed at waypoint {i}: {e}")
+                    if use_classified:
+                        report = SingularityReport(
+                            singularity_type=SingularityType.NONE,
+                            is_singular=False,
+                        )
+                    else:
+                        report = UnifiedSingularityReport(is_singular=False)
+            else:
+                if use_classified:
+                    report = SingularityReport(
+                        singularity_type=SingularityType.NONE,
+                        is_singular=False,
+                        is_reachable=False,
+                    )
+                else:
+                    report = UnifiedSingularityReport(
+                        is_singular=False,
+                        is_reachable=False,
+                    )
+            singularity_reports.append(report)
+
     return TrajectoryResult(
         trajectory_index=trajectory_index,
         num_waypoints=n_waypoints,
@@ -248,7 +318,8 @@ def check_trajectory_reachability(
         violated_joints_per_wp=violated_joints_per_wp,
         joint_angles_rad=joint_angles_rad,
         target_poses=trajectory_t_b_p,
-        unreachability_reasons=unreachability_reasons
+        unreachability_reasons=unreachability_reasons,
+        singularity_reports=singularity_reports,
     )
 
 
@@ -552,7 +623,52 @@ def generate_report(
                         lines.append(f"    Waypoint {wp_idx}: {reason}")
     else:
         lines.append("No unreachable waypoints detected!")
-    
+
+    # Singularity analysis summary (when analysis was performed)
+    lines.append("")
+    lines.append(sep_heavy)
+    lines.append("SINGULARITY ANALYSIS SUMMARY")
+    lines.append(sep_heavy)
+    lines.append("")
+
+    total_waypoints = 0
+    total_reachable = 0
+    total_unreachable = 0
+    total_singular = 0
+    type_counts: Dict[str, int] = {}
+    has_typed_reports = False
+
+    for r in all_results:
+        for t in r.trajectories:
+            for report in t.singularity_reports:
+                total_waypoints += 1
+                if not report.is_reachable:
+                    total_unreachable += 1
+                    continue
+                total_reachable += 1
+                if report.is_singular:
+                    total_singular += 1
+                if hasattr(report, 'singularity_type'):
+                    has_typed_reports = True
+                    stype = report.singularity_type.value
+                    type_counts[stype] = type_counts.get(stype, 0) + 1
+
+    if total_waypoints > 0:
+        lines.append(f"  Total waypoints:      {total_waypoints}")
+        lines.append(f"  Reachable:            {total_reachable}")
+        lines.append(f"  Unreachable:          {total_unreachable}")
+        lines.append(f"  Singular waypoints:   {total_singular}")
+        lines.append(f"  Non-singular:         {total_reachable - total_singular}")
+        lines.append("")
+        if has_typed_reports and type_counts:
+            lines.append("  Type Distribution:")
+            for stype, cnt in sorted(type_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"    {stype:<25} {cnt:>5}  ({100*cnt/total_reachable:.1f}%)")
+        else:
+            lines.append("  Mode: unified (no per-type classification)")
+    else:
+        lines.append("  No singularity analysis data available (no reachable waypoints or analysis disabled).")
+
     lines.append("")
     lines.append(sep_heavy)
     lines.append("End of Reachability Analysis Report")
@@ -592,17 +708,18 @@ def determine_output_directory(
     solver_type: str
 ) -> Path:
     """
-    Determine the output directory based on CLI args and toolpaths folder.
+    Determine the output directory based on CLI args and config.
     
     Priority:
     1. If --output CLI arg provided, use it
-    2. If toolpaths folder contains Experiment_N, use Robot_APCC/Results/Experiment_N/<solver>
-    3. Otherwise, use config default + solver subfolder
+    2. If output_folder is set in config YAML, use it + solver subfolder
+    3. If toolpaths folder contains Experiment_N, use Robot_APCC/Results/Experiment_N/<solver>
+    4. Fallback: output/reachability_test/<solver>
     
     Args:
         cli_output: Output path from CLI args (or None)
         toolpaths_folder: Toolpaths folder path
-        config_output_folder: Default from config
+        config_output_folder: output_folder from config YAML (may be empty/default)
         solver_type: Solver type ("pin" or "eaik")
         
     Returns:
@@ -610,12 +727,15 @@ def determine_output_directory(
     """
     if cli_output:
         return Path(cli_output) / solver_type
-    
+
+    if config_output_folder:
+        return Path(config_output_folder) / solver_type
+
     exp_num = extract_experiment_number(toolpaths_folder)
     if exp_num:
         return Path("Robot_APCC") / "Results" / f"Experiment_{exp_num}" / solver_type
-    
-    return Path(config_output_folder) / solver_type
+
+    return Path("output") / "reachability_test" / solver_type
 
 
 # =============================================================================
@@ -634,6 +754,8 @@ def process_combination(
     knife_translation_m: Optional[np.ndarray] = None,
     knife_quaternion: Optional[np.ndarray] = None,
     collision_checker=None,
+    export_singularity_graphs: bool = False,
+    singularity_config: Optional[Dict] = None,
 ) -> ToolpathResult:
     """Process one robot/toolpath combination (optionally with knife pose when not base_frame)."""
     if not use_base_frame and (knife_name is None or knife_translation_m is None or knife_quaternion is None):
@@ -651,6 +773,41 @@ def process_combination(
     )
 
     use_robostudio_seed = ik_config.use_robostudio_seed if hasattr(ik_config, 'use_robostudio_seed') else False
+
+    # Build singularity analyzer based on configured mode (config is the only control)
+    singularity_mode = (singularity_config or {}).get('mode')
+    if singularity_mode is None:
+        singularity_mode = 'none'
+    elif isinstance(singularity_mode, str):
+        singularity_mode = singularity_mode.lower().strip()
+    else:
+        singularity_mode = 'none'
+
+    singularity_analyzer = None
+    if singularity_mode == 'classified':
+        sing_type_thresholds = None
+        if singularity_config:
+            thresholds_cfg = singularity_config.get('thresholds', {})
+            if thresholds_cfg:
+                sing_type_thresholds = {
+                    'wrist': thresholds_cfg.get('wrist', 0.1),
+                    'shoulder': thresholds_cfg.get('shoulder', 0.1),
+                    'elbow': thresholds_cfg.get('elbow', 0.1),
+                }
+        check_j5 = singularity_config.get('check_j5_only', False)
+        j5_thresh = singularity_config.get('j5_threshold_deg', 0.76)
+        singularity_analyzer = SingularityAnalyzer(
+            n_joints=6,
+            type_thresholds=sing_type_thresholds,
+            check_j5_only=check_j5,
+            j5_threshold_deg=j5_thresh,
+        )
+    elif singularity_mode == 'unified':
+        unified_threshold = (singularity_config or {}).get('unified_threshold', 0.01)
+        singularity_analyzer = UnifiedSingularity(
+            singularity_threshold=unified_threshold,
+        )
+    # singularity_mode == 'none' or None → singularity_analyzer stays None
 
     # Load trajectories; if --base_frame: treat CSV as already in robot base frame (no knife)
     trajectories_t_p_k, speeds = load_toolpath_trajectories(toolpath_path)
@@ -688,11 +845,28 @@ def process_combination(
             use_robostudio_seed=use_robostudio_seed,
             collision_checker=collision_checker,
             robot_data=robot_data,
+            fk_solver=fk_solver,
+            singularity_analyzer=singularity_analyzer,
         )
         result.trajectories.append(traj_result)
 
         status = "PASS" if traj_result.is_fully_reachable else "FAIL"
         print(f"{traj_result.reachable_count}/{traj_result.num_waypoints} [{status}]")
+
+        if traj_result.singularity_reports:
+            sing_count = sum(1 for r in traj_result.singularity_reports if r.is_singular)
+            reachable_count = sum(1 for r in traj_result.singularity_reports if r.is_reachable)
+            if sing_count > 0:
+                type_breakdown = {}
+                for r in traj_result.singularity_reports:
+                    if r.is_singular and hasattr(r, 'singularity_type'):
+                        stype = r.singularity_type.value
+                        type_breakdown[stype] = type_breakdown.get(stype, 0) + 1
+                type_str = ", ".join(f"{k}: {v}" for k, v in sorted(type_breakdown.items())) if type_breakdown else ""
+                print(f"         Singularity: {sing_count}/{reachable_count} reachable waypoints SINGULAR"
+                      + (f" ({type_str})" if type_str else ""))
+            else:
+                print(f"         Singularity: 0/{reachable_count} — no singularity detected")
 
         # Per-trajectory reachability plot
         plot_reachability_per_waypoint(
@@ -745,6 +919,59 @@ def process_combination(
             str(combo_output / f"raw_reachability_T{traj_num}.csv")
         )
 
+        # Singularity CSV — saved when analysis was performed (config-driven)
+        if traj_result.singularity_reports:
+            if singularity_mode == 'classified':
+                SingularityAnalyzer.export_csv(
+                    traj_result.singularity_reports,
+                    str(combo_output / f"T{traj_num}_singularity_report.csv"),
+                )
+            elif singularity_mode == 'unified':
+                UnifiedSingularity.export_csv(
+                    traj_result.singularity_reports,
+                    str(combo_output / f"T{traj_num}_singularity_report.csv"),
+                )
+
+            # Singularity plots — only for classified mode and when config flag is set
+            if export_singularity_graphs and singularity_mode == 'classified':
+                traj_label = f"{toolpath_name} — T{traj_num}\n{robot_name}" + (f" / {display_knife}" if not use_base_frame else "")
+                try:
+                    plot_singularity_type_classification(
+                        traj_result.singularity_reports,
+                        str(combo_output / f"T{traj_num}_singularity_types.png"),
+                        title=f"Singularity Types — {traj_label}",
+                    )
+                    plot_sub_jacobian_metrics(
+                        traj_result.singularity_reports,
+                        str(combo_output / f"T{traj_num}_sub_jacobian_sigma_min.png"),
+                        title=f"Sub-Jacobian σ_min — {traj_label}",
+                        type_thresholds=singularity_analyzer.type_thresholds,
+                    )
+                    plot_sub_jacobian_determinants(
+                        traj_result.singularity_reports,
+                        str(combo_output / f"T{traj_num}_sub_jacobian_determinants.png"),
+                        title=f"Sub-Jacobian Determinants — {traj_label}",
+                    )
+                    plot_joint_angles_trajectory(
+                        traj_result.joint_angles_rad,
+                        str(combo_output / f"T{traj_num}_joint_angles.png"),
+                        title=f"Joint Angles — {traj_label}",
+                    )
+                    plot_singular_value_spectrum(
+                        traj_result.singularity_reports,
+                        str(combo_output / f"T{traj_num}_singular_value_spectrum.png"),
+                        title=f"Singular Value Spectrum — {traj_label}",
+                    )
+                    plot_singularity_dashboard(
+                        traj_result.singularity_reports,
+                        traj_result.joint_angles_rad,
+                        str(combo_output / f"T{traj_num}_singularity_dashboard.png"),
+                        title=f"Singularity Dashboard — {traj_label}",
+                        type_thresholds=singularity_analyzer.type_thresholds,
+                    )
+                except Exception as e:
+                    print(f"    Warning: singularity plot error: {e}")
+
     # Multi-trajectory summary plot
     if len(result.trajectories) > 1:
         traj_dicts = [
@@ -758,7 +985,11 @@ def process_combination(
         )
 
     status = "VALID" if result.is_valid else "INVALID"
-    print(f"    → {toolpath_name}: {result.total_reachable}/{result.total_waypoints} [{status}]")
+    total_sing = sum(
+        1 for t in result.trajectories for r in t.singularity_reports if r.is_singular
+    )
+    sing_suffix = f" | Singular: {total_sing}" if any(t.singularity_reports for t in result.trajectories) else ""
+    print(f"    → {toolpath_name}: {result.total_reachable}/{result.total_waypoints} [{status}]{sing_suffix}")
 
     return result
 
@@ -780,6 +1011,8 @@ def main():
                         help="Toolpath CSV is already in robot base frame; skip knife transform")
     parser.add_argument('--check_self_collision', action='store_true',
                         help="Reject IK solutions that cause self-collision (off by default)")
+    parser.add_argument('--export-singularity-graphs', action='store_true',
+                        help="Generate singularity analysis plots (PNG). Overrides config.")
     args = parser.parse_args()
 
     # Load config
@@ -838,6 +1071,17 @@ def main():
     solver_type = args.solver or options.get('solver', 'pin')
     ee_frame_override = args.ee_frame
 
+    # Singularity analysis: config is the only place to turn on/off. Mode "none" or null skips entirely.
+    singularity_config = config.get('singularity_analysis', {})
+    singularity_mode = singularity_config.get('mode')
+    if singularity_mode is None:
+        singularity_mode = 'none'
+    elif isinstance(singularity_mode, str):
+        singularity_mode = singularity_mode.lower().strip()
+    else:
+        singularity_mode = 'none'
+    export_singularity_graphs = args.export_singularity_graphs or singularity_config.get('export_singularity_graphs', False)
+
     # Determine output directory intelligently
     output_dir = determine_output_directory(
         cli_output=args.output,
@@ -850,6 +1094,7 @@ def main():
     check_self_collision = args.check_self_collision
 
     print(f"\nSolver:     {solver_type}")
+    print(f"Singularity: {singularity_mode} (graphs: {'ON' if export_singularity_graphs else 'OFF'})")
     if use_base_frame:
         print("Base frame: toolpaths used as-is (no knife pose)")
     if check_self_collision:
@@ -900,6 +1145,8 @@ def main():
                     ee_frame_override=ee_frame_override,
                     use_base_frame=True,
                     collision_checker=coll_checker,
+                    export_singularity_graphs=export_singularity_graphs,
+                    singularity_config=singularity_config,
                 )
                 all_results.append(result)
         else:
@@ -929,6 +1176,8 @@ def main():
                         knife_translation_m=knife.translation_m,
                         knife_quaternion=knife.quaternion,
                         collision_checker=coll_checker,
+                        export_singularity_graphs=export_singularity_graphs,
+                        singularity_config=singularity_config,
                     )
                     all_results.append(result)
 
@@ -944,6 +1193,8 @@ def main():
         'ee_frame': ee_frame_override,
         'base_frame': use_base_frame,
         'check_self_collision': check_self_collision,
+        'singularity_mode': singularity_mode,
+        'export_singularity_graphs': export_singularity_graphs,
     }
     
     # Generate report
