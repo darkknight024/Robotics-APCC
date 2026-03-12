@@ -39,13 +39,20 @@ A text summary is printed to stdout and saved as
 
 CONFIGURATION
 =============
-Singularity mode, thresholds, and flags are read from the
-``singularity_analysis`` section of ``tests/configs/reachability_config.yaml``
-(same config used by ``test_reachability.py``).
+Uses ``tests/configs/singularity_config.yaml`` by default.  The config
+provides:
+
+  - ``joints_input`` — path to a folder of CSVs **or** a single CSV file.
+  - ``output_folder`` — base directory for results.
+  - ``singularity_analysis`` — mode, thresholds, and flags (same schema
+    as the singularity section in ``reachability_config.yaml``).
+
+CLI arguments ``--joints-folder``, ``--joints-csv``, and ``--output``
+override the corresponding config values when provided.
 
 Usage:
     python tests/test_singularity_only.py
-    python tests/test_singularity_only.py --config tests/configs/reachability_config.yaml
+    python tests/test_singularity_only.py --config tests/configs/singularity_config.yaml
     python tests/test_singularity_only.py --joints-folder <folder>
     python tests/test_singularity_only.py --joints-csv <file.csv>
 """
@@ -225,12 +232,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Singularity-only analysis from joint-configuration CSVs"
     )
-    parser.add_argument("--config", "-c", default="tests/configs/reachability_config.yaml",
-                        help="Config YAML (reads singularity_analysis section)")
+    parser.add_argument("--config", "-c", default="tests/configs/singularity_config.yaml",
+                        help="Config YAML (default: tests/configs/singularity_config.yaml)")
     parser.add_argument("--joints-folder",
-                        help="Folder of joint-config CSVs to process")
+                        help="Override: folder of joint-config CSVs to process")
     parser.add_argument("--joints-csv",
-                        help="Single joint-config CSV to process")
+                        help="Override: single joint-config CSV to process")
     parser.add_argument("--robot", help="Override robot name from config")
     parser.add_argument("--solver", choices=["pin", "eaik"], help="Override solver")
     parser.add_argument("--output", "-o", help="Override output directory")
@@ -288,7 +295,7 @@ def main():
         unified_threshold = sing_cfg.get("unified_threshold", 0.01)
         analyzer = UnifiedSingularity(singularity_threshold=unified_threshold)
 
-    # Discover CSVs
+    # Discover CSVs: CLI overrides config joints_input
     csv_files: List[Path] = []
     if args.joints_csv:
         csv_files = [Path(args.joints_csv)]
@@ -296,18 +303,24 @@ def main():
         folder = Path(args.joints_folder)
         csv_files = sorted(folder.glob("*.csv"))
     else:
-        print("ERROR: Provide --joints-csv or --joints-folder")
-        sys.exit(1)
+        joints_input = config.get("joints_input", "")
+        if joints_input:
+            p = Path(joints_input)
+            if p.is_file() and p.suffix.lower() == ".csv":
+                csv_files = [p]
+            elif p.is_dir():
+                csv_files = sorted(p.glob("*.csv"))
 
     if not csv_files:
-        print("ERROR: No CSV files found")
+        print("ERROR: No CSV files found. Provide --joints-csv, --joints-folder, "
+              "or set joints_input in the config.")
         sys.exit(1)
 
-    # Output directory
+    # Output directory: CLI overrides config output_folder
     if args.output:
         output_dir = Path(args.output)
     else:
-        output_dir = Path(config.get("output_folder", "output/singularity_test")) / solver_type
+        output_dir = Path(config.get("output_folder", "output/singularity_test"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\nRobot:       {robot_name}")
