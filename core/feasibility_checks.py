@@ -48,7 +48,14 @@ from utils.math import (
     compute_joint_space_distance,
     compute_distance_to_joint_limits,
     compute_joint_velocity_ratio,
-    compute_joint_limit_violations
+    compute_joint_limit_violations,
+    compute_velocity_ratios_spline,
+    compute_timestamps_unified_pose,
+    shortest_angular_distance
+)
+from utils.config_loader import (
+    get_default_velocity_limits_rad_s,
+    get_default_joint_jump_limit_rad
 )
 
 
@@ -137,7 +144,7 @@ def compute_condition_number(jacobian: np.ndarray) -> float:
     try:
         singular_values = np.linalg.svd(jacobian, compute_uv=False)
         
-        # CRITICAL FIX: Sanitize NaN values that could break sorting
+        #  Sanitize NaN values that could break sorting
         if np.any(np.isnan(singular_values)):
             return np.inf
         
@@ -203,6 +210,62 @@ def check_reachability(
     return success, q if success else None, info
 
 
+DEFAULT_MULTI_SOLUTION_WEIGHTS = {
+    'c0': 1.0,
+    'c1': 2.0,
+    'singularity': 1.0,
+    'manipulability': 0.5,
+}
+
+
+def score_ik_solution(
+    q_candidate: np.ndarray,
+    q_prev: Optional[np.ndarray],
+    dt: Optional[float],
+    fk_solver,
+    velocity_limits_rad_s: Optional[np.ndarray],
+    characteristic_length_m: float,
+    weights: dict
+) -> float:
+    """
+    Evaluate a candidate IK solution against a weighted cost function.
+
+    Lower cost is better.  When *q_prev* is None (first waypoint) only the
+    singularity and manipulability terms contribute.
+
+    Terms:
+        C0  — joint-space distance to previous config (rad)
+        C1  — max velocity ratio |dq/dt| / limit (dimensionless)
+        Singularity — 1 / min_singular_value (large near singularity)
+        Manipulability — negative Yoshikawa measure (lower = more dexterous)
+    """
+    jacobian = fk_solver.get_jacobian(q_candidate)
+    min_sv = compute_singularity_proximity(jacobian)
+    manip = compute_manipulability(jacobian, characteristic_length_m)
+
+    cost = 0.0
+
+    # Singularity cost
+    cost += weights.get('singularity', 1.0) * (1.0 / max(min_sv, 1e-6))
+
+    # Manipulability reward (negative cost)
+    cost -= weights.get('manipulability', 0.5) * manip
+
+    if q_prev is not None:
+        # C0 cost
+        c0_dist = compute_joint_space_distance(q_prev, q_candidate)
+        cost += weights.get('c0', 1.0) * c0_dist
+
+        # C1 cost (only if timing data available)
+        if dt is not None and dt > 1e-9 and velocity_limits_rad_s is not None:
+            vel_ratio = compute_joint_velocity_ratio(
+                q_prev, q_candidate, dt, velocity_limits_rad_s
+            )
+            cost += weights.get('c1', 2.0) * vel_ratio
+
+    return cost
+
+
 class FeasibilityAnalyzer:
     """
     Comprehensive feasibility analyzer for robot configurations.
@@ -221,7 +284,8 @@ class FeasibilityAnalyzer:
         singularity_threshold: float = 0.01,
         velocity_limits_rad_s: Optional[np.ndarray] = None,
         joint_jump_limit_rad: Optional[float] = None,
-        max_ik_failures_per_trajectory: Optional[int] = None
+        max_ik_failures_per_trajectory: Optional[int] = None,
+        multi_solution_weights: Optional[dict] = None
     ):
         """
         Initialize feasibility analyzer.
@@ -238,6 +302,9 @@ class FeasibilityAnalyzer:
             velocity_limits_rad_s: Per-joint velocity limits for C1 checking (optional)
             joint_jump_limit_rad: Maximum allowed joint jump for C0 checking (optional)
             max_ik_failures_per_trajectory: Max IK failures before early termination (optional)
+            multi_solution_weights: When provided, enables EAIK multi-solution
+                scoring with these cost-function weights (keys: c0, c1,
+                singularity, manipulability).  None = disabled / Pinocchio.
         """
         if isinstance(robot_model_or_limits, tuple):
             pin_model = robot_model_or_limits[0]
@@ -256,9 +323,19 @@ class FeasibilityAnalyzer:
         self.fk_solver = fk_solver
         self.characteristic_length_m = characteristic_length_m
         self.singularity_threshold = singularity_threshold
-        self.velocity_limits_rad_s = velocity_limits_rad_s
-        self.joint_jump_limit_rad = joint_jump_limit_rad
+        # 3.2 & 3.6: Never None — use defaults from robots_config.yaml
+        self.velocity_limits_rad_s = (
+            np.array(velocity_limits_rad_s)
+            if velocity_limits_rad_s is not None
+            else np.array(get_default_velocity_limits_rad_s())
+        )
+        self.joint_jump_limit_rad = (
+            joint_jump_limit_rad
+            if joint_jump_limit_rad is not None
+            else get_default_joint_jump_limit_rad()
+        )
         self.max_ik_failures_per_trajectory = max_ik_failures_per_trajectory
+        self.multi_solution_weights = multi_solution_weights
     
     def analyze_waypoint(
         self,
@@ -283,7 +360,7 @@ class FeasibilityAnalyzer:
         )
         
         if not is_reachable:
-            # CRITICAL FIX: Unreachable waypoints should NOT be marked as singularities
+            #  Unreachable waypoints should NOT be marked as singularities
             # They failed IK, which is different from being near a singularity
             
             # Compute additional debug information for failed waypoints
@@ -356,24 +433,93 @@ class FeasibilityAnalyzer:
             condition_number=cond_num,
             near_singularity=near_singularity,
             joint_positions_rad=q,
+            ik_debug_info=ik_info,
             target_position=target_position,
             target_quaternion=target_quaternion,
             distance_to_joint_limits=distance_to_limits
         )
     
+    def _is_within_joint_limits(self, q: np.ndarray, tol: float = 1e-6) -> bool:
+        return bool(
+            np.all(q >= self.lower_position_limit - tol) and
+            np.all(q <= self.upper_position_limit + tol)
+        )
+
+    def _select_best_multi_solution(
+        self,
+        result: 'FeasibilityResult',
+        q_prev: Optional[np.ndarray],
+        dt: Optional[float]
+    ) -> 'FeasibilityResult':
+        """
+        Re-evaluate all EAIK solutions and replace the default pick with the
+        lowest-cost candidate according to multi_solution_weights.
+
+        Uses ``info['all_solutions']`` which is already populated by the EAIK
+        solver.  Candidates outside joint limits are filtered out here.
+
+        Falls back to the original result when multi-solution scoring is
+        disabled, no ik_debug_info is available, or fewer than 2 valid
+        candidates exist.
+        """
+        if self.multi_solution_weights is None:
+            return result
+        if result.ik_debug_info is None:
+            return result
+
+        all_sols = result.ik_debug_info.get('all_solutions', [])
+        if len(all_sols) < 2:
+            return result
+
+        # Filter to joint-limit-valid candidates
+        candidates = [q for q in all_sols if self._is_within_joint_limits(q)]
+        if len(candidates) < 2:
+            return result
+
+        best_cost = float('inf')
+        best_q = result.joint_positions_rad
+
+        for q_cand in candidates:
+            cost = score_ik_solution(
+                q_cand, q_prev, dt,
+                self.fk_solver,
+                self.velocity_limits_rad_s,
+                self.characteristic_length_m,
+                self.multi_solution_weights
+            )
+            if cost < best_cost:
+                best_cost = cost
+                best_q = q_cand
+
+        if best_q is result.joint_positions_rad:
+            return result
+
+        jacobian = self.fk_solver.get_jacobian(best_q)
+        result.joint_positions_rad = best_q
+        result.manipulability = compute_manipulability(jacobian, self.characteristic_length_m)
+        result.min_singular_value = compute_singularity_proximity(jacobian)
+        result.max_singular_value = compute_max_singular_value(jacobian)
+        result.condition_number = compute_condition_number(jacobian)
+        result.near_singularity = result.min_singular_value < self.singularity_threshold
+        result.distance_to_joint_limits = compute_distance_to_joint_limits(
+            best_q, self.lower_position_limit, self.upper_position_limit
+        )
+        return result
+
     def analyze_trajectory(
         self,
         positions: np.ndarray,
         quaternions: np.ndarray,
         timestamps: Optional[np.ndarray] = None,
         speed_mm_s: float = 100.0,
-        speeds_mm_s: Optional[np.ndarray] = None
+        speeds_mm_s: Optional[np.ndarray] = None,
+        pose_scale_m_per_rad: float = 0.1
     ) -> Dict[str, Any]:
         """
         Analyze feasibility of an entire trajectory with speed-driven physics.
         
-        CRITICAL PHYSICS UPDATE: Now uses per-waypoint speeds to compute accurate dt values.
-        No more arbitrary time steps - dt = distance / speed for each segment.
+        CRITICAL PHYSICS UPDATE: Uses unified pose distance (linear + angular) for timing,
+        per-waypoint speeds, and cubic spline for C1 velocity checks. (3.1, 3.5)
         
         CRITICAL: Returns all metrics needed for ranking:
         - feasibility_flags (reachability_ok, c0_ok, c1_ok)
@@ -403,33 +549,17 @@ class FeasibilityAnalyzer:
         joint_limit_distances = []
         joint_space_distances = []
         velocity_ratios = []
+        per_joint_jumps = []       # per-segment (n_joints,) absolute angular jumps for C0
+        cartesian_distances = []   # per-segment TCP Cartesian distance in metres
         
-        # CRITICAL PHYSICS UPDATE: Speed-driven timestamp calculation
-        if timestamps is None and self.velocity_limits_rad_s is not None:
-            estimated_times = np.zeros(n_waypoints)
-            
-            # Use per-waypoint speeds if provided, otherwise constant speed
-            if speeds_mm_s is not None:
-                # Speed-driven physics: dt = distance / speed for each segment
-                for i in range(1, n_waypoints):
-                    # Cartesian distance for this segment
-                    dist_m = np.linalg.norm(positions[i] - positions[i-1])
-                    
-                    # Use average speed of current and previous waypoint for this segment
-                    avg_speed_mm_s = (speeds_mm_s[i] + speeds_mm_s[i-1]) / 2.0
-                    avg_speed_m_s = avg_speed_mm_s / 1000.0
-                    
-                    # CRITICAL: dt = distance / speed (no more arbitrary time steps!)
-                    dt = dist_m / avg_speed_m_s if avg_speed_m_s > 1e-6 else 0.001
-                    estimated_times[i] = estimated_times[i-1] + dt
-            else:
-                # Fallback to constant speed
-                for i in range(1, n_waypoints):
-                    dist_m = np.linalg.norm(positions[i] - positions[i-1])
-                    dt = dist_m / (speed_mm_s / 1000.0) if speed_mm_s > 0 else 0.001
-                    estimated_times[i] = estimated_times[i-1] + dt
-            
-            timestamps = estimated_times
+        # 3.1: Unified pose distance for timing (matches compute_segment_times)
+        if timestamps is None:
+            timestamps = compute_timestamps_unified_pose(
+                positions, quaternions, speed_mm_s, speeds_mm_s,
+                pose_scale_m_per_rad,
+                joint_angles_rad=None,
+                velocity_limits_rad_s=None
+            )
         
         # Track IK failures for early termination
         ik_failure_count = 0
@@ -437,6 +567,14 @@ class FeasibilityAnalyzer:
         
         for i in range(n_waypoints):
             result = self.analyze_waypoint(positions[i], quaternions[i], q_prev)
+            
+            # Multi-solution optimisation: re-evaluate EAIK candidates
+            if result.is_reachable and self.multi_solution_weights is not None:
+                seg_dt = None
+                if timestamps is not None and i > 0:
+                    seg_dt = timestamps[i] - timestamps[i - 1]
+                    seg_dt = max(seg_dt, 1e-6)
+                result = self._select_best_multi_solution(result, q_prev, seg_dt)
             
             # Early termination check: stop if too many IK failures
             if not result.is_reachable:
@@ -457,7 +595,7 @@ class FeasibilityAnalyzer:
                                 min_singular_value=0.0,
                                 max_singular_value=0.0,
                                 condition_number=np.inf,
-                                near_singularity=False,  # CRITICAL FIX: Unreachable != singularity
+                                near_singularity=False,  #  Unreachable != singularity
                                 joint_positions_rad=None
                             )
                             results.append(unreachable_result)
@@ -467,26 +605,23 @@ class FeasibilityAnalyzer:
             if q_prev is not None and result.is_reachable:
                 joint_dist = compute_joint_space_distance(q_prev, result.joint_positions_rad)
                 
-                # CRITICAL FIX: Filter out duplicate waypoints to prevent infinite velocity
-                # Skip segments with very small joint space movement (likely duplicates or noise)
-                if joint_dist < 1e-6:
-                    # Skip this segment - treat as duplicate waypoint
-                    continue
-                
+                # For near-duplicate waypoints (joint_dist < 1e-6), still record — small dq
+                # yields negligible velocity ratio. Skipping would drop waypoints and break
+                # len(per_waypoint_results) != n_waypoints.
                 result.joint_space_distance = joint_dist
                 joint_space_distances.append(joint_dist)
                 
-                # CRITICAL: Compute joint velocity ratio for C1 feasibility
-                if self.velocity_limits_rad_s is not None and timestamps is not None and i > 0:
-                    dt = timestamps[i] - timestamps[i-1]
-                    # CRITICAL FIX: Ensure minimum time step to prevent division by zero
-                    dt = max(dt, 1e-6)
-                    
-                    vel_ratio = compute_joint_velocity_ratio(
-                        q_prev, result.joint_positions_rad, dt, self.velocity_limits_rad_s
-                    )
-                    result.joint_velocity_ratio = vel_ratio
-                    velocity_ratios.append(vel_ratio)
+                # Per-joint absolute angular jumps (for C0 visualisation)
+                n_j = len(q_prev)
+                jumps = np.array([
+                    abs(shortest_angular_distance(q_prev[j], result.joint_positions_rad[j]))
+                    for j in range(n_j)
+                ])
+                per_joint_jumps.append(jumps)
+                
+                # Cartesian TCP distance
+                cart_dist = float(np.linalg.norm(positions[i] - positions[max(i - 1, 0)]))
+                cartesian_distances.append(cart_dist)
             
             results.append(result)
             
@@ -500,7 +635,7 @@ class FeasibilityAnalyzer:
                     joint_limit_distances.append(result.distance_to_joint_limits)
                 q_prev = result.joint_positions_rad
                 
-                # CRITICAL FIX: Only count singularities for REACHABLE waypoints
+                #  Only count singularities for REACHABLE waypoints
                 # Unreachable waypoints should not be counted as singularities
                 if result.near_singularity:
                     singularity_count += 1
@@ -514,6 +649,34 @@ class FeasibilityAnalyzer:
                 self.lower_position_limit,
                 self.upper_position_limit
             )
+
+        # 3.5: C1 velocity ratios via cubic spline (single authoritative implementation)
+        n_segments = n_waypoints - 1
+        reachable_indices = [i for i, r in enumerate(results) if r.is_reachable and r.joint_positions_rad is not None]
+        if len(reachable_indices) >= 2:
+            joint_list = [results[i].joint_positions_rad for i in reachable_indices]
+            ts_list = [timestamps[i] for i in reachable_indices]
+            joint_angles_sub = np.array(joint_list)
+            timestamps_sub = np.array(ts_list)
+            vel_ratios_spline = compute_velocity_ratios_spline(
+                joint_angles_sub, timestamps_sub, self.velocity_limits_rad_s
+            )
+            for k in range(len(reachable_indices) - 1):
+                if reachable_indices[k + 1] == reachable_indices[k] + 1:
+                    seg_idx = reachable_indices[k]
+                    velocity_ratios.append(vel_ratios_spline[k])
+                    if seg_idx + 1 < len(results):
+                        results[seg_idx + 1].joint_velocity_ratio = float(vel_ratios_spline[k])
+
+        # 3.8: Pad segment arrays to n_segments (never variable-length for plotting)
+        n_j = len(self.lower_position_limit)
+        pad_zeros = lambda arr, target: np.pad(arr, (0, max(0, target - len(arr))), constant_values=0) if len(arr) < target else np.array(arr)[:target]
+        joint_space_distances = list(pad_zeros(np.array(joint_space_distances), n_segments))
+        velocity_ratios = list(pad_zeros(np.array(velocity_ratios), n_segments))
+        cartesian_distances = list(pad_zeros(np.array(cartesian_distances), n_segments))
+        while len(per_joint_jumps) < n_segments:
+            per_joint_jumps.append(np.zeros(n_j))
+        per_joint_jumps = per_joint_jumps[:n_segments]
         
         # CRITICAL: Compute feasibility flags for ranking
         reachability_ok = (reachable_count == n_waypoints)
@@ -538,7 +701,7 @@ class FeasibilityAnalyzer:
         # CRITICAL: Compute ranking scores
         safety_score = float(np.max(condition_numbers)) if condition_numbers else np.inf
         
-        # CRITICAL FIX: Time-weighted dexterity score to prevent sampling bias
+        #  Time-weighted dexterity score to prevent sampling bias
         # With variable speeds, fast segments (small dt) should not get equal weight to slow segments (large dt)
         if manipulability_values and timestamps is not None and len(manipulability_values) > 1:
             # Compute time weights for each reachable waypoint
@@ -559,7 +722,7 @@ class FeasibilityAnalyzer:
         else:
             dexterity_score = float(np.mean(manipulability_values)) if manipulability_values else 0.0
         
-        # CRITICAL FIX: Time-weighted smoothness score to prevent sampling bias
+        #  Time-weighted smoothness score to prevent sampling bias
         # Formula: time_weighted_average(sum(velocity_ratios^2)) penalizes high-speed joint movements
         # This prevents fast segments from being under-weighted in the energy calculation
         if velocity_ratios and timestamps is not None and len(velocity_ratios) > 0:
@@ -624,6 +787,11 @@ class FeasibilityAnalyzer:
             # Path length metrics
             'total_joint_space_path_length': np.sum(joint_space_distances) if joint_space_distances else 0.0,
             'mean_joint_space_segment_length': np.mean(joint_space_distances) if joint_space_distances else 0.0,
+            
+            # C0 per-segment detail (for plotting)
+            'per_joint_jumps': per_joint_jumps,         # list of (n_joints,) arrays
+            'cartesian_distances': cartesian_distances,  # list of floats (metres)
+            'joint_space_distances': joint_space_distances,  # list of floats (aggregate C0)
             
             'per_waypoint_results': results
         }

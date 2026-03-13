@@ -28,8 +28,6 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
-from scipy.interpolate import CubicSpline
-
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -40,6 +38,7 @@ from core import (
 )
 from utils import (
     load_toolpath_trajectories,
+    load_toolpath_trajectories_ext,
     transform_trajectories_to_base_frame,
     load_knife_config,
     load_feasibility_config,
@@ -63,12 +62,18 @@ from utils import (
     # 4-Level feasibility plots
     plot_feasibility_levels,
     plot_feasibility_levels_detailed,
-    plot_combination_feasibility_levels
+    plot_combination_feasibility_levels,
+    # C0 continuity + dashboard plots
+    plot_c0_continuity_per_waypoint,
+    plot_c0_summary_per_trajectory,
+    plot_continuity_dashboard
 )
 from utils.math import (
     compute_normalized_joint_energy,
-    compute_safety_tier
+    compute_safety_tier,
+    compute_velocity_ratios_spline
 )
+from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S
 
 
 # =============================================================================
@@ -128,7 +133,7 @@ def compute_segment_times(
         # Unified pose distance
         pose_distance = np.sqrt(d_linear**2 + (pose_scale_m_per_rad * d_angle)**2)
         
-        # CRITICAL FIX: Filter out duplicate waypoints to prevent infinite velocity
+        #  Filter out duplicate waypoints to prevent infinite velocity
         if pose_distance < 1e-6:
             # Skip this segment - treat as duplicate waypoint
             segment_durations[i] = 1e-3  # Minimal time for duplicate
@@ -149,7 +154,7 @@ def compute_segment_times(
         # Joint velocity constraint
         t_joint_min = 0
         if velocity_limits_rad_s is not None:
-            # CRITICAL FIX: Use shortest_angular_distance to handle joint wrapping
+            #  Use shortest_angular_distance to handle joint wrapping
             from utils.math import shortest_angular_distance
             delta_q = np.array([
                 shortest_angular_distance(joint_angles_rad[i, j], joint_angles_rad[i + 1, j])
@@ -206,33 +211,30 @@ def analyze_continuity(
         trajectory_m, joint_angles_rad, speed_mm_s, speeds_mm_s, velocity_limits_rad_s, pose_scale_m_per_rad
     )
     
-    # Interpolate joints with cubic splines
-    n_joints = joint_angles_rad.shape[1]
-    splines = [CubicSpline(timestamps, joint_angles_rad[:, j]) for j in range(n_joints)]
+    # Use unified spline-based velocity check (single source of truth for C1)
+    velocity_limits = np.asarray(velocity_limits_rad_s, dtype=float)
+    velocity_ratios, max_velocities_per_joint = compute_velocity_ratios_spline(
+        joint_angles_rad, timestamps, velocity_limits,
+        return_max_velocities_per_joint=True
+    )
+    max_velocities = list(max_velocities_per_joint) if len(max_velocities_per_joint) > 0 else []
     
-    # Sample at higher rate for analysis
-    t_samples = np.linspace(timestamps[0], timestamps[-1], len(timestamps) * 10)
-    joint_velocities = np.column_stack([cs(t_samples, 1) for cs in splines])
-    
-    # Check velocity limits
-    violations = []
-    max_velocities = []
+    # Pass/fail: max ratio <= safety_factor (ratio = vel/limit, so ratio <= 1.05 means within limit)
     passed = True
-    
-    for j in range(n_joints):
-        vel_abs = np.abs(joint_velocities[:, j])
-        max_vel = float(np.max(vel_abs))
-        max_velocities.append(max_vel)
-        
-        limit = velocity_limits_rad_s[j]
+    violations = []
+    if len(velocity_ratios) > 0 and np.max(velocity_ratios) > safety_factor:
+        passed = False
+    for j in range(len(max_velocities)):
+        limit = float(velocity_limits[j])
+        max_vel = max_velocities[j]
         if max_vel > limit * safety_factor:
             passed = False
             violations.append({
                 'joint': j + 1,
                 'max_velocity_rad_s': max_vel,
                 'max_velocity_deg_s': np.degrees(max_vel),
-                'limit_rad_s': float(limit),
-                'limit_deg_s': np.degrees(float(limit)),
+                'limit_rad_s': limit,
+                'limit_deg_s': np.degrees(limit),
                 'exceeded_by_percent': (max_vel / limit - 1) * 100
             })
     
@@ -343,10 +345,21 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
         lines.append(f"    Min: {traj['min_manipulability']:.6f}")
         lines.append("")
         
-        # Continuity (if available)
+        # C0 continuity
+        jsd = traj.get('joint_space_distances', [])
+        if jsd:
+            flags = traj.get('feasibility_flags', {})
+            c0_status = 'YES' if flags.get('c0_ok', True) else 'NO'
+            lines.append("  C0 CONTINUITY ANALYSIS (Position-Level Jumps):")
+            lines.append(f"    Passed: {c0_status}")
+            lines.append(f"    Max joint-space distance: {max(jsd):.6f} rad")
+            lines.append(f"    Mean joint-space distance: {sum(jsd)/len(jsd):.6f} rad")
+            lines.append("")
+
+        # C1 continuity (velocity limits)
         if 'continuity' in traj and traj['continuity'] is not None:
             cont = traj['continuity']
-            lines.append("  CONTINUITY ANALYSIS (C1 - Velocity Limits):")
+            lines.append("  C1 CONTINUITY ANALYSIS (Velocity Limits):")
             lines.append(f"    Passed: {'YES' if cont['passed'] else 'NO'}")
             lines.append(f"    Total duration: {cont['total_duration_s']:.3f} s")
             lines.append("")
@@ -375,11 +388,23 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
     lines.append(f"  Total reachable: {total_reachable} ({100*total_reachable/total_waypoints:.1f}%)")
     lines.append(f"  Total near singularity: {total_singular}")
     
+    # C0 summary
+    c0_traj = [t for t in traj_list if t.get('joint_space_distances')]
+    if c0_traj:
+        c0_pass_count = sum(1 for t in c0_traj if t.get('feasibility_flags', {}).get('c0_ok', True))
+        lines.append(f"  C0 continuity passed: {c0_pass_count}/{len(c0_traj)}")
+
+    # C1 summary
     if any(t is not None and 'continuity' in t and t['continuity'] for t in traj_list):
         passed_count = sum(1 for t in traj_list
                          if t is not None and (t.get('continuity') or {}).get('passed', False))
-        lines.append(f"  Continuity passed: {passed_count}/{results['num_trajectories']}")
+        lines.append(f"  C1 continuity passed: {passed_count}/{results['num_trajectories']}")
     
+    # Speed warning
+    if results.get('speed_warning'):
+        lines.append("")
+        lines.append("  " + results['speed_warning'])
+
     lines.append("")
     lines.append("=" * 70)
     lines.append("END OF REPORT")
@@ -497,11 +522,11 @@ def analyze_trajectory_feasibility(
 def process_toolpath(
     toolpath_path: str,
     urdf_path: str,
-    knife_translation_m: np.ndarray,
-    knife_quaternion: np.ndarray,
-    output_dir: str,
-    robot_model_name: str,
-    knife_pose_name: str,
+    knife_translation_m: Optional[np.ndarray] = None,
+    knife_quaternion: Optional[np.ndarray] = None,
+    output_dir: str = "output/feasibility",
+    robot_model_name: str = "",
+    knife_pose_name: str = "",
     robot_reach_m: float = 1.0,
     singularity_threshold: float = 0.01,
     velocity_limits_rad_s: Optional[np.ndarray] = None,
@@ -521,6 +546,8 @@ def process_toolpath(
     singularity_mode: str = "classified",
     check_j5_only: bool = True,
     j5_threshold_deg: float = 0.76,
+    use_base_frame: bool = False,
+    multi_solution_weights: Optional[dict] = None
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -585,6 +612,11 @@ def process_toolpath(
         if robot_config.joint_jump_limit_rad:
             final_joint_jump_limit = robot_config.joint_jump_limit_rad
     
+    # EAIK multi-solution scoring (only effective when solver is EAIK and weights provided)
+    effective_ms_weights = multi_solution_weights if solver_type == "eaik" else None
+    if effective_ms_weights is not None:
+        print(f"  EAIK multi-solution optimisation: ENABLED (weights: {effective_ms_weights})")
+
     # Create analyzer (accepts RobotModel or (pin.Model, pin.Data) tuple)
     # When singularity_mode is 'none', disable unified σ_min flagging
     effective_singularity_threshold = singularity_threshold
@@ -597,7 +629,8 @@ def process_toolpath(
         singularity_threshold=effective_singularity_threshold,
         velocity_limits_rad_s=final_velocity_limits,
         joint_jump_limit_rad=final_joint_jump_limit,
-        max_ik_failures_per_trajectory=max_ik_failures_per_trajectory
+        max_ik_failures_per_trajectory=max_ik_failures_per_trajectory,
+        multi_solution_weights=effective_ms_weights
     )
 
     # Build classified singularity analyzer when requested
@@ -615,12 +648,30 @@ def process_toolpath(
         trajectories_t_p_k, knife_translation_m, knife_quaternion
     )
     
+    # Load trajectories with per-waypoint speeds (extended loader tracks speed origin)
+    load_result = load_toolpath_trajectories_ext(toolpath_path)
+    trajectories_t_p_k = load_result.trajectories
+    trajectory_speeds = load_result.speeds
+    speed_extracted = load_result.speed_extracted
+
+    # Transform to base frame (or use directly when --base_frame)
+    if use_base_frame:
+        trajectories_t_b_p = trajectories_t_p_k
+    else:
+        if knife_translation_m is None or knife_quaternion is None:
+            raise ValueError("knife_translation_m and knife_quaternion are required when use_base_frame is False")
+        trajectories_t_b_p = transform_trajectories_to_base_frame(
+            trajectories_t_p_k, knife_translation_m, knife_quaternion
+        )
+
     # Validate that speeds match trajectory lengths
     for i, (traj, speeds) in enumerate(zip(trajectories_t_p_k, trajectory_speeds)):
         if len(speeds) != len(traj):
             raise ValueError(f"Trajectory {i}: speed array length ({len(speeds)}) doesn't match waypoint count ({len(traj)})")
-    
-    print(f"Loaded {len(trajectories_t_p_k)} trajectory(ies) with per-waypoint speeds from CSV")
+
+    frame_label = "base frame" if use_base_frame else "knife frame → base frame"
+    speed_label = "extracted from CSV" if speed_extracted else f"default {speed_mm_s} mm/s"
+    print(f"Loaded {len(trajectories_t_p_k)} trajectory(ies) [{frame_label}] — speed: {speed_label}")
     
     # Filter to specific trajectory if requested
     if traj_id is not None:
@@ -638,12 +689,10 @@ def process_toolpath(
     
     # Create output directory structure
     if use_flat_output_structure:
-        # Flat structure: use output_dir as-is (for combinatorial search)
-        # Avoids Windows path length issues by not adding subdirectories
         out_path = Path(output_dir)
+    elif use_base_frame:
+        out_path = Path(output_dir) / robot_model_name / toolpath_name
     else:
-        # Hierarchical structure: output_dir/robot_model_name/toolpath_name/knife_pose_name/
-        # Used for standalone analysis with organized subdirectories
         out_path = Path(output_dir) / robot_model_name / toolpath_name / knife_pose_name
     
     out_path.mkdir(parents=True, exist_ok=True)
@@ -785,9 +834,7 @@ def process_toolpath(
             )
         
         # ---------------------------------------------------------------------
-        # Compute Feasibility Metrics (Level 1 required; Level 2-4 optional)
-        # ---------------------------------------------------------------------
-        feasibility_flags = traj_result.get('feasibility_flags', {})
+        # Compute Feasibility Metrics (LevelTrue'feasibility_flags', {})
         
         if level1_only:
             # Feasibility-only: only IK reachability matters (skip C0/C1)
@@ -842,22 +889,51 @@ def process_toolpath(
             status = "PASSED" if continuity_result.passed else "FAILED"
             print(f"    Continuity: {status} (duration: {continuity_result.total_duration_s:.2f}s)")
             
-            # Generate per-trajectory continuity plot (only if detailed report is enabled)
+            # Generate per-trajectory continuity plots (only if detailed report)
             if detailed_per_trajectory_report and not skip_plots:
                 plot_continuity_analysis(
                     timestamps=continuity_result.timestamps,
                     trajectory_m=trajectory,
                     joint_angles_rad=joint_angles_rad,
-                    output_path=str(traj_out / "continuity.png"),
+                    output_path=str(traj_out / "continuity_c1.png"),
                     title=f"C1 Continuity Analysis\n{toolpath_name} - {traj_name}",
-                    speed_mm_s=100.0,  # Fallback speed
-                    speeds_mm_s=speeds,  # Per-waypoint speeds
+                    speed_mm_s=100.0,
+                    speeds_mm_s=speeds,
                     velocity_limits_rad_s=final_velocity_limits
                 )
-        
-        # Store 4-level metrics for later aggregation (don't generate plots here)
-        # Plots will be generated once per combination after all trajectories are processed
-        
+
+        # ----- C0 data extraction from core results -----
+        traj_joint_space_distances = traj_result.get('joint_space_distances', [])
+        traj_per_joint_jumps = traj_result.get('per_joint_jumps', [])
+        traj_cartesian_distances = traj_result.get('cartesian_distances', [])
+
+        # Per-trajectory C0 plot + combined dashboard
+        if not skip_plots and waypoint_idx is None:
+            if detailed_per_trajectory_report and len(traj_joint_space_distances) > 0:
+                plot_c0_continuity_per_waypoint(
+                    joint_space_distances=np.array(traj_joint_space_distances),
+                    per_joint_jumps=np.array(traj_per_joint_jumps) if traj_per_joint_jumps else np.empty((0, 6)),
+                    cartesian_distances=np.array(traj_cartesian_distances),
+                    output_path=str(traj_out / "continuity_c0.png"),
+                    title=f"C0 Continuity Analysis\n{toolpath_name} - {traj_name}",
+                    joint_jump_limit_rad=final_joint_jump_limit
+                )
+
+            # Combined C0+C1 dashboard (always generated per trajectory)
+            if len(traj_joint_space_distances) > 0 or len(velocity_ratios) > 0:
+                plot_continuity_dashboard(
+                    joint_space_distances=np.array(traj_joint_space_distances),
+                    velocity_ratios=velocity_ratios,
+                    timestamps=timestamps,
+                    trajectory_m=trajectory,
+                    speeds_mm_s=speeds,
+                    speed_mm_s=speed_mm_s,
+                    output_path=str(traj_out / f"continuity_dashboard_{traj_name}.png"),
+                    title=f"Continuity Dashboard (C0 + C1)\n{toolpath_name} - {traj_name}",
+                    joint_jump_limit_rad=final_joint_jump_limit,
+                    velocity_limits_rad_s=final_velocity_limits
+                )
+
         # Generate per-trajectory plots (only if detailed report is enabled)
         if detailed_per_trajectory_report and not skip_plots:
             plot_reachability_per_waypoint(
@@ -906,6 +982,10 @@ def process_toolpath(
             'dexterity_score': dexterity_score,
             'safety_score': max_condition_number,  # Store for tier explanation
             'continuity': None,
+            # C0 per-segment data for aggregated plots
+            'joint_space_distances': traj_joint_space_distances,
+            'per_joint_jumps': traj_per_joint_jumps,
+            'cartesian_distances': traj_cartesian_distances,
             'failed_waypoints': failed_indices,
             'failure_details': failure_details,
             'reachable_flags': reachable.tolist(),
@@ -974,10 +1054,19 @@ def process_toolpath(
         if run_continuity and any(t.get('continuity') is not None for t in results['trajectory_results']):
             plot_continuity_summary(
                 results['trajectory_results'],
-                str(out_path / "aggregated_continuity.png"),
-                title=f"Continuity Summary\n{toolpath_name}",
-                speed_mm_s=100.0,  # Will be overridden by individual trajectory speeds
+                str(out_path / "aggregated_continuity_c1.png"),
+                title=f"C1 Continuity Summary\n{toolpath_name}",
+                speed_mm_s=100.0,
                 velocity_limits_rad_s=final_velocity_limits
+            )
+        
+        # 5. C0 continuity summary per trajectory
+        if any(t.get('joint_space_distances') for t in results['trajectory_results']):
+            plot_c0_summary_per_trajectory(
+                results['trajectory_results'],
+                str(out_path / "aggregated_continuity_c0.png"),
+                title=f"C0 Continuity Summary per Trajectory\n{toolpath_name}",
+                joint_jump_limit_rad=final_joint_jump_limit
             )
         
         if verbose:
@@ -991,6 +1080,18 @@ def process_toolpath(
             title=f"Reachability Summary\n{toolpath_name}"
         )
     
+    # Speed extraction warning
+    if not speed_extracted:
+        warning_msg = (
+            "WARNING: TCP speed could not be extracted from CSV. "
+            f"Using default speed of {_DEFAULT_SPEED_MM_S} mm/s. "
+            "C1 velocity analysis may not reflect actual commanded speeds."
+        )
+        print(f"\n  {warning_msg}")
+        results['speed_warning'] = warning_msg
+    else:
+        results['speed_warning'] = None
+
     # Save analysis report as text file
     if save_analysis:
         generate_analysis_report(results, out_path / "analysis_report.txt")
@@ -1056,21 +1157,34 @@ def main():
                         help="Skip all PNG plots")
     parser.add_argument('--solver', choices=['pin', 'eaik'], default='pin',
                         help="Solver backend: pin (Pinocchio) or eaik (EAIK analytical)")
+    parser.add_argument('--base_frame', action='store_true',
+                        help="Toolpath CSV is already in robot base frame; skip knife transform")
     
     args = parser.parse_args()
+    use_base_frame = args.base_frame
     
-    # Load knife config
-    knife_poses = load_knife_config(args.knife_config)
-    if args.knife_pose not in knife_poses:
-        print(f"Error: Knife pose '{args.knife_pose}' not found")
-        sys.exit(1)
-    
-    knife = knife_poses[args.knife_pose]
+    # Load knife config (only needed when not in base-frame mode)
+    knife_translation_m = None
+    knife_quaternion = None
+    knife_pose_name = ""
+
+    if not use_base_frame:
+        knife_poses = load_knife_config(args.knife_config)
+        if args.knife_pose not in knife_poses:
+            print(f"Error: Knife pose '{args.knife_pose}' not found")
+            sys.exit(1)
+        knife = knife_poses[args.knife_pose]
+        knife_translation_m = knife.translation_m
+        knife_quaternion = knife.quaternion
+        knife_pose_name = args.knife_pose
     
     # Extract robot model name from URDF path
     robot_model_name = extract_robot_model_name(args.urdf)
     print(f"Robot model: {robot_model_name}")
-    print(f"Knife pose: {args.knife_pose}")
+    if use_base_frame:
+        print("Base frame: toolpaths used as-is (no knife pose)")
+    else:
+        print(f"Knife pose: {args.knife_pose}")
     print(f"Singularity mode: {args.singularity_mode}")
     if args.singularity_mode == 'classified':
         check_j5 = not args.no_j5_only
@@ -1078,18 +1192,21 @@ def main():
 
     singularity_threshold = args.singularity_threshold
     
-    # Default velocity limits for IRB 1300-7/1.4
     velocity_limits = np.array([4.443, 3.142, 4.312, 8.727, 7.245, 12.566])
     
-    # Process toolpath
+    # EAIK multi-solution weights — enabled by default when solver is eaik
+    ms_weights = None
+    if args.solver == "eaik":
+        ms_weights = {'c0': 1.0, 'c1': 2.0, 'singularity': 1.0, 'manipulability': 0.5}
+
     process_toolpath(
         args.toolpath,
         args.urdf,
-        knife.translation_m,
-        knife.quaternion,
-        args.output,
+        knife_translation_m=knife_translation_m,
+        knife_quaternion=knife_quaternion,
+        output_dir=args.output,
         robot_model_name=robot_model_name,
-        knife_pose_name=args.knife_pose,
+        knife_pose_name=knife_pose_name,
         robot_reach_m=args.reach,
         singularity_threshold=singularity_threshold,
         velocity_limits_rad_s=velocity_limits,
@@ -1102,6 +1219,8 @@ def main():
         singularity_mode=args.singularity_mode,
         check_j5_only=not args.no_j5_only,
         j5_threshold_deg=args.j5_threshold_deg,
+        use_base_frame=use_base_frame,
+        multi_solution_weights=ms_weights
     )
     
     print("\nAnalysis complete!")

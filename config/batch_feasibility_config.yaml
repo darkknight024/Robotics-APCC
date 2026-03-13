@@ -21,7 +21,7 @@ knife_poses_to_use:
 # =============================================================================
 # I/O Directories
 # =============================================================================
-toolpaths_folder: "Assets/Robot APCC/Toolpaths/Successful"
+toolpaths_folder: "Assets/Robot APCC/Toolpaths/Sample"
 output_folder: "output/feasibility_batch"
 
 # =============================================================================
@@ -82,6 +82,13 @@ performance:
   max_ik_failures_per_trajectory: 1
 
 # =============================================================================
+# Frame Mode
+# =============================================================================
+# When true, toolpath CSV is already in robot base frame; knife poses are ignored.
+# When false (default), toolpath is in knife frame and knife_poses_to_use apply.
+use_base_frame: false
+
+# =============================================================================
 # Continuity Analysis Settings
 # =============================================================================
 continuity:
@@ -98,13 +105,38 @@ continuity:
   default_speed_mm_s: 100.0
 
 # =============================================================================
-# Output Options
+# EAIK Multi-Solution Optimisation
 # =============================================================================
+# When the solver is "eaik", EAIK returns up to ~8 geometrically valid IK
+# solutions per waypoint.  When enabled below, the feasibility analyzer scores
+# every valid candidate at each waypoint against the previous configuration
+# using the weighted cost function and picks the lowest-cost one.
+#
+# This improves C0/C1 continuity, manipulability and singularity avoidance
+# compared to the default "closest" selection strategy.
+#
+# Ignored when solver is "pin" (Pinocchio returns a single solution).
+eaik_multi_solution:
+  enabled: true
+  weights:
+    # Joint-space distance to previous config (penalises large C0 jumps)
+    c0: 1.0
+    # Velocity ratio — penalises exceeding joint velocity limits (C1)
+    c1: 2.0
+    # 1/sigma_min — penalises proximity to singularity
+    singularity: 1.0
+    # Yoshikawa manipulability reward (subtracted from cost — higher is better)
+    manipulability: 0.5
+
 # =============================================================================
 # Solver Backend
 # =============================================================================
 # "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
 solver: "pin"
+
+# =============================================================================
+# Output Options
+# =============================================================================
 
 output:
   # Level 1 only: only compute feasibility gate (IK 100%, C0, C1); skip Level 2-4

@@ -2,107 +2,165 @@
 """
 CSV Loader for Toolpath Files
 
-Handles loading toolpath CSV files with the following format:
-- Multiple trajectories per file separated by "T0" markers
-- Each data row: x,y,z,qw,qx,qy,qz,... (first 7 columns used)
-- Positions in millimeters (automatically converted to meters)
+Handles loading toolpath CSV files in two formats:
 
-Example format:
-    2              <- trajectory count (optional header)
+Format A — T0-marker toolpaths (no header row):
+    2              <- trajectory count (optional)
     T0             <- trajectory separator
     84             <- waypoint count (optional)
-    91.33,150.26,78.46,0.000508,0.000235,-0.230003,0.973190,100,...
-    90.34,150.26,78.46,0.001095,0.000374,-0.230004,0.973189,100,...
+    91.33,150.26,78.46,0.010842,-0.002003,-0.181642,0.983303,100,...
     T0             <- next trajectory
-    84
-    91.33,148.93,78.46,-0.000989,0.000117,0.227963,0.973669,100,...
+    ...
+
+Format B — Header-based waypoint files:
+    waypoint_id,x,y,z,qw,qx,qy,qz,j1,...,speed
+    0,1007.84,123.033,1074.79,0.131214,0.664596,0.121108,0.725554,...,100
+
+Positions are always in millimetres (automatically converted to metres).
 """
 
 import csv
+import logging
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+_REQUIRED_POSE_COLUMNS = {"x", "y", "z", "qw", "qx", "qy", "qz"}
+_DEFAULT_SPEED_MM_S = 100.0
+
+
+@dataclass
+class ToolpathLoadResult:
+    """Return value of load_toolpath_trajectories with metadata."""
+    trajectories: List[np.ndarray]
+    speeds: List[np.ndarray]
+    speed_extracted: bool
+
+
+def _detect_header(row: List[str]) -> Optional[Dict[str, int]]:
+    """Return column-name -> index mapping if *row* is a text header, else None."""
+    if len(row) < 7:
+        return None
+    try:
+        float(row[0])
+        return None
+    except ValueError:
+        pass
+    col_map = {token.strip().lower(): idx for idx, token in enumerate(row)}
+    if _REQUIRED_POSE_COLUMNS.issubset(col_map):
+        return col_map
+    return None
 
 
 def load_toolpath_trajectories(
     csv_path: str,
     max_trajectories: Optional[int] = None
-) -> tuple[List[np.ndarray], List[np.ndarray]]:
+) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     """
     Load toolpath trajectories from CSV file with per-waypoint speeds.
-    
+
+    Supports both T0-marker format and header-based CSV format.
+
     Args:
         csv_path: Path to toolpath CSV file
         max_trajectories: Maximum number of trajectories to load (None = all)
-        
+
     Returns:
         Tuple of (trajectories, speeds) where:
         - trajectories: List of numpy arrays, each (n_waypoints, 7) with:
           [x_m, y_m, z_m, qw, qx, qy, qz]. Positions are in meters.
         - speeds: List of numpy arrays, each (n_waypoints,) with:
           desired speeds in mm/s for each waypoint
-        
+
     Raises:
         FileNotFoundError: If CSV file doesn't exist
         ValueError: If CSV format is invalid
     """
+    result = load_toolpath_trajectories_ext(csv_path, max_trajectories)
+    return result.trajectories, result.speeds
+
+
+def load_toolpath_trajectories_ext(
+    csv_path: str,
+    max_trajectories: Optional[int] = None
+) -> ToolpathLoadResult:
+    """
+    Extended loader that also reports whether speed was extracted from the CSV.
+
+    Returns:
+        ToolpathLoadResult with trajectories, speeds, and speed_extracted flag.
+    """
     csv_path = Path(csv_path)
-    # If path has no extension and points to a directory, try the .csv file with same name
     if csv_path.suffix.lower() != ".csv" and csv_path.is_dir():
         csv_path = csv_path.parent / (csv_path.name + ".csv")
     elif csv_path.suffix.lower() != ".csv" and not csv_path.exists() and (csv_path.parent / (csv_path.name + ".csv")).exists():
         csv_path = csv_path.parent / (csv_path.name + ".csv")
     if not csv_path.exists():
         raise FileNotFoundError(f"Toolpath CSV not found: {csv_path}")
-    
-    trajectories = []
-    speeds = []
-    current_trajectory = []
-    current_speeds = []
-    
+
+    trajectories: List[np.ndarray] = []
+    speeds: List[np.ndarray] = []
+    current_trajectory: List[List[float]] = []
+    current_speeds: List[float] = []
+
+    speed_was_extracted = False
+    col_map: Optional[Dict[str, int]] = None
+    header_checked = False
+
     try:
         with open(csv_path, 'r', newline='', encoding='utf-8') as f:
             reader = csv.reader(f)
-            
+
             for row in reader:
-                # Clean whitespace
                 clean_row = [token.strip() for token in row if token.strip()]
-                
+
                 if len(clean_row) == 0:
                     continue
-                
-                # Check for trajectory separator
+
+                # --- First row: try to detect a header ---
+                if not header_checked and len(clean_row) >= 7:
+                    col_map = _detect_header(clean_row)
+                    header_checked = True
+                    if col_map is not None:
+                        continue  # consume the header row
+
+                # T0 separator (only relevant for marker-based format)
                 if len(clean_row) == 1 and clean_row[0] == "T0":
                     _finalize_trajectory(trajectories, speeds, current_trajectory, current_speeds, max_trajectories)
                     current_trajectory = []
                     current_speeds = []
-                    
                     if max_trajectories and len(trajectories) >= max_trajectories:
                         break
                     continue
-                
-                # Skip single-value rows (trajectory count, waypoint count)
+
                 if len(clean_row) < 7:
                     continue
-                
-                # Parse data row
+
                 try:
-                    point, row_speed = _parse_waypoint(clean_row)
+                    point, row_speed = _parse_waypoint_mapped(clean_row, col_map)
                     if point is not None:
                         current_trajectory.append(point)
-                        # Store speed for each waypoint (default to 100.0 if not available)
-                        current_speeds.append(row_speed if row_speed is not None else 100.0)
-                except (ValueError, IndexError) as e:
-                    # Skip invalid rows
+                        if row_speed is not None:
+                            speed_was_extracted = True
+                            current_speeds.append(row_speed)
+                        else:
+                            current_speeds.append(_DEFAULT_SPEED_MM_S)
+                except (ValueError, IndexError):
                     continue
-            
-            # Finalize last trajectory
+
             _finalize_trajectory(trajectories, speeds, current_trajectory, current_speeds, max_trajectories)
-    
+
     except Exception as e:
         raise ValueError(f"Error reading toolpath CSV {csv_path}: {e}")
-    
-    return trajectories, speeds
+
+    return ToolpathLoadResult(
+        trajectories=trajectories,
+        speeds=speeds,
+        speed_extracted=speed_was_extracted,
+    )
 
 
 def _remove_duplicate_waypoints(
@@ -169,54 +227,67 @@ def _finalize_trajectory(
             traj_array = np.array(current_trajectory, dtype=float)
             speed_array = np.array(current_speeds, dtype=float)
             
-            # CRITICAL FIX: Remove duplicate waypoints during preprocessing
+            #  Remove duplicate waypoints during preprocessing
             traj_filtered, speed_filtered = _remove_duplicate_waypoints(traj_array, speed_array)
             
             trajectories.append(traj_filtered)
             speeds.append(speed_filtered)
 
 
-def _parse_waypoint(row: List[str]) -> tuple[Optional[List[float]], Optional[float]]:
+def _parse_waypoint_mapped(
+    row: List[str],
+    col_map: Optional[Dict[str, int]] = None
+) -> Tuple[Optional[List[float]], Optional[float]]:
     """
-    Parse a single waypoint from CSV row.
-    
-    Args:
-        row: List of string values from CSV
-        
-    Returns:
-        Tuple of ([x_m, y_m, z_m, qw, qx, qy, qz], speed_mm_s) where:
-        - First element: waypoint with positions in meters
-        - Second element: commanded speed from column 8 in mm/s (None if not available)
+    Parse a single waypoint from a CSV row.
+
+    When *col_map* is ``None`` the legacy index-based layout is used
+    (columns 0-6 = x,y,z,qw,qx,qy,qz; column 7 = speed).
+
+    When *col_map* is provided the columns are looked up by name, which
+    lets us handle CSVs like ``waypoint_id,x,y,z,qw,qx,qy,qz,...,speed``.
     """
-    # Parse position (mm -> m)
-    x_mm, y_mm, z_mm = float(row[0]), float(row[1]), float(row[2])
+    if col_map is not None:
+        x_mm = float(row[col_map["x"]])
+        y_mm = float(row[col_map["y"]])
+        z_mm = float(row[col_map["z"]])
+        qw = float(row[col_map["qw"]])
+        qx = float(row[col_map["qx"]])
+        qy = float(row[col_map["qy"]])
+        qz = float(row[col_map["qz"]])
+        speed_mm_s = None
+        if "speed" in col_map and col_map["speed"] < len(row):
+            try:
+                speed_mm_s = float(row[col_map["speed"]])
+            except (ValueError, IndexError):
+                pass
+    else:
+        x_mm, y_mm, z_mm = float(row[0]), float(row[1]), float(row[2])
+        qw, qx, qy, qz = float(row[3]), float(row[4]), float(row[5]), float(row[6])
+        speed_mm_s = None
+        if len(row) > 7:
+            try:
+                speed_mm_s = float(row[7])
+            except (ValueError, IndexError):
+                pass
+
     x_m = x_mm / 1000.0
     y_m = y_mm / 1000.0
     z_m = z_mm / 1000.0
-    
-    # Parse quaternion (qw, qx, qy, qz)
-    qw, qx, qy, qz = float(row[3]), float(row[4]), float(row[5]), float(row[6])
-    
-    # Normalize quaternion
+
     quaternion = np.array([qw, qx, qy, qz])
     norm = np.linalg.norm(quaternion)
-    
     if norm < 1e-10:
-        # Use identity quaternion for zero-norm case
         quaternion = np.array([1.0, 0.0, 0.0, 0.0])
     else:
         quaternion = quaternion / norm
-    
-    # Parse speed from column 8 (index 7) if available
-    speed_mm_s = None
-    if len(row) > 7:
-        try:
-            speed_mm_s = float(row[7])
-        except (ValueError, IndexError):
-            speed_mm_s = None
-    
+
     waypoint = [x_m, y_m, z_m, quaternion[0], quaternion[1], quaternion[2], quaternion[3]]
     return waypoint, speed_mm_s
+
+
+# Backward-compatible alias used by extract_toolpath_speed / validate_toolpath_csv
+_parse_waypoint = _parse_waypoint_mapped
 
 
 def get_trajectory_count(csv_path: str) -> int:
@@ -238,43 +309,42 @@ def get_trajectory_count(csv_path: str) -> int:
     return max(count, 1)
 
 
-def extract_toolpath_speed(csv_path: str) -> float:
+def extract_toolpath_speed(csv_path: str) -> Tuple[float, bool]:
     """
-    Extract commanded speed from toolpath CSV file (column 8).
-    
+    Extract commanded speed from toolpath CSV file.
+
     Args:
         csv_path: Path to toolpath CSV file
-        
+
     Returns:
-        Average commanded speed in mm/s (defaults to 100.0 if not found)
+        (average_speed_mm_s, speed_was_extracted) — defaults to (100.0, False).
     """
     try:
-        _, speeds = load_toolpath_trajectories(csv_path, max_trajectories=1)
-        if speeds and len(speeds[0]) > 0:
-            return float(np.mean(speeds[0]))
-        return 100.0
+        result = load_toolpath_trajectories_ext(csv_path, max_trajectories=1)
+        if result.speeds and len(result.speeds[0]) > 0:
+            return float(np.mean(result.speeds[0])), result.speed_extracted
+        return _DEFAULT_SPEED_MM_S, False
     except Exception:
-        # Return default speed if extraction fails
-        return 100.0
+        return _DEFAULT_SPEED_MM_S, False
 
 
-def validate_toolpath_csv(csv_path: str) -> tuple:
+def validate_toolpath_csv(csv_path: str) -> Tuple[bool, Optional[str]]:
     """
     Validate toolpath CSV format.
-    
+
     Args:
         csv_path: Path to toolpath CSV file
-        
+
     Returns:
         (is_valid, error_message)
     """
     try:
-        trajectories, speeds = load_toolpath_trajectories(csv_path, max_trajectories=1)
-        if not trajectories:
+        result = load_toolpath_trajectories_ext(csv_path, max_trajectories=1)
+        if not result.trajectories:
             return False, "No trajectories found in file"
-        if len(trajectories[0]) == 0:
+        if len(result.trajectories[0]) == 0:
             return False, "First trajectory has no waypoints"
-        if not speeds or len(speeds[0]) != len(trajectories[0]):
+        if not result.speeds or len(result.speeds[0]) != len(result.trajectories[0]):
             return False, "Speed array length doesn't match waypoint array length"
         return True, None
     except FileNotFoundError as e:

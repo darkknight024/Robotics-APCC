@@ -52,8 +52,8 @@ class FeasibilityTask:
     robot_reach_m: float
     velocity_limits_rad_s: Optional[np.ndarray]
     knife_name: str
-    knife_translation_m: np.ndarray
-    knife_quaternion: np.ndarray
+    knife_translation_m: Optional[np.ndarray]
+    knife_quaternion: Optional[np.ndarray]
     toolpath_path: str
     toolpath_name: str
     output_dir: str
@@ -64,6 +64,8 @@ class FeasibilityTask:
     level1_only: bool = True
     detailed_per_trajectory_report: bool = False
     export_waypoint_validity: bool = False
+    use_base_frame: bool = False
+    multi_solution_weights: Optional[dict] = None
 
 
 def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
@@ -90,6 +92,8 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
             solver_type=task.solver_type,
             export_waypoint_validity=task.export_waypoint_validity,
+            use_base_frame=task.use_base_frame,
+            multi_solution_weights=task.multi_solution_weights
         )
         
         return {
@@ -211,7 +215,16 @@ def process_batch(
     continuity_config = feas_config.get('continuity', {})
     run_continuity = continuity_config.get('enabled', True)
     speed_mm_s = continuity_config.get('default_speed_mm_s', 100.0)
-    
+    use_base_frame = config.get('use_base_frame', False)
+
+    # EAIK multi-solution optimisation weights
+    ms_section = config.get('eaik_multi_solution', {})
+    multi_solution_weights = None
+    if ms_section and ms_section.get('enabled', False):
+        _defaults = {'c0': 1.0, 'c1': 2.0, 'singularity': 1.0, 'manipulability': 0.5}
+        ws = ms_section.get('weights', {})
+        multi_solution_weights = {k: float(ws.get(k, v)) for k, v in _defaults.items()}
+
     # Output options: Level 1 only by default; aggregated plots only by default
     output_config = config.get('output', {}) or feas_config.get('output', {})
     level1_only = level1_only if level1_only is not None else output_config.get('level1_only', True)
@@ -239,7 +252,11 @@ def process_batch(
     toolpath_files = list(set(toolpath_files))
     
     print(f"Found {len(toolpath_files)} toolpath file(s)")
-    print(f"Processing with {len(config['robots'])} robot(s) and {len(config.get('knife_poses_to_use', []))} knife pose(s)")
+    print(f"Processing with {len(config['robots'])} robot(s)")
+    if use_base_frame:
+        print("Base frame mode: toolpaths used as-is (no knife pose)")
+    else:
+        print(f"  Knife poses: {len(config.get('knife_poses_to_use', []))}")
     print(f"Continuity analysis: {'Enabled' if run_continuity else 'Disabled'}")
     solver_type = config.get('solver', 'pin')
     print(f"Solver: {solver_type}")
@@ -253,26 +270,20 @@ def process_batch(
         if robot.velocity_limits_rad_s:
             velocity_limits = np.array(robot.velocity_limits_rad_s)
         
-        for pose_name in config.get('knife_poses_to_use', []):
-            if pose_name not in knife_poses:
-                print(f"  Warning: Knife pose '{pose_name}' not found, skipping")
-                continue
-            
-            knife = knife_poses[pose_name]
-            
+        if use_base_frame:
+            # Base frame: no knife iteration
             for toolpath_file in toolpath_files:
                 toolpath_name = toolpath_file.stem
                 robot_name_clean = robot.name.replace(" ", "_").replace("/", "-")
-                combo_output = output_dir / f"{robot_name_clean}__{pose_name}__{toolpath_name}"
-                
+                combo_output = output_dir / f"{robot_name_clean}__{toolpath_name}"
                 tasks.append(FeasibilityTask(
                     robot_name=robot.name,
                     urdf_path=robot.urdf_path,
                     robot_reach_m=robot.reach_m,
                     velocity_limits_rad_s=velocity_limits,
-                    knife_name=pose_name,
-                    knife_translation_m=knife.translation_m,
-                    knife_quaternion=knife.quaternion,
+                    knife_name="",
+                    knife_translation_m=None,
+                    knife_quaternion=None,
                     toolpath_path=str(toolpath_file),
                     toolpath_name=toolpath_name,
                     output_dir=str(combo_output),
@@ -283,7 +294,42 @@ def process_batch(
                     level1_only=level1_only,
                     detailed_per_trajectory_report=detailed_per_trajectory_report,
                     export_waypoint_validity=export_waypoint_validity,
+                    use_base_frame=True,
+                    multi_solution_weights=multi_solution_weights
                 ))
+        else:
+            for pose_name in config.get('knife_poses_to_use', []):
+                if pose_name not in knife_poses:
+                    print(f"  Warning: Knife pose '{pose_name}' not found, skipping")
+                    continue
+                
+                knife = knife_poses[pose_name]
+                
+                for toolpath_file in toolpath_files:
+                    toolpath_name = toolpath_file.stem
+                    robot_name_clean = robot.name.replace(" ", "_").replace("/", "-")
+                    combo_output = output_dir / f"{robot_name_clean}__{pose_name}__{toolpath_name}"
+                    
+                    tasks.append(FeasibilityTask(
+                        robot_name=robot.name,
+                        urdf_path=robot.urdf_path,
+                        robot_reach_m=robot.reach_m,
+                        velocity_limits_rad_s=velocity_limits,
+                        knife_name=pose_name,
+                        knife_translation_m=knife.translation_m,
+                        knife_quaternion=knife.quaternion,
+                        toolpath_path=str(toolpath_file),
+                        toolpath_name=toolpath_name,
+                        output_dir=str(combo_output),
+                        singularity_threshold=singularity_threshold,
+                        speed_mm_s=speed_mm_s,
+                        run_continuity=run_continuity,
+                        solver_type=solver_type,
+                        level1_only=level1_only,
+                        detailed_per_trajectory_report=detailed_per_trajectory_report,
+                        use_base_frame=False,
+                        multi_solution_weights=multi_solution_weights
+                    ))
     
     print(f"\nPrepared {len(tasks)} analysis tasks")
     

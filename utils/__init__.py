@@ -24,6 +24,8 @@ from .transform_handler import (
 
 from .csv_loader_toolpath import (
     load_toolpath_trajectories,
+    load_toolpath_trajectories_ext,
+    ToolpathLoadResult,
     get_trajectory_count,
     validate_toolpath_csv,
     extract_toolpath_speed
@@ -67,6 +69,10 @@ from .feasibility_plot import (
     plot_manipulability_per_trajectory,
     plot_singularity_per_trajectory,
     plot_continuity_summary,
+    # C0 continuity + dashboard plots
+    plot_c0_continuity_per_waypoint,
+    plot_c0_summary_per_trajectory,
+    plot_continuity_dashboard,
     # Debug plotting functions
     plot_ik_failure_analysis,
     plot_joint_limit_analysis,
@@ -139,6 +145,8 @@ __all__ = [
     'rotation_matrix_to_quaternion',
     # CSV Loaders
     'load_toolpath_trajectories',
+    'load_toolpath_trajectories_ext',
+    'ToolpathLoadResult',
     'get_trajectory_count',
     'validate_toolpath_csv',
     'extract_toolpath_speed',
@@ -168,6 +176,9 @@ __all__ = [
     'plot_manipulability_per_trajectory',
     'plot_singularity_per_trajectory',
     'plot_continuity_summary',
+    'plot_c0_continuity_per_waypoint',
+    'plot_c0_summary_per_trajectory',
+    'plot_continuity_dashboard',
     'plot_position_comparison',
     'plot_position_deltas',
     'plot_quaternion_comparison',

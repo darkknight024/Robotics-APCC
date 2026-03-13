@@ -701,6 +701,312 @@ def plot_continuity_summary(
 
 
 # =============================================================================
+# C0 Continuity Plotting Functions
+# =============================================================================
+
+def plot_c0_continuity_per_waypoint(
+    joint_space_distances: np.ndarray,
+    per_joint_jumps: np.ndarray,
+    cartesian_distances: np.ndarray,
+    output_path: str,
+    title: str = "C0 Continuity Analysis",
+    joint_jump_limit_rad: Optional[float] = None
+) -> None:
+    """
+    Plot C0 (position-level) continuity analysis for a single trajectory.
+
+    Panel 1: Joint-space distance per segment with threshold.
+    Panel 2: Per-joint absolute angular jumps per segment.
+    Panel 3: Cartesian TCP distance per segment (mm).
+
+    Args:
+        joint_space_distances: Euclidean joint-space distance per segment (n_segments,)
+        per_joint_jumps: Per-joint angular jumps (n_segments, n_joints) in rad
+        cartesian_distances: TCP Cartesian distance per segment (n_segments,) in metres
+        output_path: Path to save the output image
+        title: Plot title
+        joint_jump_limit_rad: C0 threshold (None to disable)
+    """
+    n_segments = len(joint_space_distances)
+    if n_segments == 0:
+        return
+    segments = np.arange(n_segments)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+
+    # --- Panel 1: aggregate joint-space distance ---
+    colors_c0 = ['green' if d < (joint_jump_limit_rad or np.inf) else 'red'
+                 for d in joint_space_distances]
+    ax1.bar(segments, joint_space_distances, color=colors_c0, alpha=0.7,
+            edgecolor='black', linewidth=0.5)
+    if joint_jump_limit_rad is not None:
+        ax1.axhline(y=joint_jump_limit_rad, color='red', linestyle='--',
+                     linewidth=2, label=f'C0 Threshold ({joint_jump_limit_rad:.3f} rad)')
+        _add_threshold_yticks(ax1, [joint_jump_limit_rad])
+    max_jump = float(np.max(joint_space_distances))
+    mean_jump = float(np.mean(joint_space_distances))
+    violations = int(np.sum(np.array(joint_space_distances) >= (joint_jump_limit_rad or np.inf)))
+    c0_pass = violations == 0
+    summary = f'Max: {max_jump:.4f} rad | Mean: {mean_jump:.4f} rad | Violations: {violations}'
+    ax1.text(0.02, 0.95, summary, transform=ax1.transAxes, fontweight='bold',
+             fontsize=9, va='top',
+             bbox=dict(boxstyle='round',
+                       facecolor='lightgreen' if c0_pass else 'lightcoral', alpha=0.8))
+    ax1.set_ylabel('Joint-Space Distance (rad)', fontweight='bold')
+    ax1.set_title('C0: Joint-Space Distance per Segment', fontweight='bold')
+    ax1.legend(loc='upper right', fontsize=9)
+    ax1.grid(True, alpha=0.3)
+
+    # --- Panel 2: per-joint jumps ---
+    if len(per_joint_jumps) > 0:
+        per_joint_jumps = np.array(per_joint_jumps)
+        n_joints = per_joint_jumps.shape[1]
+        joint_colors = ['tab:blue', 'tab:orange', 'tab:green',
+                        'tab:red', 'tab:purple', 'tab:brown']
+        for j in range(n_joints):
+            ax2.plot(segments, np.degrees(per_joint_jumps[:, j]),
+                     linewidth=1.5, alpha=0.8,
+                     color=joint_colors[j % len(joint_colors)],
+                     label=f'J{j+1}')
+    ax2.set_ylabel('Angular Jump (deg)', fontweight='bold')
+    ax2.set_title('Per-Joint Absolute Angular Jumps', fontweight='bold')
+    ax2.legend(loc='upper right', fontsize=9, ncol=3)
+    ax2.grid(True, alpha=0.3)
+
+    # --- Panel 3: Cartesian TCP distance ---
+    cart_mm = np.array(cartesian_distances) * 1000.0
+    ax3.bar(segments, cart_mm, color='tab:cyan', alpha=0.7,
+            edgecolor='black', linewidth=0.5)
+    ax3.set_xlabel('Segment Index', fontweight='bold')
+    ax3.set_ylabel('TCP Distance (mm)', fontweight='bold')
+    ax3.set_title('Cartesian TCP Distance per Segment', fontweight='bold')
+    ax3.grid(True, alpha=0.3)
+    ax3.text(0.02, 0.95,
+             f'Max: {float(np.max(cart_mm)):.2f} mm | Mean: {float(np.mean(cart_mm)):.2f} mm',
+             transform=ax3.transAxes, fontweight='bold', fontsize=9, va='top',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    C0 continuity graph saved: {Path(output_path).name}")
+
+
+def plot_c0_summary_per_trajectory(
+    trajectory_results: List[dict],
+    output_path: str,
+    title: str = "C0 Continuity Summary per Trajectory",
+    joint_jump_limit_rad: Optional[float] = None
+) -> None:
+    """
+    Aggregated C0 continuity metrics for all trajectories in a toolpath.
+
+    Shows max joint-space distance per trajectory as a bar chart with
+    the C0 threshold and pass/fail colouring.
+    """
+    n_traj = len(trajectory_results)
+    if n_traj == 0:
+        return
+    trajectory_indices = np.arange(1, n_traj + 1)
+
+    max_jumps = []
+    for traj in trajectory_results:
+        jsd = traj.get('joint_space_distances', [])
+        if jsd:
+            max_jumps.append(float(np.max(jsd)))
+        else:
+            max_jumps.append(0.0)
+    max_jumps = np.array(max_jumps)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+
+    # --- Panel 1: max joint-space jump per trajectory ---
+    threshold = joint_jump_limit_rad or np.inf
+    colors = ['green' if m < threshold else 'red' for m in max_jumps]
+    ax1.bar(trajectory_indices, max_jumps, color=colors, alpha=0.7,
+            edgecolor='black', linewidth=0.8)
+    if joint_jump_limit_rad is not None:
+        ax1.axhline(y=joint_jump_limit_rad, color='red', linestyle='--',
+                     linewidth=2, label=f'C0 Threshold ({joint_jump_limit_rad:.3f} rad)')
+        _add_threshold_yticks(ax1, [joint_jump_limit_rad])
+    for idx, val in zip(trajectory_indices, max_jumps):
+        ax1.text(idx, val + max(max_jumps) * 0.02, f'{val:.4f}',
+                 ha='center', va='bottom', fontsize=8, fontweight='bold')
+    ax1.set_xlabel('Trajectory', fontweight='bold')
+    ax1.set_ylabel('Max Joint-Space Distance (rad)', fontweight='bold')
+    ax1.set_title('Max Joint-Space Jump per Trajectory', fontweight='bold')
+    ax1.set_xticks(trajectory_indices)
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.3, axis='y')
+
+    # --- Panel 2: C0 pass / fail status ---
+    pass_flags = [1 if m < threshold else 0 for m in max_jumps]
+    pass_colors = ['green' if p else 'red' for p in pass_flags]
+    ax2.bar(trajectory_indices, pass_flags, color=pass_colors, alpha=0.7,
+            edgecolor='black')
+    ax2.set_xlabel('Trajectory', fontweight='bold')
+    ax2.set_ylabel('Status', fontweight='bold')
+    ax2.set_title('C0 Pass / Fail Status', fontweight='bold')
+    ax2.set_ylim(-0.1, 1.1)
+    ax2.set_yticks([0, 1])
+    ax2.set_yticklabels(['FAIL', 'PASS'])
+    ax2.set_xticks(trajectory_indices)
+    ax2.grid(True, alpha=0.3, axis='y')
+    pass_rate = 100.0 * sum(pass_flags) / n_traj
+    ax2.text(0.02, 0.95,
+             f'Pass Rate: {pass_rate:.0f}% ({sum(pass_flags)}/{n_traj})',
+             transform=ax2.transAxes, fontweight='bold', va='top',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+# =============================================================================
+# Combined C0 + C1 Continuity Dashboard
+# =============================================================================
+
+def plot_continuity_dashboard(
+    joint_space_distances: np.ndarray,
+    velocity_ratios: np.ndarray,
+    timestamps: np.ndarray,
+    trajectory_m: np.ndarray,
+    speeds_mm_s: Optional[np.ndarray],
+    speed_mm_s: float,
+    output_path: str,
+    title: str = "Continuity Dashboard (C0 + C1)",
+    joint_jump_limit_rad: Optional[float] = None,
+    velocity_limits_rad_s: Optional[np.ndarray] = None
+) -> None:
+    """
+    Combined C0 + C1 continuity dashboard for one trajectory.
+
+    Panel 1: C0 — joint-space distances per segment with threshold.
+    Panel 2: C1 — joint velocity ratios per segment with limit 1.0.
+    Panel 3: Desired TCP speed profile vs interpolated actual speed.
+    Panel 4: Pass / Fail summary banner.
+    """
+    from scipy.interpolate import CubicSpline
+
+    n_segments_c0 = len(joint_space_distances)
+    n_segments_c1 = len(velocity_ratios)
+
+    fig = plt.figure(figsize=(16, 12))
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    gs = fig.add_gridspec(2, 2, hspace=0.35, wspace=0.3)
+
+    # --- Panel 1: C0 ---
+    ax1 = fig.add_subplot(gs[0, 0])
+    if n_segments_c0 > 0:
+        segs = np.arange(n_segments_c0)
+        threshold = joint_jump_limit_rad or np.inf
+        colors_c0 = ['green' if d < threshold else 'red' for d in joint_space_distances]
+        ax1.bar(segs, joint_space_distances, color=colors_c0, alpha=0.7, edgecolor='black', linewidth=0.5)
+        if joint_jump_limit_rad is not None:
+            ax1.axhline(y=joint_jump_limit_rad, color='red', linestyle='--', linewidth=2,
+                         label=f'Threshold ({joint_jump_limit_rad:.3f} rad)')
+            _add_threshold_yticks(ax1, [joint_jump_limit_rad])
+        violations_c0 = int(np.sum(np.array(joint_space_distances) >= threshold))
+        c0_ok = violations_c0 == 0
+        ax1.text(0.02, 0.95,
+                 f'{"PASS" if c0_ok else "FAIL"} — max {np.max(joint_space_distances):.4f} rad, {violations_c0} violation(s)',
+                 transform=ax1.transAxes, fontweight='bold', fontsize=9, va='top',
+                 bbox=dict(boxstyle='round',
+                           facecolor='lightgreen' if c0_ok else 'lightcoral', alpha=0.8))
+        ax1.legend(loc='upper right', fontsize=9)
+    else:
+        ax1.text(0.5, 0.5, 'No C0 data', ha='center', transform=ax1.transAxes)
+        c0_ok = True
+    ax1.set_xlabel('Segment', fontweight='bold')
+    ax1.set_ylabel('Joint-Space Distance (rad)', fontweight='bold')
+    ax1.set_title('C0: Joint-Space Jumps', fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+
+    # --- Panel 2: C1 ---
+    ax2 = fig.add_subplot(gs[0, 1])
+    if n_segments_c1 > 0:
+        segs_c1 = np.arange(n_segments_c1)
+        colors_c1 = ['green' if v <= 1.0 else 'red' for v in velocity_ratios]
+        ax2.bar(segs_c1, velocity_ratios, color=colors_c1, alpha=0.7, edgecolor='black', linewidth=0.5)
+        ax2.axhline(y=1.0, color='red', linestyle='--', linewidth=2, label='Limit (1.0)')
+        max_vr = float(np.max(velocity_ratios))
+        c1_ok = max_vr <= 1.0
+        ax2.text(0.02, 0.95,
+                 f'{"PASS" if c1_ok else "FAIL"} — max ratio {max_vr:.3f}',
+                 transform=ax2.transAxes, fontweight='bold', fontsize=9, va='top',
+                 bbox=dict(boxstyle='round',
+                           facecolor='lightgreen' if c1_ok else 'lightcoral', alpha=0.8))
+        ax2.legend(loc='upper right', fontsize=9)
+    else:
+        ax2.text(0.5, 0.5, 'No C1 data', ha='center', transform=ax2.transAxes)
+        c1_ok = True
+    ax2.set_xlabel('Segment', fontweight='bold')
+    ax2.set_ylabel('Velocity Ratio (|dq/dt| / limit)', fontweight='bold')
+    ax2.set_title('C1: Joint Velocity Ratios', fontweight='bold')
+    ax2.grid(True, alpha=0.3)
+
+    # --- Panel 3: TCP speed profile ---
+    ax3 = fig.add_subplot(gs[1, 0])
+    if timestamps is not None and len(timestamps) > 2:
+        positions_m = trajectory_m[:, :3]
+        try:
+            cs_x = CubicSpline(timestamps, positions_m[:, 0])
+            cs_y = CubicSpline(timestamps, positions_m[:, 1])
+            cs_z = CubicSpline(timestamps, positions_m[:, 2])
+            t_fine = np.linspace(timestamps[0], timestamps[-1], len(timestamps) * 10)
+            vel_mm_s = np.sqrt(cs_x(t_fine, 1)**2 + cs_y(t_fine, 1)**2 + cs_z(t_fine, 1)**2) * 1000.0
+            ax3.plot(t_fine, vel_mm_s, linewidth=2, color='tab:green', label='Interpolated Speed')
+        except Exception:
+            pass
+        if speeds_mm_s is not None:
+            ax3.plot(timestamps, speeds_mm_s, 'o-', color='orange', linewidth=2,
+                     markersize=4, label='Desired Speed (CSV)', alpha=0.8)
+        else:
+            ax3.axhline(y=speed_mm_s, color='orange', linestyle='--', linewidth=2,
+                         label=f'Constant {speed_mm_s:.0f} mm/s')
+    else:
+        ax3.text(0.5, 0.5, 'No timing data', ha='center', transform=ax3.transAxes)
+    ax3.set_xlabel('Time (s)', fontweight='bold')
+    ax3.set_ylabel('TCP Speed (mm/s)', fontweight='bold')
+    ax3.set_title('TCP Speed Profile', fontweight='bold')
+    ax3.legend(loc='best', fontsize=9)
+    ax3.grid(True, alpha=0.3)
+
+    # --- Panel 4: Summary banner ---
+    ax4 = fig.add_subplot(gs[1, 1])
+    ax4.axis('off')
+    overall = c0_ok and c1_ok
+    banner_color = '#2ecc71' if overall else '#e74c3c'
+    ax4.add_patch(plt.Rectangle((0.05, 0.55), 0.9, 0.35, transform=ax4.transAxes,
+                                 facecolor=banner_color, alpha=0.25, edgecolor=banner_color,
+                                 linewidth=3))
+    ax4.text(0.5, 0.73, 'CONTINUOUS' if overall else 'NOT CONTINUOUS',
+             transform=ax4.transAxes, ha='center', va='center',
+             fontsize=22, fontweight='bold', color=banner_color)
+
+    summary_lines = [
+        f'C0 (Position):   {"PASS" if c0_ok else "FAIL"}',
+        f'C1 (Velocity):   {"PASS" if c1_ok else "FAIL"}',
+    ]
+    if n_segments_c0 > 0:
+        summary_lines.append(f'Max joint jump:  {np.max(joint_space_distances):.4f} rad')
+    if n_segments_c1 > 0:
+        summary_lines.append(f'Max vel ratio:   {np.max(velocity_ratios):.3f}')
+    ax4.text(0.5, 0.35, '\n'.join(summary_lines),
+             transform=ax4.transAxes, ha='center', va='top',
+             fontsize=12, family='monospace',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    Continuity dashboard saved: {Path(output_path).name}")
+
+
+# =============================================================================
 # Debug Plotting Functions for Failed Waypoints
 # =============================================================================
 

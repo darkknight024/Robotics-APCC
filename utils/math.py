@@ -4,10 +4,13 @@ Mathematical utility functions for robot trajectory analysis.
 
 This module contains pure mathematical functions for computing distances,
 velocities, and other metrics that are independent of robot models or solvers.
+
+Joint velocity computation uses cubic spline interpolation for consistency
+across feasibility analysis and continuity checks.
 """
 
 import numpy as np
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 
 def shortest_angular_distance(q1: float, q2: float) -> float:
@@ -33,7 +36,7 @@ def compute_joint_space_distance(q1: np.ndarray, q2: np.ndarray) -> float:
     """
     Compute Euclidean distance between two joint configurations with angular wrapping.
     
-    CRITICAL FIX: Now handles angular wrapping to prevent false velocity spikes
+     Now handles angular wrapping to prevent false velocity spikes
     when joints move from 359° to 1° (should be 2°, not 358°).
     
     Args:
@@ -83,7 +86,7 @@ def compute_joint_velocity_ratio(
     Returns the maximum ratio of |dq/dt| / limit across all joints.
     A value > 1.0 indicates a C1 violation.
     
-    CRITICAL FIX: Now uses shortest angular distance to prevent false velocity spikes
+     Now uses shortest angular distance to prevent false velocity spikes
     when joints wrap around (e.g., 359° to 1° should be 2°/dt, not 358°/dt).
     
     Args:
@@ -95,14 +98,133 @@ def compute_joint_velocity_ratio(
     Returns:
         Maximum velocity ratio (max of |dq/dt| / limit across joints)
     """
-    # CRITICAL FIX: Minimum time step clamp to prevent division by zero
+    #  Minimum time step clamp to prevent division by zero
     dt = max(dt, 1e-6)
     
-    # CRITICAL FIX: Use shortest angular distance for each joint to handle wrapping
+    #  Use shortest angular distance for each joint to handle wrapping
     dq = np.array([shortest_angular_distance(q_prev[i], q_current[i]) for i in range(len(q_prev))])
     velocities = dq / dt
     ratios = velocities / velocity_limits_rad_s
     return float(np.max(ratios))
+
+
+def compute_velocity_ratios_spline(
+    joint_angles_rad: np.ndarray,
+    timestamps: np.ndarray,
+    velocity_limits_rad_s: np.ndarray,
+    samples_per_segment: int = 10,
+    return_max_velocities_per_joint: bool = False
+):
+    """
+    Compute per-segment velocity ratios using cubic spline interpolation.
+
+    This is the single authoritative implementation for C1 velocity checks.
+    Used by both feasibility_checks.analyze_trajectory and analyze_continuity.
+
+    Builds a cubic spline per joint over (timestamps, joint_angles), samples the
+    derivative within each segment, and returns the max velocity ratio per segment.
+
+    Args:
+        joint_angles_rad: (n_waypoints, n_joints) in radians
+        timestamps: (n_waypoints,) in seconds
+        velocity_limits_rad_s: (n_joints,) per-joint velocity limits
+        samples_per_segment: Number of samples per segment for max velocity
+        return_max_velocities_per_joint: If True, also return (n_joints,) max velocity per joint
+
+    Returns:
+        velocity_ratios: (n_segments,) max velocity ratio per segment
+        If return_max_velocities_per_joint: (velocity_ratios, max_velocities_per_joint)
+    """
+    from scipy.interpolate import CubicSpline
+
+    if len(joint_angles_rad) < 2 or len(timestamps) < 2:
+        if return_max_velocities_per_joint:
+            return np.array([]), np.zeros(joint_angles_rad.shape[1] if len(joint_angles_rad) > 0 else 0)
+        return np.array([])
+
+    n_waypoints = joint_angles_rad.shape[0]
+    n_joints = joint_angles_rad.shape[1]
+    n_segments = n_waypoints - 1
+
+    velocity_ratios = np.zeros(n_segments)
+    max_vel_per_joint = np.zeros(n_joints) if return_max_velocities_per_joint else None
+
+    for j in range(n_joints):
+        cs = CubicSpline(timestamps, joint_angles_rad[:, j])
+        for i in range(n_segments):
+            t_start = timestamps[i]
+            t_end = timestamps[i + 1]
+            t_samples = np.linspace(t_start, t_end, samples_per_segment, endpoint=True)
+            vel = cs(t_samples, 1)
+            vel_abs = np.abs(vel)
+            ratios = vel_abs / velocity_limits_rad_s[j]
+            max_ratio = float(np.max(ratios))
+            velocity_ratios[i] = max(velocity_ratios[i], max_ratio)
+            if return_max_velocities_per_joint:
+                max_vel_per_joint[j] = max(max_vel_per_joint[j], float(np.max(vel_abs)))
+
+    if return_max_velocities_per_joint:
+        return velocity_ratios, max_vel_per_joint
+    return velocity_ratios
+
+
+def compute_timestamps_unified_pose(
+    positions: np.ndarray,
+    quaternions: np.ndarray,
+    speed_mm_s: float = 100.0,
+    speeds_mm_s: Optional[np.ndarray] = None,
+    pose_scale_m_per_rad: float = 0.1,
+    joint_angles_rad: Optional[np.ndarray] = None,
+    velocity_limits_rad_s: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """
+    Compute timestamps using unified pose distance (linear + angular).
+
+    Matches the timing model used in compute_segment_times for consistency.
+
+    Args:
+        positions: (n_waypoints, 3) in meters
+        quaternions: (n_waypoints, 4) [qw, qx, qy, qz]
+        speed_mm_s: Fallback speed in mm/s
+        speeds_mm_s: Per-waypoint speeds in mm/s
+        pose_scale_m_per_rad: Scale for angular contribution
+        joint_angles_rad: (n_waypoints, n_joints) for joint-constrained dt
+        velocity_limits_rad_s: Per-joint velocity limits
+
+    Returns:
+        timestamps: (n_waypoints,) in seconds
+    """
+    n_waypoints = len(positions)
+    timestamps = np.zeros(n_waypoints)
+
+    for i in range(1, n_waypoints):
+        d_linear = np.linalg.norm(positions[i] - positions[i - 1])
+        q1 = quaternions[i - 1] / np.linalg.norm(quaternions[i - 1])
+        q2 = quaternions[i] / np.linalg.norm(quaternions[i])
+        dot_prod = np.clip(np.abs(np.dot(q1, q2)), 0, 1)
+        d_angle = 2.0 * np.arccos(dot_prod)
+        pose_distance = np.sqrt(d_linear**2 + (pose_scale_m_per_rad * d_angle)**2)
+
+        if pose_distance < 1e-6:
+            dt = 1e-3
+        else:
+            if speeds_mm_s is not None:
+                avg_speed = (speeds_mm_s[i] + speeds_mm_s[i - 1]) / 2.0 / 1000.0
+            else:
+                avg_speed = speed_mm_s / 1000.0
+            dt = pose_distance / avg_speed if avg_speed > 1e-6 else 0.001
+
+        if joint_angles_rad is not None and velocity_limits_rad_s is not None:
+            delta_q = np.array([
+                shortest_angular_distance(joint_angles_rad[i - 1, jj], joint_angles_rad[i, jj])
+                for jj in range(len(velocity_limits_rad_s))
+            ])
+            t_joint = np.max(np.abs(delta_q) / np.maximum(velocity_limits_rad_s, 1e-10))
+            dt = max(dt, t_joint, 1e-6)
+
+        timestamps[i] = timestamps[i - 1] + max(dt, 1e-6)
+
+    return timestamps
 
 
 def compute_joint_velocity_metrics(
@@ -141,9 +263,9 @@ def compute_joint_velocity_metrics(
     for j in range(n_joints):
         # Compute velocities using finite differences
         dt = np.diff(timestamps)
-        dt = np.where(dt > 1e-6, dt, 1e-6)  # CRITICAL FIX: Minimum time step clamp
+        dt = np.where(dt > 1e-6, dt, 1e-6)  #  Minimum time step clamp
         
-        # CRITICAL FIX: Use shortest angular distance to handle joint wrapping
+        #  Use shortest angular distance to handle joint wrapping
         dq = np.array([shortest_angular_distance(joint_angles_rad[i, j], joint_angles_rad[i+1, j]) 
                        for i in range(len(joint_angles_rad) - 1)])
         vel = dq / dt
@@ -234,7 +356,7 @@ def compute_normalized_joint_energy(
     # Compute velocity ratios for each segment
     segment_energies = []
     for i in range(len(joint_angles_rad) - 1):
-        # CRITICAL FIX: Use shortest angular distance to handle joint wrapping
+        #  Use shortest angular distance to handle joint wrapping
         dq = np.array([shortest_angular_distance(joint_angles_rad[i, j], joint_angles_rad[i+1, j]) 
                        for j in range(len(velocity_limits_rad_s))])
         velocities = dq / dt[i]

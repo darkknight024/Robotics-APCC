@@ -202,6 +202,37 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
     return result
 
 
+def get_default_velocity_limits_rad_s(config_path: str = None) -> list:
+    """
+    Get default velocity limits from robots_config.yaml (first robot).
+    Used when velocity_limits_rad_s would otherwise be None.
+
+    Returns:
+        List of velocity limits in rad/s per joint.
+    """
+    robots = load_robots_config(config_path)
+    for robot in robots.values():
+        if robot.velocity_limits_rad_s is not None:
+            return list(robot.velocity_limits_rad_s)
+    # Fallback: IRB 1300-7/1.4 limits from robots_config.yaml
+    return [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
+
+
+def get_default_joint_jump_limit_rad(config_path: str = None) -> float:
+    """
+    Get default joint jump limit from robots_config.yaml constants.
+    Used when joint_jump_limit_rad would otherwise be None.
+
+    Returns:
+        Joint jump limit in radians (default 0.5).
+    """
+    if config_path is None:
+        config_path = str(Path(__file__).parent.parent / "config" / "robots_config.yaml")
+    config = load_yaml(config_path)
+    constants = config.get('constants', {})
+    return float(constants.get('joint_jump_limit_rad', 0.5))
+
+
 def get_robot_by_name(robot_name: str, robots_config_path: str = None) -> RobotConfig:
     """
     Get robot configuration by name from central config.
