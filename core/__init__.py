@@ -42,6 +42,9 @@ from .unified_singularity import (
     UnifiedSingularityReport,
 )
 
+# --- TOPP-RA ---
+from .topp_check import check_topp_feasibility, TOPPRA_AVAILABLE
+
 # --- Self-collision ---
 from .collision_checker import SelfCollisionChecker, CollisionResult
 
@@ -116,6 +119,8 @@ __all__ = [
     # Singularity analysis
     'SingularityAnalyzer', 'SingularityReport', 'SingularityType',
     'UnifiedSingularity', 'UnifiedSingularityReport',
+    # TOPP-RA
+    'check_topp_feasibility', 'TOPPRA_AVAILABLE',
     # Self-collision
     'SelfCollisionChecker', 'CollisionResult',
 ]

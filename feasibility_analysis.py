@@ -36,6 +36,7 @@ from core import (
     compute_manipulability, compute_singularity_proximity,
     SingularityAnalyzer, SingularityReport, SingularityType,
 )
+from core.feasibility_checks import score_ik_solution
 from utils import (
     load_toolpath_trajectories,
     load_toolpath_trajectories_ext,
@@ -68,12 +69,24 @@ from utils import (
     plot_c0_summary_per_trajectory,
     plot_continuity_dashboard
 )
+from utils.feasibility_plot import (
+    plot_eaik_solutions_with_scores,
+    plot_waypoint_density,
+    plot_topp_velocity_profile,
+)
 from utils.math import (
     compute_normalized_joint_energy,
     compute_safety_tier,
     compute_velocity_ratios_spline
 )
 from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S
+from utils.time_parameterization import (
+    compute_arc_lengths,
+    compute_timestamps as compute_arc_timestamps,
+    check_waypoint_density,
+    interpolate_sparse_segments,
+)
+from core.topp_check import check_topp_feasibility, TOPPRA_AVAILABLE
 
 
 # =============================================================================
@@ -374,7 +387,30 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
                     lines.append(f"      J{v['joint']}: {v['max_velocity_deg_s']:.2f} deg/s "
                                f"(limit: {v['limit_deg_s']:.2f} deg/s, exceeded by {v['exceeded_by_percent']:.1f}%)")
             lines.append("")
-    
+
+        # Waypoint density
+        density = traj.get('density_result')
+        if density is not None:
+            status = 'OK' if density['density_ok'] else f"SPARSE ({density['n_sparse']} segments)"
+            lines.append("  WAYPOINT DENSITY:")
+            lines.append(f"    Status: {status}")
+            if not density['density_ok']:
+                lines.append(f"    Sparse segment indices: {density['sparse_segments']}")
+            lines.append("")
+
+        # TOPP-RA
+        topp = traj.get('topp_result')
+        if topp is not None:
+            status = 'FEASIBLE' if topp['topp_feasible'] else 'INFEASIBLE'
+            lines.append("  TOPP-RA (Time-Optimal Path Parameterization):")
+            lines.append(f"    Status: {status}")
+            lines.append(f"    Min traversal time: {topp['min_traversal_time_s']:.3f} s")
+            lines.append(f"    Target duration:    {topp['target_duration_s']:.3f} s")
+            lines.append(f"    Time ratio:         {topp['time_ratio']:.2f}")
+            if topp.get('error'):
+                lines.append(f"    Warning: {topp['error']}")
+            lines.append("")
+
     # Summary
     lines.append("=" * 70)
     lines.append("SUMMARY")
@@ -400,6 +436,18 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
                          if t is not None and (t.get('continuity') or {}).get('passed', False))
         lines.append(f"  C1 continuity passed: {passed_count}/{results['num_trajectories']}")
     
+    # Density summary
+    density_trajs = [t for t in traj_list if t.get('density_result') is not None]
+    if density_trajs:
+        dense_ok = sum(1 for t in density_trajs if t['density_result']['density_ok'])
+        lines.append(f"  Waypoint density OK: {dense_ok}/{len(density_trajs)}")
+
+    # TOPP-RA summary
+    topp_trajs = [t for t in traj_list if t.get('topp_result') is not None]
+    if topp_trajs:
+        topp_ok = sum(1 for t in topp_trajs if t['topp_result']['topp_feasible'])
+        lines.append(f"  TOPP-RA feasible: {topp_ok}/{len(topp_trajs)}")
+
     # Speed warning
     if results.get('speed_warning'):
         lines.append("")
@@ -547,7 +595,12 @@ def process_toolpath(
     check_j5_only: bool = True,
     j5_threshold_deg: float = 0.76,
     use_base_frame: bool = False,
-    multi_solution_weights: Optional[dict] = None
+    multi_solution_weights: Optional[dict] = None,
+    generate_eaik_solutions_graph: bool = False,
+    eaik_solutions_max_waypoints: int = 20,
+    time_param_config: Optional[dict] = None,
+    topp_ra_config: Optional[dict] = None,
+    accel_limits_rad_s2: Optional[np.ndarray] = None,
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -714,6 +767,48 @@ def process_toolpath(
         from tqdm import tqdm
         pbar = tqdm(total=n_trajectories, desc="Processing trajectories", unit="traj", leave=False)
     
+    # =====================================================================
+    # Time Parameterization & Waypoint Density (pre-analysis)
+    # =====================================================================
+    tp_cfg = time_param_config or {}
+    tp_enabled = tp_cfg.get("enabled", False)
+    density_results_per_traj: List[Optional[dict]] = [None] * n_trajectories
+
+    if tp_enabled:
+        tp_freq = float(tp_cfg.get("check_frequency_hz", 50.0))
+        tp_max_gap = tp_cfg.get("max_gap_mm", None)
+        if tp_max_gap is not None:
+            tp_max_gap = float(tp_max_gap)
+        tp_interpolate = tp_cfg.get("interpolate_sparse", False)
+        tp_default_speed = float(tp_cfg.get("default_speed_mm_s", 100.0))
+
+        for t_idx, (traj, spd) in enumerate(zip(trajectories_t_b_p, trajectory_speeds)):
+            positions_mm = traj[:, :3] * 1000.0 if np.max(np.abs(traj[:, :3])) < 50 else traj[:, :3]
+            arc_lens = compute_arc_lengths(positions_mm)
+            seg_speeds = spd[:len(arc_lens)] if len(spd) >= len(arc_lens) else np.full(len(arc_lens), tp_default_speed)
+            density = check_waypoint_density(arc_lens, seg_speeds, tp_freq, tp_max_gap)
+            density_results_per_traj[t_idx] = density
+
+            if not density["density_ok"]:
+                print(f"  Trajectory {t_idx + 1}: {density['n_sparse']}/{len(arc_lens)} segments too sparse")
+                if tp_interpolate:
+                    traj_dense = interpolate_sparse_segments(traj, arc_lens, density["max_spacing_mm"])
+                    trajectories_t_b_p[t_idx] = traj_dense
+                    old_speeds = trajectory_speeds[t_idx]
+                    trajectory_speeds[t_idx] = np.interp(
+                        np.linspace(0, 1, len(traj_dense)),
+                        np.linspace(0, 1, len(old_speeds)),
+                        old_speeds,
+                    )
+                    print(f"    Densified: {len(traj)} → {len(traj_dense)} waypoints")
+        if tp_enabled:
+            print(f"  Waypoint density check complete (freq={tp_freq} Hz, max_gap={tp_max_gap} mm)")
+
+    # Resolve acceleration limits for TOPP-RA
+    final_accel_limits = accel_limits_rad_s2
+    if final_accel_limits is None and robot_config and robot_config.acceleration_limits_rad_s2:
+        final_accel_limits = np.array(robot_config.acceleration_limits_rad_s2)
+
     # Analyze each trajectory (now filtered if traj_id was specified)
     for local_idx, (trajectory, speeds) in enumerate(zip(trajectories_t_b_p, trajectory_speeds)):
         traj_idx = start_idx + local_idx
@@ -955,6 +1050,104 @@ def process_toolpath(
                 threshold=singularity_threshold
             )
         
+        # -----------------------------------------------------------------
+        # EAIK All-Solutions Graph with Scores
+        # -----------------------------------------------------------------
+        if (generate_eaik_solutions_graph and solver_type == "eaik"
+                and not skip_plots and waypoint_idx is None):
+            all_sols_per_wp: List[List[np.ndarray]] = []
+            scores_per_wp: List[List[float]] = []
+            ms_weights_for_score = multi_solution_weights or {
+                'c0': 1.0, 'c1': 2.0, 'singularity': 1.0, 'manipulability': 0.5
+            }
+            for wp_i, r in enumerate(per_wp):
+                sols = (r.ik_debug_info or {}).get('all_solutions', [])
+                all_sols_per_wp.append(sols)
+                q_prev_for_score = per_wp[wp_i - 1].joint_positions_rad if wp_i > 0 and per_wp[wp_i - 1].joint_positions_rad is not None else None
+                dt_score = float(timestamps[wp_i] - timestamps[wp_i - 1]) if timestamps is not None and wp_i > 0 else None
+                wp_scores: List[float] = []
+                for sol in sols:
+                    s = score_ik_solution(
+                        sol, q_prev_for_score, dt_score, fk_solver,
+                        final_velocity_limits, robot_reach_m, ms_weights_for_score
+                    )
+                    wp_scores.append(s)
+                scores_per_wp.append(wp_scores)
+
+            selected_deg = np.array([
+                np.degrees(r.joint_positions_rad) if r.joint_positions_rad is not None
+                else np.full(analyzer.n_joints if hasattr(analyzer, 'n_joints') else 6, np.nan)
+                for r in per_wp
+            ])
+            jlim_deg = None
+            if robot_config:
+                try:
+                    from utils.urdf_loader import load_robot_model_eaik
+                    rm = load_robot_model_eaik(robot_config.urdf_path)
+                    jlim_deg = (np.degrees(rm.lower_position_limit), np.degrees(rm.upper_position_limit))
+                except Exception:
+                    pass
+
+            sols_out = out_path / f"eaik_solutions_{traj_name}"
+            plot_eaik_solutions_with_scores(
+                all_sols_per_wp, scores_per_wp, selected_deg,
+                str(sols_out),
+                joint_limits_deg=jlim_deg,
+                limit_waypoints=eaik_solutions_max_waypoints,
+                traj_name=f"{toolpath_name} - {traj_name}",
+            )
+
+        # -----------------------------------------------------------------
+        # Waypoint Density Plot
+        # -----------------------------------------------------------------
+        if tp_enabled and not skip_plots and waypoint_idx is None:
+            density = density_results_per_traj[local_idx]
+            if density is not None:
+                plot_waypoint_density(
+                    density["actual_spacing_mm"],
+                    density["max_spacing_mm"],
+                    str(traj_out / f"waypoint_density_{traj_name}.png"),
+                    title=f"Waypoint Density — {toolpath_name} — {traj_name}",
+                    max_gap_mm=tp_max_gap if tp_enabled else None,
+                )
+
+        # -----------------------------------------------------------------
+        # TOPP-RA Feasibility Check
+        # -----------------------------------------------------------------
+        topp_result = None
+        topp_cfg = topp_ra_config or {}
+        if topp_cfg.get("enabled", False) and waypoint_idx is None and len(joint_angles_rad) >= 2:
+            if not TOPPRA_AVAILABLE:
+                print("    WARNING: toppra not installed — TOPP-RA check skipped.  pip install toppra")
+            elif final_velocity_limits is None:
+                print("    WARNING: no velocity limits — TOPP-RA check skipped")
+            elif final_accel_limits is None:
+                print("    WARNING: no acceleration limits — TOPP-RA check skipped")
+            else:
+                positions_mm_topp = trajectory[:, :3] * 1000.0 if np.max(np.abs(trajectory[:, :3])) < 50 else trajectory[:, :3]
+                arc_lens_topp = compute_arc_lengths(positions_mm_topp)
+                total_arc_mm = float(np.sum(arc_lens_topp))
+                mean_speed = float(np.mean(speeds)) if len(speeds) > 0 else speed_mm_s
+                target_dur = total_arc_mm / max(mean_speed, 1e-6)
+
+                topp_result = check_topp_feasibility(
+                    joint_angles_rad, final_velocity_limits, final_accel_limits, target_dur
+                )
+                status = "FEASIBLE" if topp_result["topp_feasible"] else "INFEASIBLE"
+                print(f"    TOPP-RA: {status} — min_time={topp_result['min_traversal_time_s']:.3f}s, "
+                      f"target={target_dur:.3f}s, ratio={topp_result['time_ratio']:.2f}")
+
+                if topp_result.get("error"):
+                    print(f"    TOPP-RA warning: {topp_result['error']}")
+
+                if not skip_plots and topp_result["sd_grid"] is not None:
+                    plot_topp_velocity_profile(
+                        topp_result["sd_grid"], topp_result["s_grid"],
+                        target_dur, topp_result["min_traversal_time_s"],
+                        str(traj_out / f"topp_ra_{traj_name}.png"),
+                        title=f"TOPP-RA — {toolpath_name} — {traj_name}",
+                    )
+
         # Store stats
         results['trajectory_stats'].append({
             'name': traj_name,
@@ -991,6 +1184,8 @@ def process_toolpath(
             'reachable_flags': reachable.tolist(),
             'singularity_mode': singularity_mode,
             'classified_reports': classified_reports if classified_reports else None,
+            'density_result': density_results_per_traj[local_idx] if tp_enabled else None,
+            'topp_result': topp_result,
         }
         
         # Export classified singularity CSV report per trajectory

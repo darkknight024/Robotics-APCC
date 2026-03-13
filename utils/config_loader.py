@@ -311,7 +311,7 @@ def load_toolpath_config(config_path: str) -> Dict[str, Any]:
         else:
             print(f"Warning: Robot '{name}' not found in robots_config.yaml")
     
-    return {
+    result = {
         'robots': robots,
         'knife_poses_to_use': config.get('knife_poses_to_use', []),
         'toolpaths_folder': config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')),
@@ -326,6 +326,14 @@ def load_toolpath_config(config_path: str) -> Dict[str, Any]:
             'num_workers': 0
         })
     }
+    for passthrough_key in (
+        'solver', 'use_base_frame', 'checks', 'thresholds', 'ranking',
+        'performance', 'continuity', 'eaik_multi_solution',
+        'time_parameterization', 'topp_ra',
+    ):
+        if passthrough_key in config:
+            result[passthrough_key] = config[passthrough_key]
+    return result
 
 
 def load_feasibility_config(config_path: str) -> Dict[str, Any]:

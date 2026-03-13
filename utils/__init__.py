@@ -89,6 +89,9 @@ from .feasibility_plot import (
     plot_joint_angles_trajectory,
     plot_singular_value_spectrum,
     plot_singularity_dashboard,
+    plot_eaik_solutions_with_scores,
+    plot_waypoint_density,
+    plot_topp_velocity_profile,
 )
 
 from .generate_combinatorial_plots import (
@@ -120,6 +123,13 @@ from .urdf_loader import (
     load_robot_model_pin,
     resolve_urdf_path,
     RobotModel
+)
+
+from .time_parameterization import (
+    compute_arc_lengths,
+    compute_timestamps,
+    check_waypoint_density,
+    interpolate_sparse_segments,
 )
 
 from .math import (
@@ -199,6 +209,14 @@ __all__ = [
     'plot_joint_angles_trajectory',
     'plot_singular_value_spectrum',
     'plot_singularity_dashboard',
+    'plot_eaik_solutions_with_scores',
+    'plot_waypoint_density',
+    'plot_topp_velocity_profile',
+    # Time parameterization
+    'compute_arc_lengths',
+    'compute_timestamps',
+    'check_waypoint_density',
+    'interpolate_sparse_segments',
     # Config
     'load_ik_config',
     'load_knife_config',

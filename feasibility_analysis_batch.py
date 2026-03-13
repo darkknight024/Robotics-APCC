@@ -66,6 +66,11 @@ class FeasibilityTask:
     export_waypoint_validity: bool = False
     use_base_frame: bool = False
     multi_solution_weights: Optional[dict] = None
+    generate_eaik_solutions_graph: bool = False
+    eaik_solutions_max_waypoints: int = 20
+    time_param_config: Optional[dict] = None
+    topp_ra_config: Optional[dict] = None
+    accel_limits_rad_s2: Optional[np.ndarray] = None
 
 
 def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
@@ -93,7 +98,12 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             solver_type=task.solver_type,
             export_waypoint_validity=task.export_waypoint_validity,
             use_base_frame=task.use_base_frame,
-            multi_solution_weights=task.multi_solution_weights
+            multi_solution_weights=task.multi_solution_weights,
+            generate_eaik_solutions_graph=task.generate_eaik_solutions_graph,
+            eaik_solutions_max_waypoints=task.eaik_solutions_max_waypoints,
+            time_param_config=task.time_param_config,
+            topp_ra_config=task.topp_ra_config,
+            accel_limits_rad_s2=task.accel_limits_rad_s2,
         )
         
         return {
@@ -232,6 +242,16 @@ def process_batch(
         detailed_per_trajectory_report if detailed_per_trajectory_report is not None
         else output_config.get('per_trajectory_plots', False) or output_config.get('per_waypoint_plots', False)
     )
+
+    # EAIK solutions graph options
+    generate_eaik_solutions_graph = output_config.get('generate_eaik_solutions_graph', False)
+    eaik_solutions_max_waypoints = int(output_config.get('eaik_solutions_max_waypoints', 20))
+
+    # Time parameterization & waypoint density config
+    time_param_config = config.get('time_parameterization', None)
+
+    # TOPP-RA config
+    topp_ra_config = config.get('topp_ra', None)
     
     # Find toolpath files from toolpaths_folder
     toolpaths_folder = Path(config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')))
@@ -269,7 +289,10 @@ def process_batch(
         velocity_limits = None
         if robot.velocity_limits_rad_s:
             velocity_limits = np.array(robot.velocity_limits_rad_s)
-        
+        accel_limits = None
+        if robot.acceleration_limits_rad_s2:
+            accel_limits = np.array(robot.acceleration_limits_rad_s2)
+
         if use_base_frame:
             # Base frame: no knife iteration
             for toolpath_file in toolpath_files:
@@ -295,7 +318,12 @@ def process_batch(
                     detailed_per_trajectory_report=detailed_per_trajectory_report,
                     export_waypoint_validity=export_waypoint_validity,
                     use_base_frame=True,
-                    multi_solution_weights=multi_solution_weights
+                    multi_solution_weights=multi_solution_weights,
+                    generate_eaik_solutions_graph=generate_eaik_solutions_graph,
+                    eaik_solutions_max_waypoints=eaik_solutions_max_waypoints,
+                    time_param_config=time_param_config,
+                    topp_ra_config=topp_ra_config,
+                    accel_limits_rad_s2=accel_limits,
                 ))
         else:
             for pose_name in config.get('knife_poses_to_use', []):
@@ -328,7 +356,12 @@ def process_batch(
                         level1_only=level1_only,
                         detailed_per_trajectory_report=detailed_per_trajectory_report,
                         use_base_frame=False,
-                        multi_solution_weights=multi_solution_weights
+                        multi_solution_weights=multi_solution_weights,
+                        generate_eaik_solutions_graph=generate_eaik_solutions_graph,
+                        eaik_solutions_max_waypoints=eaik_solutions_max_waypoints,
+                        time_param_config=time_param_config,
+                        topp_ra_config=topp_ra_config,
+                        accel_limits_rad_s2=accel_limits,
                     ))
     
     print(f"\nPrepared {len(tasks)} analysis tasks")

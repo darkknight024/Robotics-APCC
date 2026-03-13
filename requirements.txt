@@ -16,6 +16,9 @@ PyYAML
 eaik
 urchin
 
+# Time-optimal path parameterization (optional — graceful fallback if missing)
+toppra
+
 # Progress bars and utilities
 tqdm
 

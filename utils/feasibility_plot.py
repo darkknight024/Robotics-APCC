@@ -2581,3 +2581,165 @@ def plot_singularity_dashboard(
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
+
+
+# =============================================================================
+# EAIK All-Solutions with Scores
+# =============================================================================
+
+def plot_eaik_solutions_with_scores(
+    all_solutions_per_waypoint: List[List[np.ndarray]],
+    scores_per_waypoint: List[List[float]],
+    selected_joint_angles_deg: np.ndarray,
+    output_dir: str,
+    joint_limits_deg: Optional[tuple] = None,
+    limit_waypoints: int = 20,
+    traj_name: Optional[str] = None,
+) -> None:
+    """Plot all EAIK IK solutions per joint with per-solution score colour-map.
+
+    One PNG per joint is saved to *output_dir*.  Solutions are scatter-plotted
+    with colour mapped to cost (green = low/good, red = high/bad).  The
+    selected (best) solution is highlighted with a black square outline.
+    """
+    import os
+    from matplotlib.colors import Normalize
+    os.makedirs(output_dir, exist_ok=True)
+
+    n_wp = min(limit_waypoints, len(all_solutions_per_waypoint))
+    if n_wp <= 0:
+        return
+    n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
+    waypoints = np.arange(n_wp)
+
+    all_scores_flat = [s for wp_scores in scores_per_waypoint[:n_wp] for s in wp_scores]
+    if not all_scores_flat:
+        return
+    vmin, vmax = min(all_scores_flat), max(all_scores_flat)
+    if vmax - vmin < 1e-12:
+        vmax = vmin + 1.0
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.cm.RdYlGn_r  # type: ignore[attr-defined]
+
+    for j in range(n_joints):
+        fig, ax = plt.subplots(figsize=(14, 6))
+
+        if joint_limits_deg is not None:
+            lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
+            ax.axhspan(lo, hi, alpha=0.12, color="green", zorder=1)
+            ax.axhline(lo, color="green", linestyle="--", alpha=0.5)
+            ax.axhline(hi, color="green", linestyle="--", alpha=0.5)
+
+        for wp in range(n_wp):
+            sols = all_solutions_per_waypoint[wp]
+            wp_scores = scores_per_waypoint[wp]
+            if not sols:
+                continue
+            for s_idx, (q_rad, score) in enumerate(zip(sols, wp_scores)):
+                q_deg = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
+                colour = cmap(norm(score))
+                ax.scatter(wp, q_deg, color=colour, s=50, zorder=3, alpha=0.8, edgecolors="k", linewidths=0.3)
+                ax.annotate(f"{score:.2f}", (wp, q_deg), fontsize=5, ha="center",
+                            va="bottom", textcoords="offset points", xytext=(0, 4), color=colour)
+
+            if not np.isnan(selected_joint_angles_deg[wp, j]):
+                ax.scatter(wp, selected_joint_angles_deg[wp, j], marker="s", s=120,
+                           facecolors="none", edgecolors="black", linewidths=2, zorder=5,
+                           label="Selected" if wp == 0 else None)
+
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, pad=0.02)
+        cbar.set_label("Score (lower = better)", fontweight="bold")
+
+        ax.set_xlabel("Waypoint Index", fontweight="bold")
+        ax.set_ylabel(f"J{j+1} (deg)", fontweight="bold")
+        title_str = f"EAIK Solutions with Scores — J{j+1} (first {n_wp} WPs)"
+        if traj_name:
+            title_str += f"\n{traj_name}"
+        ax.set_title(title_str, fontweight="bold")
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(loc="upper right", fontsize=9)
+        ax.set_xticks(waypoints)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"eaik_solutions_scores_j{j+1}.png"),
+                    dpi=300, bbox_inches="tight")
+        plt.close()
+
+
+# =============================================================================
+# Waypoint Density
+# =============================================================================
+
+def plot_waypoint_density(
+    arc_lengths_mm: np.ndarray,
+    max_spacing_mm: np.ndarray,
+    output_path: str,
+    title: str = "Waypoint Density Check",
+    max_gap_mm: Optional[float] = None,
+) -> None:
+    """Bar chart of per-segment arc-length vs. allowed max spacing."""
+    n = len(arc_lengths_mm)
+    segments = np.arange(n)
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    colours = ["#e74c3c" if arc_lengths_mm[i] > max_spacing_mm[i] else "#2ecc71" for i in range(n)]
+    ax.bar(segments, arc_lengths_mm, color=colours, edgecolor="none", width=0.8, label="Segment arc-length")
+    ax.plot(segments, max_spacing_mm, "k--", linewidth=1.5, label="Max allowed spacing")
+
+    if max_gap_mm is not None:
+        ax.axhline(y=max_gap_mm, color="red", linestyle=":", linewidth=1.5, alpha=0.7,
+                    label=f"Hard cap ({max_gap_mm} mm)")
+
+    sparse_count = int(np.sum(arc_lengths_mm > max_spacing_mm))
+    ax.set_xlabel("Segment Index", fontweight="bold")
+    ax.set_ylabel("Distance (mm)", fontweight="bold")
+    ax.set_title(f"{title}  —  {sparse_count}/{n} segments too sparse", fontweight="bold")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+# =============================================================================
+# TOPP-RA Velocity Profile
+# =============================================================================
+
+def plot_topp_velocity_profile(
+    sd_grid: np.ndarray,
+    s_grid: np.ndarray,
+    target_duration_s: float,
+    min_traversal_time_s: float,
+    output_path: str,
+    title: str = "TOPP-RA Velocity Profile",
+) -> None:
+    """Plot the time-optimal path-velocity profile from TOPP-RA."""
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    ax.plot(s_grid, sd_grid, "b-", linewidth=1.5, label="Time-optimal ṡ(s)")
+    ax.fill_between(s_grid, 0, sd_grid, alpha=0.15, color="blue")
+
+    feasible = min_traversal_time_s <= target_duration_s
+    status = "FEASIBLE" if feasible else "INFEASIBLE"
+    colour = "#2ecc71" if feasible else "#e74c3c"
+
+    info = (f"Min time: {min_traversal_time_s:.3f}s  |  "
+            f"Target: {target_duration_s:.3f}s  |  "
+            f"Ratio: {min_traversal_time_s / max(target_duration_s, 1e-9):.2f}  |  {status}")
+    ax.text(0.02, 0.97, info, transform=ax.transAxes, fontsize=10, fontweight="bold",
+            va="top", color=colour,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.85))
+
+    ax.set_xlabel("Path parameter s", fontweight="bold")
+    ax.set_ylabel("Path velocity ṡ", fontweight="bold")
+    ax.set_title(title, fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()

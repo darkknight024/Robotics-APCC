@@ -120,11 +120,11 @@ eaik_multi_solution:
   enabled: true
   weights:
     # Joint-space distance to previous config (penalises large C0 jumps)
-    c0: 1.0
+    c0: 5.0
     # Velocity ratio — penalises exceeding joint velocity limits (C1)
-    c1: 2.0
+    c1: 1.0
     # 1/sigma_min — penalises proximity to singularity
-    singularity: 1.0
+    singularity: 0.5
     # Yoshikawa manipulability reward (subtracted from cost — higher is better)
     manipulability: 0.5
 
@@ -132,7 +132,7 @@ eaik_multi_solution:
 # Solver Backend
 # =============================================================================
 # "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
-solver: "pin"
+solver: "eaik"
 
 # =============================================================================
 # Output Options
@@ -151,3 +151,35 @@ output:
   
   # Save analysis report to text file
   save_analysis: true
+
+  # Generate EAIK all-solutions graph with per-solution scores
+  # Only effective when solver is "eaik" (Pinocchio returns a single solution).
+  generate_eaik_solutions_graph: true
+
+  # Max waypoints to include in the EAIK solutions graph
+  eaik_solutions_max_waypoints: 25
+
+# =============================================================================
+# Time Parameterization & Waypoint Density
+# =============================================================================
+# Checks whether waypoint spacing is adequate for the target TCP speed.
+# Sparse segments mean the robot path between checked poses is unverified.
+time_parameterization:
+  enabled: true
+  # Minimum check frequency (Hz) — max_spacing = speed / check_frequency
+  check_frequency_hz: 50.0
+  # Hard upper bound on segment arc-length (mm); overrides frequency-based limit
+  max_gap_mm: 5.0
+  # Auto-densify sparse segments by interpolating before IK analysis
+  interpolate_sparse: false
+  # Fallback TCP speed when CSV does not contain per-waypoint speed
+  default_speed_mm_s: 100.0
+
+# =============================================================================
+# TOPP-RA — Time-Optimal Path Parameterization Feasibility
+# =============================================================================
+# Requires `toppra` (pip install toppra).  If not installed, a warning is
+# printed and the check is skipped gracefully.
+# Uses velocity_limits_rad_s and acceleration_limits_rad_s2 from robots_config.
+topp_ra:
+  enabled: true
