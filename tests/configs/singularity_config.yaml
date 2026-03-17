@@ -40,10 +40,10 @@ output_folder: "Robot_APCC/Results/Experiment_17"
 # Singularity Analysis
 # =============================================================================
 singularity_analysis:
-  # Singularity mode: which analyzer to use.
-  #   "classified" — SingularityAnalyzer (shoulder / elbow / wrist decomposition)
-  #   "unified"    — UnifiedSingularity  (full-Jacobian σ_min only (legacy approach), no type split)
-  #   "none"  — skip singularity analysis entirely
+  # Singularity mode (both handled by core.checks.singularity.SingularityAnalyzer):
+  #   "classified" — shoulder / elbow / wrist sub-type decomposition
+  #   "unified"    — full-Jacobian σ_min only, no type split
+  #   "none"       — skip singularity analysis entirely
   mode: "classified"
 
   # Generate singularity PNG plots (CSV reports are ALWAYS saved)

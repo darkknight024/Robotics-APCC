@@ -168,64 +168,6 @@ def compute_velocity_ratios_spline(
     return velocity_ratios
 
 
-def compute_timestamps_unified_pose(
-    positions: np.ndarray,
-    quaternions: np.ndarray,
-    speed_mm_s: float = 100.0,
-    speeds_mm_s: Optional[np.ndarray] = None,
-    pose_scale_m_per_rad: float = 0.1,
-    joint_angles_rad: Optional[np.ndarray] = None,
-    velocity_limits_rad_s: Optional[np.ndarray] = None
-) -> np.ndarray:
-    """
-    Compute timestamps using unified pose distance (linear + angular).
-
-    Matches the timing model used in compute_segment_times for consistency.
-
-    Args:
-        positions: (n_waypoints, 3) in meters
-        quaternions: (n_waypoints, 4) [qw, qx, qy, qz]
-        speed_mm_s: Fallback speed in mm/s
-        speeds_mm_s: Per-waypoint speeds in mm/s
-        pose_scale_m_per_rad: Scale for angular contribution
-        joint_angles_rad: (n_waypoints, n_joints) for joint-constrained dt
-        velocity_limits_rad_s: Per-joint velocity limits
-
-    Returns:
-        timestamps: (n_waypoints,) in seconds
-    """
-    n_waypoints = len(positions)
-    timestamps = np.zeros(n_waypoints)
-
-    for i in range(1, n_waypoints):
-        d_linear = np.linalg.norm(positions[i] - positions[i - 1])
-        q1 = quaternions[i - 1] / np.linalg.norm(quaternions[i - 1])
-        q2 = quaternions[i] / np.linalg.norm(quaternions[i])
-        dot_prod = np.clip(np.abs(np.dot(q1, q2)), 0, 1)
-        d_angle = 2.0 * np.arccos(dot_prod)
-        pose_distance = np.sqrt(d_linear**2 + (pose_scale_m_per_rad * d_angle)**2)
-
-        if pose_distance < 1e-6:
-            dt = 1e-3
-        else:
-            if speeds_mm_s is not None:
-                avg_speed = (speeds_mm_s[i] + speeds_mm_s[i - 1]) / 2.0 / 1000.0
-            else:
-                avg_speed = speed_mm_s / 1000.0
-            dt = pose_distance / avg_speed if avg_speed > 1e-6 else 0.001
-
-        if joint_angles_rad is not None and velocity_limits_rad_s is not None:
-            delta_q = np.array([
-                shortest_angular_distance(joint_angles_rad[i - 1, jj], joint_angles_rad[i, jj])
-                for jj in range(len(velocity_limits_rad_s))
-            ])
-            t_joint = np.max(np.abs(delta_q) / np.maximum(velocity_limits_rad_s, 1e-10))
-            dt = max(dt, t_joint, 1e-6)
-
-        timestamps[i] = timestamps[i - 1] + max(dt, 1e-6)
-
-    return timestamps
-
 
 def compute_joint_velocity_metrics(
     joint_angles_rad: np.ndarray,

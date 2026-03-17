@@ -9,6 +9,7 @@ Provides:
 - FeasibilityAnalyzer and helpers
 - RobotModel dataclass
 - Modular checks (core.checks sub-package)
+- Consolidated singularity analysis (core.checks.singularity)
 """
 
 # --- Base classes ---
@@ -35,6 +36,10 @@ from .checks.singularity import (
     compute_condition_number,
     compute_max_singular_value,
     analyze_singularity_spectrum,
+    SingularityAnalyzer,
+    SingularityReport,
+    SingularityType,
+    SingularityMode,
 )
 from .checks.manipulability import (
     compute_manipulability,
@@ -55,21 +60,9 @@ from .checks.task_space_velocity import (
     TaskSpaceVelocityResult,
 )
 
-# --- Singularity analysis (legacy type-classified) ---
-from .singularity_analysis import (
-    SingularityAnalyzer,
-    SingularityReport,
-    SingularityType,
-)
-from .unified_singularity import (
-    UnifiedSingularity,
-    UnifiedSingularityReport,
-)
-
-# --- Time parameterization ---
+# --- Time parameterization (waypoint density) ---
 from utils.time_parameterization import (
     compute_arc_lengths,
-    compute_timestamps,
     check_waypoint_density,
     interpolate_sparse_segments,
 )
@@ -142,7 +135,9 @@ __all__ = [
     # Feasibility orchestrator
     'FeasibilityAnalyzer', 'FeasibilityResult',
     'check_reachability', 'score_ik_solution',
-    # Modular checks
+    # Consolidated singularity
+    'SingularityAnalyzer', 'SingularityReport', 'SingularityType', 'SingularityMode',
+    # Low-level checks
     'compute_singularity_proximity', 'compute_condition_number',
     'compute_max_singular_value', 'analyze_singularity_spectrum',
     'compute_manipulability',
@@ -151,9 +146,6 @@ __all__ = [
     'check_c0_continuity', 'detect_config_flips', 'compute_per_joint_deltas',
     'check_c1_continuity', 'C1Result',
     'compute_task_space_velocity', 'check_speed_limits', 'TaskSpaceVelocityResult',
-    # Singularity analysis (legacy)
-    'SingularityAnalyzer', 'SingularityReport', 'SingularityType',
-    'UnifiedSingularity', 'UnifiedSingularityReport',
     # TOPP-RA
     'parameterize_trajectory', 'ToppraResult',
     # Self-collision

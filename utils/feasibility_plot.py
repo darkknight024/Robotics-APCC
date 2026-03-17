@@ -2262,7 +2262,7 @@ def plot_singularity_type_classification(
     title: str = "Singularity Type Classification",
 ) -> None:
     """Color-coded bar chart of singularity type at each waypoint."""
-    from core.singularity_analysis import SingularityReport  # deferred to avoid circular import at module level
+    from core.checks.singularity import SingularityReport  # deferred to avoid circular import at module level
 
     n = len(reports)
     waypoints = np.arange(n)
@@ -2449,7 +2449,7 @@ def plot_singularity_dashboard(
     type_thresholds: Optional[Dict[str, float]] = None,
 ) -> None:
     """Combined 2×3 subplot dashboard aggregating all singularity views."""
-    from core.singularity_analysis import SingularityReport  # deferred
+    from core.checks.singularity import SingularityReport  # deferred
 
     n = len(reports)
     waypoints = np.arange(n)

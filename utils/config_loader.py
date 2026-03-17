@@ -1,34 +1,53 @@
 #!/usr/bin/env python3
 """
 Config Loader Module
+=====================
 
-Provides utilities for loading YAML configuration files:
-- IK configuration (URDF paths, solver parameters)
-- Knife configuration (poses with translation/rotation)
-- Toolpath configuration (robots, knives, I/O folders)
-- Feasibility configuration (which checks to run)
+Provides YAML configuration loading for the project:
+
+- Robot, knife, and IK configurations
+- :class:`FeasibilityConfig` — typed dataclass for batch feasibility analysis
+- :func:`load_batch_config` — loads ``batch_feasibility_config.yaml`` into
+  :class:`FeasibilityConfig`
 """
 
 import yaml
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 # =============================================================================
-# IK Configuration Defaults - Single Source of Truth
+# Base YAML loader
 # =============================================================================
-# These defaults are used when config file is missing or incomplete.
-# To change IK solver defaults, modify this dictionary.
-# The config file (config/ik_config.yaml) should match these values.
+
+def load_yaml(config_path: str) -> Dict[str, Any]:
+    """Load a YAML configuration file.
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist.
+        ValueError: If YAML parsing fails.
+    """
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"Error parsing YAML file {config_path}: {e}")
+
+
+# =============================================================================
+# IK Configuration
+# =============================================================================
+
 _DEFAULT_IK_CONFIG = {
     'ee_frame_name': 'ee_link',
-    # EAIK-specific
     'solution_selection': 'closest',
     'fk_pos_tolerance_m': 1e-3,
     'fk_rot_tolerance_deg': 0.02,
-    # Pinocchio-specific
     'max_iterations': 50,
     'tolerance': 1e-4,
     'rot_weight': 0.2,
@@ -37,7 +56,6 @@ _DEFAULT_IK_CONFIG = {
     'lambda_max': 1e1,
     'max_step': 0.2,
     'backtrack': True,
-    # Retry strategy (Pinocchio only)
     'use_initial_guess': True,
     'use_neutral': True,
     'use_random': True,
@@ -45,364 +63,27 @@ _DEFAULT_IK_CONFIG = {
 }
 
 
-@dataclass
-class KnifePose:
-    """Knife pose in robot base frame."""
-    name: str
-    description: str
-    translation_m: np.ndarray  # [x, y, z] in meters
-    quaternion: np.ndarray     # [qw, qx, qy, qz]
-
-
-@dataclass
-class RobotConfig:
-    """Robot configuration."""
-    name: str
-    urdf_path: str
-    reach_m: float
-    velocity_limits_rad_s: Optional[List[float]] = None
-    acceleration_limits_rad_s2: Optional[List[float]] = None
-    joint_jump_limit_rad: Optional[float] = None  # From constants section
-
-
-def load_yaml(config_path: str) -> Dict[str, Any]:
-    """
-    Load a YAML configuration file.
-    
-    Args:
-        config_path: Path to YAML file
-        
-    Returns:
-        Dictionary with configuration data
-        
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If YAML parsing fails
-    """
-    path = Path(config_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-    
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        raise ValueError(f"Error parsing YAML file {config_path}: {e}")
-
-
 def load_ik_config(config_path: str) -> Dict[str, Any]:
-    """
-    Load IK solver configuration.
-    
-    Expected format:
-        ik_parameters:
-          max_iterations: 50  # See _DEFAULT_IK_CONFIG for default values
-          tolerance: 1e-4
-          rot_weight: 0.2
-          trans_weight: 1.0
-          lambda0: 1e-3
-          lambda_max: 1e1
-          max_step: 0.2
-    
-    Args:
-        config_path: Path to IK config YAML
-        
-    Returns:
-        Dictionary with IK parameters
-    """
+    """Load IK solver configuration."""
     config = load_yaml(config_path)
     return config.get('ik_parameters', {})
 
 
-def load_knife_config(config_path: str) -> Dict[str, KnifePose]:
-    """
-    Load knife poses configuration.
-    
-    Expected format:
-        poses:
-          pose_1:
-            description: "..."
-            translation_mm:
-              x: -367.773
-              y: -915.815
-              z: 520.4
-            rotation:
-              w: 0.00515984
-              x: 0.712632
-              y: -0.701518
-              z: 0.000396522
-    
-    Args:
-        config_path: Path to knife config YAML
-        
-    Returns:
-        Dictionary mapping pose name to KnifePose objects
-    """
-    config = load_yaml(config_path)
-    poses = config.get('poses', {})
-    
-    result = {}
-    for name, pose_data in poses.items():
-        trans = pose_data.get('translation_mm', pose_data.get('translation', {}))
-        rot = pose_data['rotation']
-        
-        # Convert mm to meters if translation_mm key used
-        if 'translation_mm' in pose_data:
-            translation_m = np.array([
-                trans['x'] / 1000.0,
-                trans['y'] / 1000.0,
-                trans['z'] / 1000.0
-            ])
-        else:
-            translation_m = np.array([trans['x'], trans['y'], trans['z']])
-        
-        quaternion = np.array([rot['w'], rot['x'], rot['y'], rot['z']])
-        
-        result[name] = KnifePose(
-            name=name,
-            description=pose_data.get('description', ''),
-            translation_m=translation_m,
-            quaternion=quaternion
-        )
-    
-    return result
-
-
-def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
-    """
-    Load central robot configuration database.
-    
-    Args:
-        config_path: Path to robots_config.yaml. If None, uses default.
-        
-    Returns:
-        Dictionary mapping robot name to RobotConfig
-    """
-    if config_path is None:
-        config_path = str(Path(__file__).parent.parent / "config" / "robots_config.yaml")
-    
-    config = load_yaml(config_path)
-    
-    # Load constants (e.g., joint_jump_limit_rad)
-    constants = config.get('constants', {})
-    joint_jump_limit_rad = constants.get('joint_jump_limit_rad', 0.5)  # Default: 0.5 rad
-    
-    result = {}
-    for robot_data in config.get('robots', []):
-        name = robot_data.get('name', 'Unknown')
-        result[name] = RobotConfig(
-            name=name,
-            urdf_path=robot_data.get('urdf_path', ''),
-            reach_m=float(robot_data.get('reach_m', 1.0)),
-            velocity_limits_rad_s=robot_data.get('velocity_limits_rad_s'),
-            acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2'),
-            joint_jump_limit_rad=joint_jump_limit_rad
-        )
-    
-    return result
-
-
-def get_default_velocity_limits_rad_s(config_path: str = None) -> list:
-    """
-    Get default velocity limits from robots_config.yaml (first robot).
-    Used when velocity_limits_rad_s would otherwise be None.
-
-    Returns:
-        List of velocity limits in rad/s per joint.
-    """
-    robots = load_robots_config(config_path)
-    for robot in robots.values():
-        if robot.velocity_limits_rad_s is not None:
-            return list(robot.velocity_limits_rad_s)
-    # Fallback: IRB 1300-7/1.4 limits from robots_config.yaml
-    return [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
-
-
-def get_default_joint_jump_limit_rad(config_path: str = None) -> float:
-    """
-    Get default joint jump limit from robots_config.yaml constants.
-    Used when joint_jump_limit_rad would otherwise be None.
-
-    Returns:
-        Joint jump limit in radians (default 0.5).
-    """
-    if config_path is None:
-        config_path = str(Path(__file__).parent.parent / "config" / "robots_config.yaml")
-    config = load_yaml(config_path)
-    constants = config.get('constants', {})
-    return float(constants.get('joint_jump_limit_rad', 0.5))
-
-
-def get_robot_by_name(robot_name: str, robots_config_path: str = None) -> RobotConfig:
-    """
-    Get robot configuration by name from central config.
-    
-    Args:
-        robot_name: Name of robot (e.g., "IRB 1300-7/1.4")
-        robots_config_path: Path to robots_config.yaml
-        
-    Returns:
-        RobotConfig for the specified robot
-        
-    Raises:
-        ValueError: If robot not found
-    """
-    robots = load_robots_config(robots_config_path)
-    
-    if robot_name not in robots:
-        available = list(robots.keys())
-        raise ValueError(f"Robot '{robot_name}' not found. Available: {available}")
-    
-    return robots[robot_name]
-
-
-def load_toolpath_config(config_path: str) -> Dict[str, Any]:
-    """
-    Load toolpath processing configuration.
-    Resolves robot names from config/robots_config.yaml.
-    
-    Expected format:
-        robots_to_use:
-          - "IRB 1300-7/1.4"
-        
-        knife_poses_to_use:
-          - "pose_1"
-        
-        toolpaths_folder: "input/toolpaths"
-        robostudio_joints_folder: "input/robostudio_joints"
-        output_folder: "output/toolpath_comparison"
-    
-    Args:
-        config_path: Path to toolpath config YAML
-        
-    Returns:
-        Dictionary with robots, knife poses, I/O paths, and options
-    """
-    config = load_yaml(config_path)
-    
-    # Load central robots config
-    robots_db = load_robots_config()
-    
-    # Resolve robot names to RobotConfig objects
-    robots = []
-    
-    # Support both old format (robots: [...]) and new format (robots_to_use: [...])
-    robot_names = config.get('robots_to_use', [])
-    if not robot_names and 'robots' in config:
-        # Old format with embedded robot configs
-        for robot_data in config.get('robots', []):
-            if isinstance(robot_data, dict):
-                # Embedded config
-                robots.append(RobotConfig(
-                    name=robot_data.get('name', 'Unknown'),
-                    urdf_path=robot_data.get('urdf_path', robot_data.get('path', '')),
-                    reach_m=float(robot_data.get('reach_m', 1.0)),
-                    velocity_limits_rad_s=robot_data.get('velocity_limits_rad_s'),
-                    acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2')
-                ))
-            elif isinstance(robot_data, str):
-                # Just a name reference
-                robot_names.append(robot_data)
-    
-    # Resolve name references
-    for name in robot_names:
-        if name in robots_db:
-            robots.append(robots_db[name])
-        else:
-            print(f"Warning: Robot '{name}' not found in robots_config.yaml")
-    
-    result = {
-        'robots': robots,
-        'knife_poses_to_use': config.get('knife_poses_to_use', []),
-        'toolpaths_folder': config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')),
-        'robostudio_joints_folder': config.get('robostudio_joints_folder', 'input/robostudio_joints'),
-        'output_folder': config.get('output_folder', 'output/toolpath_comparison'),
-        'toolpaths': config.get('toolpaths', []),
-        'output': config.get('output', {}),
-        'options': config.get('options', {
-            'save_joint_csv': True,
-            'generate_plots': True,
-            'adaptive_plot_scale': False,
-            'num_workers': 0
-        })
-    }
-    for passthrough_key in (
-        'solver', 'use_base_frame', 'checks', 'thresholds', 'ranking',
-        'performance', 'continuity', 'eaik_multi_solution',
-        'time_parameterization', 'topp_ra', 'graphs',
-    ):
-        if passthrough_key in config:
-            result[passthrough_key] = config[passthrough_key]
-    return result
-
-
-def load_feasibility_config(config_path: str) -> Dict[str, Any]:
-    """
-    Load feasibility analysis configuration.
-    
-    Expected format:
-        checks:
-          manipulability: true
-          singularity: true
-          reachability: true
-          condition_number: false
-        
-        thresholds:
-          singularity_warning: 0.01
-          manipulability_warning: 0.001
-    
-    Args:
-        config_path: Path to feasibility config YAML
-        
-    Returns:
-        Dictionary with check flags and thresholds
-    """
-    config = load_yaml(config_path)
-    
-    return {
-        'checks': config.get('checks', {
-            'manipulability': True,
-            'singularity': True,
-            'reachability': True,
-            'condition_number': False
-        }),
-        'thresholds': config.get('thresholds', {
-            'singularity_warning': 0.01,
-            'manipulability_warning': 0.001
-        })
-    }
-
-
 def get_default_ik_config() -> Dict[str, Any]:
-    """
-    Get default IK configuration parameters.
-    
-    Returns a copy of the default IK config dictionary.
-    To change defaults, modify _DEFAULT_IK_CONFIG constant above.
-    """
+    """Get default IK configuration parameters."""
     return _DEFAULT_IK_CONFIG.copy()
 
 
 def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
-    """
-    Load IK configuration and return the appropriate IKConfig object.
-
-    The *solver* argument tells this function which config object to build.
-    It is always provided by the calling script (which reads it from its own
-    script-level config, e.g. toolpath_config.yaml, robostudio_test_config.yaml,
-    batch_feasibility_config.yaml). The ik_config.yaml file itself does NOT
-    contain a solver field -- it only holds IK tuning parameters.
+    """Load IK configuration and return the appropriate IKConfig object.
 
     Args:
-        config_path: Path to IK config YAML. If None, uses default at config/ik_config.yaml
-        solver: Which backend to build config for: "eaik" or "pin"
+        config_path: Path to IK config YAML.  Uses default if None.
+        solver: Which backend to build config for: ``"eaik"`` or ``"pin"``.
 
     Returns:
-        EAIKConfig or PinocchioIKConfig instance
+        EAIKConfig or PinocchioIKConfig instance.
     """
-    from pathlib import Path
-
-    # Default path
     if config_path is None:
         config_path = str(Path(__file__).parent.parent / "config" / "ik_config.yaml")
 
@@ -411,11 +92,9 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
         params = raw.get('ik_parameters', {})
     except Exception as e:
         print(f"Warning: Could not load IK config from {config_path}: {e}")
-        print("Using default IK parameters from _DEFAULT_IK_CONFIG")
         params = {}
 
     solver = solver.lower().strip()
-
     ee_frame_name = str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name']))
 
     if solver in ("pin", "pinocchio"):
@@ -445,61 +124,324 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
         )
 
 
-def load_robostudio_test_config(config_path: str) -> Dict[str, Any]:
-    """
-    Load RobotStudio test trajectory configuration.
-    
-    Expected format:
-        robot:
-          name: "IRB 1300-7/1.4"
-          urdf_path: "path/to/urdf"
-        
-        input_folder: "input/robostudio_test"
-        output_folder: "output/test_comparison"
-        
-        options:
-          adaptive_scale: false
-          generate_fk_plots: true
-          generate_ik_plots: true
-    
-    Args:
-        config_path: Path to config YAML
-        
-    Returns:
-        Dictionary with robot, input/output paths, and options
-    """
+# =============================================================================
+# Knife Configuration
+# =============================================================================
+
+@dataclass
+class KnifePose:
+    """Knife pose in robot base frame."""
+    name: str
+    description: str
+    translation_m: np.ndarray
+    quaternion: np.ndarray
+
+
+def load_knife_config(config_path: str) -> Dict[str, KnifePose]:
+    """Load knife poses configuration."""
     config = load_yaml(config_path)
-    
-    # Support both old format (robot: {name, urdf_path}) and new format (robot_name: "...")
+    poses = config.get('poses', {})
+
+    result = {}
+    for name, pose_data in poses.items():
+        trans = pose_data.get('translation_mm', pose_data.get('translation', {}))
+        rot = pose_data['rotation']
+
+        if 'translation_mm' in pose_data:
+            translation_m = np.array([trans['x'] / 1000.0, trans['y'] / 1000.0, trans['z'] / 1000.0])
+        else:
+            translation_m = np.array([trans['x'], trans['y'], trans['z']])
+
+        quaternion = np.array([rot['w'], rot['x'], rot['y'], rot['z']])
+        result[name] = KnifePose(
+            name=name, description=pose_data.get('description', ''),
+            translation_m=translation_m, quaternion=quaternion,
+        )
+    return result
+
+
+# =============================================================================
+# Robot Configuration
+# =============================================================================
+
+@dataclass
+class RobotConfig:
+    """Robot configuration."""
+    name: str
+    urdf_path: str
+    reach_m: float
+    velocity_limits_rad_s: Optional[List[float]] = None
+    acceleration_limits_rad_s2: Optional[List[float]] = None
+    joint_jump_limit_rad: Optional[float] = None
+
+
+def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
+    """Load central robot configuration database."""
+    if config_path is None:
+        config_path = str(Path(__file__).parent.parent / "config" / "robots_config.yaml")
+
+    config = load_yaml(config_path)
+    constants = config.get('constants', {})
+    joint_jump_limit_rad = constants.get('joint_jump_limit_rad', 0.5)
+
+    result = {}
+    for robot_data in config.get('robots', []):
+        name = robot_data.get('name', 'Unknown')
+        result[name] = RobotConfig(
+            name=name,
+            urdf_path=robot_data.get('urdf_path', ''),
+            reach_m=float(robot_data.get('reach_m', 1.0)),
+            velocity_limits_rad_s=robot_data.get('velocity_limits_rad_s'),
+            acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2'),
+            joint_jump_limit_rad=joint_jump_limit_rad,
+        )
+    return result
+
+
+def get_robot_by_name(robot_name: str, robots_config_path: str = None) -> RobotConfig:
+    """Get robot configuration by name from central config.
+
+    Raises:
+        ValueError: If robot not found.
+    """
+    robots = load_robots_config(robots_config_path)
+    if robot_name not in robots:
+        raise ValueError(f"Robot '{robot_name}' not found. Available: {list(robots.keys())}")
+    return robots[robot_name]
+
+
+def get_default_velocity_limits_rad_s(config_path: str = None) -> list:
+    """Get default velocity limits from robots_config.yaml (first robot)."""
+    robots = load_robots_config(config_path)
+    for robot in robots.values():
+        if robot.velocity_limits_rad_s is not None:
+            return list(robot.velocity_limits_rad_s)
+    return [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
+
+
+def get_default_joint_jump_limit_rad(config_path: str = None) -> float:
+    """Get default joint jump limit from robots_config.yaml constants."""
+    if config_path is None:
+        config_path = str(Path(__file__).parent.parent / "config" / "robots_config.yaml")
+    config = load_yaml(config_path)
+    return float(config.get('constants', {}).get('joint_jump_limit_rad', 0.5))
+
+
+# =============================================================================
+# Feasibility Config Dataclasses
+# =============================================================================
+
+@dataclass
+class ReachabilityGraphConfig:
+    """Graph toggle for reachability (always runs)."""
+    generate_graphs: bool = True
+
+
+@dataclass
+class EaikMultiSolutionConfig:
+    """EAIK multi-solution optimisation settings."""
+    enabled: bool = True
+    weights: Dict[str, float] = field(default_factory=lambda: {"c0": 10.0, "singularity": 1.0, "manipulability": 0.5})
+    generate_graphs: bool = True
+    max_waypoints_in_graph: int = 25
+
+
+@dataclass
+class SingularityGroupConfig:
+    """Singularity check settings."""
+    enabled: bool = True
+    mode: str = "unified"
+    threshold: float = 0.01
+    type_thresholds: Dict[str, float] = field(default_factory=lambda: {"wrist": 0.1, "shoulder": 0.1, "elbow": 0.1})
+    check_j5_only: bool = True
+    j5_threshold_deg: float = 0.76
+    generate_graphs: bool = True
+
+
+@dataclass
+class ManipulabilityGroupConfig:
+    """Manipulability check settings."""
+    enabled: bool = True
+    warning: float = 0.001
+    translational_warning: float = 0.001
+    rotational_warning: float = 0.001
+    directional_warning: float = 0.01
+    generate_graphs: bool = True
+
+
+@dataclass
+class ContinuityGroupConfig:
+    """Continuity (C0 + C1) check settings."""
+    enabled: bool = True
+    pose_scale_m_per_rad: float = 0.1
+    safety_factor: float = 1.05
+    default_speed_mm_s: float = 100.0
+    generate_graphs: bool = True
+
+
+@dataclass
+class WaypointDensityGroupConfig:
+    """Pre-IK waypoint density check settings."""
+    enabled: bool = True
+    check_frequency_hz: float = 50.0
+    max_gap_mm: float = 5.0
+    interpolate_sparse: bool = False
+    default_speed_mm_s: float = 100.0
+    generate_graphs: bool = True
+
+
+@dataclass
+class ToppRaGroupConfig:
+    """TOPP-RA settings (always runs — only graph toggle)."""
+    generate_graphs: bool = True
+
+
+@dataclass
+class OutputConfig:
+    """Output settings."""
+    level1_only: bool = True
+    save_analysis: bool = True
+
+
+@dataclass
+class RankingConfig:
+    """Ranking parameters for combinatorial search."""
+    safety_bin_size: float = 10.0
+    smoothness_weight: float = 1.0
+    dexterity_weight: float = 1.0
+
+
+@dataclass
+class FeasibilityConfig:
+    """All settings for batch feasibility analysis, loaded from YAML.
+
+    Each functional group owns its ``enabled`` and ``generate_graphs``
+    toggles.  TOPP-RA and reachability always run (no ``enabled`` flag).
+    """
+    # I/O
+    robots: List[RobotConfig] = field(default_factory=list)
+    knife_poses_to_use: List[str] = field(default_factory=list)
+    toolpaths_folder: str = "input/toolpaths"
+    output_folder: str = "output/feasibility_batch"
+    use_base_frame: bool = False
+
+    # Solver
+    solver: str = "pin"
+
+    # Performance
+    max_ik_failures_per_trajectory: int = 1
+
+    # Output
+    output: OutputConfig = field(default_factory=OutputConfig)
+
+    # Functional groups
+    reachability: ReachabilityGraphConfig = field(default_factory=ReachabilityGraphConfig)
+    eaik_multi_solution: EaikMultiSolutionConfig = field(default_factory=EaikMultiSolutionConfig)
+    singularity: SingularityGroupConfig = field(default_factory=SingularityGroupConfig)
+    manipulability: ManipulabilityGroupConfig = field(default_factory=ManipulabilityGroupConfig)
+    continuity: ContinuityGroupConfig = field(default_factory=ContinuityGroupConfig)
+    waypoint_density: WaypointDensityGroupConfig = field(default_factory=WaypointDensityGroupConfig)
+    topp_ra: ToppRaGroupConfig = field(default_factory=ToppRaGroupConfig)
+
+    # Ranking (combinatorial search only)
+    ranking: RankingConfig = field(default_factory=RankingConfig)
+
+
+# =============================================================================
+# Batch Config Loader
+# =============================================================================
+
+def _load_group(raw: Dict, key: str, cls, **extra_defaults):
+    """Instantiate a group dataclass from the raw YAML dict section."""
+    section = raw.get(key, {}) or {}
+    if isinstance(section, dict):
+        filtered = {k: v for k, v in section.items() if k in cls.__dataclass_fields__}
+        filtered.update(extra_defaults)
+        return cls(**filtered)
+    return cls(**extra_defaults)
+
+
+def load_batch_config(config_path: str) -> FeasibilityConfig:
+    """Load ``batch_feasibility_config.yaml`` into a :class:`FeasibilityConfig`.
+
+    Resolves robot names against ``config/robots_config.yaml``.
+    """
+    raw = load_yaml(config_path)
+    robots_db = load_robots_config()
+
+    robots: List[RobotConfig] = []
+    for name in raw.get('robots_to_use', []):
+        if name in robots_db:
+            robots.append(robots_db[name])
+        else:
+            print(f"Warning: Robot '{name}' not found in robots_config.yaml")
+
+    output_section = raw.get('output', {}) or {}
+    output_cfg = OutputConfig(
+        level1_only=output_section.get('level1_only', True),
+        save_analysis=output_section.get('save_analysis', True),
+    )
+
+    ranking_section = raw.get('ranking', {}) or {}
+    ranking_cfg = RankingConfig(
+        safety_bin_size=float(ranking_section.get('safety_bin_size', 10.0)),
+        smoothness_weight=float(ranking_section.get('smoothness_weight', 1.0)),
+        dexterity_weight=float(ranking_section.get('dexterity_weight', 1.0)),
+    )
+
+    return FeasibilityConfig(
+        robots=robots,
+        knife_poses_to_use=raw.get('knife_poses_to_use', []),
+        toolpaths_folder=raw.get('toolpaths_folder', 'input/toolpaths'),
+        output_folder=raw.get('output_folder', 'output/feasibility_batch'),
+        use_base_frame=raw.get('use_base_frame', False),
+        solver=raw.get('solver', 'pin'),
+        max_ik_failures_per_trajectory=int(raw.get('max_ik_failures_per_trajectory', 1)),
+        output=output_cfg,
+        reachability=_load_group(raw, 'reachability', ReachabilityGraphConfig),
+        eaik_multi_solution=_load_group(raw, 'eaik_multi_solution', EaikMultiSolutionConfig),
+        singularity=_load_group(raw, 'singularity', SingularityGroupConfig),
+        manipulability=_load_group(raw, 'manipulability', ManipulabilityGroupConfig),
+        continuity=_load_group(raw, 'continuity', ContinuityGroupConfig),
+        waypoint_density=_load_group(raw, 'waypoint_density', WaypointDensityGroupConfig),
+        topp_ra=_load_group(raw, 'topp_ra', ToppRaGroupConfig),
+        ranking=ranking_cfg,
+    )
+
+
+# =============================================================================
+# Legacy loaders (kept for backward compatibility with non-feasibility scripts)
+# =============================================================================
+
+def load_robostudio_test_config(config_path: str) -> Dict[str, Any]:
+    """Load RobotStudio test trajectory configuration."""
+    config = load_yaml(config_path)
+
     robot_name = config.get('robot_name', '')
     urdf_path = None
     robot_config = None
-    
+
     if not robot_name and 'robot' in config:
-        # Old format with embedded robot config
         robot = config.get('robot', {})
         robot_name = robot.get('name', 'Unknown Robot')
         urdf_path = robot.get('urdf_path', '')
-    
-    # Try to resolve from central config
+
     if robot_name:
         try:
             robot_config = get_robot_by_name(robot_name)
             urdf_path = robot_config.urdf_path
         except ValueError:
-            # Not found in central config, use provided urdf_path if available
             pass
-    
+
     return {
         'robot_name': robot_name,
         'urdf_path': urdf_path or '',
-        'robot_config': robot_config,  # Full RobotConfig if resolved
+        'robot_config': robot_config,
         'input_folder': config.get('input_folder', 'input/robostudio_test'),
         'output_folder': config.get('output_folder', 'output/test_comparison'),
         'options': config.get('options', {
             'adaptive_scale': False,
             'generate_fk_plots': True,
-            'generate_ik_plots': True
-        })
+            'generate_ik_plots': True,
+        }),
     }
-

@@ -64,25 +64,20 @@ from .feasibility_plot import (
     plot_manipulability_per_waypoint,
     plot_reachability_summary,
     plot_continuity_analysis,
-    # Aggregated plotting functions
     plot_reachability_rate_per_trajectory,
     plot_manipulability_per_trajectory,
     plot_singularity_per_trajectory,
     plot_continuity_summary,
-    # C0 continuity + dashboard plots
     plot_c0_continuity_per_waypoint,
     plot_c0_summary_per_trajectory,
     plot_continuity_dashboard,
-    # Debug plotting functions
     plot_ik_failure_analysis,
     plot_joint_limit_analysis,
     plot_per_waypoint_ik_debug,
     plot_joint_configurations_vs_limits,
-    # 4-Level feasibility plots
     plot_feasibility_levels,
     plot_feasibility_levels_detailed,
     plot_combination_feasibility_levels,
-    # Singularity classification plots
     plot_singularity_type_classification,
     plot_sub_jacobian_metrics,
     plot_sub_jacobian_determinants,
@@ -92,7 +87,6 @@ from .feasibility_plot import (
     plot_eaik_solutions_with_scores,
     plot_waypoint_density,
     plot_topp_velocity_profile,
-    # New Phase 3/4 plots
     plot_task_space_velocity,
     plot_joint_space_trajectory,
     plot_3d_spline_trajectory,
@@ -109,8 +103,7 @@ from .csv_export_validity import (
 from .config_loader import (
     load_ik_config,
     load_knife_config,
-    load_toolpath_config,
-    load_feasibility_config,
+    load_batch_config,
     load_robostudio_test_config,
     load_robots_config,
     get_robot_by_name,
@@ -118,7 +111,8 @@ from .config_loader import (
     get_default_ik_config,
     load_ik_config_as_object,
     KnifePose,
-    RobotConfig
+    RobotConfig,
+    FeasibilityConfig,
 )
 
 from .urdf_loader import (
@@ -131,7 +125,6 @@ from .urdf_loader import (
 
 from .time_parameterization import (
     compute_arc_lengths,
-    compute_timestamps,
     check_waypoint_density,
     interpolate_sparse_segments,
 )
@@ -197,16 +190,10 @@ __all__ = [
     'plot_position_deltas',
     'plot_quaternion_comparison',
     'plot_euclidean_error',
-    'plot_singularity_per_waypoint',
-    'plot_reachability_per_waypoint',
-    'plot_manipulability_per_waypoint',
-    'plot_reachability_summary',
-    'plot_continuity_analysis',
     'generate_ranking_plot',
     'plot_feasibility_levels',
     'plot_feasibility_levels_detailed',
     'plot_combination_feasibility_levels',
-    # Singularity classification plots
     'plot_singularity_type_classification',
     'plot_sub_jacobian_metrics',
     'plot_sub_jacobian_determinants',
@@ -222,16 +209,21 @@ __all__ = [
     # Config
     'load_ik_config',
     'load_knife_config',
-    'load_toolpath_config',
-    'load_feasibility_config',
+    'load_batch_config',
+    'load_robostudio_test_config',
     'load_yaml',
     'get_default_ik_config',
     'load_ik_config_as_object',
     'KnifePose',
     'RobotConfig',
+    'FeasibilityConfig',
     # URDF Loading
     'load_robot_model',
     'resolve_urdf_path',
+    # Time parameterization (waypoint density)
+    'compute_arc_lengths',
+    'check_waypoint_density',
+    'interpolate_sparse_segments',
     # Math utilities
     'shortest_angular_distance',
     'compute_joint_space_distance',
@@ -240,5 +232,5 @@ __all__ = [
     'compute_joint_velocity_metrics',
     'compute_joint_limit_violations',
     'compute_normalized_joint_energy',
-    'compute_safety_tier'
+    'compute_safety_tier',
 ]

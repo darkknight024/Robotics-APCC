@@ -1,231 +1,119 @@
 # =============================================================================
 # Batch Feasibility Analysis Configuration
 # =============================================================================
-# Configuration for trajectory feasibility analysis.
-# Controls which checks to run and their thresholds.
+# Each functional group owns its settings, thresholds, and graph toggle.
+# Rule: if enabled=true AND generate_graphs=true, all graphs for that
+# group are produced (per-trajectory + aggregated).
 
 # =============================================================================
-# Robots to Analyze
+# I/O
 # =============================================================================
-# Reference robot names from config/robots_config.yaml
 robots_to_use:
   - "IRB 1300-7/1.4"
 
-# =============================================================================
-# Knife Poses to Use
-# =============================================================================
-# Reference knife pose names from config/knife_config.yaml
 knife_poses_to_use:
   - "pose_1"
 
-# =============================================================================
-# I/O Directories
-# =============================================================================
 toolpaths_folder: "Assets/Robot APCC/Toolpaths/Sample"
 output_folder: "output/feasibility_batch"
-
-# =============================================================================
-# Checks to Run
-# =============================================================================
-checks:
-  # Compute and plot manipulability index (Yoshikawa measure)
-  manipulability: true
-  
-  # Compute and plot minimum singular value (singularity proximity)
-  singularity: true
-  
-  # Check kinematic reachability (IK solvability)
-  reachability: true
-  
-  # Compute condition number (optional, expensive)
-  condition_number: false
-  
-  # Continuity analysis (C1 velocity limits)
-  continuity: true
-
-# =============================================================================
-# Thresholds
-# =============================================================================
-thresholds:
-  # Minimum singular value below which to warn about singularity
-  singularity_warning: 0.01
-  
-  # Manipulability below which to warn about poor dexterity
-  manipulability_warning: 0.001
-
-# =============================================================================
-# Ranking Parameters (4-Level Hierarchical Feasibility)
-# =============================================================================
-# Controls the lexicographic ranking algorithm per docs/combinatorial_context.md
-ranking:
-  # Safety Tier binning (Level 2)
-  # Discretizes condition numbers to group "equally safe" paths
-  # Example: bin_size=10 means Cond=12 and Cond=18 are both "Tier 2"
-  # Lower bin_size = more sensitive to safety differences
-  safety_bin_size: 10.0
-  
-  # Smoothness weight (Level 3) - reserved for future use
-  # Currently not used, but could scale smoothness cost if needed
-  smoothness_weight: 1.0
-  
-  # Dexterity weight (Level 4) - reserved for future use
-  # Currently not used, but could scale dexterity score if needed
-  dexterity_weight: 1.0
-
-# =============================================================================
-# Performance Optimization
-# =============================================================================
-performance:
-  # Early termination for failing trajectories
-  # Stop processing a trajectory after N IK failures to save computation time
-  # Set to 0 to disable early termination
-  max_ik_failures_per_trajectory: 1
-
-# =============================================================================
-# Frame Mode
-# =============================================================================
-# When true, toolpath CSV is already in robot base frame; knife poses are ignored.
-# When false (default), toolpath is in knife frame and knife_poses_to_use apply.
 use_base_frame: false
 
 # =============================================================================
-# Continuity Analysis Settings
+# Solver
 # =============================================================================
-continuity:
-  # Enable continuity analysis
-  enabled: true
-  
-  # Pose scale factor (meters per radian) for unified pose metric
-  pose_scale_m_per_rad: 0.1
-  
-  # Safety factor for velocity limit checks (1.05 = 5% margin)
-  safety_factor: 1.05
-  
-  # Default end-effector speed (mm/s) if not in trajectory
-  default_speed_mm_s: 100.0
+solver: "pin"
+
+# =============================================================================
+# Output
+# =============================================================================
+output:
+  level1_only: true
+  save_analysis: true
+
+# =============================================================================
+# Performance
+# =============================================================================
+max_ik_failures_per_trajectory: 1
+
+# =============================================================================
+# Reachability (always runs — IK is the foundation)
+# =============================================================================
+reachability:
+  generate_graphs: true
 
 # =============================================================================
 # EAIK Multi-Solution Optimisation
 # =============================================================================
-# When the solver is "eaik", EAIK returns up to ~8 geometrically valid IK
-# solutions per waypoint.  When enabled below, the feasibility analyzer scores
-# every valid candidate at each waypoint against the previous configuration
-# using the weighted cost function and picks the lowest-cost one.
-#
-# This improves C0/C1 continuity, manipulability and singularity avoidance
-# compared to the default "closest" selection strategy.
-#
-# Ignored when solver is "pin" (Pinocchio returns a single solution).
+# When solver is "eaik", scores every valid IK candidate per waypoint
+# against the previous configuration and picks the lowest-cost one.
+# Ignored when solver is "pin".
 eaik_multi_solution:
   enabled: true
   weights:
-    # Joint-space distance to previous config (dominant — penalises large C0 jumps)
     c0: 10.0
-    # 1/sigma_min — penalises proximity to singularity
     singularity: 1.0
-    # Yoshikawa manipulability reward (subtracted from cost — higher is better)
     manipulability: 0.5
+  generate_graphs: true
+  max_waypoints_in_graph: 25
 
 # =============================================================================
-# Solver Backend
+# Singularity
 # =============================================================================
-# "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
-solver: "pin"
-
-# =============================================================================
-# Output Options
-# =============================================================================
-
-output:
-  # Level 1 only: only compute feasibility gate (IK 100%, C0, C1); skip Level 2-4
-  level1_only: true
-
-  # Save analysis report to text file
-  save_analysis: true
-
-  # Generate EAIK all-solutions graph with per-solution scores
-  # Only effective when solver is "eaik" (Pinocchio returns a single solution).
-  generate_eaik_solutions_graph: true
-
-  # Max waypoints to include in the EAIK solutions graph
-  eaik_solutions_max_waypoints: 25
-
-# =============================================================================
-# Graph Configuration
-# =============================================================================
-# Unified toggle system for all plots.  Master switch + per-category
-# enable/disable.  Individual graph keys can be set to false to skip.
-graphs:
-  # Master switch — set to false to skip ALL plots
+singularity:
   enabled: true
-
-  # Dashboard (multi-panel summary per toolpath)
-  dashboard: true
-
-  # Individual trajectory graphs
-  per_trajectory:
-    enabled: true
-    c0_continuity: true
-    c1_continuity: true
-    singularity: true
-    manipulability: true
-    decomposed_manipulability: true
-    directional_manipulability: true
-    eaik_solutions: true
-    waypoint_density: true
-    topp_ra_velocity_profile: true
-    task_space_velocity: true
-    trajectory_3d_spline: true
-    joint_space_trajectory: true
-
-  # Aggregated plots (across all trajectories in the toolpath)
-  aggregated:
-    enabled: true
-    reachability_rate: true
-    manipulability: true
-    singularity: true
-    c0_summary: true
-    c1_summary: true
-    decomposed_manipulability: true
-    feasibility_levels: true
+  mode: "unified"
+  threshold: 0.01
+  # Classified-mode settings (only used when mode=classified):
+  type_thresholds:
+    wrist: 0.1
+    shoulder: 0.1
+    elbow: 0.1
+  check_j5_only: true
+  j5_threshold_deg: 0.76
+  generate_graphs: true
 
 # =============================================================================
-# Time Parameterization & Waypoint Density
+# Manipulability
 # =============================================================================
-# Checks whether waypoint spacing is adequate for the target TCP speed.
-# Sparse segments mean the robot path between checked poses is unverified.
-time_parameterization:
-  enabled: true
-  # Minimum check frequency (Hz) — max_spacing = speed / check_frequency
-  check_frequency_hz: 50.0
-  # Hard upper bound on segment arc-length (mm); overrides frequency-based limit
-  max_gap_mm: 5.0
-  # Auto-densify sparse segments by interpolating before IK analysis
-  interpolate_sparse: false
-  # Fallback TCP speed when CSV does not contain per-waypoint speed
-  default_speed_mm_s: 100.0
-
-# =============================================================================
-# TOPP-RA — Time-Optimal Path Parameterization (mandatory)
-# =============================================================================
-# toppra MUST be installed (pip install toppra).  The pipeline will exit
-# with an error if it is missing — there is no fallback.
-# Uses velocity_limits_rad_s and acceleration_limits_rad_s2 from robots_config.
-topp_ra:
-  enabled: true
-
-# =============================================================================
-# Decomposed Manipulability (Phase 2)
-# =============================================================================
-# Decomposes the unified Yoshikawa index into translational, rotational,
-# normalized combined, and directional components.  Always computed when the
-# feasibility analysis runs; the thresholds below control warning flags in
-# the report and threshold lines on plots.
 manipulability:
   enabled: true
-  # Translational manipulability w_v warning threshold
+  warning: 0.001
   translational_warning: 0.001
-  # Rotational manipulability w_omega warning threshold
   rotational_warning: 0.001
-  # Directional manipulability w_d warning threshold
   directional_warning: 0.01
+  generate_graphs: true
+
+# =============================================================================
+# Continuity (C0 + C1)
+# =============================================================================
+continuity:
+  enabled: true
+  pose_scale_m_per_rad: 0.1
+  safety_factor: 1.05
+  default_speed_mm_s: 100.0
+  generate_graphs: true
+
+# =============================================================================
+# Waypoint Density (pre-IK check)
+# =============================================================================
+waypoint_density:
+  enabled: true
+  check_frequency_hz: 50.0
+  max_gap_mm: 5.0
+  interpolate_sparse: false
+  default_speed_mm_s: 100.0
+  generate_graphs: true
+
+# =============================================================================
+# TOPP-RA (always runs — cannot be disabled)
+# =============================================================================
+topp_ra:
+  generate_graphs: true
+
+# =============================================================================
+# Ranking (used by combinatorial search only)
+# =============================================================================
+ranking:
+  safety_bin_size: 10.0
+  smoothness_weight: 1.0
+  dexterity_weight: 1.0

@@ -64,12 +64,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from utils import (
     load_knife_config,
-    load_toolpath_config,
-    load_feasibility_config,
     extract_toolpath_speed,
     KnifePose,
-    RobotConfig
+    RobotConfig,
 )
+from utils.config_loader import load_batch_config, FeasibilityConfig
 
 # Import the single toolpath processor
 from feasibility_analysis import process_toolpath
@@ -1611,35 +1610,34 @@ def _load_configs(
     Returns:
         Tuple of (config, knife_poses, feas_config)
     """
-    # Load main config
-    config = load_toolpath_config(config_path)
-    
-    # Load knife poses
+    cfg = load_batch_config(config_path)
+
     if knife_config_path is None:
         knife_config_path = str(Path(__file__).parent / "config" / "sparse_generated_knife_poses.yaml")
-    
     if not Path(knife_config_path).exists():
-        # Fallback to default knife config
         knife_config_path = str(Path(__file__).parent / "config" / "knife_config.yaml")
-    
+
     knife_poses = load_knife_config(knife_config_path)
     logger.info(f"Loaded {len(knife_poses)} knife poses from {knife_config_path}")
-    
-    # Validate knife IDs
+
     if not validate_knife_ids(knife_poses):
         raise ValueError("Knife pose IDs must be unique")
-    
-    # Load feasibility config
-    feasibility_config_path = str(Path(__file__).parent / "config" / "batch_feasibility_config.yaml")
-    try:
-        feas_config = load_feasibility_config(feasibility_config_path)
-    except FileNotFoundError:
-        feas_config = {
-            'thresholds': {'singularity_warning': 0.01},
-            'continuity': {'enabled': True}
-        }
-    
-    return config, knife_poses, feas_config
+
+    config_dict = {
+        'robots': cfg.robots,
+        'knife_poses_to_use': cfg.knife_poses_to_use,
+        'toolpaths_folder': cfg.toolpaths_folder,
+        'output_folder': cfg.output_folder,
+        'use_base_frame': cfg.use_base_frame,
+        'solver': cfg.solver,
+    }
+    feas_dict = {
+        'thresholds': {'singularity_warning': cfg.singularity.threshold},
+        'continuity': {'enabled': cfg.continuity.enabled, 'default_speed_mm_s': cfg.continuity.default_speed_mm_s},
+        'performance': {'max_ik_failures_per_trajectory': cfg.max_ik_failures_per_trajectory},
+    }
+
+    return config_dict, knife_poses, feas_dict
 
 
 def _setup_output_directories(output_base: Optional[str], config: Dict) -> Tuple[Path, Path]:

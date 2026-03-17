@@ -47,11 +47,11 @@ from utils import (
     load_toolpath_trajectories,
     transform_trajectories_to_base_frame,
     load_knife_config,
-    load_toolpath_config,
     load_ik_config_as_object,
     plot_joint_comparison,
     plot_joint_deltas
 )
+from utils.config_loader import load_yaml, load_robots_config
 
 
 @dataclass
@@ -289,8 +289,9 @@ def process_batch(config_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary with batch results
     """
-    # Load configurations
-    config = load_toolpath_config(config_path)
+    config = load_yaml(config_path)
+    robots_db = load_robots_config()
+    config['robots'] = [robots_db[n] for n in config.get('robots_to_use', []) if n in robots_db]
     
     knife_config_path = str(Path(__file__).parent.parent / "config" / "knife_config.yaml")
     knife_poses = load_knife_config(knife_config_path)

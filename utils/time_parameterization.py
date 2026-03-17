@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 """
-Time Parameterization and Waypoint Density Analysis
-====================================================
+Waypoint Density Utilities
+===========================
 
-Computes arc-length between consecutive Cartesian waypoints, derives
-timestamps from per-segment speeds, and checks whether the waypoint
-spacing is adequate for a given control/check frequency.
+Pre-IK utilities for analysing and improving the spatial density of
+toolpath waypoints.  These functions work on the *Cartesian* waypoints
+before any IK or time parameterisation happens.
 
-Optionally interpolates sparse segments via linear position interpolation
-and quaternion SLERP so that no segment exceeds the maximum allowed gap.
+Time parameterisation itself is handled exclusively by TOPP-RA
+(``core.topp_check.parameterize_trajectory``).
+
+Provides
+--------
+- :func:`compute_arc_lengths` — Euclidean gaps between consecutive waypoints.
+- :func:`check_waypoint_density` — flag segments that are too sparse for
+  a given control / check frequency.
+- :func:`interpolate_sparse_segments` — densify by inserting intermediate
+  poses (linear position + quaternion SLERP).
 """
 
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
-# Arc-length and timing
+# Arc-length
 # ---------------------------------------------------------------------------
 
 def compute_arc_lengths(positions_mm: np.ndarray) -> np.ndarray:
@@ -30,23 +38,6 @@ def compute_arc_lengths(positions_mm: np.ndarray) -> np.ndarray:
     """
     diff = np.diff(positions_mm, axis=0)
     return np.linalg.norm(diff, axis=1)
-
-
-def compute_timestamps(arc_lengths_mm: np.ndarray,
-                       speeds_mm_s: np.ndarray) -> np.ndarray:
-    """Derive per-segment durations: dt_i = arc_length_i / speed_i.
-
-    The speed array should have one entry per *segment* (n_segments).
-    If the caller provides per-waypoint speeds (n_waypoints) the first
-    n_segments entries are used (speed at the start of each segment).
-
-    Returns:
-        (n_segments,) array of durations in seconds.  Minimum duration
-        is clamped to 1 ms to avoid division-by-zero downstream.
-    """
-    seg_speeds = speeds_mm_s[:len(arc_lengths_mm)]
-    dt = arc_lengths_mm / np.maximum(seg_speeds, 1e-6)
-    return np.maximum(dt, 1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +61,7 @@ def check_waypoint_density(
 
     Returns:
         Dict with keys:
-            sparse_segments   – list of 0-based segment indices that are too sparse
+            sparse_segments   – list of 0-based segment indices
             max_spacing_mm    – (n_segments,) allowed spacing per segment
             actual_spacing_mm – same as arc_lengths_mm (for convenience)
             density_ok        – True when no segments are sparse
@@ -123,12 +114,9 @@ def interpolate_sparse_segments(
     """Densify a trajectory by inserting intermediate poses in sparse segments.
 
     Positions are linearly interpolated; orientations use SLERP.
-    Both metres and mm are supported for positions; arc_lengths_mm and max_spacing_mm
-    must be in the same units and consistent with the trajectory's position scale.
 
     Args:
         trajectory: (n_waypoints, 7) — [x, y, z, qw, qx, qy, qz].
-            Positions may be in metres or mm; must match arc_lengths_mm units.
         arc_lengths_mm: (n_segments,) from :func:`compute_arc_lengths`.
         max_spacing_mm: (n_segments,) maximum allowed gap per segment.
 
