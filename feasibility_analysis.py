@@ -35,7 +35,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core import (
     create_solvers, FeasibilityAnalyzer,
-    compute_manipulability, compute_singularity_proximity
+    compute_manipulability, compute_singularity_proximity,
+    SingularityAnalyzer, SingularityReport, SingularityType,
 )
 from utils import (
     load_toolpath_trajectories,
@@ -320,8 +321,20 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
         
         # Singularity
         lines.append("  SINGULARITY ANALYSIS:")
+        sing_mode = traj.get('singularity_mode', 'unified')
+        lines.append(f"    Mode: {sing_mode}")
         lines.append(f"    Near singularity: {traj['singularity_count']} waypoints")
         lines.append(f"    Mean min singular value: {traj['mean_min_singular_value']:.6f}")
+        if sing_mode == 'classified' and traj.get('classified_reports'):
+            type_counts: Dict[str, int] = {}
+            for rpt in traj['classified_reports']:
+                if rpt.is_singular:
+                    stype = rpt.singularity_type.value
+                    type_counts[stype] = type_counts.get(stype, 0) + 1
+            if type_counts:
+                lines.append("    Type breakdown:")
+                for stype, cnt in sorted(type_counts.items()):
+                    lines.append(f"      {stype}: {cnt}")
         lines.append("")
         
         # Manipulability
@@ -504,7 +517,10 @@ def process_toolpath(
     waypoint_idx: Optional[int] = None,
     max_ik_failures_per_trajectory: Optional[int] = None,
     solver_type: str = "pin",
-    export_waypoint_validity: bool = False
+    export_waypoint_validity: bool = False,
+    singularity_mode: str = "classified",
+    check_j5_only: bool = True,
+    j5_threshold_deg: float = 0.76,
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -518,7 +534,7 @@ def process_toolpath(
         robot_model_name: Robot model name (e.g., "IRB-1300-1.4")
         knife_pose_name: Knife pose name (e.g., "pose_1")
         robot_reach_m: Robot workspace reach in meters
-        singularity_threshold: Threshold for singularity warning
+        singularity_threshold: Threshold for singularity warning (unified mode σ_min)
         velocity_limits_rad_s: Per-joint velocity limits for continuity
         speed_mm_s: End-effector speed for timing
         run_continuity: Whether to run continuity analysis
@@ -532,6 +548,12 @@ def process_toolpath(
         max_ik_failures_per_trajectory: Max IK failures before early termination (optional)
         export_waypoint_validity: If True, write an annotated copy of the input CSV
             with an ``ik_feasible`` column appended to each waypoint row.
+        singularity_mode: "classified" (default, type-decomposed with J5 check),
+            "unified" (full-Jacobian σ_min), or "none" (skip singularity).
+        check_j5_only: When True (default) and singularity_mode="classified",
+            wrist singularity is detected via the J5 geometric check
+            (|sin(q5)| < sin(j5_threshold)) instead of the wrist sub-Jacobian σ_min.
+        j5_threshold_deg: J5 angle threshold in degrees for the J5 geometric check.
         
     Returns:
         Dictionary with analysis results
@@ -564,14 +586,28 @@ def process_toolpath(
             final_joint_jump_limit = robot_config.joint_jump_limit_rad
     
     # Create analyzer (accepts RobotModel or (pin.Model, pin.Data) tuple)
+    # When singularity_mode is 'none', disable unified σ_min flagging
+    effective_singularity_threshold = singularity_threshold
+    if singularity_mode == 'none':
+        effective_singularity_threshold = 0.0
+
     analyzer = FeasibilityAnalyzer(
         robot_data, ik_solver, fk_solver,
         characteristic_length_m=robot_reach_m,
-        singularity_threshold=singularity_threshold,
+        singularity_threshold=effective_singularity_threshold,
         velocity_limits_rad_s=final_velocity_limits,
         joint_jump_limit_rad=final_joint_jump_limit,
         max_ik_failures_per_trajectory=max_ik_failures_per_trajectory
     )
+
+    # Build classified singularity analyzer when requested
+    singularity_analyzer = None
+    if singularity_mode == 'classified':
+        singularity_analyzer = SingularityAnalyzer(
+            n_joints=6,
+            check_j5_only=check_j5_only,
+            j5_threshold_deg=j5_threshold_deg,
+        )
     
     # Load and transform trajectories with per-waypoint speeds
     trajectories_t_p_k, trajectory_speeds = load_toolpath_trajectories(toolpath_path)
@@ -666,6 +702,44 @@ def process_toolpath(
         velocity_ratios = np.array([r.joint_velocity_ratio for r in per_wp
                                     if r.joint_velocity_ratio is not None])
         
+        # Classified singularity analysis (runs on reachable waypoints after IK)
+        classified_reports: List[SingularityReport] = []
+        classified_singularity_count = 0
+        if singularity_analyzer is not None:
+            for i, wp_result in enumerate(per_wp):
+                if wp_result.is_reachable and wp_result.joint_positions_rad is not None:
+                    q = wp_result.joint_positions_rad
+                    try:
+                        jacobian = fk_solver.get_jacobian(q)
+                        report = singularity_analyzer.analyze(jacobian, q, fk_solver=fk_solver)
+                    except Exception:
+                        report = SingularityReport(
+                            singularity_type=SingularityType.NONE,
+                            is_singular=False,
+                        )
+                else:
+                    report = SingularityReport(
+                        singularity_type=SingularityType.NONE,
+                        is_singular=False,
+                        is_reachable=False,
+                    )
+                classified_reports.append(report)
+                if report.is_reachable and report.is_singular:
+                    classified_singularity_count += 1
+
+            traj_result['singularity_count'] = classified_singularity_count
+            if verbose:
+                if classified_singularity_count > 0:
+                    type_breakdown = {}
+                    for rpt in classified_reports:
+                        if rpt.is_singular:
+                            stype = rpt.singularity_type.value
+                            type_breakdown[stype] = type_breakdown.get(stype, 0) + 1
+                    type_str = ", ".join(f"{k}: {v}" for k, v in sorted(type_breakdown.items()))
+                    print(f"    Classified singularity: {classified_singularity_count} waypoints ({type_str})")
+                else:
+                    print(f"    Classified singularity: 0 — no singularity detected")
+
         # Extract failed waypoint info for report
         failed_indices = [i for i, r in enumerate(per_wp) if not r.is_reachable]
         failure_details = []
@@ -835,8 +909,15 @@ def process_toolpath(
             'failed_waypoints': failed_indices,
             'failure_details': failure_details,
             'reachable_flags': reachable.tolist(),
+            'singularity_mode': singularity_mode,
+            'classified_reports': classified_reports if classified_reports else None,
         }
         
+        # Export classified singularity CSV report per trajectory
+        if classified_reports:
+            csv_name = f"{traj_name}_singularity_report.csv"
+            SingularityAnalyzer.export_csv(classified_reports, str(out_path / csv_name))
+
         if continuity_result:
             traj_data['continuity'] = {
                 'passed': continuity_result.passed,
@@ -953,10 +1034,16 @@ def main():
     parser.add_argument('--reach', '-r', type=float, default=1.4,
                         help="Robot reach in meters")
     parser.add_argument('--singularity-threshold', type=float, default=0.01,
-                        help="Singularity warning threshold")
-    parser.add_argument('--singularity-mode', choices=['unified', 'none'],
-                        default='unified',
-                        help="Singularity mode: 'unified' (full-Jacobian σ_min) or 'none' (skip)")
+                        help="Singularity warning threshold (σ_min for unified mode)")
+    parser.add_argument('--singularity-mode', choices=['classified', 'unified', 'none'],
+                        default='classified',
+                        help="Singularity mode: 'classified' (type-decomposed with J5 check, default), "
+                             "'unified' (full-Jacobian σ_min), or 'none' (skip)")
+    parser.add_argument('--no-j5-only', action='store_true',
+                        help="Disable J5-only wrist singularity check in classified mode "
+                             "(use wrist sub-Jacobian σ_min instead)")
+    parser.add_argument('--j5-threshold-deg', type=float, default=0.76,
+                        help="J5 angle threshold in degrees for wrist singularity (default: 0.76)")
     parser.add_argument('--speed', type=float, default=100.0,
                         help="End-effector speed in mm/s")
     parser.add_argument('--no-continuity', action='store_true',
@@ -985,11 +1072,11 @@ def main():
     print(f"Robot model: {robot_model_name}")
     print(f"Knife pose: {args.knife_pose}")
     print(f"Singularity mode: {args.singularity_mode}")
+    if args.singularity_mode == 'classified':
+        check_j5 = not args.no_j5_only
+        print(f"  J5-only wrist check: {check_j5} (threshold: {args.j5_threshold_deg}°)")
 
-    # When singularity mode is 'none', set threshold to 0 to skip all flagging
     singularity_threshold = args.singularity_threshold
-    if args.singularity_mode == 'none':
-        singularity_threshold = 0.0
     
     # Default velocity limits for IRB 1300-7/1.4
     velocity_limits = np.array([4.443, 3.142, 4.312, 8.727, 7.245, 12.566])
@@ -1011,7 +1098,10 @@ def main():
         level1_only=not args.full_analysis,
         detailed_per_trajectory_report=args.per_trajectory_plots,
         skip_plots=args.skip_plots,
-        solver_type=args.solver
+        solver_type=args.solver,
+        singularity_mode=args.singularity_mode,
+        check_j5_only=not args.no_j5_only,
+        j5_threshold_deg=args.j5_threshold_deg,
     )
     
     print("\nAnalysis complete!")

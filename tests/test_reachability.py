@@ -794,7 +794,7 @@ def process_combination(
                     'shoulder': thresholds_cfg.get('shoulder', 0.1),
                     'elbow': thresholds_cfg.get('elbow', 0.1),
                 }
-        check_j5 = singularity_config.get('check_j5_only', False)
+        check_j5 = singularity_config.get('check_j5_only', True)
         j5_thresh = singularity_config.get('j5_threshold_deg', 0.76)
         singularity_analyzer = SingularityAnalyzer(
             n_joints=6,

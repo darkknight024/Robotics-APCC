@@ -146,7 +146,7 @@ class SingularityAnalyzer:
         self,
         n_joints: int = 6,
         type_thresholds: Optional[Dict[str, float]] = None,
-        check_j5_only: bool = False,
+        check_j5_only: bool = True,
         j5_threshold_deg: float = 0.76,
     ):
         self.n_joints = n_joints
@@ -353,7 +353,7 @@ class SingularityAnalyzer:
         metrics["j5_distance_to_singularity_rad"] = dist_to_singularity
 
         if check_j5_only:
-            is_active = abs(q5) < _J5_SINGULARITY_THRESHOLD_RAD
+            is_active = dist_to_singularity < np.sin(_J5_SINGULARITY_THRESHOLD_RAD)
         else:
             threshold = self.type_thresholds.get("wrist", 0.01)
             is_active = sigma_min_w < threshold

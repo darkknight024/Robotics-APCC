@@ -288,7 +288,7 @@ def main():
         analyzer = SingularityAnalyzer(
             n_joints=6,
             type_thresholds=sing_type_thresholds,
-            check_j5_only=sing_cfg.get("check_j5_only", False),
+            check_j5_only=sing_cfg.get("check_j5_only", True),
             j5_threshold_deg=sing_cfg.get("j5_threshold_deg", 0.76),
         )
     else:
