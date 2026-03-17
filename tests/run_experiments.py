@@ -141,7 +141,7 @@ def build_command(test_script: str, run_cfg: dict, experiment_cfg: dict) -> list
         if output:
             cmd.extend(['--output', str(output)])
 
-    return cmd, output
+    return cmd, output, solver
 
 
 # =============================================================================
@@ -430,7 +430,7 @@ def run_experiment(experiment: dict, solver_filter: str = None,
         print(f"{'=' * 70}")
 
         try:
-            cmd, output_path = build_command(test_script, run, experiment)
+            cmd, output_path, solver_used = build_command(test_script, run, experiment)
         except ValueError as e:
             print(f"  SKIP: {e}")
             results.append((label, False, 0.0, str(e), None, ""))
@@ -473,6 +473,9 @@ def run_experiment(experiment: dict, solver_filter: str = None,
         gt_summary = ""
         if exec_ok and enable_benchmarking and gt_dir and output_path:
             output_dir = PROJECT_ROOT / output_path
+            # test_reachability writes to output/solver (e.g. Pinocchio/pin/)
+            if test_script == "test_reachability" and solver_used:
+                output_dir = output_dir / solver_used
             gt_abs = PROJECT_ROOT / gt_dir
             print(f"  Comparing output against ground truth...")
             print(f"    Output:       {output_dir}")

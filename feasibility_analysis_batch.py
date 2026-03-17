@@ -72,6 +72,7 @@ class FeasibilityTask:
     topp_ra_config: Optional[dict] = None
     accel_limits_rad_s2: Optional[np.ndarray] = None
     manipulability_config: Optional[dict] = None
+    graphs_config: Optional[dict] = None
 
 
 def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
@@ -106,6 +107,7 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             topp_ra_config=task.topp_ra_config,
             accel_limits_rad_s2=task.accel_limits_rad_s2,
             manipulability_config=task.manipulability_config,
+            graphs_config=task.graphs_config,
         )
         
         return {
@@ -233,7 +235,7 @@ def process_batch(
     ms_section = config.get('eaik_multi_solution', {})
     multi_solution_weights = None
     if ms_section and ms_section.get('enabled', False):
-        _defaults = {'c0': 1.0, 'c1': 2.0, 'singularity': 1.0, 'manipulability': 0.5}
+        _defaults = {'c0': 10.0, 'singularity': 1.0, 'manipulability': 0.5}
         ws = ms_section.get('weights', {})
         multi_solution_weights = {k: float(ws.get(k, v)) for k, v in _defaults.items()}
 
@@ -257,6 +259,9 @@ def process_batch(
 
     # Manipulability decomposition config (Phase 2)
     manipulability_config = config.get('manipulability', None)
+
+    # Graph toggle config
+    graphs_config = config.get('graphs', None)
     
     # Find toolpath files from toolpaths_folder
     toolpaths_folder = Path(config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')))
@@ -330,6 +335,7 @@ def process_batch(
                     topp_ra_config=topp_ra_config,
                     accel_limits_rad_s2=accel_limits,
                     manipulability_config=manipulability_config,
+                    graphs_config=graphs_config,
                 ))
         else:
             for pose_name in config.get('knife_poses_to_use', []):
@@ -369,6 +375,7 @@ def process_batch(
                         topp_ra_config=topp_ra_config,
                         accel_limits_rad_s2=accel_limits,
                         manipulability_config=manipulability_config,
+                        graphs_config=graphs_config,
                     ))
     
     print(f"\nPrepared {len(tasks)} analysis tasks")

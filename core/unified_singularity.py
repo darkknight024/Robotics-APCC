@@ -193,7 +193,11 @@ class UnifiedSingularity:
             row.update(r.to_flat_dict())
             rows.append(row)
 
-        fieldnames = list(rows[0].keys())
+        # Collect union of all keys across rows (unreachable waypoints have sparse dicts)
+        all_keys = set()
+        for row in rows:
+            all_keys.update(row.keys())
+        fieldnames = ["waypoint_index"] + sorted(k for k in all_keys if k != "waypoint_index")
         with open(output_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

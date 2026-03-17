@@ -329,7 +329,7 @@ def load_toolpath_config(config_path: str) -> Dict[str, Any]:
     for passthrough_key in (
         'solver', 'use_base_frame', 'checks', 'thresholds', 'ranking',
         'performance', 'continuity', 'eaik_multi_solution',
-        'time_parameterization', 'topp_ra',
+        'time_parameterization', 'topp_ra', 'graphs',
     ):
         if passthrough_key in config:
             result[passthrough_key] = config[passthrough_key]

@@ -119,12 +119,10 @@ continuity:
 eaik_multi_solution:
   enabled: true
   weights:
-    # Joint-space distance to previous config (penalises large C0 jumps)
-    c0: 5.0
-    # Velocity ratio — penalises exceeding joint velocity limits (C1)
-    c1: 1.0
+    # Joint-space distance to previous config (dominant — penalises large C0 jumps)
+    c0: 10.0
     # 1/sigma_min — penalises proximity to singularity
-    singularity: 0.5
+    singularity: 1.0
     # Yoshikawa manipulability reward (subtracted from cost — higher is better)
     manipulability: 0.5
 
@@ -132,7 +130,7 @@ eaik_multi_solution:
 # Solver Backend
 # =============================================================================
 # "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
-solver: "eaik"
+solver: "pin"
 
 # =============================================================================
 # Output Options
@@ -141,14 +139,7 @@ solver: "eaik"
 output:
   # Level 1 only: only compute feasibility gate (IK 100%, C0, C1); skip Level 2-4
   level1_only: true
-  
-  # Per-trajectory plots: save reachability/manipulability/singularity/continuity per trajectory
-  # When false (default), only aggregated plots for entire toolpath are saved
-  per_trajectory_plots: false
-  
-  # Generate trajectory summary plots (aggregated)
-  summary_plots: true
-  
+
   # Save analysis report to text file
   save_analysis: true
 
@@ -158,6 +149,45 @@ output:
 
   # Max waypoints to include in the EAIK solutions graph
   eaik_solutions_max_waypoints: 25
+
+# =============================================================================
+# Graph Configuration
+# =============================================================================
+# Unified toggle system for all plots.  Master switch + per-category
+# enable/disable.  Individual graph keys can be set to false to skip.
+graphs:
+  # Master switch — set to false to skip ALL plots
+  enabled: true
+
+  # Dashboard (multi-panel summary per toolpath)
+  dashboard: true
+
+  # Individual trajectory graphs
+  per_trajectory:
+    enabled: true
+    c0_continuity: true
+    c1_continuity: true
+    singularity: true
+    manipulability: true
+    decomposed_manipulability: true
+    directional_manipulability: true
+    eaik_solutions: true
+    waypoint_density: true
+    topp_ra_velocity_profile: true
+    task_space_velocity: true
+    trajectory_3d_spline: true
+    joint_space_trajectory: true
+
+  # Aggregated plots (across all trajectories in the toolpath)
+  aggregated:
+    enabled: true
+    reachability_rate: true
+    manipulability: true
+    singularity: true
+    c0_summary: true
+    c1_summary: true
+    decomposed_manipulability: true
+    feasibility_levels: true
 
 # =============================================================================
 # Time Parameterization & Waypoint Density
@@ -176,10 +206,10 @@ time_parameterization:
   default_speed_mm_s: 100.0
 
 # =============================================================================
-# TOPP-RA — Time-Optimal Path Parameterization Feasibility
+# TOPP-RA — Time-Optimal Path Parameterization (mandatory)
 # =============================================================================
-# Requires `toppra` (pip install toppra).  If not installed, a warning is
-# printed and the check is skipped gracefully.
+# toppra MUST be installed (pip install toppra).  The pipeline will exit
+# with an error if it is missing — there is no fallback.
 # Uses velocity_limits_rad_s and acceleration_limits_rad_s2 from robots_config.
 topp_ra:
   enabled: true

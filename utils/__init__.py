@@ -92,6 +92,10 @@ from .feasibility_plot import (
     plot_eaik_solutions_with_scores,
     plot_waypoint_density,
     plot_topp_velocity_profile,
+    # New Phase 3/4 plots
+    plot_task_space_velocity,
+    plot_joint_space_trajectory,
+    plot_3d_spline_trajectory,
 )
 
 from .generate_combinatorial_plots import (
@@ -212,11 +216,9 @@ __all__ = [
     'plot_eaik_solutions_with_scores',
     'plot_waypoint_density',
     'plot_topp_velocity_profile',
-    # Time parameterization
-    'compute_arc_lengths',
-    'compute_timestamps',
-    'check_waypoint_density',
-    'interpolate_sparse_segments',
+    'plot_task_space_velocity',
+    'plot_joint_space_trajectory',
+    'plot_3d_spline_trajectory',
     # Config
     'load_ik_config',
     'load_knife_config',

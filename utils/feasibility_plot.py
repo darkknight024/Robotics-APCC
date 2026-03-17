@@ -216,59 +216,38 @@ def plot_continuity_analysis(
     title: str = "Continuity Analysis",
     speed_mm_s: float = 100.0,
     speeds_mm_s: Optional[np.ndarray] = None,
-    velocity_limits_rad_s: Optional[np.ndarray] = None
+    velocity_limits_rad_s: Optional[np.ndarray] = None,
+    t_samples: Optional[np.ndarray] = None,
+    positions_interp: Optional[np.ndarray] = None,
+    velocity_norms_mm_s: Optional[np.ndarray] = None,
+    velocities_mm_s: Optional[np.ndarray] = None,
+    joint_velocities: Optional[np.ndarray] = None,
 ) -> None:
+    """Plot C1 continuity (4-panel).  Accepts pre-computed arrays.
+
+    If *t_samples* / *positions_interp* / *velocity_norms_mm_s* etc. are
+    provided they are plotted directly (no computation).  Otherwise a
+    simple finite-difference fallback is used (no CubicSpline).
     """
-    Plot C1 continuity analysis graphs (4-panel figure) with speed integration.
-    
-    Panel 1: Cartesian position components (X, Y, Z) in meters
-    Panel 2: Cartesian velocity magnitude vs commanded speeds from CSV
-    Panel 3: Velocity components (Vx, Vy, Vz)
-    Panel 4: Joint velocities with hardware limits
-    
-    SPEED INTEGRATION: Now shows per-waypoint commanded speeds from toolpath CSV.
-    
-    Args:
-        timestamps: Time values (n_waypoints,) in seconds
-        trajectory_m: Poses (n_waypoints, 7) with positions in meters
-        joint_angles_rad: Joint angles (n_waypoints, 6) in radians
-        output_path: Path to save the output image
-        title: Plot title
-        speed_mm_s: Target end-effector speed in mm/s
-        velocity_limits_rad_s: Per-joint velocity limits (6,)
-    """
-    from scipy.interpolate import CubicSpline
-    
     positions_m = trajectory_m[:, :3]
     n_joints = joint_angles_rad.shape[1]
-    
-    # Create cubic splines for positions
-    cs_x = CubicSpline(timestamps, positions_m[:, 0])
-    cs_y = CubicSpline(timestamps, positions_m[:, 1])
-    cs_z = CubicSpline(timestamps, positions_m[:, 2])
-    
-    # Sample at higher rate for smooth curves
-    t_samples = np.linspace(timestamps[0], timestamps[-1], len(timestamps) * 10)
-    
-    # Interpolated positions
-    positions_interp = np.column_stack([
-        cs_x(t_samples),
-        cs_y(t_samples),
-        cs_z(t_samples)
-    ])
-    
-    # Velocities from derivatives
-    velocities_m_s = np.column_stack([
-        cs_x(t_samples, 1),
-        cs_y(t_samples, 1),
-        cs_z(t_samples, 1)
-    ])
-    velocities_mm_s = velocities_m_s * 1000
-    velocity_norms_mm_s = np.linalg.norm(velocities_mm_s, axis=1)
-    
-    # Joint splines and velocities
-    joint_splines = [CubicSpline(timestamps, joint_angles_rad[:, j]) for j in range(n_joints)]
-    joint_velocities = np.column_stack([cs(t_samples, 1) for cs in joint_splines])
+
+    if t_samples is None:
+        t_samples = timestamps
+    if positions_interp is None:
+        positions_interp = positions_m
+    if velocity_norms_mm_s is None or velocities_mm_s is None:
+        dt = np.diff(timestamps)
+        dt = np.where(dt > 1e-9, dt, 1e-9)
+        dp = np.diff(positions_m, axis=0) / dt[:, None] * 1000.0
+        velocities_mm_s = np.vstack([dp, dp[-1:]])
+        velocity_norms_mm_s = np.linalg.norm(velocities_mm_s, axis=1)
+        t_samples = timestamps
+    if joint_velocities is None:
+        dt = np.diff(timestamps)
+        dt = np.where(dt > 1e-9, dt, 1e-9)
+        dq = np.diff(joint_angles_rad, axis=0) / dt[:, None]
+        joint_velocities = np.vstack([dq, dq[-1:]])
     
     # Create figure
     fig = plt.figure(figsize=(16, 10))
@@ -2934,6 +2913,180 @@ def plot_topp_velocity_profile(
     ax.set_ylabel("Path velocity ṡ", fontweight="bold")
     ax.set_title(title, fontweight="bold")
     ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+# =============================================================================
+# New Phase 3 / Phase 4 plots
+# =============================================================================
+
+def plot_task_space_velocity(
+    t_samples: np.ndarray,
+    linear_speed_m_s: np.ndarray,
+    output_path: str,
+    title: str = "Task-Space Velocity",
+    speed_limit_m_s: Optional[float] = None,
+    angular_speed_rad_s: Optional[np.ndarray] = None,
+) -> None:
+    """Plot ||v(t)|| linear speed with optional CSV limit overlay."""
+    n_panels = 2 if angular_speed_rad_s is not None else 1
+    fig, axes = plt.subplots(n_panels, 1, figsize=(14, 4 * n_panels), squeeze=False)
+    ax = axes[0, 0]
+
+    speed_mm_s = linear_speed_m_s * 1000.0
+    ax.plot(t_samples, speed_mm_s, "b-", linewidth=1.5, label="EE linear speed")
+    if speed_limit_m_s is not None:
+        limit_mm = speed_limit_m_s * 1000.0
+        ax.axhline(y=limit_mm, color="red", linestyle="--", linewidth=1.5, label=f"Limit ({limit_mm:.0f} mm/s)")
+        mask = speed_mm_s > limit_mm
+        if np.any(mask):
+            ax.fill_between(t_samples, limit_mm, speed_mm_s, where=mask, alpha=0.25, color="red", label="Violation")
+    ax.set_xlabel("Time (s)", fontweight="bold")
+    ax.set_ylabel("Speed (mm/s)", fontweight="bold")
+    ax.set_title(title, fontweight="bold")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    if angular_speed_rad_s is not None:
+        ax2 = axes[1, 0]
+        ax2.plot(t_samples, np.degrees(angular_speed_rad_s), "g-", linewidth=1.5, label="Angular speed")
+        ax2.set_xlabel("Time (s)", fontweight="bold")
+        ax2.set_ylabel("Angular speed (deg/s)", fontweight="bold")
+        ax2.set_title("Angular Velocity", fontweight="bold")
+        ax2.legend(fontsize=9)
+        ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_joint_space_trajectory(
+    t_samples: np.ndarray,
+    q_t: np.ndarray,
+    qdot_t: np.ndarray,
+    qddot_t: np.ndarray,
+    output_path: str,
+    title: str = "Joint-Space Trajectory",
+    velocity_limits_rad_s: Optional[np.ndarray] = None,
+) -> None:
+    """3-row plot: q(t), qdot(t), qddot(t) from TOPP-RA output."""
+    n_joints = q_t.shape[1]
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+    colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown"]
+
+    for j in range(n_joints):
+        c = colors[j % len(colors)]
+        axes[0].plot(t_samples, np.degrees(q_t[:, j]), color=c, linewidth=1.2, label=f"J{j+1}")
+        axes[1].plot(t_samples, qdot_t[:, j], color=c, linewidth=1.2, label=f"J{j+1}")
+        axes[2].plot(t_samples, qddot_t[:, j], color=c, linewidth=1.2, label=f"J{j+1}")
+        if velocity_limits_rad_s is not None:
+            lim = velocity_limits_rad_s[j]
+            axes[1].axhline(y=lim, color=c, linestyle="--", alpha=0.3)
+            axes[1].axhline(y=-lim, color=c, linestyle="--", alpha=0.3)
+
+    axes[0].set_ylabel("Position (deg)", fontweight="bold")
+    axes[0].set_title(title, fontweight="bold")
+    axes[0].legend(fontsize=8, ncol=n_joints)
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].set_ylabel("Velocity (rad/s)", fontweight="bold")
+    axes[1].grid(True, alpha=0.3)
+
+    axes[2].set_ylabel("Acceleration (rad/s²)", fontweight="bold")
+    axes[2].set_xlabel("Time (s)", fontweight="bold")
+    axes[2].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_3d_spline_trajectory(
+    positions: np.ndarray,
+    quaternions: np.ndarray,
+    reachable: np.ndarray,
+    output_path: str,
+    title: str = "3D Spline Trajectory",
+    axis_length: float = 0.02,
+) -> None:
+    """3D path with waypoints visible; rotation shown as coloured XYZ axes.
+
+    Args:
+        positions: (n, 3) in metres.
+        quaternions: (n, 4) [qw, qx, qy, qz].
+        reachable: (n,) bool.
+        output_path: PNG path.
+        title: Figure title.
+        axis_length: Length of orientation arrows in metres.
+    """
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection="3d")
+
+    x, y, z = positions[:, 0], positions[:, 1], positions[:, 2]
+
+    # Enforce equal scaling on X/Y/Z so the toolpath is not distorted.
+    x_min, x_max = float(np.min(x)), float(np.max(x))
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    z_min, z_max = float(np.min(z)), float(np.max(z))
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    z_range = z_max - z_min
+    max_range = max(x_range, y_range, z_range, 1e-9)
+
+    x_mid = 0.5 * (x_max + x_min)
+    y_mid = 0.5 * (y_max + y_min)
+    z_mid = 0.5 * (z_max + z_min)
+
+    half = 0.5 * max_range
+    ax.set_xlim(x_mid - half, x_mid + half)
+    ax.set_ylim(y_mid - half, y_mid + half)
+    ax.set_zlim(z_mid - half, z_mid + half)
+
+    ax.plot(x, y, z, "k-", linewidth=0.8, alpha=0.5, label="Path")
+
+    reach_mask = reachable.astype(bool)
+    ax.scatter(x[reach_mask], y[reach_mask], z[reach_mask], c="green", s=20, label="Reachable", depthshade=True)
+    if np.any(~reach_mask):
+        ax.scatter(x[~reach_mask], y[~reach_mask], z[~reach_mask], c="red", s=30, marker="x", label="Unreachable")
+
+    axis_colors = {"x": "red", "y": "green", "z": "blue"}
+    step = max(1, len(positions) // 30)
+
+    # Scale orientation axis length relative to the current view scale so
+    # arrows stay visually reasonable regardless of workspace size.
+    if axis_length <= 1.0:
+        effective_axis_length = axis_length * max_range
+    else:
+        effective_axis_length = axis_length
+
+    for i in range(0, len(positions), step):
+        if not reachable[i]:
+            continue
+        qw, qx, qy, qz = quaternions[i]
+        R = np.array([
+            [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qz*qw),     2*(qx*qz + qy*qw)],
+            [2*(qx*qy + qz*qw),     1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
+            [2*(qx*qz - qy*qw),     2*(qy*qz + qx*qw),     1 - 2*(qx*qx + qy*qy)],
+        ])
+        p = positions[i]
+        for col_idx, (axis_name, color) in enumerate(axis_colors.items()):
+            direction = R[:, col_idx] * effective_axis_length
+            ax.quiver(
+                p[0], p[1], p[2],
+                direction[0], direction[1], direction[2],
+                color=color, arrow_length_ratio=0.2, linewidth=1.2,
+            )
+
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.set_title(title, fontweight="bold")
     ax.legend(fontsize=9)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
