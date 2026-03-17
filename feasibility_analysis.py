@@ -324,21 +324,6 @@ def process_toolpath(
         multi_solution_weights=effective_ms_weights,
     )
 
-    # Build classified singularity analyzer when requested
-    singularity_analyzer = None
-    if singularity_mode == 'classified':
-        singularity_analyzer = SingularityAnalyzer(
-            n_joints=6,
-            check_j5_only=check_j5_only,
-            j5_threshold_deg=j5_threshold_deg,
-        )
-    
-    # Load and transform trajectories with per-waypoint speeds
-    trajectories_t_p_k, trajectory_speeds = load_toolpath_trajectories(toolpath_path)
-    trajectories_t_b_p = transform_trajectories_to_base_frame(
-        trajectories_t_p_k, knife_translation_m, knife_quaternion
-    )
-    
     # Load trajectories with per-waypoint speeds (extended loader tracks speed origin)
     load_result = load_toolpath_trajectories_ext(toolpath_path)
     trajectories_t_p_k = load_result.trajectories
@@ -690,9 +675,11 @@ def process_toolpath(
         c0_per_joint = c0_result.per_joint_deltas.tolist() if c0_result is not None else []
 
         failed_indices = [i for i, r in enumerate(per_wp) if not r.is_reachable]
+        reachable_flags = np.array([r.is_reachable for r in per_wp])
 
         traj_data: Dict[str, Any] = {
             "trajectory_index": traj_idx + 1,
+            "reachable_flags": reachable_flags,
             "num_waypoints": n_waypoints,
             "reachable_count": traj_result["reachable_count"],
             "reachability_percent": traj_result["reachability_percent"],
@@ -892,7 +879,7 @@ def main():
 
     robot_model_name = extract_robot_model_name(args.urdf)
     print(f"Robot model: {robot_model_name}")
-    if use_base_frame:
+    if args.base_frame:
         print("Base frame: toolpaths used as-is (no knife pose)")
     else:
         print(f"Knife pose: {args.knife_pose}")

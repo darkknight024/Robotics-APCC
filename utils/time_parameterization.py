@@ -123,9 +123,12 @@ def interpolate_sparse_segments(
     """Densify a trajectory by inserting intermediate poses in sparse segments.
 
     Positions are linearly interpolated; orientations use SLERP.
+    Both metres and mm are supported for positions; arc_lengths_mm and max_spacing_mm
+    must be in the same units and consistent with the trajectory's position scale.
 
     Args:
-        trajectory: (n_waypoints, 7) — [x, y, z, qw, qx, qy, qz] in mm / unit-quat.
+        trajectory: (n_waypoints, 7) — [x, y, z, qw, qx, qy, qz].
+            Positions may be in metres or mm; must match arc_lengths_mm units.
         arc_lengths_mm: (n_segments,) from :func:`compute_arc_lengths`.
         max_spacing_mm: (n_segments,) maximum allowed gap per segment.
 
