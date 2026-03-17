@@ -2584,6 +2584,201 @@ def plot_singularity_dashboard(
 
 
 # =============================================================================
+# Phase 2: Decomposed & Directional Manipulability Plots
+# =============================================================================
+
+def plot_decomposed_manipulability_per_waypoint(
+    trans_manip: np.ndarray,
+    rot_manip: np.ndarray,
+    norm_manip: np.ndarray,
+    dir_manip: np.ndarray,
+    output_path: str,
+    title: str = "Decomposed Manipulability Analysis",
+    trans_threshold: Optional[float] = None,
+    rot_threshold: Optional[float] = None,
+    dir_threshold: Optional[float] = None,
+) -> None:
+    """
+    4-panel figure: translational, rotational, normalized, directional manipulability.
+
+    Args:
+        trans_manip: Translational manipulability per waypoint (w_v)
+        rot_manip: Rotational manipulability per waypoint (w_omega)
+        norm_manip: Normalized combined manipulability per waypoint
+        dir_manip: Directional manipulability per waypoint (w_d)
+        output_path: Path to save the output image
+        title: Overall figure title
+        trans_threshold: Optional warning threshold for translational
+        rot_threshold: Optional warning threshold for rotational
+        dir_threshold: Optional warning threshold for directional
+    """
+    n = len(trans_manip)
+    waypoints = np.arange(n)
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10), sharex=True)
+    fig.suptitle(title, fontweight='bold', fontsize=14)
+
+    # --- Translational ---
+    ax = axes[0, 0]
+    ax.plot(waypoints, trans_manip, 'b-o', linewidth=1.5, markersize=3, label='w_v')
+    ax.fill_between(waypoints, 0, trans_manip, alpha=0.2, color='blue')
+    mean_v = float(np.nanmean(trans_manip))
+    ax.axhline(y=mean_v, color='orange', linestyle='--', linewidth=1, label=f'Mean: {mean_v:.4f}')
+    if trans_threshold is not None:
+        ax.axhline(y=trans_threshold, color='red', linestyle=':', linewidth=1.5,
+                   label=f'Threshold: {trans_threshold}')
+    ax.set_ylabel('w_v (translational)', fontweight='bold')
+    ax.set_title('Translational Manipulability', fontweight='bold')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # --- Rotational ---
+    ax = axes[0, 1]
+    ax.plot(waypoints, rot_manip, 'g-o', linewidth=1.5, markersize=3, label='w_ω')
+    ax.fill_between(waypoints, 0, rot_manip, alpha=0.2, color='green')
+    mean_w = float(np.nanmean(rot_manip))
+    ax.axhline(y=mean_w, color='orange', linestyle='--', linewidth=1, label=f'Mean: {mean_w:.4f}')
+    if rot_threshold is not None:
+        ax.axhline(y=rot_threshold, color='red', linestyle=':', linewidth=1.5,
+                   label=f'Threshold: {rot_threshold}')
+    ax.set_ylabel('w_ω (rotational)', fontweight='bold')
+    ax.set_title('Rotational Manipulability', fontweight='bold')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # --- Normalized combined ---
+    ax = axes[1, 0]
+    ax.plot(waypoints, norm_manip, 'm-o', linewidth=1.5, markersize=3, label='w_norm')
+    ax.fill_between(waypoints, 0, norm_manip, alpha=0.2, color='purple')
+    mean_n = float(np.nanmean(norm_manip))
+    ax.axhline(y=mean_n, color='orange', linestyle='--', linewidth=1, label=f'Mean: {mean_n:.4f}')
+    ax.set_xlabel('Waypoint Index', fontweight='bold')
+    ax.set_ylabel('w_norm (normalized)', fontweight='bold')
+    ax.set_title('Normalized Combined Manipulability (Lc-scaled)', fontweight='bold')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # --- Directional ---
+    ax = axes[1, 1]
+    ax.plot(waypoints, dir_manip, 'r-o', linewidth=1.5, markersize=3, label='w_d')
+    ax.fill_between(waypoints, 0, dir_manip, alpha=0.2, color='red')
+    mean_d = float(np.nanmean(dir_manip))
+    ax.axhline(y=mean_d, color='orange', linestyle='--', linewidth=1, label=f'Mean: {mean_d:.4f}')
+    if dir_threshold is not None:
+        ax.axhline(y=dir_threshold, color='darkred', linestyle=':', linewidth=1.5,
+                   label=f'Threshold: {dir_threshold}')
+    ax.set_xlabel('Waypoint Index', fontweight='bold')
+    ax.set_ylabel('w_d (directional)', fontweight='bold')
+    ax.set_title('Directional Manipulability (along trajectory)', fontweight='bold')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_decomposed_manipulability_per_trajectory(
+    trajectory_results: List[dict],
+    output_path: str,
+    title: str = "Decomposed Manipulability per Trajectory",
+) -> None:
+    """
+    Aggregated bar chart: mean/min of translational, rotational, normalized, and
+    directional manipulability across trajectories.
+
+    Args:
+        trajectory_results: List of trajectory result dicts with decomposed stats
+        output_path: Path to save the output image
+        title: Plot title
+    """
+    n_traj = len(trajectory_results)
+    if n_traj == 0:
+        return
+
+    indices = np.arange(1, n_traj + 1)
+    mean_trans = np.array([t.get('mean_translational_manipulability', 0) for t in trajectory_results])
+    min_trans = np.array([t.get('min_translational_manipulability', 0) for t in trajectory_results])
+    mean_rot = np.array([t.get('mean_rotational_manipulability', 0) for t in trajectory_results])
+    min_rot = np.array([t.get('min_rotational_manipulability', 0) for t in trajectory_results])
+    mean_norm = np.array([t.get('mean_normalized_manipulability', 0) for t in trajectory_results])
+    min_norm = np.array([t.get('min_normalized_manipulability', 0) for t in trajectory_results])
+    mean_dir = np.array([t.get('mean_directional_manipulability', 0) for t in trajectory_results])
+    min_dir = np.array([t.get('min_directional_manipulability', 0) for t in trajectory_results])
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    fig.suptitle(title, fontweight='bold', fontsize=14)
+
+    width = 0.35
+    for ax, mean_vals, min_vals, ylabel, sub_title, color in [
+        (axes[0, 0], mean_trans, min_trans, 'w_v', 'Translational', 'tab:blue'),
+        (axes[0, 1], mean_rot, min_rot, 'w_ω', 'Rotational', 'tab:green'),
+        (axes[1, 0], mean_norm, min_norm, 'w_norm', 'Normalized Combined', 'tab:purple'),
+        (axes[1, 1], mean_dir, min_dir, 'w_d', 'Directional', 'tab:red'),
+    ]:
+        ax.bar(indices - width / 2, mean_vals, width, color=color, alpha=0.7,
+               edgecolor='black', label='Mean')
+        ax.bar(indices + width / 2, min_vals, width, color=color, alpha=0.35,
+               edgecolor='black', linestyle='--', label='Min')
+        ax.set_ylabel(ylabel, fontweight='bold')
+        ax.set_title(sub_title, fontweight='bold')
+        ax.set_xticks(indices)
+        ax.set_xlabel('Trajectory', fontweight='bold')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3, axis='y')
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_directional_manipulability_per_waypoint(
+    dir_manip: np.ndarray,
+    output_path: str,
+    title: str = "Directional Manipulability along Trajectory",
+    threshold: Optional[float] = None,
+) -> None:
+    """
+    Standalone directional manipulability plot (w_d) along the trajectory.
+
+    Args:
+        dir_manip: Directional manipulability per waypoint (w_d)
+        output_path: Path to save the output image
+        title: Plot title
+        threshold: Optional warning threshold line
+    """
+    n = len(dir_manip)
+    waypoints = np.arange(n)
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(waypoints, dir_manip, 'r-o', linewidth=2, markersize=4, label='w_d')
+    ax.fill_between(waypoints, 0, dir_manip, alpha=0.25, color='red')
+
+    mean_d = float(np.nanmean(dir_manip))
+    min_d = float(np.nanmin(dir_manip))
+    ax.axhline(y=mean_d, color='orange', linestyle='--', linewidth=1.5,
+               label=f'Mean: {mean_d:.4f}')
+    if threshold is not None:
+        ax.axhline(y=threshold, color='darkred', linestyle=':', linewidth=2,
+                   label=f'Threshold: {threshold}')
+        _add_threshold_yticks(ax, [threshold], color='darkred')
+
+    summary = f'Mean: {mean_d:.4f} | Min: {min_d:.4f}'
+    ax.text(0.02, 0.98, summary, transform=ax.transAxes, fontweight='bold',
+            va='top', fontsize=10, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    ax.set_xlabel('Waypoint Index', fontweight='bold')
+    ax.set_ylabel('Directional Manipulability (w_d)', fontweight='bold')
+    ax.set_title(title, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+# =============================================================================
 # EAIK All-Solutions with Scores
 # =============================================================================
 

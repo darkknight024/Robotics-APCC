@@ -183,3 +183,19 @@ time_parameterization:
 # Uses velocity_limits_rad_s and acceleration_limits_rad_s2 from robots_config.
 topp_ra:
   enabled: true
+
+# =============================================================================
+# Decomposed Manipulability (Phase 2)
+# =============================================================================
+# Decomposes the unified Yoshikawa index into translational, rotational,
+# normalized combined, and directional components.  Always computed when the
+# feasibility analysis runs; the thresholds below control warning flags in
+# the report and threshold lines on plots.
+manipulability:
+  enabled: true
+  # Translational manipulability w_v warning threshold
+  translational_warning: 0.001
+  # Rotational manipulability w_omega warning threshold
+  rotational_warning: 0.001
+  # Directional manipulability w_d warning threshold
+  directional_warning: 0.01

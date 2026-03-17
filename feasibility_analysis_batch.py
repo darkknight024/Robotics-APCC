@@ -71,6 +71,7 @@ class FeasibilityTask:
     time_param_config: Optional[dict] = None
     topp_ra_config: Optional[dict] = None
     accel_limits_rad_s2: Optional[np.ndarray] = None
+    manipulability_config: Optional[dict] = None
 
 
 def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
@@ -104,6 +105,7 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             time_param_config=task.time_param_config,
             topp_ra_config=task.topp_ra_config,
             accel_limits_rad_s2=task.accel_limits_rad_s2,
+            manipulability_config=task.manipulability_config,
         )
         
         return {
@@ -252,6 +254,9 @@ def process_batch(
 
     # TOPP-RA config
     topp_ra_config = config.get('topp_ra', None)
+
+    # Manipulability decomposition config (Phase 2)
+    manipulability_config = config.get('manipulability', None)
     
     # Find toolpath files from toolpaths_folder
     toolpaths_folder = Path(config.get('toolpaths_folder', config.get('input_folder', 'input/toolpaths')))
@@ -324,6 +329,7 @@ def process_batch(
                     time_param_config=time_param_config,
                     topp_ra_config=topp_ra_config,
                     accel_limits_rad_s2=accel_limits,
+                    manipulability_config=manipulability_config,
                 ))
         else:
             for pose_name in config.get('knife_poses_to_use', []):
@@ -362,6 +368,7 @@ def process_batch(
                         time_param_config=time_param_config,
                         topp_ra_config=topp_ra_config,
                         accel_limits_rad_s2=accel_limits,
+                        manipulability_config=manipulability_config,
                     ))
     
     print(f"\nPrepared {len(tasks)} analysis tasks")

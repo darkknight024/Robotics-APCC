@@ -257,11 +257,14 @@ output/feasibility/robot_model_name/toolpath_name/knife_pose_name/
 │   └── continuity_c1.png                  C1 per-waypoint
 ├── continuity_dashboard_trajectory_1.png  Combined C0+C1+speed dashboard
 ├── continuity_dashboard_trajectory_2.png
+├── decomposed_manipulability_trajectory_1.png   Phase 2: 4-panel decomposed
+├── directional_manipulability_trajectory_1.png  Phase 2: w_d along trajectory
 ├── aggregated_reachability_rate.png
 ├── aggregated_manipulability.png
 ├── aggregated_singularity.png
 ├── aggregated_continuity_c0.png           C0 summary across trajectories
 ├── aggregated_continuity_c1.png           C1 summary across trajectories
+├── aggregated_decomposed_manipulability.png  Phase 2: decomposed per trajectory
 ├── feasibility_levels_comprehensive.png
 ├── reachability_summary.png
 └── analysis_report.txt
@@ -293,7 +296,8 @@ output/feasibility_batch/
 - Reachability (reachable count, unreachable waypoints)
 - IK failure details (indices, positions, residuals, singular values)
 - Singularity analysis (proximity, warning thresholds)
-- Manipulability (mean, min, dexterity index)
+- Manipulability — unified (mean, min, dexterity index)
+- Decomposed manipulability — translational w_v, rotational w_ω, normalized w_norm, directional w_d (mean, min each)
 - C0 continuity (pass/fail, max joint-space distance, mean distance)
 - C1 continuity (pass/fail, max joint velocities, violations)
 - Speed warning (if TCP speed was defaulted to 100 mm/s)
@@ -442,12 +446,72 @@ poses:
 
 ## Algorithm Reference
 
-### Yoshikawa Manipulability
+### Yoshikawa Manipulability (Unified — Phase 1)
 
 **Formula:** m = √det(J × J^T), normalized by robot reach
 
 - **Interpretation:** m → 0 near singularity; higher m = more dexterity
 - **Scale:** Typically 0–1 for normalized index
+
+### Decomposed & Directional Manipulability (Phase 2)
+
+Phase 1's unified Yoshikawa index mixes translational (m/s) and rotational (rad/s) components, producing a unit-inconsistent quantity. Phase 2 decomposes the analysis into four targeted measures computed at every reachable waypoint.
+
+#### Translational Manipulability (w_v)
+
+```
+w_v = √det(Jv × Jv^T)
+```
+
+where `Jv` is the translational (linear-velocity) block of the spatial Jacobian (rows 3–5 in the `[angular; linear]` convention). A trajectory demanding continuous positional motion can be rotationally well-conditioned but translationally near-singular, or vice versa.
+
+#### Rotational Manipulability (w_ω)
+
+```
+w_ω = √det(Jω × Jω^T)
+```
+
+where `Jω` is the rotational (angular-velocity) block (rows 0–2). Relevant when the end-effector must maintain or change orientation (e.g., spiralling knife angle).
+
+#### Normalized Combined Manipulability (w_norm)
+
+```
+J_norm = diag(Lc × I₃, I₃) × J
+w_norm = √det(J_norm × J_norm^T)
+```
+
+`Lc` is the Euclidean distance from the robot base to the end-effector at each configuration, converting angular velocity to a dimensionally equivalent linear velocity. This makes the combined index consistent across translational and rotational components.
+
+#### Directional Manipulability (w_d)
+
+```
+w_d = ‖Jv^T × t̂‖₂
+```
+
+where `t̂` is the unit tangent of the end-effector translational velocity (computed via finite differences from the waypoint positions). A low `w_d` indicates kinematic stiffness specifically in the direction of motion — the isotropic indices above will not detect this.
+
+#### Configuration
+
+In `config/batch_feasibility_config.yaml`:
+
+```yaml
+manipulability:
+  enabled: true
+  translational_warning: 0.001    # w_v threshold
+  rotational_warning: 0.001       # w_ω threshold
+  directional_warning: 0.01       # w_d threshold
+```
+
+#### Output
+
+Per trajectory:
+- `decomposed_manipulability_{trajectory_name}.png` — 4-panel figure (translational, rotational, normalized, directional)
+- `directional_manipulability_{trajectory_name}.png` — standalone directional manipulability
+
+Aggregated across trajectories:
+- `aggregated_decomposed_manipulability.png` — mean/min bar charts per component
+
+Report section `DECOMPOSED MANIPULABILITY` with mean and min for each component per trajectory.
 
 ---
 

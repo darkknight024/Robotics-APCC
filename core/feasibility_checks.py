@@ -88,6 +88,11 @@ class FeasibilityResult:
     # Additional metrics (computed when previous waypoint available)
     distance_to_joint_limits: Optional[float] = None  # Min distance across all joints
     joint_space_distance: Optional[float] = None  # Distance from previous waypoint (for C0 check)
+    # Phase 2: Decomposed manipulability
+    translational_manipulability: Optional[float] = None  # w_v = sqrt(det(Jv * Jv^T))
+    rotational_manipulability: Optional[float] = None     # w_omega = sqrt(det(Jw * Jw^T))
+    normalized_manipulability: Optional[float] = None     # Yoshikawa on Lc-scaled full J
+    directional_manipulability: Optional[float] = None    # w_d = ||Jv^T * t_hat||_2 (set at trajectory level)
 
 
 def compute_manipulability(
@@ -181,6 +186,100 @@ def compute_max_singular_value(jacobian: np.ndarray) -> float:
     return float(np.max(singular_values))
 
 
+def compute_translational_manipulability(jacobian: np.ndarray) -> float:
+    """
+    Compute translational manipulability: w_v = sqrt(det(Jv * Jv^T)).
+
+    Jv is the translational (linear) block of the spatial Jacobian.
+    Convention: Jacobian rows are [angular(3); linear(3)], so Jv = J[3:6, :].
+
+    Args:
+        jacobian: 6xn Jacobian matrix [angular; linear]
+
+    Returns:
+        Translational manipulability (w_v)
+    """
+    Jv = jacobian[3:6, :]
+    det_val = np.linalg.det(Jv @ Jv.T)
+    return float(np.sqrt(max(det_val, 0.0)))
+
+
+def compute_rotational_manipulability(jacobian: np.ndarray) -> float:
+    """
+    Compute rotational manipulability: w_omega = sqrt(det(Jw * Jw^T)).
+
+    Jw is the rotational (angular) block of the spatial Jacobian.
+    Convention: Jacobian rows are [angular(3); linear(3)], so Jw = J[0:3, :].
+
+    Args:
+        jacobian: 6xn Jacobian matrix [angular; linear]
+
+    Returns:
+        Rotational manipulability (w_omega)
+    """
+    Jw = jacobian[0:3, :]
+    det_val = np.linalg.det(Jw @ Jw.T)
+    return float(np.sqrt(max(det_val, 0.0)))
+
+
+def compute_normalized_manipulability(
+    jacobian: np.ndarray,
+    Lc: float
+) -> float:
+    """
+    Compute normalized combined manipulability with dimensional consistency.
+
+    Applies characteristic length Lc to the rotational block so that angular
+    velocity (rad/s) is scaled to a dimensionally equivalent linear velocity
+    (m/s) before computing the Yoshikawa index over the full Jacobian:
+
+        J_norm = diag(Lc * I3, I3) * J
+        w_norm = sqrt(det(J_norm * J_norm^T))
+
+    Convention: Jacobian rows are [angular(3); linear(3)].
+    Rotational rows (0:3) are multiplied by Lc; linear rows (3:6) are unchanged.
+
+    Args:
+        jacobian: 6xn Jacobian matrix [angular; linear]
+        Lc: Characteristic length — Euclidean distance from base to EE (m)
+
+    Returns:
+        Normalized combined manipulability
+    """
+    if Lc < 1e-9:
+        return 0.0
+    J_norm = jacobian.copy()
+    J_norm[0:3, :] *= Lc
+    det_val = np.linalg.det(J_norm @ J_norm.T)
+    return float(np.sqrt(max(det_val, 0.0)))
+
+
+def compute_directional_manipulability(
+    jacobian: np.ndarray,
+    t_hat: np.ndarray
+) -> float:
+    """
+    Compute directional manipulability along the path tangent.
+
+    Projects the translational manipulability ellipsoid onto the instantaneous
+    direction of end-effector travel:
+
+        w_d = ||Jv^T * t_hat||_2
+
+    A low w_d means the robot is kinematically stiff specifically in the
+    direction of motion — the isotropic indices will not detect this.
+
+    Convention: Jacobian rows are [angular(3); linear(3)], so Jv = J[3:6, :].
+
+    Args:
+        jacobian: 6xn Jacobian matrix [angular; linear]
+        t_hat: Unit tangent vector of EE translational velocity (3,)
+
+    Returns:
+        Directional manipulability (w_d)
+    """
+    Jv = jacobian[3:6, :]
+    return float(np.linalg.norm(Jv.T @ t_hat))
 
 
 def check_reachability(
@@ -420,6 +519,12 @@ class FeasibilityAnalyzer:
         cond_num = compute_condition_number(jacobian)
         near_singularity = min_sv < self.singularity_threshold
         
+        # Phase 2: Decomposed manipulability
+        w_v = compute_translational_manipulability(jacobian)
+        w_omega = compute_rotational_manipulability(jacobian)
+        Lc = float(np.linalg.norm(target_position))
+        w_norm = compute_normalized_manipulability(jacobian, Lc)
+        
         # Compute distance to joint limits
         distance_to_limits = compute_distance_to_joint_limits(
             q, self.lower_position_limit, self.upper_position_limit
@@ -436,7 +541,10 @@ class FeasibilityAnalyzer:
             ik_debug_info=ik_info,
             target_position=target_position,
             target_quaternion=target_quaternion,
-            distance_to_joint_limits=distance_to_limits
+            distance_to_joint_limits=distance_to_limits,
+            translational_manipulability=w_v,
+            rotational_manipulability=w_omega,
+            normalized_manipulability=w_norm,
         )
     
     def _is_within_joint_limits(self, q: np.ndarray, tol: float = 1e-6) -> bool:
@@ -504,6 +612,10 @@ class FeasibilityAnalyzer:
         result.distance_to_joint_limits = compute_distance_to_joint_limits(
             best_q, self.lower_position_limit, self.upper_position_limit
         )
+        result.translational_manipulability = compute_translational_manipulability(jacobian)
+        result.rotational_manipulability = compute_rotational_manipulability(jacobian)
+        Lc = float(np.linalg.norm(result.target_position)) if result.target_position is not None else self.characteristic_length_m
+        result.normalized_manipulability = compute_normalized_manipulability(jacobian, Lc)
         return result
 
     def analyze_trajectory(
@@ -551,8 +663,13 @@ class FeasibilityAnalyzer:
         velocity_ratios = []
         per_joint_jumps = []       # per-segment (n_joints,) absolute angular jumps for C0
         cartesian_distances = []   # per-segment TCP Cartesian distance in metres
+         # Phase 2: decomposed manipulability accumulators
+        trans_manip_values = []
+        rot_manip_values = []
+        norm_manip_values = []
+        dir_manip_values = []
         
-        # 3.1: Unified pose distance for timing (matches compute_segment_times)
+        # Unified pose distance for timing (matches compute_segment_times)
         if timestamps is None:
             timestamps = compute_timestamps_unified_pose(
                 positions, quaternions, speed_mm_s, speeds_mm_s,
@@ -633,6 +750,13 @@ class FeasibilityAnalyzer:
                 condition_numbers.append(result.condition_number)
                 if result.distance_to_joint_limits is not None:
                     joint_limit_distances.append(result.distance_to_joint_limits)
+                #phase 2: decomposed manipulability
+                if result.translational_manipulability is not None:
+                    trans_manip_values.append(result.translational_manipulability)
+                if result.rotational_manipulability is not None:
+                    rot_manip_values.append(result.rotational_manipulability)
+                if result.normalized_manipulability is not None:
+                    norm_manip_values.append(result.normalized_manipulability)
                 q_prev = result.joint_positions_rad
                 
                 #  Only count singularities for REACHABLE waypoints
@@ -678,6 +802,32 @@ class FeasibilityAnalyzer:
             per_joint_jumps.append(np.zeros(n_j))
         per_joint_jumps = per_joint_jumps[:n_segments]
         
+        # Phase 2: Directional manipulability (requires path tangent vectors)
+        # Enforce that positions has shape (n_waypoints, 3)
+        if not (positions.ndim == 2 and positions.shape[0] == n_waypoints and positions.shape[1] == 3):
+            raise ValueError(f"`positions` must have shape (n_waypoints, 3), but got {positions.shape}")
+        for i in range(n_waypoints):
+            if not results[i].is_reachable or results[i].joint_positions_rad is None:
+                continue
+            # Finite-difference tangent from positions
+            if i == 0:
+                if n_waypoints > 1:
+                    tangent = positions[1] - positions[0]
+                else:
+                    continue
+            elif i == n_waypoints - 1:
+                tangent = positions[i] - positions[i - 1]
+            else:
+                tangent = positions[i + 1] - positions[i - 1]
+            norm = np.linalg.norm(tangent)
+            if norm < 1e-12:
+                continue
+            t_hat = tangent / norm
+            jacobian = self.fk_solver.get_jacobian(results[i].joint_positions_rad)
+            w_d = compute_directional_manipulability(jacobian, t_hat)
+            results[i].directional_manipulability = w_d
+            dir_manip_values.append(w_d)
+
         # CRITICAL: Compute feasibility flags for ranking
         reachability_ok = (reachable_count == n_waypoints)
         
@@ -792,6 +942,16 @@ class FeasibilityAnalyzer:
             'per_joint_jumps': per_joint_jumps,         # list of (n_joints,) arrays
             'cartesian_distances': cartesian_distances,  # list of floats (metres)
             'joint_space_distances': joint_space_distances,  # list of floats (aggregate C0)
+            
+            # Phase 2: decomposed manipulability statistics
+            'mean_translational_manipulability': float(np.mean(trans_manip_values)) if trans_manip_values else 0.0,
+            'min_translational_manipulability': float(np.min(trans_manip_values)) if trans_manip_values else 0.0,
+            'mean_rotational_manipulability': float(np.mean(rot_manip_values)) if rot_manip_values else 0.0,
+            'min_rotational_manipulability': float(np.min(rot_manip_values)) if rot_manip_values else 0.0,
+            'mean_normalized_manipulability': float(np.mean(norm_manip_values)) if norm_manip_values else 0.0,
+            'min_normalized_manipulability': float(np.min(norm_manip_values)) if norm_manip_values else 0.0,
+            'mean_directional_manipulability': float(np.mean(dir_manip_values)) if dir_manip_values else 0.0,
+            'min_directional_manipulability': float(np.min(dir_manip_values)) if dir_manip_values else 0.0,
             
             'per_waypoint_results': results
         }

@@ -28,7 +28,11 @@ from .feasibility_checks import (
     compute_singularity_proximity,
     compute_max_singular_value,
     compute_condition_number,
-    check_reachability
+    check_reachability,
+    compute_translational_manipulability,
+    compute_rotational_manipulability,
+    compute_normalized_manipulability,
+    compute_directional_manipulability,
 )
 
 # --- Singularity analysis ---
@@ -116,6 +120,8 @@ __all__ = [
     'compute_manipulability', 'compute_singularity_proximity',
     'compute_max_singular_value', 'compute_condition_number',
     'check_reachability',
+    'compute_translational_manipulability', 'compute_rotational_manipulability',
+    'compute_normalized_manipulability', 'compute_directional_manipulability',
     # Singularity analysis
     'SingularityAnalyzer', 'SingularityReport', 'SingularityType',
     'UnifiedSingularity', 'UnifiedSingularityReport',

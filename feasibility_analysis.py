@@ -73,6 +73,9 @@ from utils.feasibility_plot import (
     plot_eaik_solutions_with_scores,
     plot_waypoint_density,
     plot_topp_velocity_profile,
+    plot_decomposed_manipulability_per_waypoint,
+    plot_decomposed_manipulability_per_trajectory,
+    plot_directional_manipulability_per_waypoint,
 )
 from utils.math import (
     compute_normalized_joint_energy,
@@ -352,11 +355,20 @@ def generate_analysis_report(results: Dict, output_path: Path) -> None:
                     lines.append(f"      {stype}: {cnt}")
         lines.append("")
         
-        # Manipulability
-        lines.append("  MANIPULABILITY:")
+        # Manipulability (unified)
+        lines.append("  MANIPULABILITY (Unified Yoshikawa):")
         lines.append(f"    Mean: {traj['mean_manipulability']:.6f}")
         lines.append(f"    Min: {traj['min_manipulability']:.6f}")
         lines.append("")
+        
+        # Decomposed manipulability (Phase 2)
+        if traj.get('mean_translational_manipulability', 0) > 0 or traj.get('mean_rotational_manipulability', 0) > 0:
+            lines.append("  DECOMPOSED MANIPULABILITY:")
+            lines.append(f"    Translational (w_v):  Mean: {traj.get('mean_translational_manipulability', 0):.6f}  Min: {traj.get('min_translational_manipulability', 0):.6f}")
+            lines.append(f"    Rotational (w_ω):     Mean: {traj.get('mean_rotational_manipulability', 0):.6f}  Min: {traj.get('min_rotational_manipulability', 0):.6f}")
+            lines.append(f"    Normalized (w_norm):   Mean: {traj.get('mean_normalized_manipulability', 0):.6f}  Min: {traj.get('min_normalized_manipulability', 0):.6f}")
+            lines.append(f"    Directional (w_d):    Mean: {traj.get('mean_directional_manipulability', 0):.6f}  Min: {traj.get('min_directional_manipulability', 0):.6f}")
+            lines.append("")
         
         # C0 continuity
         jsd = traj.get('joint_space_distances', [])
@@ -601,6 +613,7 @@ def process_toolpath(
     time_param_config: Optional[dict] = None,
     topp_ra_config: Optional[dict] = None,
     accel_limits_rad_s2: Optional[np.ndarray] = None,
+    manipulability_config: Optional[dict] = None,
 ) -> dict:
     """
     Process a single toolpath for feasibility analysis.
@@ -838,6 +851,12 @@ def process_toolpath(
         manipulability = np.array([r.manipulability for r in per_wp])
         min_sv = np.array([r.min_singular_value for r in per_wp])
         condition_numbers = np.array([r.condition_number for r in per_wp])
+        
+        # Phase 2: decomposed manipulability per waypoint
+        trans_manip = np.array([r.translational_manipulability if r.translational_manipulability is not None else 0.0 for r in per_wp])
+        rot_manip = np.array([r.rotational_manipulability if r.rotational_manipulability is not None else 0.0 for r in per_wp])
+        norm_manip = np.array([r.normalized_manipulability if r.normalized_manipulability is not None else 0.0 for r in per_wp])
+        dir_manip = np.array([r.directional_manipulability if r.directional_manipulability is not None else 0.0 for r in per_wp])
         
         # Extract joint angles from IK solutions
         joint_angles_rad = np.array([r.joint_positions_rad for r in per_wp if r.joint_positions_rad is not None])
@@ -1112,6 +1131,26 @@ def process_toolpath(
                 )
 
         # -----------------------------------------------------------------
+        # Decomposed Manipulability Plots (Phase 2)
+        # -----------------------------------------------------------------
+        if not skip_plots and waypoint_idx is None and len(trans_manip) > 0:
+            manip_cfg = manipulability_config or {}
+            plot_decomposed_manipulability_per_waypoint(
+                trans_manip, rot_manip, norm_manip, dir_manip,
+                str(traj_out / f"decomposed_manipulability_{traj_name}.png"),
+                title=f"Decomposed Manipulability\n{toolpath_name} - {traj_name}",
+                trans_threshold=manip_cfg.get('translational_warning'),
+                rot_threshold=manip_cfg.get('rotational_warning'),
+                dir_threshold=manip_cfg.get('directional_warning'),
+            )
+            plot_directional_manipulability_per_waypoint(
+                dir_manip,
+                str(traj_out / f"directional_manipulability_{traj_name}.png"),
+                title=f"Directional Manipulability\n{toolpath_name} - {traj_name}",
+                threshold=manip_cfg.get('directional_warning'),
+            )
+
+        # -----------------------------------------------------------------
         # TOPP-RA Feasibility Check
         # -----------------------------------------------------------------
         topp_result = None
@@ -1186,6 +1225,15 @@ def process_toolpath(
             'classified_reports': classified_reports if classified_reports else None,
             'density_result': density_results_per_traj[local_idx] if tp_enabled else None,
             'topp_result': topp_result,
+            # Phase 2: decomposed manipulability
+            'mean_translational_manipulability': traj_result.get('mean_translational_manipulability', 0.0),
+            'min_translational_manipulability': traj_result.get('min_translational_manipulability', 0.0),
+            'mean_rotational_manipulability': traj_result.get('mean_rotational_manipulability', 0.0),
+            'min_rotational_manipulability': traj_result.get('min_rotational_manipulability', 0.0),
+            'mean_normalized_manipulability': traj_result.get('mean_normalized_manipulability', 0.0),
+            'min_normalized_manipulability': traj_result.get('min_normalized_manipulability', 0.0),
+            'mean_directional_manipulability': traj_result.get('mean_directional_manipulability', 0.0),
+            'min_directional_manipulability': traj_result.get('min_directional_manipulability', 0.0),
         }
         
         # Export classified singularity CSV report per trajectory
@@ -1262,6 +1310,14 @@ def process_toolpath(
                 str(out_path / "aggregated_continuity_c0.png"),
                 title=f"C0 Continuity Summary per Trajectory\n{toolpath_name}",
                 joint_jump_limit_rad=final_joint_jump_limit
+            )
+        
+        # 6. Decomposed manipulability per trajectory (Phase 2)
+        if any(t.get('mean_translational_manipulability', 0) > 0 for t in results['trajectory_results']):
+            plot_decomposed_manipulability_per_trajectory(
+                results['trajectory_results'],
+                str(out_path / "aggregated_decomposed_manipulability.png"),
+                title=f"Decomposed Manipulability per Trajectory\n{toolpath_name}"
             )
         
         if verbose:
