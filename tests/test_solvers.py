@@ -498,9 +498,9 @@ def process_single_csv(
                 ik_joints_subset_rad = ik_joints_rad[violated_indices]
                 
                 for k in range(len(violated_indices)):
-                    pos, quat = fk_solver.solve_fk(ik_joints_subset_rad[k])
-                    ik_pos_subset[k] = pos
-                    ik_quat_subset[k] = quat
+                    result = fk_solver.solve(ik_joints_subset_rad[k])
+                    ik_pos_subset[k] = result.position_m
+                    ik_quat_subset[k] = result.quaternion
 
                 plot_detailed_violation_debug(
                     violated_indices,
