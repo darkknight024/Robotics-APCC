@@ -68,6 +68,10 @@ from typing import Optional, Tuple, Dict, Any, List
 from dataclasses import dataclass
 
 from core.base_solvers import BaseIKSolver, BaseIKConfig
+from core.abb_configuration import (
+    compute_cfx_from_joints_and_robot,
+    place_solutions_in_ecfx_grid,
+)
 from utils.urdf_loader import RobotModel
 
 
@@ -144,12 +148,15 @@ class EAIKIKSolver(BaseIKSolver):
             'n_valid': 0,
             'is_ls': False,
             'selected_index': None,
+            'selected_ecfx': None,
             'converged': False,
             'reason': None,
             'solve_method': None,
             'violated_joints': None,
             'all_solutions': [],
+            'solutions_ecfx': np.full((8, self.n_joints), np.nan),
             'fk_errors': [],
+            'ecfx_notes': [],
         }
 
         if n_sol == 0:
@@ -184,7 +191,15 @@ class EAIKIKSolver(BaseIKSolver):
 
         # Case 1: valid exact solutions
         if len(valid_exact) > 0:
-            selected_q = self._pick_best(valid_exact, q_init)
+            grid, ecfx_notes = place_solutions_in_ecfx_grid(
+                valid_exact, self.robot_model, q_init
+            )
+            info['solutions_ecfx'] = grid
+            info['ecfx_notes'] = ecfx_notes
+            flat = [grid[i] for i in range(8) if np.all(np.isfinite(grid[i]))]
+            pool = flat if len(flat) > 0 else valid_exact
+            selected_q = self._pick_best(pool, q_init)
+            info['selected_ecfx'] = int(compute_cfx_from_joints_and_robot(selected_q, self.robot_model))
             info['is_ls'] = False
             info['converged'] = True
             info['reason'] = 'converged'
@@ -198,12 +213,21 @@ class EAIKIKSolver(BaseIKSolver):
             info['solve_method'] = 'joint_limits'
             info['violated_joints'] = self._get_violated_joints(best_sol)
             info['is_ls'] = False
+            info['selected_ecfx'] = int(compute_cfx_from_joints_and_robot(best_sol, self.robot_model))
             return False, best_sol, info
 
         # Case 3: only LS solutions — check if any satisfy limits + FK
         valid_ls = self._filter_valid(ls_sols, target_position, rotation, info)
         if len(valid_ls) > 0:
-            selected_q = self._pick_best(valid_ls, q_init)
+            grid, ecfx_notes = place_solutions_in_ecfx_grid(
+                valid_ls, self.robot_model, q_init
+            )
+            info['solutions_ecfx'] = grid
+            info['ecfx_notes'] = ecfx_notes
+            flat = [grid[i] for i in range(8) if np.all(np.isfinite(grid[i]))]
+            pool = flat if len(flat) > 0 else valid_ls
+            selected_q = self._pick_best(pool, q_init)
+            info['selected_ecfx'] = int(compute_cfx_from_joints_and_robot(selected_q, self.robot_model))
             info['is_ls'] = True
             info['converged'] = False
             info['reason'] = 'least_squares'
@@ -216,6 +240,7 @@ class EAIKIKSolver(BaseIKSolver):
         info['solve_method'] = 'least_squares'
         info['violated_joints'] = self._get_violated_joints(best_sol)
         info['is_ls'] = True
+        info['selected_ecfx'] = int(compute_cfx_from_joints_and_robot(best_sol, self.robot_model))
         return False, best_sol, info
 
     def solve_with_retries(

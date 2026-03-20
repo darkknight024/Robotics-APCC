@@ -14,14 +14,14 @@ robots_to_use:
 knife_poses_to_use:
   - "pose_1"
 
-toolpaths_folder: "Assets/Robot APCC/Toolpaths/Sample"
-output_folder: "output/feasibility_batch"
-use_base_frame: false
+toolpaths_folder: "Robot_APCC/Experiments/Experiment_19/toolpaths"
+output_folder: "Robot_APCC/Results/Experiment_19/feasibility_updated"
+use_base_frame: true
 
 # =============================================================================
 # Solver
 # =============================================================================
-solver: "pin"
+solver: "eaik"
 
 # =============================================================================
 # Output
@@ -50,8 +50,8 @@ reachability:
 eaik_multi_solution:
   enabled: true
   weights:
-    c0: 10.0
-    singularity: 1.0
+    c0: 50.0
+    singularity: 0.5
     manipulability: 0.5
   generate_graphs: true
   max_waypoints_in_graph: 25

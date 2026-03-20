@@ -17,6 +17,7 @@ Usage::
 """
 
 import argparse
+import csv
 import sys
 import numpy as np
 from pathlib import Path
@@ -124,6 +125,60 @@ def _generate_analysis_report(results: Dict, output_path: Path) -> None:
     lines.append("=" * 70)
     with open(output_path, "w") as f:
         f.write("\n".join(lines))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dense time-sampled trajectory CSV export  [TEMPORARY]
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DENSE_TRAJ_EXPORT = True       # set False to disable
+_DENSE_TRAJ_DT_MS  = 1.0        # sampling interval in milliseconds
+
+
+def _export_dense_trajectory_csv(
+    topp_result: "ToppraResult",
+    fk_solver,
+    output_path: Path,
+    dt_ms: float = _DENSE_TRAJ_DT_MS,
+) -> None:
+    """Sample the TOPP-RA trajectory at dense time intervals and write to CSV.
+
+    Columns: time_ms, j1_rad … j6_rad, x_m, y_m, z_m, qw, qx, qy, qz
+    All values are in SI units (radians, metres).  time_ms is milliseconds.
+    """
+    duration_s = topp_result.duration_s
+    dt_s = dt_ms / 1000.0
+    n_samples = max(2, int(np.ceil(duration_s / dt_s)) + 1)
+    t_dense = np.linspace(0.0, duration_s, n_samples)
+
+    # Re-sample joint trajectory from the TOPP-RA spline at dense intervals
+    q_dense = topp_result.trajectory(t_dense)          # (n_samples, n_joints)
+
+    # Compute FK for every sample to get task-space pose in robot base frame
+    positions, quaternions = fk_solver.solve_batch(q_dense)  # (n,3), (n,4) [qw qx qy qz]
+
+    n_joints = q_dense.shape[1]
+    header = (
+        ["time_ms"]
+        + [f"j{j + 1}_rad" for j in range(n_joints)]
+        + ["x_m", "y_m", "z_m", "qw", "qx", "qy", "qz"]
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(header)
+        for i in range(n_samples):
+            row: List[Any] = [round(t_dense[i] * 1000.0, 4)]
+            row += [round(float(q_dense[i, j]), 9) for j in range(n_joints)]
+            row += [round(float(positions[i, 0]), 9),
+                    round(float(positions[i, 1]), 9),
+                    round(float(positions[i, 2]), 9)]
+            row += [round(float(quaternions[i, 0]), 9),
+                    round(float(quaternions[i, 1]), 9),
+                    round(float(quaternions[i, 2]), 9),
+                    round(float(quaternions[i, 3]), 9)]
+            writer.writerow(row)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -452,6 +507,18 @@ def process_toolpath(
                     joint_jump_limit_rad=final_joint_jump,
                 )
 
+        # Dense time-sampled trajectory CSV  [TEMPORARY]
+        if _DENSE_TRAJ_EXPORT and topp_result_raw is not None:
+            dense_csv_path = traj_out / f"dense_trajectory_{traj_name}.csv"
+            try:
+                _export_dense_trajectory_csv(topp_result_raw, fk_solver, dense_csv_path)
+                if verbose:
+                    n_rows = max(2, int(np.ceil(topp_result_raw.duration_s / (_DENSE_TRAJ_DT_MS / 1000.0))) + 1)
+                    print(f"    Dense trajectory CSV: {dense_csv_path.name} ({n_rows} rows @ {_DENSE_TRAJ_DT_MS} ms)")
+            except Exception as _exc:
+                if verbose:
+                    print(f"    Dense trajectory CSV: FAILED — {_exc}")
+
         # TOPP-RA graphs
         if config.topp_ra.generate_graphs and topp_result_raw is not None:
             plot_topp_velocity_profile(
@@ -490,7 +557,21 @@ def process_toolpath(
             scores_per_wp: List[List[float]] = []
             w = ms_weights or {"c0": 10.0, "singularity": 1.0, "manipulability": 0.5}
             for wp_i, r in enumerate(per_wp):
-                sols = (r.ik_debug_info or {}).get("all_solutions", [])
+                dbg = r.ik_debug_info or {}
+                grid = dbg.get("solutions_ecfx")
+                if (
+                    grid is not None
+                    and hasattr(grid, "shape")
+                    and len(grid.shape) == 2
+                    and grid.shape[0] == 8
+                ):
+                    sols = []
+                    for slot in range(8):
+                        row = np.asarray(grid[slot], dtype=float).flatten()
+                        if np.all(np.isfinite(row)):
+                            sols.append(row)
+                else:
+                    sols = dbg.get("all_solutions", [])
                 all_sols_per_wp.append(sols)
                 q_prev = (
                     per_wp[wp_i - 1].joint_positions_rad

@@ -753,11 +753,12 @@ def plot_all_eaik_solutions(
     output_dir: str,
     joint_limits_deg: Optional[tuple] = None,
     limit_waypoints: int = 20,
-    traj_index: Optional[str] = None
+    traj_index: Optional[str] = None,
+    solutions_ecfx_per_wp: Optional[List[np.ndarray]] = None,
 ) -> None:
     """
     Plot all EAIK solutions vs RobotStudio reference for the first N waypoints, one graph per joint.
-    
+
     Args:
         rs_joints_deg: Reference joint angles (n_waypoints, n_joints)
         all_solutions_list: List of length n_waypoints, each containing the analytical solutions (in radians)
@@ -767,6 +768,7 @@ def plot_all_eaik_solutions(
         joint_limits_deg: Tuple of (lower_limits_deg, upper_limits_deg)
         limit_waypoints: Number of waypoints to plot
         traj_index: Optional trajectory name
+        solutions_ecfx_per_wp: Optional list of (8, n_joints) FK-valid grids indexed by ECFX/cfx slot
     """
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -796,7 +798,32 @@ def plot_all_eaik_solutions(
         # Since not all waypoints might have exactly 8, we plot each solution as a scatter/line
         # but to keep it clean, we just iterate through each waypoint's solutions
         colors = plt.cm.tab10(np.linspace(0, 1, 10))
+        use_ecfx = (
+            solutions_ecfx_per_wp is not None
+            and len(solutions_ecfx_per_wp) >= n_waypoints
+        )
         for wp in range(n_waypoints):
+            if use_ecfx:
+                grid = np.asarray(solutions_ecfx_per_wp[wp], dtype=float)
+                if grid.ndim != 2 or grid.shape[0] != 8:
+                    continue
+                for slot in range(8):
+                    q_rad = grid[slot]
+                    if not np.all(np.isfinite(q_rad)):
+                        continue
+                    q_deg = np.degrees(q_rad)
+                    lbl = f"ECFX {slot}" if wp == 0 else None
+                    ax.scatter(
+                        wp, q_deg[j], color=colors[slot % 10], s=40, zorder=3, alpha=0.7, label=lbl
+                    )
+                # Same as legacy path: black square = IK solution actually chosen
+                if ik_success[wp] and not np.isnan(ik_joints_deg[wp, j]):
+                    lbl_sel = "Selected Solution" if wp == 0 else None
+                    ax.scatter(
+                        wp, ik_joints_deg[wp, j], color="black", marker="s", s=100,
+                        facecolors="none", edgecolors="black", linewidths=2, zorder=5, label=lbl_sel
+                    )
+                continue
             sols = all_solutions_list[wp]
             if not sols:
                 continue

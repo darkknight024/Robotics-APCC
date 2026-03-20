@@ -78,9 +78,9 @@ def benchmark_solvers(input_folder, output_folder, urdf_path, ee_frame, ik_confi
         rs_data = load_robostudio_full(csv_file)
         n_waypoints = rs_data.num_waypoints
         
-        # We need to maintain q_prev for both solvers if use_robostudio_seed is false
-        q_prev_pin = rs_data.joint_positions_rad[0]
-        q_prev_eaik = rs_data.joint_positions_rad[0]
+        # Seed: RobotStudio per waypoint only when use_robostudio_seed; else chain from previous IK
+        q_prev_pin = rs_data.joint_positions_rad[0] if use_robostudio_seed else None
+        q_prev_eaik = rs_data.joint_positions_rad[0] if use_robostudio_seed else None
         
         # Pre-allocate arrays for this file to avoid append overhead during timing? 
         # Actually list append is fast enough, but precision requires tight loops.
