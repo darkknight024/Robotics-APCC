@@ -2845,6 +2845,103 @@ def plot_eaik_solutions_with_scores(
 
 
 # =============================================================================
+# EAIK ECFX-coloured solutions (cf1 / cf4 / cf6 subplots)
+# =============================================================================
+
+def _ecfx_color(value: int, cmap_name: str = 'tab10') -> tuple:
+    """Map an integer ECFX quadrant value to a distinct colour."""
+    cmap = plt.cm.get_cmap(cmap_name, 12)
+    return cmap((value + 4) % 12)
+
+
+def plot_eaik_solutions_with_ecfx(
+    all_solutions_per_waypoint: List[List[np.ndarray]],
+    all_ecfx_labels: List[List[tuple]],
+    selected_joint_angles_deg: np.ndarray,
+    output_dir: str,
+    joint_limits_deg: Optional[tuple] = None,
+    limit_waypoints: int = 20,
+    traj_name: Optional[str] = None,
+) -> None:
+    """Plot EAIK solutions coloured by ECFX quadrant values.
+
+    For each of the 6 joints a PNG with **3 vertically stacked subplots** is
+    saved.  Each subplot colours the scatter points by a different ECFX
+    field (cf1, cf4, cf6).  The selected solution is highlighted with a
+    black square marker.
+    """
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    n_wp = min(limit_waypoints, len(all_solutions_per_waypoint))
+    if n_wp <= 0:
+        return
+    n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
+    waypoints = np.arange(n_wp)
+
+    cf_fields = [
+        (0, 'cf1'),
+        (1, 'cf4'),
+        (2, 'cf6'),
+    ]
+
+    for j in range(n_joints):
+        fig, axes = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
+
+        for ax_idx, (cf_index, cf_name) in enumerate(cf_fields):
+            ax = axes[ax_idx]
+
+            if joint_limits_deg is not None:
+                lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
+                ax.axhspan(lo, hi, alpha=0.12, color='green', zorder=1)
+                ax.axhline(lo, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
+                ax.axhline(hi, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
+
+            seen_labels: set = set()
+            for wp in range(n_wp):
+                sols = all_solutions_per_waypoint[wp]
+                ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+                if not sols:
+                    continue
+                for s_idx, q_rad in enumerate(sols):
+                    q_deg = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
+                    cf_val = ecfx_list[s_idx][cf_index] if s_idx < len(ecfx_list) else 0
+                    color = _ecfx_color(cf_val)
+                    lbl_key = f'{cf_name}={cf_val}'
+                    lbl = lbl_key if lbl_key not in seen_labels else None
+                    if lbl:
+                        seen_labels.add(lbl_key)
+                    ax.scatter(wp, q_deg, color=color, s=35, zorder=3.5, alpha=0.75, label=lbl)
+
+                if not np.isnan(selected_joint_angles_deg[wp, j]):
+                    lbl_sel = 'Selected' if wp == 0 else None
+                    ax.scatter(wp, selected_joint_angles_deg[wp, j], marker='s', s=90,
+                               facecolors='none', edgecolors='black', linewidths=2,
+                               zorder=5.5, label=lbl_sel)
+
+            ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
+            ax.set_title(f'Coloured by {cf_name}', fontsize=10, fontweight='bold')
+            ax.set_xticks(waypoints)
+            ax.grid(True, alpha=0.3)
+
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), loc='center left',
+                      bbox_to_anchor=(1, 0.5), fontsize=8)
+
+        axes[-1].set_xlabel('Waypoint Index', fontweight='bold')
+        title_str = f'EAIK Solutions (ECFX) — J{j+1} (first {n_wp} WPs)'
+        if traj_name:
+            title_str += f'\n{traj_name}'
+        fig.suptitle(title_str, fontweight='bold', fontsize=12, y=1.01)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'eaik_solutions_ecfx_j{j+1}.png'),
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+
+
+# =============================================================================
 # Waypoint Density
 # =============================================================================
 

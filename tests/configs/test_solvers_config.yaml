@@ -13,15 +13,15 @@ robot_name: "IRB 1300-7/1.4"
 # =============================================================================
 # I/O Directories
 # =============================================================================
-input_folder: "Robot_APCC/Experiments/Experiment_13/Results"
-output_folder: "Robot_APCC/Results/Experiment_13/Pinocchio"
+input_folder: "Robot_APCC/Experiments/Experiment_19/Results_robostudio_filtered"
+output_folder: "Robot_APCC/Results/Experiment_19/comaprision_ecfx"
 
 # =============================================================================
 # Processing Options
 # =============================================================================
 options:
   # Solver backend: "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
-  solver: "pin"
+  solver: "eaik"
 
   # Seed IK solvers with the actual RobotStudio joint posture (q_init = rs_data)
   # If false, IK solvers are seeded with the previous successful IK solution
@@ -37,7 +37,7 @@ options:
   generate_ik_plots: true
 
   # Generate EAIK all solutions graph
-  generate_eaik_solutions_graph: false
+  generate_eaik_solutions_graph: true
 
   # Max waypoints to generate EAIK solutions graph for
-  eaik_solutions_max_waypoints: 20
+  eaik_solutions_max_waypoints: 50

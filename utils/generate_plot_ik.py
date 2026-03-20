@@ -11,6 +11,7 @@ Generates plots comparing IK results:
 All angles displayed in degrees.
 """
 
+import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Optional, List
@@ -745,6 +746,163 @@ def _compute_uniform_scale(data_arrays: List[np.ndarray]) -> tuple:
     return all_min - margin, all_max + margin
 
 
+def _get_ecfx_color(value: int, cmap_name: str = 'tab10') -> tuple:
+    """Map an integer ECFX quadrant value to a distinct colour."""
+    cmap = plt.cm.get_cmap(cmap_name, 12)
+    # Shift so that 0 lands in the middle of the palette
+    return cmap((value + 4) % 12)
+
+
+def _plot_robotstudio_reference_curve(
+    ax,
+    waypoints: np.ndarray,
+    y_deg: np.ndarray,
+    *,
+    label: str = 'RobotStudio Reference',
+    zorder_base: float = 1.8,
+    eai_marker_s: float = 35.0,
+) -> None:
+    """Draw RobotStudio reference behind EAIK scatters.
+
+    Marker *area* is slightly larger than the EAIK scatter ``s`` so the blue
+    ring remains visible around/under the coloured points, while staying
+    below them in z-order.
+    """
+    blue = '#1976D2'
+    # Soft glow (line body only)
+    ax.plot(
+        waypoints, y_deg, color=blue, linewidth=6.0, alpha=0.07, zorder=zorder_base - 0.35,
+        solid_capstyle='round',
+    )
+    ax.plot(
+        waypoints, y_deg, color=blue, linewidth=1.15, alpha=0.42, zorder=zorder_base - 0.25,
+    )
+    # Scatter ``s`` is area (points²). 2.5× linear diameter vs EAIK ⇒ area × 2.5².
+    rs_marker_s = float(eai_marker_s) * (2.5 ** 2)
+    ax.scatter(
+        waypoints,
+        y_deg,
+        s=rs_marker_s,
+        c='#7EB7E8',
+        alpha=0.58,
+        edgecolors='#1565C0',
+        linewidths=0.75,
+        zorder=zorder_base,
+        label=label,
+    )
+
+
+def _plot_ecfx_subplot(
+    ax,
+    j: int,
+    cf_index: int,
+    cf_name: str,
+    n_waypoints: int,
+    waypoints: np.ndarray,
+    rs_joints_deg: np.ndarray,
+    all_solutions_list: List[List[np.ndarray]],
+    all_ecfx_labels: List[List[tuple]],
+    ik_success: np.ndarray,
+    ik_joints_deg: np.ndarray,
+    joint_limits_deg: Optional[tuple],
+) -> None:
+    """Draw one ECFX-coloured subplot for a single joint and cf field."""
+    if joint_limits_deg is not None:
+        lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
+        ax.axhspan(lo, hi, alpha=0.12, color='green', zorder=1)
+        ax.axhline(lo, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
+        ax.axhline(hi, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
+
+    _plot_robotstudio_reference_curve(
+        ax, waypoints, rs_joints_deg[:n_waypoints, j], zorder_base=1.8, eai_marker_s=35.0,
+    )
+
+    seen_labels = set()
+    for wp in range(n_waypoints):
+        sols = all_solutions_list[wp]
+        ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+        if not sols:
+            continue
+        for s_idx, q_rad in enumerate(sols):
+            q_deg = np.degrees(q_rad)
+            cf_val = ecfx_list[s_idx][cf_index] if s_idx < len(ecfx_list) else 0
+            color = _get_ecfx_color(cf_val)
+            lbl_key = f'{cf_name}={cf_val}'
+            lbl = lbl_key if lbl_key not in seen_labels else None
+            if lbl:
+                seen_labels.add(lbl_key)
+            ax.scatter(wp, q_deg[j], color=color, s=35, zorder=3.5, alpha=0.75, label=lbl)
+
+        if ik_success[wp] and not np.isnan(ik_joints_deg[wp, j]):
+            lbl_sel = 'Selected' if wp == 0 else None
+            ax.scatter(wp, ik_joints_deg[wp, j], color='black', marker='s', s=90,
+                       facecolors='none', edgecolors='black', linewidths=2, zorder=5.5,
+                       label=lbl_sel)
+
+    ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
+    ax.set_title(f'Coloured by {cf_name}', fontsize=10, fontweight='bold')
+    ax.set_xticks(waypoints)
+    ax.grid(True, alpha=0.3)
+
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='center left',
+              bbox_to_anchor=(1, 0.5), fontsize=8)
+
+
+def _write_ecfx_solutions_csv(
+    output_dir: str,
+    all_solutions_list: List[List[np.ndarray]],
+    all_ecfx_labels: List[List[tuple]],
+    n_waypoints: int,
+    traj_index: Optional[str] = None,
+) -> Optional[str]:
+    """Write one row per (waypoint, solution): joints (deg) + ECFX (cf1,cf4,cf6,cfx).
+
+    Returns the path written, or None if nothing was written.
+    """
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    name = 'eaik_all_solutions_ecfx.csv'
+    if traj_index:
+        safe = str(traj_index).replace('/', '_').replace('\\', '_').strip() or 'trajectory'
+        name = f'eaik_all_solutions_ecfx__{safe}.csv'
+    csv_path = out_path / name
+
+    header = [
+        'waypoint',
+        'solution_index',
+        'j1_deg', 'j2_deg', 'j3_deg', 'j4_deg', 'j5_deg', 'j6_deg',
+        'cf1', 'cf4', 'cf6', 'cfx',
+    ]
+    rows: List[List] = []
+    for wp in range(n_waypoints):
+        sols = all_solutions_list[wp] if wp < len(all_solutions_list) else []
+        ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+        for s_idx, q_rad in enumerate(sols):
+            q_deg = np.degrees(np.asarray(q_rad).flatten())
+            if len(q_deg) < 6:
+                q_deg = np.pad(q_deg, (0, 6 - len(q_deg)), constant_values=np.nan)
+            tup = ecfx_list[s_idx] if s_idx < len(ecfx_list) else (0, 0, 0, 0)
+            cf1, cf4, cf6 = int(tup[0]), int(tup[1]), int(tup[2])
+            cfx = int(tup[3]) if len(tup) > 3 else 0
+            rows.append(
+                [wp, s_idx]
+                + [float(q_deg[i]) for i in range(6)]
+                + [cf1, cf4, cf6, cfx]
+            )
+
+    if not rows:
+        return None
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(rows)
+
+    return str(csv_path)
+
+
 def plot_all_eaik_solutions(
     rs_joints_deg: np.ndarray,
     all_solutions_list: List[List[np.ndarray]],
@@ -753,80 +911,115 @@ def plot_all_eaik_solutions(
     output_dir: str,
     joint_limits_deg: Optional[tuple] = None,
     limit_waypoints: int = 20,
-    traj_index: Optional[str] = None
+    traj_index: Optional[str] = None,
+    all_ecfx_labels: Optional[List[List[tuple]]] = None,
 ) -> None:
     """
-    Plot all EAIK solutions vs RobotStudio reference for the first N waypoints, one graph per joint.
-    
+    Plot all EAIK solutions vs RobotStudio reference, one file per joint.
+
+    When *all_ecfx_labels* is provided each file contains three vertically
+    stacked subplots where solutions are coloured by cf1, cf4, and cf6
+    quadrant values respectively.  Without ECFX data the function falls
+    back to the legacy index-based colouring in a single subplot.
+
     Args:
         rs_joints_deg: Reference joint angles (n_waypoints, n_joints)
-        all_solutions_list: List of length n_waypoints, each containing the analytical solutions (in radians)
+        all_solutions_list: Per-waypoint list of analytical solutions (radians)
         ik_success: Boolean array (n_waypoints,)
-        ik_joints_deg: The final selected IK joint angles (n_waypoints, n_joints)
-        output_dir: Path to directory where individual joint plots will be saved
-        joint_limits_deg: Tuple of (lower_limits_deg, upper_limits_deg)
-        limit_waypoints: Number of waypoints to plot
-        traj_index: Optional trajectory name
+        ik_joints_deg: Final selected IK joint angles (n_waypoints, n_joints)
+        output_dir: Directory for output PNG files
+        joint_limits_deg: (lower_deg, upper_deg) each of length n_joints
+        limit_waypoints: Max waypoints to plot
+        traj_index: Optional trajectory name for the title
+        all_ecfx_labels: Per-waypoint list of ECFX tuples (cf1,cf4,cf6,cfx)
+                         parallel to *all_solutions_list*.
+
+    When ECFX data is present, also writes *eaik_all_solutions_ecfx.csv* (or
+    *eaik_all_solutions_ecfx__{traj_index}.csv*) in *output_dir* with columns:
+    waypoint, solution_index, j1_deg..j6_deg, cf1, cf4, cf6, cfx.
     """
     import os
     os.makedirs(output_dir, exist_ok=True)
-    
+
     n_waypoints = min(limit_waypoints, len(rs_joints_deg))
     if n_waypoints <= 0:
         return
-        
+
     n_joints = rs_joints_deg.shape[1]
     waypoints = np.arange(n_waypoints)
-    
+
+    has_ecfx = (all_ecfx_labels is not None and len(all_ecfx_labels) > 0
+                and any(len(lbl) > 0 for lbl in all_ecfx_labels[:n_waypoints]))
+
+    if has_ecfx and all_ecfx_labels is not None:
+        _write_ecfx_solutions_csv(
+            output_dir, all_solutions_list, all_ecfx_labels, n_waypoints, traj_index
+        )
+
+    cf_fields = [
+        (0, 'cf1'),
+        (1, 'cf4'),
+        (2, 'cf6'),
+    ]
+
     for j in range(n_joints):
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        # Plot Joint Limits
-        if joint_limits_deg is not None:
-            lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
-            ax.axhspan(lo, hi, alpha=0.15, color='green', label='Joint Limits', zorder=1)
-            ax.axhline(lo, color='green', linestyle='--', alpha=0.5)
-            ax.axhline(hi, color='green', linestyle='--', alpha=0.5)
-            
-        # Plot RobotStudio True Reference
-        ax.plot(waypoints, rs_joints_deg[:n_waypoints, j], 'b-o', 
-                label='RobotStudio Reference', linewidth=3, markersize=8, zorder=4)
-        
-        # Plot All 8 EAIK Solutions
-        # Since not all waypoints might have exactly 8, we plot each solution as a scatter/line
-        # but to keep it clean, we just iterate through each waypoint's solutions
-        colors = plt.cm.tab10(np.linspace(0, 1, 10))
-        for wp in range(n_waypoints):
-            sols = all_solutions_list[wp]
-            if not sols:
-                continue
-            for s_idx, q_rad in enumerate(sols):
-                q_deg = np.degrees(q_rad)
-                # Only add label once for the legend
-                lbl = f'EAIK Sol {s_idx}' if wp == 0 else None
-                ax.scatter(wp, q_deg[j], color=colors[s_idx % 10], s=40, zorder=3, alpha=0.7, label=lbl)
-
-            # Highlight the mathematically selected solution for this waypoint
-            if ik_success[wp] and not np.isnan(ik_joints_deg[wp, j]):
-                lbl_selected = 'Selected Solution' if wp == 0 else None
-                ax.scatter(wp, ik_joints_deg[wp, j], color='black', marker='s', s=100, 
-                           facecolors='none', edgecolors='black', linewidths=2, zorder=5, label=lbl_selected)
-
-        ax.set_xlabel('Waypoint Index', fontweight='bold')
-        ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
-        title_str = f"All EAIK Solutions vs RobotStudio - J{j+1} (First {limit_waypoints} WPs)"
-        if traj_index:
-            title_str += f"\nTrajectory: {traj_index}"
-        ax.set_title(title_str, fontweight='bold')
-        
-        # Only layout unique labels
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        ax.legend(by_label.values(), by_label.keys(), loc='center left', bbox_to_anchor=(1, 0.5))
-        
-        ax.set_xticks(waypoints)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'all_solutions_j{j+1}.png'), dpi=300, bbox_inches='tight')
-        plt.close()
+        if has_ecfx:
+            fig, axes = plt.subplots(3, 1, figsize=(14, 16), sharex=True)
+            for row, (cf_idx, cf_name) in enumerate(cf_fields):
+                _plot_ecfx_subplot(
+                    axes[row], j, cf_idx, cf_name, n_waypoints, waypoints,
+                    rs_joints_deg, all_solutions_list, all_ecfx_labels,
+                    ik_success, ik_joints_deg, joint_limits_deg,
+                )
+            axes[-1].set_xlabel('Waypoint Index', fontweight='bold')
+            title_str = f"EAIK Solutions (ECFX) - J{j+1} (First {n_waypoints} WPs)"
+            if traj_index:
+                title_str += f"\nTrajectory: {traj_index}"
+            fig.suptitle(title_str, fontsize=13, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, f'all_solutions_j{j+1}.png'),
+                        dpi=300, bbox_inches='tight')
+            plt.close()
+        else:
+            # Legacy fallback: single subplot, index-based colours
+            fig, ax = plt.subplots(figsize=(12, 6))
+            if joint_limits_deg is not None:
+                lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
+                ax.axhspan(lo, hi, alpha=0.15, color='green', label='Joint Limits', zorder=1)
+                ax.axhline(lo, color='green', linestyle='--', alpha=0.5)
+                ax.axhline(hi, color='green', linestyle='--', alpha=0.5)
+            _plot_robotstudio_reference_curve(
+                ax, waypoints, rs_joints_deg[:n_waypoints, j], zorder_base=1.8, eai_marker_s=40.0,
+            )
+            colors = plt.cm.tab10(np.linspace(0, 1, 10))
+            for wp in range(n_waypoints):
+                sols = all_solutions_list[wp]
+                if not sols:
+                    continue
+                for s_idx, q_rad in enumerate(sols):
+                    q_deg = np.degrees(q_rad)
+                    lbl = f'EAIK Sol {s_idx}' if wp == 0 else None
+                    ax.scatter(wp, q_deg[j], color=colors[s_idx % 10], s=40,
+                               zorder=3.5, alpha=0.7, label=lbl)
+                if ik_success[wp] and not np.isnan(ik_joints_deg[wp, j]):
+                    lbl_selected = 'Selected Solution' if wp == 0 else None
+                    ax.scatter(wp, ik_joints_deg[wp, j], color='black', marker='s', s=100,
+                               facecolors='none', edgecolors='black', linewidths=2,
+                               zorder=5.5, label=lbl_selected)
+            ax.set_xlabel('Waypoint Index', fontweight='bold')
+            ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
+            title_str = f"All EAIK Solutions vs RobotStudio - J{j+1} (First {limit_waypoints} WPs)"
+            if traj_index:
+                title_str += f"\nTrajectory: {traj_index}"
+            ax.set_title(title_str, fontweight='bold')
+            handles, labels = ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), loc='center left',
+                      bbox_to_anchor=(1, 0.5))
+            ax.set_xticks(waypoints)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, f'all_solutions_j{j+1}.png'),
+                        dpi=300, bbox_inches='tight')
+            plt.close()
 

@@ -17,7 +17,7 @@ from .base_solvers import BaseFKSolver, BaseIKSolver, BaseIKConfig, FKResult
 
 # --- EAIK backend ---
 from .eaik_fk_solver import EAIKFKSolver
-from .eaik_ik_solver import EAIKIKSolver, EAIKConfig
+from .eaik_ik_solver import EAIKIKSolver, EAIKConfig, ECFXLabel, compute_ecfx
 
 # --- Robot model ---
 from utils.urdf_loader import load_robot_model, load_robot_model_eaik, load_robot_model_pin, RobotModel
@@ -123,7 +123,7 @@ __all__ = [
     # Base
     'BaseFKSolver', 'BaseIKSolver', 'BaseIKConfig', 'FKResult',
     # EAIK
-    'EAIKFKSolver', 'EAIKIKSolver', 'EAIKConfig',
+    'EAIKFKSolver', 'EAIKIKSolver', 'EAIKConfig', 'ECFXLabel', 'compute_ecfx',
     # Pinocchio (lazy)
     'PinocchioFKSolver', 'PinocchioIKSolver', 'PinocchioIKConfig',
     # Backward-compatibility

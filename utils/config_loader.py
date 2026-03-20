@@ -119,6 +119,7 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
         return EAIKConfig(
             ee_frame_name=ee_frame_name,
             solution_selection=str(params.get('solution_selection', _DEFAULT_IK_CONFIG['solution_selection'])),
+            configuration_mode=str(params.get('configuration_mode', 'Compliant')),
             fk_pos_tolerance_m=float(params.get('fk_pos_tolerance_m', _DEFAULT_IK_CONFIG['fk_pos_tolerance_m'])),
             fk_rot_tolerance_deg=float(params.get('fk_rot_tolerance_deg', _DEFAULT_IK_CONFIG['fk_rot_tolerance_deg'])),
         )

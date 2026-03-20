@@ -56,6 +56,7 @@ from utils.feasibility_plot import (
     plot_manipulability_per_waypoint,
     plot_singularity_per_waypoint,
     plot_eaik_solutions_with_scores,
+    plot_eaik_solutions_with_ecfx,
     plot_waypoint_density,
     plot_topp_velocity_profile,
     plot_decomposed_manipulability_per_waypoint,
@@ -487,11 +488,14 @@ def process_toolpath(
                 and config.eaik_multi_solution.generate_graphs
                 and config.solver == "eaik"):
             all_sols_per_wp: List[List[np.ndarray]] = []
+            all_ecfx_per_wp: List[List[tuple]] = []
             scores_per_wp: List[List[float]] = []
             w = ms_weights or {"c0": 10.0, "singularity": 1.0, "manipulability": 0.5}
             for wp_i, r in enumerate(per_wp):
-                sols = (r.ik_debug_info or {}).get("all_solutions", [])
+                dbg = r.ik_debug_info or {}
+                sols = dbg.get("all_solutions", [])
                 all_sols_per_wp.append(sols)
+                all_ecfx_per_wp.append(dbg.get("ecfx_labels", []))
                 q_prev = (
                     per_wp[wp_i - 1].joint_positions_rad
                     if wp_i > 0 and per_wp[wp_i - 1].joint_positions_rad is not None
@@ -504,12 +508,20 @@ def process_toolpath(
                 np.degrees(r.joint_positions_rad) if r.joint_positions_rad is not None
                 else np.full(6, np.nan) for r in per_wp
             ])
+            eaik_out = str(out_path / f"eaik_solutions_{traj_name}")
             plot_eaik_solutions_with_scores(
                 all_sols_per_wp, scores_per_wp, selected_deg,
-                str(out_path / f"eaik_solutions_{traj_name}"),
+                eaik_out,
                 limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
                 traj_name=f"{toolpath_name} - {traj_name}",
             )
+            if any(len(lbl_list) > 0 for lbl_list in all_ecfx_per_wp):
+                plot_eaik_solutions_with_ecfx(
+                    all_sols_per_wp, all_ecfx_per_wp, selected_deg,
+                    eaik_out,
+                    limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
+                    traj_name=f"{toolpath_name} - {traj_name}",
+                )
 
         # Waypoint density graphs
         if wp_cfg.enabled and wp_cfg.generate_graphs:

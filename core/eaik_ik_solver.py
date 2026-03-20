@@ -63,21 +63,90 @@ See Also
 * ``core/eaik_fk_solver.py``— companion FK solver + numerical Jacobian.
 """
 
+import math
+import logging
 import numpy as np
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, NamedTuple
 from dataclasses import dataclass
 
 from core.base_solvers import BaseIKSolver, BaseIKConfig
 from utils.urdf_loader import RobotModel
 
+logger = logging.getLogger(__name__)
+
+
+# ── ECFX label (ABB confdata equivalent for EAIK solutions) ─────────────────
+
+class ECFXLabel(NamedTuple):
+    """Configuration label replicating ABB's confdata (cf1, cf4, cf6, cfx).
+
+    For IRB 1400 / 2400 / 3400 / 4400 / 6400 family, cfx is unused and
+    always set to 0.  cf1, cf4, cf6 are quadrant numbers computed as
+    ``floor(theta_deg / 90)`` for axes 1, 4, 6 respectively.
+    """
+    cf1: int
+    cf4: int
+    cf6: int
+    cfx: int = 0
+
+
+def compute_ecfx(q_rad: np.ndarray) -> ECFXLabel:
+    """Compute ECFX label from a joint-angle vector (radians).
+
+    **Must be called on the raw EAIK angle, before normalisation.**
+    ``_normalize_to_joint_limits`` can shift an angle by ±360° to fit
+    URDF limits, which changes the quadrant but not the physical pose.
+    RobotStudio computes cf values from the un-wrapped angle, so we must
+    do the same.
+
+    Uses ``math.floor(theta_deg / 90)`` for joints 1, 4, 6
+    (0-indexed: 0, 3, 5).  cfx is always 0 for IRB 1400.
+    """
+    q_deg = np.degrees(q_rad)
+    return ECFXLabel(
+        cf1=int(math.floor(q_deg[0] / 90.0)),
+        cf4=int(math.floor(q_deg[3] / 90.0)),
+        cf6=int(math.floor(q_deg[5] / 90.0)),
+        cfx=0,
+    )
+
+
+# Quadrant boundary tolerance (degrees).  When a joint is within this
+# distance of a 90° boundary, the cf value is considered ambiguous —
+# a different IK engine could legitimately land on the adjacent quadrant.
+_CF_BOUNDARY_TOL_DEG = 0.1
+
+
+def _cf_boundary_flags(q_rad: np.ndarray) -> tuple:
+    """Return per-cf boolean flags indicating quadrant-boundary proximity.
+
+    A joint is boundary-sensitive when it is within ``_CF_BOUNDARY_TOL_DEG``
+    of any multiple of 90° (0°, ±90°, ±180°, …).  In that case even a tiny
+    IK engine difference can flip the cf value.
+
+    Returns:
+        (cf1_boundary, cf4_boundary, cf6_boundary) — each ``True`` if the
+        corresponding joint is near a quadrant edge.
+    """
+    q_deg = np.degrees(q_rad)
+    flags = []
+    for idx in (0, 3, 5):
+        remainder = abs(q_deg[idx] % 90.0)
+        near_edge = remainder < _CF_BOUNDARY_TOL_DEG or (90.0 - remainder) < _CF_BOUNDARY_TOL_DEG
+        flags.append(bool(near_edge))
+    return tuple(flags)
+
 
 @dataclass
 class EAIKConfig(BaseIKConfig):
-    """Configuration for the EAIK analytical IK solver.
+    """Configuration for the EAIK analytical IK solver."""
+    solution_selection: str = "closest"  # "closest" | "min_norm" (used for Ignore mode)
 
-    Only end-effector frame name and solution selection strategy are needed.
-    """
-    solution_selection: str = "closest"  # "closest" | "min_norm"
+    # ConfigurationMode — controls which IK solution is selected.
+    # "Compliant" — solution ECFX must be within ±1 of the previous waypoint's
+    #               cf1/cf4/cf6, and cfx must be exactly equal.
+    # "Ignore"    — no ECFX filtering; sub-behaviour controlled by solution_selection.
+    configuration_mode: str = "Compliant"
 
     # FK verification tolerances — every candidate IK solution is forward-
     # kinematically verified against the original target.  Solutions whose
@@ -104,6 +173,11 @@ class EAIKIKSolver(BaseIKSolver):
         self.config = config or EAIKConfig()
         self.n_joints = robot_model.n_joints
 
+        # Trajectory-chaining state for ECFX-based selection.
+        # Reset when q_init=None is passed (first waypoint signal).
+        self._previous_ecfx: Optional[ECFXLabel] = None
+        self._previous_q: Optional[np.ndarray] = None
+
     @property
     def solver_name(self) -> str:
         return "EAIK"
@@ -119,10 +193,19 @@ class EAIKIKSolver(BaseIKSolver):
 
         EAIK returns all analytical solutions.  Each solution is:
           1. Angle-normalised to fall within URDF joint limits.
-          2. Checked against joint limits.
-          3. FK-verified against the original Cartesian target.
-        The best passing solution is returned.
+          2. Classified as exact or least-squares (LS stripped from main path).
+          3. Checked against joint limits and FK-verified.
+          4. Labelled with ECFX (cf1, cf4, cf6, cfx).
+          5. Selected via configuration-mode logic (Compliant / Ignore).
+
+        Passing ``q_init=None`` signals "first waypoint" and resets the
+        internal ECFX chaining state.
         """
+        # Reset trajectory state when signalled by caller
+        if q_init is None:
+            self._previous_ecfx = None
+            self._previous_q = None
+
         rotation = self._quat_to_rotation(target_quaternion)
         target_pose_ee = np.eye(4)
         target_pose_ee[:3, :3] = rotation
@@ -149,6 +232,11 @@ class EAIKIKSolver(BaseIKSolver):
             'solve_method': None,
             'violated_joints': None,
             'all_solutions': [],
+            'ecfx_labels': [],
+            'ecfx_boundary_flags': [],
+            'selected_ecfx': None,
+            'configuration_mode_used': self.config.configuration_mode,
+            'compliant_count': None,
             'fk_errors': [],
         }
 
@@ -159,11 +247,21 @@ class EAIKIKSolver(BaseIKSolver):
 
         # --- Phase 1: normalise raw EAIK angles into URDF joint ranges ---
         raw_solutions = [Q[i, :] for i in range(n_sol)]
+
+        # ECFX must be computed from the RAW angle (before normalisation).
+        # _normalize_to_joint_limits can shift by ±360° to fit URDF limits,
+        # which changes the quadrant but not the physical configuration.
+        all_ecfx = [compute_ecfx(s) for s in raw_solutions]
+        all_boundary = [_cf_boundary_flags(s) for s in raw_solutions]
+        info['ecfx_labels'] = [tuple(lbl) for lbl in all_ecfx]
+        info['ecfx_boundary_flags'] = all_boundary
+
         normalized_solutions = [self._normalize_to_joint_limits(s) for s in raw_solutions]
         info['all_solutions'] = normalized_solutions
 
         # --- Phase 2: classify exact vs least-squares ---
         exact_sols: List[np.ndarray] = []
+        exact_ecfx: List[ECFXLabel] = []
         ls_sols: List[np.ndarray] = []
 
         for i in range(n_sol):
@@ -177,14 +275,28 @@ class EAIKIKSolver(BaseIKSolver):
                 ls_sols.append(sol)
             else:
                 exact_sols.append(sol)
+                exact_ecfx.append(all_ecfx[i])
 
         # --- Phase 3: filter by joint limits, then FK-verify ---
         valid_exact = self._filter_valid(exact_sols, target_position, rotation, info)
         info['n_valid'] = len(valid_exact)
 
-        # Case 1: valid exact solutions
+        # Build parallel ECFX list for valid exact solutions
+        valid_exact_ecfx: List[ECFXLabel] = []
+        for vq in valid_exact:
+            for eq, elbl in zip(exact_sols, exact_ecfx):
+                if vq is eq:
+                    valid_exact_ecfx.append(elbl)
+                    break
+
+        # Case 1: valid exact solutions — use ECFX-based selection
         if len(valid_exact) > 0:
-            selected_q = self._pick_best(valid_exact, q_init)
+            selected_q, selected_lbl = self._pick_best_ecfx(
+                valid_exact, valid_exact_ecfx, info
+            )
+            self._previous_q = selected_q
+            self._previous_ecfx = selected_lbl
+            info['selected_ecfx'] = tuple(selected_lbl)
             info['is_ls'] = False
             info['converged'] = True
             info['reason'] = 'converged'
@@ -192,6 +304,7 @@ class EAIKIKSolver(BaseIKSolver):
             return True, selected_q, info
 
         # Case 2: exact solutions exist but all violate limits or FK check
+        # (do NOT update trajectory state on failure)
         if len(exact_sols) > 0:
             best_sol = self._select_least_violation(exact_sols, q_init)
             info['reason'] = 'no_valid_solutions_within_limits'
@@ -324,8 +437,65 @@ class EAIKIKSolver(BaseIKSolver):
                 valid.append(q)
         return valid
 
+    def _pick_best_ecfx(
+        self,
+        solutions: List[np.ndarray],
+        ecfx_labels: List[ECFXLabel],
+        info: Dict[str, Any],
+    ) -> Tuple[np.ndarray, ECFXLabel]:
+        """Pick the best solution using ECFX configuration-mode logic.
+
+        Implements three modes matching ABB RobotStudio's ConfigurationMode:
+        - Compliant: filter by ±1 quadrant on cf1/cf4/cf6 + exact cfx, then closest
+        - Ignore/closest: closest to previous q, no ECFX filtering
+        - Ignore/min_norm: stateless min-norm selection
+
+        First waypoint (``_previous_ecfx is None``) always uses min_norm.
+
+        Returns:
+            (selected_q, selected_ecfx)
+        """
+        is_first = self._previous_ecfx is None
+        mode = self.config.configuration_mode
+
+        if is_first:
+            idx = self._select_min_norm(solutions)
+            return solutions[idx], ecfx_labels[idx]
+
+        if mode == "Compliant":
+            prev = self._previous_ecfx
+            compliant_indices = [
+                i for i, lbl in enumerate(ecfx_labels)
+                if abs(lbl.cf1 - prev.cf1) <= 1
+                and abs(lbl.cf4 - prev.cf4) <= 1
+                and abs(lbl.cf6 - prev.cf6) <= 1
+                and lbl.cfx == prev.cfx
+            ]
+            info['compliant_count'] = len(compliant_indices)
+
+            if compliant_indices:
+                subset = [solutions[i] for i in compliant_indices]
+                local_idx = self._select_closest(subset, self._previous_q)
+                orig_idx = compliant_indices[local_idx]
+                return solutions[orig_idx], ecfx_labels[orig_idx]
+            else:
+                logger.warning(
+                    "No compliant ECFX solution found (prev=%s) — "
+                    "configuration jump, falling back to min_norm",
+                    prev,
+                )
+                idx = self._select_min_norm(solutions)
+                return solutions[idx], ecfx_labels[idx]
+
+        # Ignore mode
+        if self.config.solution_selection == "closest" and self._previous_q is not None:
+            idx = self._select_closest(solutions, self._previous_q)
+        else:
+            idx = self._select_min_norm(solutions)
+        return solutions[idx], ecfx_labels[idx]
+
     def _pick_best(self, solutions: List[np.ndarray], q_init: Optional[np.ndarray]) -> np.ndarray:
-        """Pick the best solution from a validated list using the configured strategy."""
+        """Legacy pick-best (used for LS fallback paths where ECFX is irrelevant)."""
         if self.config.solution_selection == "closest" and q_init is not None:
             idx = self._select_closest(solutions, q_init)
         else:

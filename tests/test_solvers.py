@@ -325,21 +325,20 @@ def process_single_csv(
     ik_violated_joints = [None] * n_waypoints  # For EAIK joint limit violations
     ik_joint_limit_violated = np.zeros(n_waypoints, dtype=bool)  # Track EAIK joint-limit failures
     ik_all_solutions = []
+    ik_all_ecfx_labels = []   # ECFX per solution per waypoint
+    ik_selected_ecfx = []     # Selected ECFX per waypoint
     
-    # Seed with the first reference joint angles if we aren't seeding every step
-    # This prevents total tracking failure if waypoint 0 fails to solve
-    q_prev = rs_data.joint_positions_rad[0]
+    # First waypoint always gets q_init=None so the solver uses min_norm
+    # and resets its internal ECFX chaining state.
+    q_prev = None
     
-    # Conditional Reference Tracking
     for i in range(n_waypoints):
         
-        # Decide which seed to feed to the solver
-        if use_robostudio_seed:
-            # Strictly seed from RS every time via config
+        if i == 0:
+            current_q_ref = None
+        elif use_robostudio_seed:
             current_q_ref = rs_data.joint_positions_rad[i]
         else:
-            # First waypoint already seeded via q_prev init above
-            # Subsequent waypoints use the previous IK solution 
             current_q_ref = q_prev
         
         success, q, info = ik_solver.solve_with_retries(
@@ -349,7 +348,6 @@ def process_single_csv(
         )
         ik_success[i] = success
         
-        # Override solve_method to explicitly show we seeded with RS tracking if enabled mathematically
         solve_method = info.get('solve_method', 'failed')
         if use_robostudio_seed and solve_method == 'initial_guess':
             solve_method = 'robostudio_seed'
@@ -357,15 +355,14 @@ def process_single_csv(
         ik_solve_methods[i] = solve_method
         ik_violated_joints[i] = info.get('violated_joints', None)
         ik_all_solutions.append(info.get('all_solutions', []))
+        ik_all_ecfx_labels.append(info.get('ecfx_labels', []))
+        ik_selected_ecfx.append(info.get('selected_ecfx', None))
         if success:
             ik_joints_rad[i] = q
             q_prev = q
         elif info.get('solve_method') == 'joint_limits':
-            # EAIK: solution exists but violates joint limits — keep it
-            # for visualization instead of leaving as NaN
             ik_joints_rad[i] = q
             ik_joint_limit_violated[i] = True
-        # Other failures (no_solutions, etc.) stay NaN
     
     rs_joints_deg = np.degrees(rs_data.joint_positions_rad)
     ik_joints_deg = np.degrees(ik_joints_rad)
@@ -459,7 +456,8 @@ def process_single_csv(
             if generate_eaik_solutions_graph:
                 plot_all_eaik_solutions(
                     rs_joints_deg, ik_all_solutions, ik_success, ik_joints_deg, str(all_sols_dir), 
-                    joint_limits_deg=joint_limits_deg, limit_waypoints=eaik_solutions_max_waypoints, traj_index=csv_name
+                    joint_limits_deg=joint_limits_deg, limit_waypoints=eaik_solutions_max_waypoints,
+                    traj_index=csv_name, all_ecfx_labels=ik_all_ecfx_labels
                 )
             
             # Plot joint limits violations for EAIK

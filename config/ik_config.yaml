@@ -34,9 +34,22 @@ ik_parameters:
 
   # =========================================================================
   # --- EAIK-specific parameters ---
-  # Solution selection strategy when multiple IK solutions exist:
-  #   "closest"  - Pick solution closest to q_init (best for trajectory continuity)
-  #   "min_norm" - Pick solution with smallest joint norm (best for neutral poses)
+
+  # ConfigurationMode — controls which IK solution is selected from all exact
+  # candidates.  Mirrors ABB RobotStudio's ConfigurationMode enum.
+  #
+  #   "Compliant" - Solution must be within ±1 quadrant of the previous
+  #                 waypoint's cf1, cf4, cf6, and cfx must be exactly equal.
+  #                 First waypoint always uses min_norm (no previous config).
+  #
+  #   "Ignore"    - Stored configuration is ignored entirely.
+  #                 Sub-behaviour controlled by solution_selection below.
+  configuration_mode: "Compliant"
+
+  # Solution selection strategy (used for Ignore mode, and as tiebreaker):
+  #   "closest"  - Pick solution closest to previous q (chained nearest-neighbour).
+  #                First waypoint uses min_norm.
+  #   "min_norm" - Always pick solution with smallest joint norm (stateless).
   solution_selection: "closest"
 
   # FK verification tolerances — after EAIK finds candidate IK solutions,

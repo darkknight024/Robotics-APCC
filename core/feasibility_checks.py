@@ -271,8 +271,17 @@ class FeasibilityAnalyzer:
         result: FeasibilityResult,
         q_prev: Optional[np.ndarray],
     ) -> FeasibilityResult:
-        """Re-evaluate EAIK candidates and pick the lowest-cost one."""
+        """Re-evaluate EAIK candidates and pick the lowest-cost one.
+
+        For the first waypoint (``q_prev is None``) the EAIK solver's own
+        selection (min_norm) is accepted as-is — there is no previous
+        configuration to compute a C0 distance from, and the singularity /
+        manipulability terms alone can pick a worse starting posture than
+        the neutral-biased min_norm.
+        """
         if self.multi_solution_weights is None:
+            return result
+        if q_prev is None:
             return result
         if result.ik_debug_info is None:
             return result
