@@ -3109,16 +3109,20 @@ def plot_3d_spline_trajectory(
     output_path: str,
     title: str = "3D Spline Trajectory",
     axis_length: float = 0.02,
+    *,
+    show_reachability: bool = True,
 ) -> None:
     """3D path with waypoints visible; rotation shown as coloured XYZ axes.
 
     Args:
         positions: (n, 3) in metres.
         quaternions: (n, 4) [qw, qx, qy, qz].
-        reachable: (n,) bool.
+        reachable: (n,) bool — used only when *show_reachability* is True.
         output_path: PNG path.
         title: Figure title.
         axis_length: Length of orientation arrows in metres.
+        show_reachability: If False, all waypoints are drawn in one colour (for
+            pre-IK paths such as original sparse waypoints before densification).
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -3148,9 +3152,12 @@ def plot_3d_spline_trajectory(
     ax.plot(x, y, z, "k-", linewidth=0.8, alpha=0.5, label="Path")
 
     reach_mask = reachable.astype(bool)
-    ax.scatter(x[reach_mask], y[reach_mask], z[reach_mask], c="green", s=20, label="Reachable", depthshade=True)
-    if np.any(~reach_mask):
-        ax.scatter(x[~reach_mask], y[~reach_mask], z[~reach_mask], c="red", s=30, marker="x", label="Unreachable")
+    if show_reachability:
+        ax.scatter(x[reach_mask], y[reach_mask], z[reach_mask], c="green", s=20, label="Reachable", depthshade=True)
+        if np.any(~reach_mask):
+            ax.scatter(x[~reach_mask], y[~reach_mask], z[~reach_mask], c="red", s=30, marker="x", label="Unreachable")
+    else:
+        ax.scatter(x, y, z, c="#1976D2", s=18, alpha=0.85, label="Waypoints", depthshade=True)
 
     axis_colors = {"x": "red", "y": "green", "z": "blue"}
     step = max(1, len(positions) // 30)
@@ -3163,7 +3170,7 @@ def plot_3d_spline_trajectory(
         effective_axis_length = axis_length
 
     for i in range(0, len(positions), step):
-        if not reachable[i]:
+        if show_reachability and not reachable[i]:
             continue
         qw, qx, qy, qz = quaternions[i]
         R = np.array([

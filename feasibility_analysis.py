@@ -255,6 +255,8 @@ def process_toolpath(
     # ── Pre-IK waypoint density check ───────────────────────────────────────
     wp_cfg = config.waypoint_density
     density_results: List[Optional[dict]] = [None] * n_trajectories
+    # Copy of each trajectory before sparse-segment interpolation (for 3D plots).
+    original_trajectories_before_dense: List[Optional[np.ndarray]] = [None] * n_trajectories
 
     if wp_cfg.enabled:
         for t_idx, (traj, spd) in enumerate(zip(trajectories_t_b_p, trajectory_speeds)):
@@ -265,6 +267,7 @@ def process_toolpath(
             density_results[t_idx] = density
 
             if not density["density_ok"] and wp_cfg.interpolate_sparse:
+                original_trajectories_before_dense[t_idx] = np.array(traj, copy=True)
                 traj_dense = interpolate_sparse_segments(traj, arc_lens, density["max_spacing_mm"])
                 trajectories_t_b_p[t_idx] = traj_dense
                 old_speeds = trajectory_speeds[t_idx]
@@ -477,11 +480,29 @@ def process_toolpath(
                 velocity_limits_rad_s=final_vel_lims,
             )
             if len(joint_angles_rad) >= 2:
-                plot_3d_spline_trajectory(
-                    positions, quaternions, reachable_arr,
-                    str(traj_out / f"3d_spline_{traj_name}.png"),
-                    title=f"3D Spline — {toolpath_name} — {traj_name}",
-                )
+                orig_before_dense = original_trajectories_before_dense[local_idx]
+                if orig_before_dense is not None:
+                    # Original sparse CSV waypoints (pre-interpolation); no IK overlay.
+                    plot_3d_spline_trajectory(
+                        orig_before_dense[:, :3],
+                        orig_before_dense[:, 3:7],
+                        np.ones(len(orig_before_dense), dtype=bool),
+                        str(traj_out / f"3d_spline_original_sparse_{traj_name}.png"),
+                        title=f"3D Spline (original sparse) — {toolpath_name} — {traj_name}",
+                        show_reachability=False,
+                    )
+                    # Densified path (linear + SLERP) that IK / TOPP use.
+                    plot_3d_spline_trajectory(
+                        positions, quaternions, reachable_arr,
+                        str(traj_out / f"3d_spline_interpolated_{traj_name}.png"),
+                        title=f"3D Spline (interpolated dense) — {toolpath_name} — {traj_name}",
+                    )
+                else:
+                    plot_3d_spline_trajectory(
+                        positions, quaternions, reachable_arr,
+                        str(traj_out / f"3d_spline_{traj_name}.png"),
+                        title=f"3D Spline — {toolpath_name} — {traj_name}",
+                    )
 
         # EAIK solutions graphs
         if (config.eaik_multi_solution.enabled
