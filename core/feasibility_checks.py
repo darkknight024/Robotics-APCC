@@ -277,20 +277,11 @@ class FeasibilityAnalyzer:
         if result.ik_debug_info is None:
             return result
 
-        dbg = result.ik_debug_info
-        grid = dbg.get("solutions_ecfx")
-        if grid is not None and isinstance(grid, np.ndarray) and grid.ndim == 2 and grid.shape[0] == 8:
-            candidates = []
-            for slot in range(8):
-                qv = np.asarray(grid[slot], dtype=float).flatten()
-                if not np.all(np.isfinite(qv)):
-                    continue
-                if self._is_within_joint_limits(qv):
-                    candidates.append(qv)
-        else:
-            all_sols = dbg.get("all_solutions", [])
-            candidates = [q for q in all_sols if self._is_within_joint_limits(q)]
+        all_sols = result.ik_debug_info.get("all_solutions", [])
+        if len(all_sols) < 2:
+            return result
 
+        candidates = [q for q in all_sols if self._is_within_joint_limits(q)]
         if len(candidates) < 2:
             return result
 

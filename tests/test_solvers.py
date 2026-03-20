@@ -15,7 +15,6 @@ Usage:
 import argparse
 import sys
 import numpy as np
-from typing import Optional
 from pathlib import Path
 from datetime import datetime
 
@@ -23,7 +22,6 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import create_solvers
-from core.abb_configuration import compute_cf146_from_joints_deg, compute_ecfx_configuration
 from utils import (
     load_robostudio_full,
     find_robostudio_csvs,
@@ -327,37 +325,38 @@ def process_single_csv(
     ik_violated_joints = [None] * n_waypoints  # For EAIK joint limit violations
     ik_joint_limit_violated = np.zeros(n_waypoints, dtype=bool)  # Track EAIK joint-limit failures
     ik_all_solutions = []
-    ik_solutions_ecfx = []  # (n_wp,) each (8, 6) float, NaN = empty ECFX slot
-
-    # Previous IK configuration for continuity (never RobotStudio unless use_robostudio_seed)
-    q_prev: Optional[np.ndarray] = rs_data.joint_positions_rad[0] if use_robostudio_seed else None
-
+    
+    # Seed with the first reference joint angles if we aren't seeding every step
+    # This prevents total tracking failure if waypoint 0 fails to solve
+    q_prev = rs_data.joint_positions_rad[0]
+    
+    # Conditional Reference Tracking
     for i in range(n_waypoints):
+        
+        # Decide which seed to feed to the solver
         if use_robostudio_seed:
+            # Strictly seed from RS every time via config
             current_q_ref = rs_data.joint_positions_rad[i]
         else:
+            # First waypoint already seeded via q_prev init above
+            # Subsequent waypoints use the previous IK solution 
             current_q_ref = q_prev
-
+        
         success, q, info = ik_solver.solve_with_retries(
             rs_data.tcp_positions_m[i],
             rs_data.tcp_quaternions[i],
             current_q_ref
         )
         ik_success[i] = success
-
+        
         # Override solve_method to explicitly show we seeded with RS tracking if enabled mathematically
         solve_method = info.get('solve_method', 'failed')
         if use_robostudio_seed and solve_method == 'initial_guess':
             solve_method = 'robostudio_seed'
-
+            
         ik_solve_methods[i] = solve_method
         ik_violated_joints[i] = info.get('violated_joints', None)
         ik_all_solutions.append(info.get('all_solutions', []))
-        grid = info.get('solutions_ecfx')
-        if grid is not None:
-            ik_solutions_ecfx.append(np.asarray(grid, dtype=float))
-        else:
-            ik_solutions_ecfx.append(np.full((8, 6), np.nan))
         if success:
             ik_joints_rad[i] = q
             q_prev = q
@@ -459,11 +458,8 @@ def process_single_csv(
             all_sols_dir = out_path / "all_solutions"
             if generate_eaik_solutions_graph:
                 plot_all_eaik_solutions(
-                    rs_joints_deg, ik_all_solutions, ik_success, ik_joints_deg, str(all_sols_dir),
-                    joint_limits_deg=joint_limits_deg, limit_waypoints=eaik_solutions_max_waypoints, traj_index=csv_name,
-                    solutions_ecfx_per_wp=(
-                        ik_solutions_ecfx if (solver_label == "EAIK" and ik_solutions_ecfx) else None
-                    ),
+                    rs_joints_deg, ik_all_solutions, ik_success, ik_joints_deg, str(all_sols_dir), 
+                    joint_limits_deg=joint_limits_deg, limit_waypoints=eaik_solutions_max_waypoints, traj_index=csv_name
                 )
             
             # Plot joint limits violations for EAIK
@@ -533,37 +529,11 @@ def process_single_csv(
     # =========================================================================
     print("  Saving raw comparison CSV...")
     raw_csv_path = out_path / "raw_comparison.csv"
-
-    def _row_cf_rs(i: int) -> list:
-        out = []
-        for arr_name in ("cf1", "cf4", "cf6", "cfx"):
-            arr = getattr(rs_data, arr_name, None)
-            if arr is None or i >= len(arr):
-                out.append("")
-            else:
-                v = arr[i]
-                if v is None or (isinstance(v, float) and np.isnan(v)):
-                    out.append("")
-                else:
-                    out.append(str(int(v)))
-        return out
-
-    def _row_cf_ik(i: int) -> list:
-        q = ik_joints_rad[i]
-        if np.any(np.isnan(q)):
-            return ["", "", "", ""]
-        j_deg = np.degrees(q)
-        if solver_label == "EAIK" and hasattr(robot_data, "eaik_robot"):
-            cfg = compute_ecfx_configuration(q, robot_data)
-            return [str(cfg["cf1"]), str(cfg["cf4"]), str(cfg["cf6"]), str(cfg["cfx"])]
-        c1, c4, c6 = compute_cf146_from_joints_deg(j_deg)
-        return [str(c1), str(c4), str(c6), ""]
-
+    
     # Build header
     header = ['waypoint']
     # RobotStudio inputs
     header += [f'rs_j{j+1}_deg' for j in range(6)]
-    header += ['rs_cf1', 'rs_cf4', 'rs_cf6', 'rs_cfx']
     header += ['rs_tcp_x_mm', 'rs_tcp_y_mm', 'rs_tcp_z_mm']
     header += ['rs_qw', 'rs_qx', 'rs_qy', 'rs_qz']
     # FK outputs
@@ -572,17 +542,15 @@ def process_single_csv(
     header += ['fk_pos_error_mm']
     # IK outputs
     header += [f'ik_j{j+1}_deg' for j in range(6)]
-    header += ['ik_cf1', 'ik_cf4', 'ik_cf6', 'ik_cfx', 'ik_selected_ecfx']
     header += ['ik_success', 'ik_solve_method']
     header += [f'ik_j{j+1}_error_deg' for j in range(6)]
-
+    
     # Build rows
     rows = np.empty((n_waypoints, len(header)), dtype=object)
     for i in range(n_waypoints):
         row = [i]
         # RS joints (deg)
         row += [f'{v:.6f}' for v in rs_joints_deg[i]]
-        row += _row_cf_rs(i)
         # RS TCP (mm)
         row += [f'{v:.6f}' for v in rs_positions_mm[i]]
         # RS quaternions
@@ -595,44 +563,17 @@ def process_single_csv(
         row += [f'{fk_errors_mm[i]:.6f}']
         # IK joints (deg) — NaN for failed
         row += [f'{v:.6f}' if not np.isnan(v) else '' for v in ik_joints_deg[i]]
-        row += _row_cf_ik(i)
-        sel_ecfx = ""
-        if solver_label == "EAIK" and i < len(ik_solutions_ecfx):
-            # selected slot from last solve — recompute from joints if needed
-            q = ik_joints_rad[i]
-            if not np.any(np.isnan(q)) and hasattr(robot_data, "eaik_robot"):
-                sel_ecfx = str(compute_ecfx_configuration(np.asarray(q), robot_data)["cfx"])
-        row.append(sel_ecfx)
         # IK success & method
         row += [str(ik_success[i]), ik_solve_methods[i]]
         # IK joint errors (deg) — NaN for failed
         row += [f'{v:.6f}' if not np.isnan(v) else '' for v in joint_errors_deg[i]]
         rows[i] = row
-
+    
     with open(raw_csv_path, 'w') as f:
         f.write(','.join(header) + '\n')
         for row in rows:
             f.write(','.join(str(v) for v in row) + '\n')
     print(f"    Raw CSV saved: {raw_csv_path.name}")
-
-    # Secondary: all ECFX slots (8 × joints) per waypoint for EAIK
-    if solver_label == "EAIK" and len(ik_solutions_ecfx) == n_waypoints:
-        ecfx_path = out_path / "raw_ik_ecfx.csv"
-        eh = ["waypoint", "ecfx_slot"] + [f"ik_j{j+1}_deg" for j in range(6)]
-        lines = [",".join(eh)]
-        for wp in range(n_waypoints):
-            g = ik_solutions_ecfx[wp]
-            for slot in range(8):
-                qd = np.degrees(g[slot]) if np.any(np.isfinite(g[slot])) else None
-                cells = [str(wp), str(slot)]
-                if qd is None:
-                    cells += [""] * 6
-                else:
-                    cells += [f"{v:.6f}" for v in qd]
-                lines.append(",".join(cells))
-        with open(ecfx_path, "w") as f:
-            f.write("\n".join(lines) + "\n")
-        print(f"    ECFX grid CSV saved: {ecfx_path.name}")
     
     # Save individual analysis
     save_individual_analysis(

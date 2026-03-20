@@ -27,11 +27,6 @@ class RobotStudioData:
     tcp_quaternions: np.ndarray      # (n_waypoints, 4) - [qw, qx, qy, qz]
     joint_positions_rad: np.ndarray  # (n_waypoints, 6) - joint angles in radians
     num_waypoints: int
-    # Optional ABB configuration columns when present in CSV
-    cf1: Optional[np.ndarray] = None
-    cf4: Optional[np.ndarray] = None
-    cf6: Optional[np.ndarray] = None
-    cfx: Optional[np.ndarray] = None
 
 
 # Column name constants
@@ -74,26 +69,12 @@ def load_robostudio_full(csv_path: str) -> RobotStudioData:
     tcp_positions_m = df[TCP_COLS].values / 1000.0  # mm -> m
     tcp_quaternions = df[QUAT_COLS].values
     joint_positions_rad = np.deg2rad(df[JOINT_COLS].values)
-
-    cf1 = cf4 = cf6 = cfx = None
-    if "cf1" in df.columns:
-        cf1 = pd.to_numeric(df["cf1"], errors="coerce").values
-    if "cf4" in df.columns:
-        cf4 = pd.to_numeric(df["cf4"], errors="coerce").values
-    if "cf6" in df.columns:
-        cf6 = pd.to_numeric(df["cf6"], errors="coerce").values
-    if "cfx" in df.columns:
-        cfx = pd.to_numeric(df["cfx"], errors="coerce").values
-
+    
     return RobotStudioData(
         tcp_positions_m=tcp_positions_m,
         tcp_quaternions=tcp_quaternions,
         joint_positions_rad=joint_positions_rad,
-        num_waypoints=len(df),
-        cf1=cf1,
-        cf4=cf4,
-        cf6=cf6,
-        cfx=cfx,
+        num_waypoints=len(df)
     )
 
 
