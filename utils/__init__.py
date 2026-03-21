@@ -48,7 +48,8 @@ from .generate_plot_ik import (
     plot_joint_limits_violated_per_waypoint,
     plot_joint_violation_graph,
     plot_detailed_violation_debug,
-    plot_all_eaik_solutions
+    plot_all_eaik_solutions,
+    eaik_selected_branch_index,
 )
 
 from .generate_plot_fk import (
@@ -90,6 +91,9 @@ from .feasibility_plot import (
     plot_task_space_velocity,
     plot_joint_space_trajectory,
     plot_3d_spline_trajectory,
+    plot_task_space_positions_vs_index,
+    plot_task_space_quaternions_vs_index,
+    match_sparse_indices_in_dense_trajectory,
 )
 
 from .generate_combinatorial_plots import (
@@ -174,6 +178,7 @@ __all__ = [
     'plot_joint_violation_graph',
     'plot_detailed_violation_debug',
     'plot_all_eaik_solutions',
+    'eaik_selected_branch_index',
     'plot_singularity_per_waypoint',
     'plot_reachability_per_waypoint',
     'plot_manipulability_per_waypoint',
@@ -206,6 +211,9 @@ __all__ = [
     'plot_task_space_velocity',
     'plot_joint_space_trajectory',
     'plot_3d_spline_trajectory',
+    'plot_task_space_positions_vs_index',
+    'plot_task_space_quaternions_vs_index',
+    'match_sparse_indices_in_dense_trajectory',
     # Config
     'load_ik_config',
     'load_knife_config',

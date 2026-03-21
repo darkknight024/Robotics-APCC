@@ -289,6 +289,9 @@ class WaypointDensityGroupConfig:
     interpolate_sparse: bool = False
     default_speed_mm_s: float = 100.0
     generate_graphs: bool = True
+    # Task-space vs waypoint-index plots (XYZ mm + quaternion wxyz), FK-style scaling
+    task_space_graphs: bool = True
+    task_space_adaptive_scale: bool = False
 
 
 @dataclass

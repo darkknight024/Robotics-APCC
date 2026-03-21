@@ -11,8 +11,14 @@ Generates plots for trajectory feasibility analysis:
 
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
+
+# Z-order for ECFX / all-solutions plots: grid & limits behind branches,
+# selected point always on top (avoids colour bleed). Keep in sync with generate_plot_ik.py.
+_Z_ECFX_LIMITS = 1.0
+_Z_ECFX_BRANCHES = 4.0
+_Z_ECFX_SELECTED = 100.0
 
 
 def _add_threshold_yticks(ax, threshold_values: List[float], color: str = "red") -> None:
@@ -2867,8 +2873,8 @@ def plot_eaik_solutions_with_ecfx(
 
     For each of the 6 joints a PNG with **3 vertically stacked subplots** is
     saved.  Each subplot colours the scatter points by a different ECFX
-    field (cf1, cf4, cf6).  The selected solution is highlighted with a
-    black square marker.
+    field (cf1, cf4, cf6).  The selected solution is highlighted with ECFX color
+    and drawn on top (highest z-order) with black edge outline.
     """
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -2890,34 +2896,62 @@ def plot_eaik_solutions_with_ecfx(
 
         for ax_idx, (cf_index, cf_name) in enumerate(cf_fields):
             ax = axes[ax_idx]
+            ax.set_axisbelow(True)
 
             if joint_limits_deg is not None:
                 lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
-                ax.axhspan(lo, hi, alpha=0.12, color='green', zorder=1)
+                ax.axhspan(lo, hi, alpha=0.12, color='green', zorder=_Z_ECFX_LIMITS)
                 ax.axhline(lo, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
                 ax.axhline(hi, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
 
             seen_labels: set = set()
+            
+            # First pass: draw all non-selected branches
             for wp in range(n_wp):
                 sols = all_solutions_per_waypoint[wp]
                 ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
                 if not sols:
                     continue
                 for s_idx, q_rad in enumerate(sols):
-                    q_deg = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
+                    # Check if this is the selected solution for this waypoint
+                    selected_q_deg = selected_joint_angles_deg[wp, j]
+                    q_deg_scalar = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
+                    is_selected = not np.isnan(selected_q_deg) and np.isclose(q_deg_scalar, selected_q_deg, atol=0.02)
+                    
+                    # Skip selected for this pass (draw it later on top)
+                    if is_selected:
+                        continue
+                    
                     cf_val = ecfx_list[s_idx][cf_index] if s_idx < len(ecfx_list) else 0
                     color = _ecfx_color(cf_val)
                     lbl_key = f'{cf_name}={cf_val}'
                     lbl = lbl_key if lbl_key not in seen_labels else None
                     if lbl:
                         seen_labels.add(lbl_key)
-                    ax.scatter(wp, q_deg, color=color, s=35, zorder=3.5, alpha=0.75, label=lbl)
-
-                if not np.isnan(selected_joint_angles_deg[wp, j]):
-                    lbl_sel = 'Selected' if wp == 0 else None
-                    ax.scatter(wp, selected_joint_angles_deg[wp, j], marker='s', s=90,
-                               facecolors='none', edgecolors='black', linewidths=2,
-                               zorder=5.5, label=lbl_sel)
+                    ax.scatter(wp, q_deg_scalar, color=color, s=35, zorder=_Z_ECFX_BRANCHES, alpha=0.75, label=lbl)
+            
+            # Second pass: draw selected branches on top with ECFX color
+            for wp in range(n_wp):
+                sols = all_solutions_per_waypoint[wp]
+                ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+                if not sols:
+                    continue
+                
+                selected_q_deg = selected_joint_angles_deg[wp, j]
+                if np.isnan(selected_q_deg):
+                    continue
+                
+                # Find the matching solution
+                for s_idx, q_rad in enumerate(sols):
+                    q_deg_scalar = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
+                    if np.isclose(q_deg_scalar, selected_q_deg, atol=0.02):
+                        cf_val = ecfx_list[s_idx][cf_index] if s_idx < len(ecfx_list) else 0
+                        color = _ecfx_color(cf_val)
+                        lbl = 'Selected' if wp == 0 else None
+                        # Draw with larger marker and black edge, ON TOP, ECFX-colored
+                        ax.scatter(wp, selected_q_deg, color=color, s=120, zorder=_Z_ECFX_SELECTED,
+                                   alpha=0.95, edgecolors='black', linewidths=2.5, label=lbl)
+                        break
 
             ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
             ax.set_title(f'Coloured by {cf_name}', fontsize=10, fontweight='bold')
@@ -2926,6 +2960,14 @@ def plot_eaik_solutions_with_ecfx(
 
             handles, labels = ax.get_legend_handles_labels()
             by_label = dict(zip(labels, handles))
+            
+            # Replace the "Selected" legend entry with a hollow circle (no fill, black edge only)
+            if 'Selected' in by_label:
+                from matplotlib.lines import Line2D
+                by_label['Selected'] = Line2D([0], [0], marker='o', color='w', 
+                                               markeredgecolor='black', markeredgewidth=2.5,
+                                               markersize=10, linestyle='None', label='Selected')
+            
             ax.legend(by_label.values(), by_label.keys(), loc='center left',
                       bbox_to_anchor=(1, 0.5), fontsize=8)
 
@@ -3097,6 +3139,170 @@ def plot_joint_space_trajectory(
     axes[2].set_xlabel("Time (s)", fontweight="bold")
     axes[2].grid(True, alpha=0.3)
 
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def _task_space_uniform_scale(data_arrays: List[np.ndarray]) -> Tuple[float, float]:
+    """Uniform y-limits across subplots (same idea as :func:`generate_plot_fk._compute_uniform_scale`)."""
+    valid_arrays = [arr for arr in data_arrays if len(arr) > 0]
+    if not valid_arrays:
+        return -1.0, 1.0
+    all_min = min(float(np.nanmin(arr)) for arr in valid_arrays)
+    all_max = max(float(np.nanmax(arr)) for arr in valid_arrays)
+    if np.isnan(all_min) or np.isnan(all_max):
+        return -1.0, 1.0
+    if all_min == all_max:
+        margin = 0.1 if all_min == 0 else abs(all_min) * 0.1
+    else:
+        margin = (all_max - all_min) * 0.1
+    return all_min - margin, all_max + margin
+
+
+def match_sparse_indices_in_dense_trajectory(
+    dense_traj: np.ndarray,
+    sparse_traj: np.ndarray,
+) -> np.ndarray:
+    """Map each sparse waypoint to the closest dense row index (by XYZ in metres).
+
+    Args:
+        dense_traj: (n_dense, 7) — [x,y,z,qw,qx,qy,qz] in **metres** (same units as sparse).
+        sparse_traj: (n_sparse, 7) — original toolpath before densification.
+
+    Returns:
+        (n_sparse,) int — dense indices highlighting original CSV waypoints on dense plots.
+    """
+    dense_traj = np.asarray(dense_traj)
+    sparse_traj = np.asarray(sparse_traj)
+    dpos = dense_traj[:, :3]
+    out = np.empty(len(sparse_traj), dtype=int)
+    for k in range(len(sparse_traj)):
+        dists = np.linalg.norm(dpos - sparse_traj[k, :3], axis=1)
+        out[k] = int(np.argmin(dists))
+    return out
+
+
+def plot_task_space_positions_vs_index(
+    positions_m: np.ndarray,
+    output_path: str,
+    title: str = "Task-space position (base frame)",
+    sparse_original_indices: Optional[np.ndarray] = None,
+    adaptive_scale: bool = False,
+) -> None:
+    """1×3 subplots: X, Y, Z position (mm) vs dense waypoint index.
+
+    When *sparse_original_indices* is set (after ``interpolate_sparse``), draws every
+    dense sample plus highlighted markers at original toolpath indices (FK-style
+    colours / scaling similar to :mod:`utils.generate_plot_fk`).
+    """
+    positions_m = np.asarray(positions_m)
+    positions_mm = positions_m * 1000.0
+    n = len(positions_mm)
+    wp = np.arange(n, dtype=float)
+    axis_names = ["X", "Y", "Z"]
+
+    if not adaptive_scale:
+        all_data = [positions_mm[:, i] for i in range(3)]
+        y_min, y_max = _task_space_uniform_scale(all_data)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    dense_label = "Dense (interpolated)"
+    orig_label = "Original toolpath waypoints"
+
+    for idx, name in enumerate(axis_names):
+        ax = axes[idx]
+        ycol = positions_mm[:, idx]
+
+        if sparse_original_indices is not None and len(sparse_original_indices) > 0:
+            ax.plot(wp, ycol, "-", color="#90CAF9", linewidth=1.2, alpha=0.75, zorder=1)
+            ax.scatter(
+                wp, ycol, s=14, c="#BBDEFB", alpha=0.9, edgecolors="none", zorder=2, label=dense_label if idx == 0 else None,
+            )
+            si = np.asarray(sparse_original_indices, dtype=int)
+            ax.scatter(
+                wp[si],
+                ycol[si],
+                s=70,
+                facecolors="#FFF8E1",
+                edgecolors="#E65100",
+                linewidths=2.0,
+                zorder=5,
+                label=orig_label if idx == 0 else None,
+            )
+        else:
+            ax.plot(wp, ycol, "b-o", linewidth=1.5, markersize=4, label="Toolpath waypoints" if idx == 0 else None)
+
+        ax.set_xlabel("Waypoint index", fontweight="bold")
+        ax.set_ylabel(f"{name} (mm)", fontweight="bold")
+        ax.set_title(f"{name} position", fontweight="bold")
+        if not adaptive_scale:
+            ax.set_ylim(y_min, y_max)
+        ax.grid(True, alpha=0.3)
+        if idx == 0:
+            ax.legend(loc="best", fontsize=9)
+
+    plt.suptitle(title, fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_task_space_quaternions_vs_index(
+    quaternions: np.ndarray,
+    output_path: str,
+    title: str = "Task-space quaternion (base frame)",
+    sparse_original_indices: Optional[np.ndarray] = None,
+    adaptive_scale: bool = False,
+) -> None:
+    """2×2 subplots: qw, qx, qy, qz vs waypoint index ([w,x,y,z] order)."""
+    quaternions = np.asarray(quaternions)
+    n = len(quaternions)
+    wp = np.arange(n, dtype=float)
+    quat_names = ["qw", "qx", "qy", "qz"]
+
+    if not adaptive_scale:
+        all_data = [quaternions[:, i] for i in range(4)]
+        y_min, y_max = _task_space_uniform_scale(all_data)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    dense_label = "Dense (interpolated)"
+    orig_label = "Original toolpath waypoints"
+
+    for idx, name in enumerate(quat_names):
+        row, col = idx // 2, idx % 2
+        ax = axes[row, col]
+        ycol = quaternions[:, idx]
+
+        if sparse_original_indices is not None and len(sparse_original_indices) > 0:
+            ax.plot(wp, ycol, "-", color="#90CAF9", linewidth=1.2, alpha=0.75, zorder=1)
+            ax.scatter(
+                wp, ycol, s=14, c="#BBDEFB", alpha=0.9, edgecolors="none", zorder=2, label=dense_label if idx == 0 else None,
+            )
+            si = np.asarray(sparse_original_indices, dtype=int)
+            ax.scatter(
+                wp[si],
+                ycol[si],
+                s=70,
+                facecolors="#FFF8E1",
+                edgecolors="#E65100",
+                linewidths=2.0,
+                zorder=5,
+                label=orig_label if idx == 0 else None,
+            )
+        else:
+            ax.plot(wp, ycol, "b-o", linewidth=1.5, markersize=4, label="Toolpath waypoints" if idx == 0 else None)
+
+        ax.set_xlabel("Waypoint index", fontweight="bold")
+        ax.set_ylabel(name, fontweight="bold")
+        ax.set_title(f"{name}", fontweight="bold")
+        if not adaptive_scale:
+            ax.set_ylim(y_min, y_max)
+        ax.grid(True, alpha=0.3)
+        if idx == 0:
+            ax.legend(loc="best", fontsize=9)
+
+    plt.suptitle(title, fontsize=14, fontweight="bold")
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()

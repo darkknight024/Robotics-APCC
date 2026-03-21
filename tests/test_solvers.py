@@ -39,6 +39,7 @@ from utils import (
     plot_joint_violation_graph,
     plot_detailed_violation_debug,
     plot_all_eaik_solutions,
+    eaik_selected_branch_index,
     load_ik_config_as_object
 )
 
@@ -327,7 +328,8 @@ def process_single_csv(
     ik_all_solutions = []
     ik_all_ecfx_labels = []   # ECFX per solution per waypoint
     ik_selected_ecfx = []     # Selected ECFX per waypoint
-    
+    ik_selected_solution_indices: list = []  # Branch index into all_solutions (same ref as returned q)
+
     # First waypoint always gets q_init=None so the solver uses min_norm
     # and resets its internal ECFX chaining state.
     q_prev = None
@@ -354,9 +356,11 @@ def process_single_csv(
             
         ik_solve_methods[i] = solve_method
         ik_violated_joints[i] = info.get('violated_joints', None)
-        ik_all_solutions.append(info.get('all_solutions', []))
+        all_sols = info.get('all_solutions', [])
+        ik_all_solutions.append(all_sols)
         ik_all_ecfx_labels.append(info.get('ecfx_labels', []))
         ik_selected_ecfx.append(info.get('selected_ecfx', None))
+        ik_selected_solution_indices.append(eaik_selected_branch_index(all_sols, q))
         if success:
             ik_joints_rad[i] = q
             q_prev = q
@@ -455,9 +459,10 @@ def process_single_csv(
             all_sols_dir = out_path / "all_solutions"
             if generate_eaik_solutions_graph:
                 plot_all_eaik_solutions(
-                    rs_joints_deg, ik_all_solutions, ik_success, ik_joints_deg, str(all_sols_dir), 
+                    rs_joints_deg, ik_all_solutions, ik_success, ik_joints_deg, str(all_sols_dir),
                     joint_limits_deg=joint_limits_deg, limit_waypoints=eaik_solutions_max_waypoints,
-                    traj_index=csv_name, all_ecfx_labels=ik_all_ecfx_labels
+                    traj_index=csv_name, all_ecfx_labels=ik_all_ecfx_labels,
+                    selected_solution_indices=ik_selected_solution_indices,
                 )
             
             # Plot joint limits violations for EAIK

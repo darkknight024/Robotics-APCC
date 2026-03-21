@@ -792,6 +792,14 @@ time_parameterization:
 
 - **Text report**: Density status (OK or SPARSE), sparse segment indices, interpolation warning if applicable
 - **Plot** (`waypoint_density_{trajectory_name}.png`): Bar chart comparing actual spacing vs. allowed spacing per segment
+- **Task-space vs index** (when `task_space_graphs: true`, default): two figures per trajectory in FK-style layout (mm for position, same scaling options as `task_space_adaptive_scale`):
+  - `task_space_position_{trajectory_name}.png` — one row, three subplots (X, Y, Z in **mm**) vs waypoint index.
+  - `task_space_quaternion_{trajectory_name}.png` — 2×2 subplots (qw, qx, qy, qz) vs waypoint index.
+  - If **interpolation** ran (`interpolate_sparse` and sparse segments): every dense sample is shown (line + small markers); **original CSV waypoints** are highlighted with larger orange-edged markers. Without interpolation, a single blue line+markers series is used (input waypoints only).
+- **3D splines** (when TOPP-RA graphs are enabled and densification ran):  
+  - `3d_spline_original_sparse_{trajectory_name}.png` — Cartesian path from the **original sparse** CSV (pre-interpolation; blue waypoints, no IK reachability colouring).  
+  - `3d_spline_interpolated_{trajectory_name}.png` — **densified** path (linear position + SLERP orientation) that IK and TOPP-RA use, with green/red reachability per waypoint.  
+  If no densification was applied, a single `3d_spline_{trajectory_name}.png` is produced as before.
 
 #### Use Case
 

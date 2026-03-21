@@ -17,6 +17,13 @@ import matplotlib.pyplot as plt
 from typing import Optional, List
 from pathlib import Path
 
+# Z-order for ECFX / all-solutions plots: grid & limits behind reference, branch
+# scatters above reference, selected IK marker always on top (avoids colour bleed).
+_Z_LIMITS = 1.0
+_Z_RS_REFERENCE = 2.0
+_Z_EAIK_BRANCHES = 4.0
+_Z_SELECTED_IK = 100.0
+
 
 def plot_joint_comparison(
     ref_joints_deg: np.ndarray,
@@ -805,25 +812,42 @@ def _plot_ecfx_subplot(
     ik_success: np.ndarray,
     ik_joints_deg: np.ndarray,
     joint_limits_deg: Optional[tuple],
+    selected_solution_indices: Optional[List[Optional[int]]] = None,
 ) -> None:
-    """Draw one ECFX-coloured subplot for a single joint and cf field."""
+    """Draw one ECFX-coloured subplot for a single joint and cf field.
+    
+    Branches are drawn in two passes:
+    - First: non-selected branches at zorder=_Z_EAIK_BRANCHES
+    - Second: selected branch at zorder=_Z_SELECTED_IK (on top, with ECFX color visible)
+    """
+    ax.set_axisbelow(True)
     if joint_limits_deg is not None:
         lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
-        ax.axhspan(lo, hi, alpha=0.12, color='green', zorder=1)
+        ax.axhspan(lo, hi, alpha=0.12, color='green', zorder=_Z_LIMITS)
         ax.axhline(lo, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
         ax.axhline(hi, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
 
     _plot_robotstudio_reference_curve(
-        ax, waypoints, rs_joints_deg[:n_waypoints, j], zorder_base=1.8, eai_marker_s=35.0,
+        ax, waypoints, rs_joints_deg[:n_waypoints, j], zorder_base=_Z_RS_REFERENCE, eai_marker_s=35.0,
     )
 
     seen_labels = set()
+    
+    # First pass: draw all non-selected branches
     for wp in range(n_waypoints):
         sols = all_solutions_list[wp]
         ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+        sel_idx: Optional[int] = None
+        if selected_solution_indices is not None and wp < len(selected_solution_indices):
+            sel_idx = selected_solution_indices[wp]
+        
         if not sols:
             continue
         for s_idx, q_rad in enumerate(sols):
+            # Skip selected solution for this pass (draw it later on top)
+            if sel_idx is not None and s_idx == sel_idx:
+                continue
+            
             q_deg = np.degrees(q_rad)
             cf_val = ecfx_list[s_idx][cf_index] if s_idx < len(ecfx_list) else 0
             color = _get_ecfx_color(cf_val)
@@ -831,13 +855,28 @@ def _plot_ecfx_subplot(
             lbl = lbl_key if lbl_key not in seen_labels else None
             if lbl:
                 seen_labels.add(lbl_key)
-            ax.scatter(wp, q_deg[j], color=color, s=35, zorder=3.5, alpha=0.75, label=lbl)
-
-        if ik_success[wp] and not np.isnan(ik_joints_deg[wp, j]):
-            lbl_sel = 'Selected' if wp == 0 else None
-            ax.scatter(wp, ik_joints_deg[wp, j], color='black', marker='s', s=90,
-                       facecolors='none', edgecolors='black', linewidths=2, zorder=5.5,
-                       label=lbl_sel)
+            ax.scatter(wp, q_deg[j], color=color, s=35, zorder=_Z_EAIK_BRANCHES, alpha=0.75, label=lbl)
+    
+    # Second pass: draw selected branch on top with ECFX color (no black box, just colored)
+    for wp in range(n_waypoints):
+        sols = all_solutions_list[wp]
+        ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+        sel_idx: Optional[int] = None
+        if selected_solution_indices is not None and wp < len(selected_solution_indices):
+            sel_idx = selected_solution_indices[wp]
+        
+        if not sols or sel_idx is None or sel_idx >= len(sols):
+            continue
+        
+        q_rad = sols[sel_idx]
+        q_deg = np.degrees(q_rad)
+        cf_val = ecfx_list[sel_idx][cf_index] if sel_idx < len(ecfx_list) else 0
+        color = _get_ecfx_color(cf_val)
+        # Only label the first waypoint's selected solution in legend (will be replaced below)
+        lbl = 'Selected' if wp == 0 else None
+        # Draw with larger marker and edge to make it stand out, ON TOP, ECFX-colored
+        ax.scatter(wp, q_deg[j], color=color, s=120, zorder=_Z_SELECTED_IK, alpha=0.95,
+                   edgecolors='black', linewidths=2.5, label=lbl)
 
     ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
     ax.set_title(f'Coloured by {cf_name}', fontsize=10, fontweight='bold')
@@ -846,8 +885,38 @@ def _plot_ecfx_subplot(
 
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
+    
+    # Replace the "Selected" legend entry with a hollow circle (no fill, black edge only)
+    if 'Selected' in by_label:
+        from matplotlib.lines import Line2D
+        by_label['Selected'] = Line2D([0], [0], marker='o', color='w', 
+                                       markeredgecolor='black', markeredgewidth=2.5,
+                                       markersize=10, linestyle='None', label='Selected')
+    
     ax.legend(by_label.values(), by_label.keys(), loc='center left',
               bbox_to_anchor=(1, 0.5), fontsize=8)
+
+
+def eaik_selected_branch_index(
+    all_solutions: List[np.ndarray],
+    q_selected: np.ndarray,
+) -> Optional[int]:
+    """Return the branch index EAIK chose: position of *q_selected* in *all_solutions*.
+
+    EAIK's ``solve`` returns the same ndarray object as one entry of
+    ``info['all_solutions']`` (no copy).  We resolve the index with **object
+    identity** (``is``), not floating-point comparison.
+
+    Returns:
+        Index in ``[0, len(all_solutions))``, or ``None`` if *q_selected* is not
+        one of the listed branch arrays (e.g. empty list or future solver change).
+    """
+    if not all_solutions:
+        return None
+    for j, s in enumerate(all_solutions):
+        if s is q_selected:
+            return j
+    return None
 
 
 def _write_ecfx_solutions_csv(
@@ -856,8 +925,13 @@ def _write_ecfx_solutions_csv(
     all_ecfx_labels: List[List[tuple]],
     n_waypoints: int,
     traj_index: Optional[str] = None,
+    *,
+    selected_solution_indices: Optional[List[Optional[int]]] = None,
 ) -> Optional[str]:
-    """Write one row per (waypoint, solution): joints (deg) + ECFX (cf1,cf4,cf6,cfx).
+    """Write one row per (waypoint, solution): joints (deg) + ECFX (cf1,cf4,cf6,cfx) + is_selected.
+
+    *is_selected* is True where ``solution_index`` equals the EAIK branch index for
+    that waypoint (from :func:`eaik_selected_branch_index` / solver output).
 
     Returns the path written, or None if nothing was written.
     """
@@ -874,11 +948,15 @@ def _write_ecfx_solutions_csv(
         'solution_index',
         'j1_deg', 'j2_deg', 'j3_deg', 'j4_deg', 'j5_deg', 'j6_deg',
         'cf1', 'cf4', 'cf6', 'cfx',
+        'is_selected',
     ]
     rows: List[List] = []
     for wp in range(n_waypoints):
         sols = all_solutions_list[wp] if wp < len(all_solutions_list) else []
         ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+        sel_idx: Optional[int] = None
+        if selected_solution_indices is not None and wp < len(selected_solution_indices):
+            sel_idx = selected_solution_indices[wp]
         for s_idx, q_rad in enumerate(sols):
             q_deg = np.degrees(np.asarray(q_rad).flatten())
             if len(q_deg) < 6:
@@ -886,10 +964,12 @@ def _write_ecfx_solutions_csv(
             tup = ecfx_list[s_idx] if s_idx < len(ecfx_list) else (0, 0, 0, 0)
             cf1, cf4, cf6 = int(tup[0]), int(tup[1]), int(tup[2])
             cfx = int(tup[3]) if len(tup) > 3 else 0
+            is_sel = sel_idx is not None and int(sel_idx) == int(s_idx)
             rows.append(
                 [wp, s_idx]
                 + [float(q_deg[i]) for i in range(6)]
                 + [cf1, cf4, cf6, cfx]
+                + [is_sel]
             )
 
     if not rows:
@@ -913,6 +993,7 @@ def plot_all_eaik_solutions(
     limit_waypoints: int = 20,
     traj_index: Optional[str] = None,
     all_ecfx_labels: Optional[List[List[tuple]]] = None,
+    selected_solution_indices: Optional[List[Optional[int]]] = None,
 ) -> None:
     """
     Plot all EAIK solutions vs RobotStudio reference, one file per joint.
@@ -933,10 +1014,14 @@ def plot_all_eaik_solutions(
         traj_index: Optional trajectory name for the title
         all_ecfx_labels: Per-waypoint list of ECFX tuples (cf1,cf4,cf6,cfx)
                          parallel to *all_solutions_list*.
+        selected_solution_indices: Per-waypoint branch index into *all_solutions_list* for
+            the IK solution EAIK returned (same reference as ``info['all_solutions'][k]``).
+            Use :func:`eaik_selected_branch_index` on the solver output; if omitted,
+            *is_selected* in the CSV is all False.
 
     When ECFX data is present, also writes *eaik_all_solutions_ecfx.csv* (or
     *eaik_all_solutions_ecfx__{traj_index}.csv*) in *output_dir* with columns:
-    waypoint, solution_index, j1_deg..j6_deg, cf1, cf4, cf6, cfx.
+    waypoint, solution_index, j1_deg..j6_deg, cf1, cf4, cf6, cfx, is_selected.
     """
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -953,7 +1038,12 @@ def plot_all_eaik_solutions(
 
     if has_ecfx and all_ecfx_labels is not None:
         _write_ecfx_solutions_csv(
-            output_dir, all_solutions_list, all_ecfx_labels, n_waypoints, traj_index
+            output_dir,
+            all_solutions_list,
+            all_ecfx_labels,
+            n_waypoints,
+            traj_index,
+            selected_solution_indices=selected_solution_indices,
         )
 
     cf_fields = [
@@ -970,6 +1060,7 @@ def plot_all_eaik_solutions(
                     axes[row], j, cf_idx, cf_name, n_waypoints, waypoints,
                     rs_joints_deg, all_solutions_list, all_ecfx_labels,
                     ik_success, ik_joints_deg, joint_limits_deg,
+                    selected_solution_indices=selected_solution_indices,
                 )
             axes[-1].set_xlabel('Waypoint Index', fontweight='bold')
             title_str = f"EAIK Solutions (ECFX) - J{j+1} (First {n_waypoints} WPs)"

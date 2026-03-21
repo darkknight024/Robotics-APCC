@@ -65,6 +65,9 @@ from utils.feasibility_plot import (
     plot_task_space_velocity,
     plot_joint_space_trajectory,
     plot_3d_spline_trajectory,
+    plot_task_space_positions_vs_index,
+    plot_task_space_quaternions_vs_index,
+    match_sparse_indices_in_dense_trajectory,
 )
 from utils.math import compute_normalized_joint_energy, compute_safety_tier
 from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S
@@ -555,6 +558,28 @@ def process_toolpath(
                     max_gap_mm=float(wp_cfg.max_gap_mm),
                 )
 
+        # Task-space vs waypoint index (XYZ mm + quaternion wxyz), FK-style layout
+        if getattr(wp_cfg, "task_space_graphs", True):
+            orig_t = original_trajectories_before_dense[local_idx]
+            sparse_idx = None
+            if orig_t is not None:
+                sparse_idx = match_sparse_indices_in_dense_trajectory(trajectory, orig_t)
+            ts_adaptive = getattr(wp_cfg, "task_space_adaptive_scale", False)
+            plot_task_space_positions_vs_index(
+                positions,
+                str(traj_out / f"task_space_position_{traj_name}.png"),
+                title=f"Task-space position — {toolpath_name} — {traj_name}",
+                sparse_original_indices=sparse_idx,
+                adaptive_scale=ts_adaptive,
+            )
+            plot_task_space_quaternions_vs_index(
+                quaternions,
+                str(traj_out / f"task_space_quaternion_{traj_name}.png"),
+                title=f"Task-space quaternion — {toolpath_name} — {traj_name}",
+                sparse_original_indices=sparse_idx,
+                adaptive_scale=ts_adaptive,
+            )
+
         # ── Collect per-trajectory data ─────────────────────────────────────
         c0_dists = c0_result.joint_space_distances.tolist() if c0_result is not None else []
         c0_per_joint = c0_result.per_joint_deltas.tolist() if c0_result is not None else []
@@ -719,6 +744,7 @@ def main():
         cfg.continuity.generate_graphs = False
         cfg.topp_ra.generate_graphs = False
         cfg.waypoint_density.generate_graphs = False
+        cfg.waypoint_density.task_space_graphs = False
         cfg.eaik_multi_solution.generate_graphs = False
     if args.base_frame:
         cfg.use_base_frame = True
