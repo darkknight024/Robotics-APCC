@@ -11,8 +11,11 @@ Generates plots for trajectory feasibility analysis:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from enum import Enum, auto
 from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
+
+from core.feasibility_checks import IkSolutionScoreBreakdown
 
 # Z-order for ECFX / all-solutions plots: grid & limits behind branches,
 # selected point always on top (avoids colour bleed). Keep in sync with generate_plot_ik.py.
@@ -2767,9 +2770,50 @@ def plot_directional_manipulability_per_waypoint(
 # EAIK All-Solutions with Scores
 # =============================================================================
 
+
+class EaikScorePlotComponent(Enum):
+    """Which component of the EAIK multi-solution cost colours the score plot."""
+
+    ALL = auto()
+    C0 = auto()
+    SINGULARITY = auto()
+    MANIPULABILITY = auto()
+
+
+# Change this to pick the colormap variable (not C0 from YAML).
+EAIK_SCORE_PLOT_COMPONENT = EaikScorePlotComponent.ALL
+
+
+def _eaik_plot_value_for_component(
+    bd: IkSolutionScoreBreakdown, component: EaikScorePlotComponent
+) -> float:
+    """Scalar used for colour + annotation for one candidate solution."""
+    if component is EaikScorePlotComponent.ALL:
+        return bd.total
+    if component is EaikScorePlotComponent.C0:
+        return bd.c0
+    if component is EaikScorePlotComponent.SINGULARITY:
+        return bd.singularity
+    if component is EaikScorePlotComponent.MANIPULABILITY:
+        return bd.manipulability_reward
+    return bd.total
+
+
+def _eaik_score_plot_cbar_label(component: EaikScorePlotComponent) -> str:
+    if component is EaikScorePlotComponent.ALL:
+        return "Total cost (lower = better)"
+    if component is EaikScorePlotComponent.C0:
+        return "C0 term w·Δq (lower = better)"
+    if component is EaikScorePlotComponent.SINGULARITY:
+        return "Singularity term w/σ_min (lower = better)"
+    if component is EaikScorePlotComponent.MANIPULABILITY:
+        return "Manipulability reward w·μ (higher = better)"
+    return "Score"
+
+
 def plot_eaik_solutions_with_scores(
     all_solutions_per_waypoint: List[List[np.ndarray]],
-    scores_per_waypoint: List[List[float]],
+    scores_per_waypoint: List[List[IkSolutionScoreBreakdown]],
     selected_joint_angles_deg: np.ndarray,
     output_dir: str,
     joint_limits_deg: Optional[tuple] = None,
@@ -2779,8 +2823,8 @@ def plot_eaik_solutions_with_scores(
     """Plot all EAIK IK solutions per joint with per-solution score colour-map.
 
     One PNG per joint is saved to *output_dir*.  Solutions are scatter-plotted
-    with colour mapped to cost (green = low/good, red = high/bad).  The
-    selected (best) solution is highlighted with a black square outline.
+    with colour mapped to a cost component (see :data:`EAIK_SCORE_PLOT_COMPONENT`).
+    The selected (best) solution is highlighted with a black square outline.
     """
     import os
     from matplotlib.colors import Normalize
@@ -2792,14 +2836,21 @@ def plot_eaik_solutions_with_scores(
     n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
     waypoints = np.arange(n_wp)
 
-    all_scores_flat = [s for wp_scores in scores_per_waypoint[:n_wp] for s in wp_scores]
-    if not all_scores_flat:
+    all_vals_flat: List[float] = []
+    for wp_scores in scores_per_waypoint[:n_wp]:
+        for bd in wp_scores:
+            all_vals_flat.append(_eaik_plot_value_for_component(bd, EAIK_SCORE_PLOT_COMPONENT))
+    if not all_vals_flat:
         return
-    vmin, vmax = min(all_scores_flat), max(all_scores_flat)
+    vmin, vmax = min(all_vals_flat), max(all_vals_flat)
     if vmax - vmin < 1e-12:
         vmax = vmin + 1.0
     norm = Normalize(vmin=vmin, vmax=vmax)
-    cmap = plt.cm.RdYlGn_r  # type: ignore[attr-defined]
+    # Lower cost is better for all except MANIPULABILITY (higher reward is better).
+    if EAIK_SCORE_PLOT_COMPONENT is EaikScorePlotComponent.MANIPULABILITY:
+        cmap = plt.cm.RdYlGn  # type: ignore[attr-defined]
+    else:
+        cmap = plt.cm.RdYlGn_r  # type: ignore[attr-defined]
 
     for j in range(n_joints):
         fig, ax = plt.subplots(figsize=(14, 6))
@@ -2815,11 +2866,12 @@ def plot_eaik_solutions_with_scores(
             wp_scores = scores_per_waypoint[wp]
             if not sols:
                 continue
-            for s_idx, (q_rad, score) in enumerate(zip(sols, wp_scores)):
+            for s_idx, (q_rad, bd) in enumerate(zip(sols, wp_scores)):
                 q_deg = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
-                colour = cmap(norm(score))
+                val = _eaik_plot_value_for_component(bd, EAIK_SCORE_PLOT_COMPONENT)
+                colour = cmap(norm(val))
                 ax.scatter(wp, q_deg, color=colour, s=50, zorder=3, alpha=0.8, edgecolors="k", linewidths=0.3)
-                ax.annotate(f"{score:.2f}", (wp, q_deg), fontsize=5, ha="center",
+                ax.annotate(f"{val:.2f}", (wp, q_deg), fontsize=5, ha="center",
                             va="bottom", textcoords="offset points", xytext=(0, 4), color=colour)
 
             if not np.isnan(selected_joint_angles_deg[wp, j]):
@@ -2830,11 +2882,12 @@ def plot_eaik_solutions_with_scores(
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = fig.colorbar(sm, ax=ax, pad=0.02)
-        cbar.set_label("Score (lower = better)", fontweight="bold")
+        cbar.set_label(_eaik_score_plot_cbar_label(EAIK_SCORE_PLOT_COMPONENT), fontweight="bold")
 
         ax.set_xlabel("Waypoint Index", fontweight="bold")
         ax.set_ylabel(f"J{j+1} (deg)", fontweight="bold")
-        title_str = f"EAIK Solutions with Scores — J{j+1} (first {n_wp} WPs)"
+        comp_str = EAIK_SCORE_PLOT_COMPONENT.name
+        title_str = f"EAIK Solutions with Scores ({comp_str}) — J{j+1} (first {n_wp} WPs)"
         if traj_name:
             title_str += f"\n{traj_name}"
         ax.set_title(title_str, fontweight="bold")

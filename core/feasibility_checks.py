@@ -15,7 +15,8 @@ Public API
 ----------
 - FeasibilityResult    dataclass  (per-waypoint)
 - FeasibilityAnalyzer  class      (orchestrator)
-- score_ik_solution    function   (EAIK multi-solution cost)
+- score_ik_solution_breakdown  (EAIK multi-solution cost; use ``.total`` for scalar cost)
+- IkSolutionScoreBreakdown  dataclass  (per-term cost for plotting)
 - check_reachability   function   (single-waypoint IK)
 
 All low-level metric functions (compute_*) are re-exported from
@@ -106,6 +107,19 @@ def check_reachability(
 
 # ── EAIK scoring ─────────────────────────────────────────────────────────────
 
+# Minimum σ_min used inside the soft singularity penalty (avoids division by zero).
+_SINGULARITY_SOFT_EPS = 1e-9
+
+
+def _singularity_penalty_soft(min_sv: float) -> float:
+    """Softer than raw ``1/σ_min``: ``log(1 + 1/max(σ_min, ε))``.
+
+    Grows slowly as the Jacobian's smallest singular value → 0, so the cost
+    does not dominate C0 / manipulability with unbounded spikes.
+    """
+    return float(np.log1p(1.0 / max(float(min_sv), _SINGULARITY_SOFT_EPS)))
+
+
 DEFAULT_MULTI_SOLUTION_WEIGHTS = {
     "c0": 10.0,
     "singularity": 1.0,
@@ -113,32 +127,54 @@ DEFAULT_MULTI_SOLUTION_WEIGHTS = {
 }
 
 
-def score_ik_solution(
+@dataclass(frozen=True)
+class IkSolutionScoreBreakdown:
+    """Weighted EAIK multi-solution terms (single source of truth for IK branch cost)."""
+
+    c0: float
+    singularity: float
+    manipulability_reward: float
+    total: float
+
+
+def score_ik_solution_breakdown(
     q_candidate: np.ndarray,
     q_prev: Optional[np.ndarray],
     fk_solver,
     characteristic_length_m: float,
     weights: dict,
-) -> float:
-    """Evaluate a candidate IK solution.  Lower cost is better.
+) -> IkSolutionScoreBreakdown:
+    """Score one IK candidate vs previous config. Lower ``total`` is better.
 
-    Terms (no velocity -- timing comes from TOPP-RA later):
-        C0  — joint-space distance to previous config  (highest weight)
-        Singularity — 1 / sigma_min
-        Manipulability — negative Yoshikawa (reward)
+    ``total = c0 + singularity - manipulability_reward``.
+
+    Terms (no velocity — timing comes from TOPP-RA later):
+        * **c0** — ``w_c0 · Δq`` to previous joint config (0 if no *q_prev*)
+        * **singularity** — ``w_s · log(1 + 1/max(σ_min, ε))`` where σ_min is the
+          smallest Jacobian singular value (``ε`` = :data:`_SINGULARITY_SOFT_EPS`).
+          This is a **soft** penalty vs raw ``1/σ_min``, which can explode near singularities.
+        * **manipulability_reward** — ``w_m · μ`` (Yoshikawa); subtracted in *total*
+
+    Use ``breakdown.total`` when a single scalar cost is needed (e.g. argmin over branches).
     """
     jacobian = fk_solver.get_jacobian(q_candidate)
     min_sv = compute_singularity_proximity(jacobian)
     manip = compute_manipulability(jacobian, characteristic_length_m)
-
-    cost = 0.0
-    cost += weights.get("singularity", 1.0) * (1.0 / max(min_sv, 1e-6))
-    cost -= weights.get("manipulability", 0.5) * manip
-
+    w_s = float(weights.get("singularity", 1.0))
+    w_m = float(weights.get("manipulability", 0.5))
+    w_c0 = float(weights.get("c0", 10.0))
+    term_sing = w_s * _singularity_penalty_soft(min_sv)
+    manip_reward = w_m * float(manip)
+    term_c0 = 0.0
     if q_prev is not None:
-        cost += weights.get("c0", 10.0) * compute_joint_space_distance(q_prev, q_candidate)
-
-    return cost
+        term_c0 = w_c0 * float(compute_joint_space_distance(q_prev, q_candidate))
+    total = term_c0 + term_sing - manip_reward
+    return IkSolutionScoreBreakdown(
+        c0=term_c0,
+        singularity=term_sing,
+        manipulability_reward=manip_reward,
+        total=total,
+    )
 
 
 # ── FeasibilityAnalyzer ──────────────────────────────────────────────────────
@@ -281,8 +317,10 @@ class FeasibilityAnalyzer:
         """
         if self.multi_solution_weights is None:
             return result
-        if q_prev is None:
-            return result
+        
+        # NOTE: Commented out for now to use the neutral-biased min_norm as starting posture
+        # if q_prev is None:
+        #     return result
         if result.ik_debug_info is None:
             return result
 
@@ -298,13 +336,13 @@ class FeasibilityAnalyzer:
         best_q = result.joint_positions_rad
 
         for q_cand in candidates:
-            cost = score_ik_solution(
+            cost = score_ik_solution_breakdown(
                 q_cand,
                 q_prev,
                 self.fk_solver,
                 self.characteristic_length_m,
                 self.multi_solution_weights,
-            )
+            ).total
             if cost < best_cost:
                 best_cost = cost
                 best_q = q_cand

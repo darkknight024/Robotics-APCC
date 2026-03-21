@@ -26,8 +26,9 @@ from utils.urdf_loader import load_robot_model, load_robot_model_eaik, load_robo
 from .feasibility_checks import (
     FeasibilityAnalyzer,
     FeasibilityResult,
+    IkSolutionScoreBreakdown,
     check_reachability,
-    score_ik_solution,
+    score_ik_solution_breakdown,
 )
 
 # --- Modular checks (core.checks sub-package) ---
@@ -134,7 +135,8 @@ __all__ = [
     'create_solvers',
     # Feasibility orchestrator
     'FeasibilityAnalyzer', 'FeasibilityResult',
-    'check_reachability', 'score_ik_solution',
+    'IkSolutionScoreBreakdown',
+    'check_reachability', 'score_ik_solution_breakdown',
     # Consolidated singularity
     'SingularityAnalyzer', 'SingularityReport', 'SingularityType', 'SingularityMode',
     # Low-level checks

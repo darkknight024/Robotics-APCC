@@ -26,7 +26,7 @@ from typing import Dict, List, Any, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core import create_solvers, FeasibilityAnalyzer
-from core.feasibility_checks import score_ik_solution
+from core.feasibility_checks import score_ik_solution_breakdown
 from core.topp_check import parameterize_trajectory, ToppraResult
 from core.checks import (
     check_c1_continuity,
@@ -525,7 +525,10 @@ def process_toolpath(
                     if wp_i > 0 and per_wp[wp_i - 1].joint_positions_rad is not None
                     else None
                 )
-                wp_scores = [score_ik_solution(sol, q_prev, fk_solver, robot_reach_m, w) for sol in sols]
+                wp_scores = [
+                    score_ik_solution_breakdown(sol, q_prev, fk_solver, robot_reach_m, w)
+                    for sol in sols
+                ]
                 scores_per_wp.append(wp_scores)
 
             selected_deg = np.array([

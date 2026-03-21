@@ -16,6 +16,10 @@ Format B — Header-based waypoint files:
     waypoint_id,x,y,z,qw,qx,qy,qz,j1,...,speed
     0,1007.84,123.033,1074.79,0.131214,0.664596,0.121108,0.725554,...,100
 
+    TCP pose may also use RobotStudio-style names (mm / unit quaternion), e.g.:
+    j1,j2,...,rs_x_mm,rs_y_mm,rs_z_mm,rs_qw,rs_qx,rs_qy,rs_qz
+    Those columns are mapped to x,y,z,qw,qx,qy,qz before parsing.
+
 Positions are always in millimetres (automatically converted to metres).
 """
 
@@ -30,6 +34,31 @@ logger = logging.getLogger(__name__)
 
 _REQUIRED_POSE_COLUMNS = {"x", "y", "z", "qw", "qx", "qy", "qz"}
 _DEFAULT_SPEED_MM_S = 100.0
+
+# RobotStudio / joint-prefixed CSVs often name TCP pose columns rs_x_mm, rs_qw, …
+# instead of x, y, z, qw, … — map those onto the canonical names used by the parser.
+_POSE_COLUMN_ALIASES = {
+    "x": ("x", "rs_x_mm", "tcp_x_mm", "pos_x_mm", "tcp_x"),
+    "y": ("y", "rs_y_mm", "tcp_y_mm", "pos_y_mm", "tcp_y"),
+    "z": ("z", "rs_z_mm", "tcp_z_mm", "pos_z_mm", "tcp_z"),
+    "qw": ("qw", "rs_qw", "q_w"),
+    "qx": ("qx", "rs_qx", "q_x"),
+    "qy": ("qy", "rs_qy", "q_y"),
+    "qz": ("qz", "rs_qz", "q_z"),
+}
+
+
+def _normalize_pose_column_map(col_map: Dict[str, int]) -> Dict[str, int]:
+    """Fill canonical x,y,z,qw,qx,qy,qz keys from common RobotStudio / alias headers."""
+    out = dict(col_map)
+    for std, aliases in _POSE_COLUMN_ALIASES.items():
+        if std in out:
+            continue
+        for a in aliases:
+            if a in out:
+                out[std] = out[a]
+                break
+    return out
 
 
 @dataclass
@@ -50,6 +79,7 @@ def _detect_header(row: List[str]) -> Optional[Dict[str, int]]:
     except ValueError:
         pass
     col_map = {token.strip().lower(): idx for idx, token in enumerate(row)}
+    col_map = _normalize_pose_column_map(col_map)
     if _REQUIRED_POSE_COLUMNS.issubset(col_map):
         return col_map
     return None
