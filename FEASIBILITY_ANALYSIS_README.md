@@ -43,7 +43,7 @@ Provides the core feasibility logic (solver-agnostic):
 - **compute_singularity_proximity()** – Minimum singular value of Jacobian
 - **compute_condition_number()** – κ = σ_max / σ_min
 - **check_reachability()** – IK solver (Pinocchio or EAIK) with retries
-- **score_ik_solution()** – Weighted cost function for EAIK multi-solution selection (C0 + C1 + singularity − manipulability)
+- **score_ik_solution_breakdown()** – Weighted EAIK multi-solution cost (use ``.total`` for scalar; C0 + soft singularity penalty − manipulability reward)
 - **`_select_best_multi_solution()`** – Scores all `info['all_solutions']` candidates, filters by joint limits, and picks the lowest-cost one
 
 ---
@@ -364,7 +364,7 @@ eaik_multi_solution:
   weights:
     c0: 1.0              # joint-space distance penalty
     c1: 2.0              # velocity ratio penalty
-    singularity: 1.0     # 1/σ_min penalty
+    singularity: 1.0     # weight on w_s·log(1+1/σ_min) (soft singularity penalty)
     manipulability: 0.5  # Yoshikawa reward (subtracted from cost)
 ```
 
@@ -655,29 +655,31 @@ At each waypoint the feasibility analyzer:
 
 1. **Retrieves candidates** — reads `info['all_solutions']` from the EAIK solver (no modifications to `eaik_ik_solver.py`).
 2. **Filters for joint limits** — discards any solution that violates the robot's position limits.
-3. **Scores each candidate** using the cost function:
+3. **Scores each candidate** using the cost function (same as `score_ik_solution_breakdown()` in `core/feasibility_checks.py`):
 
 ```
 cost(q) = w_c0  × ‖Δq‖₂
-         + w_c1  × max_j( |Δq_j| / (Δt × limit_j) )
-         + w_sin × (1 / σ_min)
-         − w_man × manipulability(q)
+         + w_sin × log(1 + 1/max(σ_min, ε))
+         − w_man × μ(q)
 ```
-l
+
+- **σ_min** — smallest singular value of the manipulator Jacobian at `q` (→ 0 near singularities).
+- **ε** — small floor (~`1e-9`) so the log argument stays finite.
+- **μ** — Yoshikawa manipulability (higher is better; it is **subtracted**, so higher μ lowers cost).
+- The **log** singularity term replaces a raw `1/σ_min` penalty so costs stay bounded and comparable to the C0 and manipulability terms near singularities.
 
 | Weight | Effect when increased | Typical use-case |
 |--------|-----------------------|------------------|
 | `c0` | Strongly favours smooth branch transitions; reduces C0 jumps | Trajectories with frequent IK branch switches |
-| `c1` | Heavily penalises exceeding velocity limits; sacrifices smoothness for executability | High-speed toolpaths close to velocity limits |
-| `singularity` | Steers away from singular configurations even if it means larger jumps | Paths near wrist singularities |
+| `singularity` | Stronger push away from small σ_min (still smooth via log) | Paths near wrist or other singularities |
 | `manipulability` | Prefers dexterous configurations (higher Yoshikawa index) | General-purpose — keeps the robot away from kinematic edge cases |
 
 **Tuning guide:**
 
-- Default weights (1.0, 2.0, 1.0, 0.5) give priority to C1 executability while maintaining reasonable C0 smoothness.
-- If the trajectory still shows C0 jumps, increase `c0` to 2.0–3.0.
-- If the trajectory is low-speed and singularity avoidance matters more, increase `singularity` and decrease `c1`.
-- Setting all weights to 0 except `manipulability` turns the scorer into a pure dexterity maximiser.
+- Raise **`c0`** if branch switches still cause large joint jumps.
+- Raise **`singularity`** if candidates cluster too close to singular poses; lower it if the log term still dominates everything else after retuning.
+- Raise **`manipulability`** to prefer dexterity over the other terms.
+- C1 / velocity-limit checks are **separate** (continuity phase); they are **not** part of this branch-selection score.
 
 This feature is **ignored** when the solver is `"pin"` (Pinocchio returns a single solution per call).
 
@@ -724,7 +726,8 @@ When the EAIK solver is used, it returns multiple geometrically valid IK solutio
 
 1. **Collection**: After trajectory analysis completes, for each waypoint, extract all candidates from `ik_debug_info['all_solutions']`.
 2. **Scoring**: Score each candidate using the same cost function as multi-solution selection:
-   - `cost = w_c0 × ‖Δq‖ + w_c1 × max_j(dq_j/dt / limit_j) + w_sing × (1/σ_min) − w_manip × manip`
+   - `cost = w_c0 × ‖Δq‖ + w_sing × log(1 + 1/max(σ_min, ε)) − w_manip × μ`
+   - σ_min is the Jacobian’s smallest singular value; ε is a small floor (~1e‑9). The **log** form avoids unbounded `1/σ_min` spikes near singularities. (C1 velocity terms are not part of this branch score; they appear elsewhere in continuity checks.)
 3. **Visualization**: For each joint, create a scatter plot:
    - **X-axis**: Waypoint index (0 to N-1)
    - **Y-axis**: Joint angle (degrees)

@@ -9,10 +9,11 @@ Generates plots for trajectory feasibility analysis:
 4. Reachability summary across trajectories
 """
 
+import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from enum import Enum, auto
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Union
 from pathlib import Path
 
 from core.feasibility_checks import IkSolutionScoreBreakdown
@@ -3359,6 +3360,102 @@ def plot_task_space_quaternions_vs_index(
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
+
+
+def export_final_trajectory_csv(
+    output_path: Union[str, Path],
+    t_samples_s: np.ndarray,
+    position_m: np.ndarray,
+    quaternion_wxyz: np.ndarray,
+    q_rad: np.ndarray,
+    qdot_rad_s: np.ndarray,
+    qddot_rad_s2: np.ndarray,
+) -> None:
+    """Write TOPP-RA time-parameterized trajectory to CSV.
+
+    Columns: ``time_ms``, task-space ``x_m,y_m,z_m``, ``qw,qx,qy,qz`` (wxyz),
+    joint angles ``j{i}_rad``, joint velocities ``j{i}_dot_rad_s``, joint
+    accelerations ``j{i}_ddot_rad_s2`` for *i* = 1 … *n_joints*.
+
+    Task-space columns must match FK of *q_rad* at each time sample (computed by
+    the caller). All arrays must have the same row count *N*.
+
+    Args:
+        output_path: Path to ``.csv`` file (e.g. per-trajectory folder).
+        t_samples_s: (N,) time stamps in seconds.
+        position_m: (N, 3) TCP position in metres (base frame).
+        quaternion_wxyz: (N, 4) unit quaternion [qw, qx, qy, qz].
+        q_rad: (N, n_joints) joint positions in radians.
+        qdot_rad_s: (N, n_joints) joint velocities from TOPP-RA.
+        qddot_rad_s2: (N, n_joints) joint accelerations from TOPP-RA.
+    """
+    t_samples_s = np.asarray(t_samples_s, dtype=float).reshape(-1)
+    position_m = np.asarray(position_m, dtype=float)
+    quaternion_wxyz = np.asarray(quaternion_wxyz, dtype=float)
+    q_rad = np.asarray(q_rad, dtype=float)
+    qdot_rad_s = np.asarray(qdot_rad_s, dtype=float)
+    qddot_rad_s2 = np.asarray(qddot_rad_s2, dtype=float)
+
+    n = len(t_samples_s)
+    if not (
+        position_m.shape[0] == n
+        and quaternion_wxyz.shape[0] == n
+        and q_rad.shape[0] == n
+        and qdot_rad_s.shape[0] == n
+        and qddot_rad_s2.shape[0] == n
+    ):
+        raise ValueError(
+            "export_final_trajectory_csv: mismatched row counts for time, pose, and joints"
+        )
+    if position_m.shape[1] != 3 or quaternion_wxyz.shape[1] != 4:
+        raise ValueError("export_final_trajectory_csv: expected position (N,3) and quaternion (N,4)")
+    nj = q_rad.shape[1]
+    if qdot_rad_s.shape[1] != nj or qddot_rad_s2.shape[1] != nj:
+        raise ValueError("export_final_trajectory_csv: q, qdot, qddot must share the same n_joints")
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    header: List[str] = [
+        "time_ms",
+        "x_m",
+        "y_m",
+        "z_m",
+        "qw",
+        "qx",
+        "qy",
+        "qz",
+    ]
+    for i in range(nj):
+        header.append(f"j{i + 1}_rad")
+    for i in range(nj):
+        header.append(f"j{i + 1}_dot_rad_s")
+    for i in range(nj):
+        header.append(f"j{i + 1}_ddot_rad_s2")
+
+    time_ms = t_samples_s * 1000.0
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        for row in range(n):
+            line: List[float] = [
+                float(time_ms[row]),
+                float(position_m[row, 0]),
+                float(position_m[row, 1]),
+                float(position_m[row, 2]),
+                float(quaternion_wxyz[row, 0]),
+                float(quaternion_wxyz[row, 1]),
+                float(quaternion_wxyz[row, 2]),
+                float(quaternion_wxyz[row, 3]),
+            ]
+            for j in range(nj):
+                line.append(float(q_rad[row, j]))
+            for j in range(nj):
+                line.append(float(qdot_rad_s[row, j]))
+            for j in range(nj):
+                line.append(float(qddot_rad_s2[row, j]))
+            w.writerow(line)
 
 
 def plot_3d_spline_trajectory(

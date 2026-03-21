@@ -68,6 +68,7 @@ from utils.feasibility_plot import (
     plot_task_space_positions_vs_index,
     plot_task_space_quaternions_vs_index,
     match_sparse_indices_in_dense_trajectory,
+    export_final_trajectory_csv,
 )
 from utils.math import compute_normalized_joint_energy, compute_safety_tier
 from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S
@@ -581,6 +582,19 @@ def process_toolpath(
                 title=f"Task-space quaternion — {toolpath_name} — {traj_name}",
                 sparse_original_indices=sparse_idx,
                 adaptive_scale=ts_adaptive,
+            )
+
+        # TOPP-RA final trajectory (time, task space via FK, joints, qdot, qddot)
+        if topp_result_raw is not None:
+            pos_m_topp, quat_wxyz_topp = fk_solver.solve_batch(topp_result_raw.q_t)
+            export_final_trajectory_csv(
+                traj_out / f"final_trajectory_{traj_name}.csv",
+                topp_result_raw.t_samples,
+                pos_m_topp,
+                quat_wxyz_topp,
+                topp_result_raw.q_t,
+                topp_result_raw.qdot_t,
+                topp_result_raw.qddot_t,
             )
 
         # ── Collect per-trajectory data ─────────────────────────────────────
