@@ -1,0 +1,116 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-surface-0: #0a0a0f;
+    --color-surface-1: #111118;
+    --color-surface-2: #1a1a24;
+    --color-surface-3: #232330;
+    --color-surface-4: #2d2d3d;
+    --color-accent-blue: #3b82f6;
+    --color-border: #2d2d3d;
+  }
+
+  *, *::before, *::after {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-surface-0 text-text-primary font-sans antialiased;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Monospace for all numeric data */
+  [data-numeric],
+  .font-mono,
+  input[type="number"] {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Custom scrollbar for dark theme */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-surface-1);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-surface-4);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3d3d50;
+  }
+
+  /* Selection */
+  ::selection {
+    background: rgba(59, 130, 246, 0.3);
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-surface-2 border border-border rounded-lg;
+  }
+
+  .panel-header {
+    @apply px-3 py-2 border-b border-border text-xs font-medium uppercase tracking-wider text-text-secondary;
+  }
+
+  .btn-primary {
+    @apply px-4 py-2 bg-accent-blue text-white rounded-md text-sm font-medium
+           hover:bg-blue-500 transition-colors duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply px-3 py-1.5 text-sm text-text-secondary rounded-md
+           hover:bg-surface-4 hover:text-text-primary transition-colors duration-150;
+  }
+
+  .input-field {
+    @apply bg-surface-1 border border-border rounded-md px-3 py-1.5 text-sm text-text-primary
+           focus:outline-none focus:border-accent-blue focus:ring-1 focus:ring-accent-blue/30
+           placeholder:text-text-muted;
+  }
+
+  .select-field {
+    @apply bg-surface-1 border border-border rounded-md px-3 py-1.5 text-sm text-text-primary
+           focus:outline-none focus:border-accent-blue cursor-pointer
+           appearance-none;
+  }
+
+  .tab-active {
+    @apply text-text-primary border-b-2 border-accent-blue;
+  }
+
+  .tab-inactive {
+    @apply text-text-secondary hover:text-text-primary border-b-2 border-transparent;
+  }
+}
+
+@layer utilities {
+  .status-green { color: #22c55e; }
+  .status-yellow { color: #eab308; }
+  .status-orange { color: #f97316; }
+  .status-red { color: #ef4444; }
+  .status-blue { color: #3b82f6; }
+  .status-purple { color: #a855f7; }
+  .status-grey { color: #6b7280; }
+}

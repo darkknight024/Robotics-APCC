@@ -1,0 +1,10 @@
+# Robotics-APCC Visualizer — Backend Python Dependencies
+# Install with: pip install -r visualizer/requirements.txt
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+viser>=0.2.0
+yourdfpy>=0.0.56
+scipy>=1.10.0
+pyyaml>=6.0
+numpy>=1.24.0
