@@ -10,6 +10,7 @@ import { ConfigPanel } from '../components/analysis/ConfigPanel'
 import { RunPanel } from '../components/analysis/RunPanel'
 import { ResultsStep } from '../components/analysis/ResultsStep'
 import { KinematicsPlotDashboard } from '../components/plots/KinematicsPlotDashboard'
+import { FeasibilityPlotDashboard } from '../components/plots/FeasibilityPlotDashboard'
 import {
   Database,
   Settings2,
@@ -118,11 +119,15 @@ function RightPanel() {
       <div className="panel-header">Plots & Data</div>
       <div className="flex-1 overflow-y-auto min-h-0 p-2">
         {runResult ? (
-          <KinematicsPlotDashboard result={runResult} />
+          runResult.kind === 'feasibility' ? (
+            <FeasibilityPlotDashboard result={runResult} />
+          ) : (
+            <KinematicsPlotDashboard result={runResult} />
+          )
         ) : (
           <div className="flex flex-col items-center justify-center h-full min-h-[120px] p-4 text-center space-y-2">
             <Database className="w-8 h-8 text-text-muted mx-auto" />
-            <p className="text-xs text-text-muted">Run IK or FK to see kinematics plots</p>
+            <p className="text-xs text-text-muted">Run IK, FK, or feasibility to see plots</p>
           </div>
         )}
       </div>

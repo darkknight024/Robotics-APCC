@@ -11,9 +11,10 @@ import queue
 import sys
 import os
 import uuid
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
@@ -38,6 +39,8 @@ from visualizer.backend.data_detection import (
     waypoint_counts_from_toolpath,
     write_normalized_toolpath_csv,
 )
+from visualizer.backend.feasibility_runner import run_feasibility_pipeline
+from visualizer.backend.json_sanitize import json_sanitize
 from visualizer.backend.pipeline_runner import (
     load_run_result,
     run_fk_pipeline,
@@ -45,16 +48,20 @@ from visualizer.backend.pipeline_runner import (
     save_run_result,
     update_last_job_id,
 )
+from visualizer.backend.final_trajectory_csv import load_final_trajectory_csv, row_at_index
 from visualizer.backend.scene_state import (
     cmd_clear_trajectory_preview,
     cmd_draw_trajectory,
+    cmd_load_feasibility_trajectories,
     cmd_load_robot,
+    cmd_set_tcp_marker,
+    cmd_set_trajectory_visibility,
     cmd_set_waypoint,
 )
 
 # ---- App Setup ----
 
-app = FastAPI(title="Robotics-APCC Visualizer API", version="0.3.0")
+app = FastAPI(title="Robotics-APCC Visualizer API", version="0.4.0")
 _executor = ThreadPoolExecutor(max_workers=4)
 _job_async_queues: Dict[str, asyncio.Queue] = {}
 
@@ -82,6 +89,36 @@ def error_response(msg: str) -> Dict[str, Any]:
 ROBOTS_CONFIG = str(PROJECT_ROOT / "config" / "robots_config.yaml")
 KNIFE_CONFIG = str(PROJECT_ROOT / "config" / "knife_config.yaml")
 
+# Cached dense TOPP CSV payloads (session_dir, job_id, traj_idx) -> parsed dict
+_DENSE_TRAJ_CACHE: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+
+
+def _urdf_link_names(urdf_path: str) -> List[str]:
+    tree = ET.parse(urdf_path)
+    return [el.get("name") for el in tree.iter() if el.tag.endswith("link") and el.get("name")]
+
+
+def _clear_dense_cache_for_session_dir(session_dir: Path) -> None:
+    global _DENSE_TRAJ_CACHE
+    s = str(session_dir.resolve())
+    _DENSE_TRAJ_CACHE = {k: v for k, v in _DENSE_TRAJ_CACHE.items() if k[0] != s}
+
+
+def _get_dense_traj(session_dir: Path, job_id: str, result: Dict[str, Any], ti: int):
+    key = (str(session_dir.resolve()), job_id, ti)
+    if key in _DENSE_TRAJ_CACHE:
+        return _DENSE_TRAJ_CACHE[key]
+    trajs = result.get("trajectory_results") or []
+    if ti < 0 or ti >= len(trajs):
+        return None
+    path = trajs[ti].get("final_trajectory_csv")
+    if not path or not os.path.isfile(path):
+        return None
+    data = load_final_trajectory_csv(path)
+    if data:
+        _DENSE_TRAJ_CACHE[key] = data
+    return data
+
 
 # ---- Scene Queue (set by start.py) ----
 
@@ -97,7 +134,7 @@ def set_scene_queue(q):
 
 @app.get("/api/health")
 async def health():
-    return ok_response({"status": "running", "version": "0.3.0"})
+    return ok_response({"status": "running", "version": "0.4.0"})
 
 
 @app.get("/api/robots")
@@ -220,21 +257,26 @@ async def detect_columns(session_id: str, body: DetectRequest = DetectRequest())
     if not original.exists():
         return error_response("No uploaded CSV in session.")
 
-    column_map = body.column_map or {}
-
+    user_map = body.column_map or {}
     sniff = sniff_csv(original)
-    merged = merge_column_map(sniff.detected_columns, column_map)
-
-    unknown_remaining = [u for u in sniff.unknown_columns if u not in column_map]
+    # Default every unknown column to ignore; explicit user_map overrides.
+    auto_ignore = {u: "ignore" for u in sniff.unknown_columns}
+    full_map = {**auto_ignore, **user_map}
+    merged = merge_column_map(sniff.detected_columns, full_map)
+    unknown_remaining: List[str] = []
 
     normalized_path = session_dir / sm.NORMALIZED_CSV
     warnings: List[str] = list(sniff.warnings)
 
-    if column_map:
+    if sniff.has_header and (sniff.unknown_columns or user_map):
         ok, w = write_normalized_toolpath_csv(original, normalized_path, merged)
         warnings.extend(w)
         if ok:
-            sm.update_metadata(session_dir, active_csv=sm.NORMALIZED_CSV, column_map=column_map)
+            sm.update_metadata(
+                session_dir,
+                active_csv=sm.NORMALIZED_CSV,
+                column_map=full_map,
+            )
             active = normalized_path
         else:
             active = original
@@ -275,6 +317,7 @@ class ConfigureRequest(BaseModel):
     knife_name: Optional[str] = None
     robot_name: str
     trajectory_index: int = 0
+    ee_frame_name: str = "ee_link"
 
 
 @app.post("/api/configure/{session_id}")
@@ -303,6 +346,13 @@ async def configure_session(session_id: str, req: ConfigureRequest):
 
     robot = robots_db[req.robot_name]
     urdf_path = _resolve_urdf(robot.urdf_path)
+
+    links = _urdf_link_names(urdf_path)
+    if req.ee_frame_name not in links:
+        return error_response(
+            f"End-effector link '{req.ee_frame_name}' not found in URDF. "
+            f"Available links (sample): {links[:25]}{'…' if len(links) > 25 else ''}",
+        )
 
     if _scene_queue is not None:
         _scene_queue.put(cmd_load_robot(urdf_path, req.robot_name))
@@ -356,6 +406,7 @@ async def configure_session(session_id: str, req: ConfigureRequest):
         "urdf_path": urdf_path,
         "reach_mm": robot.reach_m * 1000.0,
         "velocity_limits_rad_s": robot.velocity_limits_rad_s or [],
+        "link_names": links,
         **jmeta,
     }
 
@@ -366,6 +417,7 @@ async def configure_session(session_id: str, req: ConfigureRequest):
         robot_name=req.robot_name,
         urdf_path=urdf_path,
         trajectory_index=req.trajectory_index,
+        ee_frame_name=req.ee_frame_name,
     )
 
     return ok_response({
@@ -374,8 +426,55 @@ async def configure_session(session_id: str, req: ConfigureRequest):
     })
 
 
+def _waypoint_colors_feasibility(traj: Dict[str, Any]) -> List[str]:
+    n = int(traj.get("num_waypoints", 0))
+    reach = traj.get("reachable_flags") or []
+    ns = traj.get("near_singularity") or []
+    c0seg = traj.get("c0_segment_violation") or []
+    out: List[str] = []
+    for i in range(n):
+        r_ok = bool(reach[i]) if i < len(reach) else False
+        nsg = bool(ns[i]) if i < len(ns) else False
+        if not r_ok:
+            out.append("#ef4444")
+        elif nsg:
+            out.append("#f97316")
+        elif i > 0 and (i - 1) < len(c0seg) and c0seg[i - 1]:
+            out.append("#eab308")
+        else:
+            out.append("#22c55e")
+    return out
+
+
+def _push_feasibility_to_viser(result: Dict[str, Any]) -> None:
+    if _scene_queue is None:
+        return
+    trajs = result.get("trajectory_results") or []
+    if not trajs:
+        return
+    t = trajs[0]
+    xyz = t.get("tcp_xyz_m") or []
+    colors = _waypoint_colors_feasibility(t)
+    dense_path = t.get("final_trajectory_csv") or ""
+    if dense_path and os.path.isfile(dense_path):
+        _scene_queue.put(
+            cmd_load_feasibility_trajectories(
+                dense_path,
+                xyz,
+                colors,
+                show_input=False,
+                show_dense=True,
+            )
+        )
+    elif len(xyz) == len(colors) and xyz:
+        _scene_queue.put(cmd_draw_trajectory(xyz, colors))
+
+
 def _push_result_to_viser(result: Dict[str, Any]) -> None:
     if _scene_queue is None:
+        return
+    if result.get("kind") == "feasibility":
+        _push_feasibility_to_viser(result)
         return
     xyz = result.get("tcp_xyz") or []
     colors = result.get("waypoint_colors_hex") or []
@@ -537,6 +636,89 @@ async def _execute_fk_job(
     await out_q.put({"type": "done", "result": result})
 
 
+async def _execute_feasibility_job(
+    session_id: str,
+    job_id: str,
+    body: "RunFeasibilityRequest",
+    out_q: asyncio.Queue,
+) -> None:
+    session_dir = sm.session_path(PROJECT_ROOT, session_id)
+    if session_dir is None:
+        await out_q.put({"type": "error", "message": "Session not found"})
+        return
+    meta = sm.read_metadata(session_dir)
+    urdf = meta.get("urdf_path")
+    if not urdf or not os.path.isfile(urdf):
+        robots_db = load_robots_config(ROBOTS_CONFIG)
+        rn = meta.get("robot_name")
+        if rn and rn in robots_db:
+            urdf = _resolve_urdf(robots_db[rn].urdf_path)
+    if not urdf:
+        await out_q.put({"type": "error", "message": "Missing urdf_path; run POST /api/configure first."})
+        return
+    robot_name = meta.get("robot_name")
+    if not robot_name:
+        await out_q.put({"type": "error", "message": "No robot_name in session metadata."})
+        return
+
+    loop = asyncio.get_event_loop()
+    pq: queue.Queue = queue.Queue()
+
+    def worker():
+        try:
+            return run_feasibility_pipeline(
+                session_dir,
+                meta,
+                urdf,
+                robot_name,
+                job_id,
+                body.config,
+                speed_mm_s=body.speed_mm_s,
+                progress=lambda m: pq.put(m),
+            )
+        except Exception as e:
+            pq.put({"type": "error", "message": str(e)})
+            return None
+
+    fut = loop.run_in_executor(_executor, worker)
+
+    while not fut.done():
+        await asyncio.sleep(0.03)
+        while True:
+            try:
+                m = pq.get_nowait()
+                if m.get("type") == "error":
+                    await out_q.put(m)
+                    await asyncio.wrap_future(fut)
+                    return
+                await out_q.put(m)
+            except queue.Empty:
+                break
+
+    while True:
+        try:
+            m = pq.get_nowait()
+            await out_q.put(m)
+        except queue.Empty:
+            break
+
+    try:
+        result = await asyncio.wrap_future(fut)
+    except Exception as e:
+        await out_q.put({"type": "error", "message": str(e)})
+        return
+
+    if result is None:
+        await out_q.put({"type": "error", "message": "Feasibility run failed"})
+        return
+
+    _clear_dense_cache_for_session_dir(session_dir)
+    save_run_result(session_dir, job_id, result)
+    update_last_job_id(session_dir, job_id)
+    _push_result_to_viser(result)
+    await out_q.put({"type": "done", "result": result})
+
+
 class RunIKRequest(BaseModel):
     solver: str = "eaik"
     ee_frame_name: str = "ee_link"
@@ -549,8 +731,17 @@ class RunFKRequest(BaseModel):
     trajectory_index: int = 0
 
 
+class RunFeasibilityRequest(BaseModel):
+    speed_mm_s: float = 100.0
+    config: Optional[Dict[str, Any]] = None
+
+
 class TimelineBody(BaseModel):
     index: int = 0
+    trajectory_index: int = 0
+    time_s: Optional[float] = None
+    """sparse = IK waypoints, dense = TOPP CSV samples, auto = dense if available."""
+    playback: str = "auto"
 
 
 @app.post("/api/run-ik/{session_id}")
@@ -585,6 +776,37 @@ async def post_run_fk(session_id: str, body: RunFKRequest):
     _job_async_queues[job_id] = out_q
     asyncio.create_task(_execute_fk_job(session_id, job_id, body, out_q))
     return ok_response({"job_id": job_id})
+
+
+@app.post("/api/run-feasibility/{session_id}")
+async def post_run_feasibility(session_id: str, body: RunFeasibilityRequest):
+    session_dir = sm.session_path(PROJECT_ROOT, session_id)
+    if session_dir is None:
+        return error_response("Session not found.")
+    meta = sm.read_metadata(session_dir)
+    last = meta.get("last_detection") or {}
+    if not last.get("has_task_space"):
+        return error_response("Feasibility requires task-space data.")
+
+    job_id = str(uuid.uuid4())
+    out_q: asyncio.Queue = asyncio.Queue()
+    _job_async_queues[job_id] = out_q
+    asyncio.create_task(_execute_feasibility_job(session_id, job_id, body, out_q))
+    return ok_response({"job_id": job_id})
+
+
+@app.get("/api/default-feasibility-config")
+async def get_default_feasibility_config():
+    """Expose batch feasibility defaults for the config panel (no YAML in frontend)."""
+    try:
+        from dataclasses import asdict
+
+        from visualizer.backend.feasibility_config_merge import build_feasibility_config
+
+        cfg = build_feasibility_config(str(PROJECT_ROOT), None)
+        return ok_response(json_sanitize(asdict(cfg)))
+    except Exception as e:
+        return error_response(str(e))
 
 
 @app.get("/api/results/{session_id}/{job_id}")
@@ -630,6 +852,46 @@ async def post_timeline(session_id: str, body: TimelineBody):
     if not data or not data.get("result"):
         return error_response("No result data.")
     result = data["result"]
+    if result.get("kind") == "feasibility":
+        trajs = result.get("trajectory_results") or []
+        if not trajs:
+            return error_response("No trajectory results.")
+        ti = max(0, min(int(body.trajectory_index), len(trajs) - 1))
+        t = trajs[ti]
+        pb = (body.playback or "auto").lower()
+        if pb == "dense":
+            want_dense = True
+        elif pb == "sparse":
+            want_dense = False
+        else:
+            want_dense = bool(int(t.get("dense_n_samples") or 0) > 0 and t.get("final_trajectory_csv"))
+        if want_dense:
+            d = _get_dense_traj(session_dir, jid, result, ti)
+            if d is not None:
+                idx = max(0, min(int(body.index), int(d["n_samples"]) - 1))
+                q, tcp = row_at_index(d, idx)
+                if _scene_queue is not None:
+                    _scene_queue.put(cmd_set_waypoint(idx, q))
+                    _scene_queue.put(cmd_set_tcp_marker(tcp[:3], tcp[3:7]))
+                return ok_response(
+                    {
+                        "index": idx,
+                        "n_waypoints": int(d["n_samples"]),
+                        "trajectory_index": ti,
+                        "playback": "dense",
+                    }
+                )
+        jd = t.get("joint_angles_deg") or []
+        n = len(jd)
+        if n == 0:
+            return error_response("Empty trajectory.")
+        idx = max(0, min(int(body.index), n - 1))
+        row_deg = jd[idx]
+        q_rad = [float(x) * np.pi / 180.0 for x in row_deg]
+        if _scene_queue is not None:
+            _scene_queue.put(cmd_set_waypoint(idx, q_rad))
+        return ok_response({"index": idx, "n_waypoints": n, "trajectory_index": ti, "playback": "sparse"})
+
     joints = result.get("joints_rad") or []
     n = len(joints)
     if n == 0:
@@ -639,6 +901,48 @@ async def post_timeline(session_id: str, body: TimelineBody):
     if _scene_queue is not None:
         _scene_queue.put(cmd_set_waypoint(idx, list(map(float, q))))
     return ok_response({"index": idx, "n_waypoints": n})
+
+
+class FeasibilitySceneBody(BaseModel):
+    trajectory_index: int = 0
+
+
+@app.post("/api/session/{session_id}/feasibility-scene")
+async def post_feasibility_scene(session_id: str, body: FeasibilitySceneBody):
+    """Redraw Viser TCP path for a trajectory from the last feasibility result."""
+    session_dir = sm.session_path(PROJECT_ROOT, session_id)
+    if session_dir is None:
+        return error_response("Session not found.")
+    jid = sm.read_metadata(session_dir).get("last_job_id")
+    if not jid:
+        return error_response("No completed run.")
+    data = load_run_result(session_dir, jid)
+    if not data or not data.get("result"):
+        return error_response("No result data.")
+    result = data["result"]
+    if result.get("kind") != "feasibility":
+        return error_response("Last run is not a feasibility result.")
+    trajs = result.get("trajectory_results") or []
+    if not trajs:
+        return error_response("No trajectories.")
+    ti = max(0, min(int(body.trajectory_index), len(trajs) - 1))
+    t = trajs[ti]
+    xyz = t.get("tcp_xyz_m") or []
+    colors = _waypoint_colors_feasibility(t)
+    dense_path = t.get("final_trajectory_csv") or ""
+    if _scene_queue is not None and dense_path and os.path.isfile(dense_path):
+        _scene_queue.put(
+            cmd_load_feasibility_trajectories(
+                dense_path,
+                xyz,
+                colors,
+                show_input=False,
+                show_dense=True,
+            )
+        )
+    elif _scene_queue is not None and len(xyz) == len(colors) and xyz:
+        _scene_queue.put(cmd_draw_trajectory(xyz, colors))
+    return ok_response({"trajectory_index": ti, "n_points": len(xyz)})
 
 
 @app.post("/api/load-robot")

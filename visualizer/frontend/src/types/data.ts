@@ -106,11 +106,95 @@ export interface KinematicsRunResult {
   waypoint_colors_hex?: string[]
 }
 
+export interface FeasibilityToppSeries {
+  t_samples_s: number[]
+  q_rad: number[][]
+  qdot_rad_s: number[][]
+  qddot_rad_s2: number[][]
+}
+
+export interface FeasibilityTrajectoryResult {
+  trajectory_index: number
+  num_waypoints: number
+  reachable_flags: boolean[]
+  tcp_xyz_m: number[][]
+  joint_angles_deg: number[][]
+  manipulability: number[]
+  min_singular_value: number[]
+  condition_number: number[]
+  near_singularity: boolean[]
+  joint_space_distances: number[]
+  per_joint_jumps: number[][]
+  singularity_threshold_used?: number
+  c0_segment_violation?: boolean[] | null
+  topp_result?: { duration_s?: number | null; n_samples?: number; error?: string } | null
+  topp_series?: FeasibilityToppSeries | null
+  /** Absolute path on server to TOPP `final_trajectory_*.csv` (dense playback). */
+  final_trajectory_csv?: string | null
+  dense_n_samples?: number
+}
+
+/** Nested groups aligned with `config/batch_feasibility_config.yaml` (API merges into FeasibilityConfig). */
+export interface FeasibilityConfigPayload {
+  max_ik_failures_per_trajectory?: number
+  singularity?: {
+    enabled?: boolean
+    threshold?: number
+    mode?: string
+    check_j5_only?: boolean
+    j5_threshold_deg?: number
+  }
+  manipulability?: {
+    enabled?: boolean
+    warning?: number
+    translational_warning?: number
+    rotational_warning?: number
+    directional_warning?: number
+  }
+  continuity?: {
+    enabled?: boolean
+    pose_scale_m_per_rad?: number
+    safety_factor?: number
+    default_speed_mm_s?: number
+  }
+  waypoint_density?: {
+    enabled?: boolean
+    check_frequency_hz?: number
+    max_gap_mm?: number
+    interpolate_sparse?: boolean
+    default_speed_mm_s?: number
+  }
+  reachability?: { generate_graphs?: boolean }
+  eaik_multi_solution?: {
+    enabled?: boolean
+    max_waypoints_in_graph?: number
+    weights?: { c0?: number; singularity?: number; manipulability?: number }
+  }
+  topp_ra?: { generate_graphs?: boolean }
+  ranking?: { safety_bin_size?: number; smoothness_weight?: number; dexterity_weight?: number }
+}
+
+/** Result from POST /api/run-feasibility */
+export interface FeasibilityRunResult {
+  kind: 'feasibility'
+  toolpath_name?: string
+  num_trajectories: number
+  trajectory_results: FeasibilityTrajectoryResult[]
+  robot_name?: string
+}
+
+export type AnalysisRunResult = KinematicsRunResult | FeasibilityRunResult
+
 export interface RunConfig {
   solver: 'eaik' | 'pin'
   ee_frame_name: string
   trajectory_index: number
+  /** Phase 4 feasibility */
+  speed_mm_s?: number
+  feasibility?: FeasibilityConfigPayload
 }
+
+export type FeasibilityPlaybackMode = 'sparse' | 'dense'
 
 export type AnalysisStep = 'upload' | 'detect' | 'frame' | 'robot' | 'action' | 'config' | 'run' | 'results'
 export type AnalysisMode = 'ik_only' | 'fk_only' | 'compare' | 'feasibility'

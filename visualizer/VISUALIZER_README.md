@@ -1302,12 +1302,13 @@ Goal: User can run IK and see joint trajectories plotted with timeline cursor.
 ### Phase 4 — Feasibility & Full Plot Groups (Week 3–4)
 Goal: Full feasibility pipeline runs, all plot groups visible.
 
-- [ ] Feasibility run endpoint calling `process_toolpath()` via subprocess
-- [ ] Result loading from dense_trajectory CSV output
-- [ ] Singularity, manipulability, continuity plot groups
-- [ ] TOPP-RA group with real-time axis
-- [ ] Waypoint color coding upgraded (all conditions: singular, C0, C1 violations)
-- [ ] Multi-trajectory support (trajectory selector tabs, switching trajectory updates all plots + scene)
+- [x] Feasibility run endpoint: `POST /api/run-feasibility/{session_id}` calls `process_toolpath()` in a thread pool (lazy-imports `feasibility_analysis` so the server can start without optional deps such as `toppra` until a run)
+- [x] Result JSON from `trajectory_results` (per-waypoint series + embedded `topp_series`); optional CSV still written under `feasibility_runs/{job_id}/`
+- [x] Singularity, manipulability, C0 continuity, and TOPP-RA (time axis) plot groups in `FeasibilityPlotDashboard`
+- [x] Waypoint color coding in Viser: unreachable, near-singularity, C0 segment violation (see `_waypoint_colors_feasibility`); C1 is trajectory-level in the pipeline, not per-waypoint coloring
+- [x] Multi-trajectory: selector + `POST /api/session/{session_id}/feasibility-scene` redraws the TCP path for the chosen trajectory
+
+**Manual acceptance (Phase 4):** Upload task-space CSV → configure robot → choose **Feasibility** → run → WebSocket completes → right panel shows plot groups; scrub timeline (waypoint vs TOPP time per plot id); change trajectory → plots and 3D path update; re-run clears prior job output as usual.
 
 ### Phase 5 — ECFX Branch Plots (Week 4)
 Goal: Full ECFX-colored branch visualization.

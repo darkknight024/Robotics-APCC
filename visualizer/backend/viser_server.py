@@ -11,7 +11,7 @@ import os
 import time
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from multiprocessing import Queue
 
 import numpy as np
@@ -37,6 +37,12 @@ class ViserSceneServer:
         self.current_urdf: Optional[ViserUrdf] = None
         self.current_urdf_model: Optional[yourdfpy.URDF] = None
         self.current_robot_name: str = ""
+        self._tcp_marker = None
+        self._stored_input_wp: Optional[np.ndarray] = None
+        self._stored_input_colors: Optional[List[str]] = None
+        self._dense_positions_cache: Optional[np.ndarray] = None
+        self._vis_show_input: bool = False
+        self._vis_show_dense: bool = True
 
     def start(self):
         """Start the Viser server and begin processing commands."""
@@ -55,6 +61,8 @@ class ViserSceneServer:
             cmd_thread = threading.Thread(target=self._process_commands, daemon=True)
             cmd_thread.start()
 
+        self._setup_trajectory_gui()
+
         # Keep alive
         try:
             while True:
@@ -69,6 +77,117 @@ class ViserSceneServer:
 
         self.server.scene.add_frame("world_frame", show_axes=True,
                                      axes_length=0.15, axes_radius=0.004)
+
+    def _setup_trajectory_gui(self):
+        """Viser checkboxes: toggle input vs TOPP dense path visibility."""
+        if self.server is None:
+            return
+        try:
+            with self.server.gui.add_folder("Trajectory"):
+                cb_in = self.server.gui.add_checkbox("Show input waypoints", initial_value=False)
+                cb_dn = self.server.gui.add_checkbox("Show TOPP (dense) path", initial_value=True)
+
+                @cb_in.on_update
+                def _(_):
+                    self._vis_show_input = bool(cb_in.value)
+                    self._redraw_stored_trajectories()
+
+                @cb_dn.on_update
+                def _(_):
+                    self._vis_show_dense = bool(cb_dn.value)
+                    self._redraw_stored_trajectories()
+        except Exception as e:
+            print(f"Trajectory GUI: {e}")
+
+    def _redraw_stored_trajectories(self):
+        if self.server is None:
+            return
+        try:
+            self.server.scene.remove_by_filter("/trajectory")
+        except Exception:
+            pass
+        if self._dense_positions_cache is not None and self._vis_show_dense and len(self._dense_positions_cache) >= 2:
+            pos = self._dense_positions_cache
+            self.server.scene.add_spline_catmull_rom(
+                "/trajectory/dense_path",
+                pos,
+                tension=0.5,
+                line_width=3.0,
+                color=(0, 255, 0),
+            )
+        if (
+            self._stored_input_wp is not None
+            and self._vis_show_input
+            and len(self._stored_input_wp) >= 2
+        ):
+            positions = self._stored_input_wp
+            colors = self._stored_input_colors or ["#22c55e"] * len(positions)
+            self.server.scene.add_spline_catmull_rom(
+                "/trajectory/input_path",
+                positions,
+                tension=0.5,
+                line_width=2.0,
+                color=(59, 130, 246),
+            )
+            color_map = {
+                "#22c55e": (34, 197, 94),
+                "#eab308": (234, 179, 8),
+                "#f97316": (249, 115, 22),
+                "#ef4444": (239, 68, 68),
+                "#3b82f6": (59, 130, 246),
+            }
+            pc = np.array([color_map.get(c, (34, 197, 94)) for c in colors], dtype=np.uint8)
+            self.server.scene.add_point_cloud(
+                "/trajectory/input_points",
+                points=positions,
+                colors=pc,
+                point_size=0.006,
+            )
+
+    def _load_feasibility_trajectories_cmd(self, cmd: Dict[str, Any]):
+        from visualizer.backend.final_trajectory_csv import load_final_trajectory_csv
+
+        if self.server is None:
+            return
+        path = cmd.get("dense_csv_path") or ""
+        data = load_final_trajectory_csv(path) if path else None
+        inp = cmd.get("input_waypoints") or []
+        cols = cmd.get("input_colors") or []
+        self._vis_show_input = bool(cmd.get("show_input", False))
+        self._vis_show_dense = bool(cmd.get("show_dense", True))
+        self._stored_input_wp = np.array(inp, dtype=float) if inp else None
+        self._stored_input_colors = cols if cols else None
+        if data is not None and data.get("position_m") is not None:
+            pos_full = np.asarray(data["position_m"], dtype=float)
+            if len(pos_full) > 1000:
+                step = max(1, len(pos_full) // 1000)
+                self._dense_positions_cache = pos_full[::step]
+            else:
+                self._dense_positions_cache = pos_full
+        else:
+            self._dense_positions_cache = None
+        self._redraw_stored_trajectories()
+
+    def _set_tcp_marker_cmd(self, cmd: Dict[str, Any]):
+        if self.server is None:
+            return
+        pos = cmd.get("pos") or [0, 0, 0]
+        wxyz = cmd.get("wxyz") or [1, 0, 0, 0]
+        try:
+            if self._tcp_marker is None:
+                self._tcp_marker = self.server.scene.add_frame(
+                    "/tcp_ee_marker",
+                    show_axes=True,
+                    axes_length=0.12,
+                    axes_radius=0.004,
+                    position=tuple(float(x) for x in pos),
+                    wxyz=tuple(float(x) for x in wxyz),
+                )
+            else:
+                self._tcp_marker.position = tuple(float(x) for x in pos)
+                self._tcp_marker.wxyz = tuple(float(x) for x in wxyz)
+        except Exception as e:
+            print(f"TCP marker: {e}")
 
     def _load_default_robot(self):
         """Load the first robot from config as default."""
@@ -131,6 +250,7 @@ class ViserSceneServer:
             self.current_robot_name = robot_name
 
             print(f"Robot '{robot_name}' loaded successfully ({num_joints} joints)")
+            self._tcp_marker = None
 
         except Exception as e:
             print(f"Error loading robot '{robot_name}': {e}")
@@ -208,7 +328,15 @@ class ViserSceneServer:
                 if action == "load_robot":
                     self._load_robot(cmd["urdf_path"], cmd["robot_name"])
                 elif action == "set_waypoint":
-                    self._set_joint_config(cmd["q"])
+                    self._set_joint_config(cmd.get("q", []))
+                elif action == "load_feasibility_trajectories":
+                    self._load_feasibility_trajectories_cmd(cmd)
+                elif action == "set_tcp_marker":
+                    self._set_tcp_marker_cmd(cmd)
+                elif action == "set_trajectory_visibility":
+                    self._vis_show_input = bool(cmd.get("show_input", False))
+                    self._vis_show_dense = bool(cmd.get("show_dense", True))
+                    self._redraw_stored_trajectories()
                 elif action == "draw_trajectory":
                     self._draw_trajectory(cmd["waypoints"], cmd.get("colors", []))
                 elif action == "clear_scene":

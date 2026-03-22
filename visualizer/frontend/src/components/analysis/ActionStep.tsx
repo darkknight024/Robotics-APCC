@@ -17,8 +17,20 @@ export function ActionStep() {
 
   return (
     <div className="p-3 space-y-3 text-xs">
-      <p className="text-text-muted text-xxs">Choose what to run on the loaded CSV (Phase 3).</p>
+      <p className="text-text-muted text-xxs">Choose analysis mode (IK/FK or full feasibility).</p>
       <div className="space-y-2">
+        {canIk && (
+          <button
+            type="button"
+            className={`w-full text-left px-3 py-2 rounded-md border text-xxs ${
+              mode === 'feasibility' ? 'border-accent-blue bg-accent-blue/10' : 'border-border hover:bg-surface-3'
+            }`}
+            onClick={() => pick('feasibility')}
+          >
+            <div className="font-medium text-text-primary">Feasibility pipeline</div>
+            <div className="text-text-muted">IK, TOPP-RA, continuity, singularity, manipulability</div>
+          </button>
+        )}
         {canIk && (
           <button
             type="button"

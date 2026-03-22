@@ -13,12 +13,14 @@ export function unregisterPlotDiv(plotId: string) {
   registry.delete(plotId)
 }
 
-export function broadcastCursorUpdate(waypointIndex: number) {
-  for (const div of registry.values()) {
+/** Waypoint-index plots use `waypointIndex`; `topp_*` plot IDs use `timeS` when provided. */
+export function broadcastCursorUpdate(waypointIndex: number, timeS?: number) {
+  for (const [plotId, div] of registry.entries()) {
+    const x = plotId.startsWith('topp_') && timeS !== undefined ? timeS : waypointIndex
     try {
       void Plotly.relayout(div, {
-        'shapes[0].x0': waypointIndex,
-        'shapes[0].x1': waypointIndex,
+        'shapes[0].x0': x,
+        'shapes[0].x1': x,
       } as Record<string, unknown>)
     } catch {
       /* ignore */

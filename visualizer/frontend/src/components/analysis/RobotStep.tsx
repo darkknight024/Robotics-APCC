@@ -28,6 +28,7 @@ export function RobotStep() {
       knife_name: useBaseFrame ? null : selectedKnife,
       robot_name: selectedRobot,
       trajectory_index: runConfig.trajectory_index,
+      ee_frame_name: runConfig.ee_frame_name || 'ee_link',
     })
     setBusy(false)
     if (!json.ok || !json.data) {

@@ -129,13 +129,13 @@ export function DetectStep() {
                   <span className="font-mono text-xxs flex-1 truncate">{col}</span>
                   <select
                     className="select-field text-xxs flex-shrink-0 max-w-[140px]"
-                    value={mapper[col] || ''}
+                    value={mapper[col] ?? 'ignore'}
                     onChange={(e) =>
                       setMapper((m) => ({ ...m, [col]: e.target.value || 'ignore' }))
                     }
                   >
-                    <option value="">—</option>
-                    {ROLE_OPTIONS.map((o) => (
+                    <option value="ignore">Ignore (default)</option>
+                    {ROLE_OPTIONS.filter((o) => o.value !== 'ignore').map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
                       </option>

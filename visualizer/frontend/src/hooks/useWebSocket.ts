@@ -1,16 +1,16 @@
 import { useCallback, useRef } from 'react'
 import { streamWebSocketUrl } from '../lib/api'
-import type { KinematicsRunResult } from '../types/data'
+import type { AnalysisRunResult } from '../types/data'
 
 type StreamPayload =
   | { type: 'log'; line?: string }
   | { type: 'progress' }
   | { type: 'error'; message?: string }
-  | { type: 'done'; result?: KinematicsRunResult }
+  | { type: 'done'; result?: AnalysisRunResult }
 
 export type JobStreamHandlers = {
   onLogLine?: (line: string) => void
-  onDone?: (result: KinematicsRunResult) => void
+  onDone?: (result: AnalysisRunResult) => void
   /** Server or worker reported failure */
   onServerError?: (message: string) => void
   /** Browser could not use WebSocket — caller may poll GET /api/results */

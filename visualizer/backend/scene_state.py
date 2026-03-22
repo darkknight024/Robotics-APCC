@@ -52,3 +52,28 @@ def cmd_show_ecfx_ghosts(solutions: List[Dict]) -> Dict[str, Any]:
 
 def cmd_clear_trajectory_preview() -> Dict[str, Any]:
     return {"cmd": "clear_trajectory_preview"}
+
+
+def cmd_load_feasibility_trajectories(
+    dense_csv_path: str,
+    input_waypoints: List[List[float]],
+    input_colors: List[str],
+    show_input: bool = False,
+    show_dense: bool = True,
+) -> Dict[str, Any]:
+    return {
+        "cmd": "load_feasibility_trajectories",
+        "dense_csv_path": dense_csv_path,
+        "input_waypoints": input_waypoints,
+        "input_colors": input_colors,
+        "show_input": show_input,
+        "show_dense": show_dense,
+    }
+
+
+def cmd_set_tcp_marker(pos: List[float], wxyz: List[float]) -> Dict[str, Any]:
+    return {"cmd": "set_tcp_marker", "pos": pos, "wxyz": wxyz}
+
+
+def cmd_set_trajectory_visibility(show_input: bool, show_dense: bool) -> Dict[str, Any]:
+    return {"cmd": "set_trajectory_visibility", "show_input": show_input, "show_dense": show_dense}
