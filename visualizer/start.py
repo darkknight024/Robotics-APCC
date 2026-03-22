@@ -73,6 +73,9 @@ def _stream_pipe(pipe, tag: str):
 
 
 def main():
+    # Matplotlib must not use TkAgg in worker threads / subprocesses (shutdown Tk errors).
+    os.environ.setdefault("MPLBACKEND", "Agg")
+
     print(f"""
 {COLORS['bold']}{'=' * 60}
   Robotics-APCC Live Visualizer

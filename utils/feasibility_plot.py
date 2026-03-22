@@ -11,6 +11,10 @@ Generates plots for trajectory feasibility analysis:
 
 import csv
 import numpy as np
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from enum import Enum, auto
 from typing import List, Optional, Dict, Any, Tuple, Union
