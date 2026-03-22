@@ -1,12 +1,18 @@
 import { create } from 'zustand'
-import type { RobotOption, KnifeOption, AnalysisStep, AnalysisMode, DetectionResult } from '../types/data'
+import type {
+  RobotOption,
+  KnifeOption,
+  AnalysisStep,
+  AnalysisMode,
+  DetectionResult,
+  KinematicsRunResult,
+  RunConfig,
+} from '../types/data'
 
 interface AnalysisState {
-  // Current step
   currentStep: AnalysisStep
   setStep: (step: AnalysisStep) => void
 
-  // Robot & knife selections
   robots: RobotOption[]
   setRobots: (robots: RobotOption[]) => void
   selectedRobot: string | null
@@ -17,21 +23,35 @@ interface AnalysisState {
   selectedKnife: string | null
   setSelectedKnife: (name: string | null) => void
 
-  // Data detection
   detectionResult: DetectionResult | null
   setDetectionResult: (result: DetectionResult | null) => void
 
-  // Frame config
   useBaseFrame: boolean
   setUseBaseFrame: (val: boolean) => void
 
-  // Analysis mode
   analysisMode: AnalysisMode | null
   setAnalysisMode: (mode: AnalysisMode) => void
 
-  // Session
   sessionId: string | null
-  setSessionId: (id: string) => void
+  setSessionId: (id: string | null) => void
+
+  runConfig: RunConfig
+  setRunConfig: (c: Partial<RunConfig>) => void
+
+  runResult: KinematicsRunResult | null
+  setRunResult: (r: KinematicsRunResult | null) => void
+
+  lastJobId: string | null
+  setLastJobId: (id: string | null) => void
+
+  timelineIndex: number
+  setTimelineIndex: (i: number) => void
+}
+
+const defaultRunConfig: RunConfig = {
+  solver: 'eaik',
+  ee_frame_name: 'ee_link',
+  trajectory_index: 0,
 }
 
 export const useAnalysisStore = create<AnalysisState>((set) => ({
@@ -59,4 +79,17 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
 
   sessionId: null,
   setSessionId: (id) => set({ sessionId: id }),
+
+  runConfig: { ...defaultRunConfig },
+  setRunConfig: (c) =>
+    set((s) => ({ runConfig: { ...s.runConfig, ...c } })),
+
+  runResult: null,
+  setRunResult: (r) => set({ runResult: r }),
+
+  lastJobId: null,
+  setLastJobId: (id) => set({ lastJobId: id }),
+
+  timelineIndex: 0,
+  setTimelineIndex: (i) => set({ timelineIndex: i }),
 }))

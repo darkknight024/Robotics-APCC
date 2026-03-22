@@ -15,6 +15,7 @@ SESSION_TTL_SEC = 24 * 3600
 ORIGINAL_CSV = "original.csv"
 NORMALIZED_CSV = "normalized.csv"
 METADATA_JSON = "metadata.json"
+RUNS_SUBDIR = "runs"
 
 
 def sessions_root(project_root: Path) -> Path:

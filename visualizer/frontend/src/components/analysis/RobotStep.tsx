@@ -12,6 +12,8 @@ export function RobotStep() {
     useBaseFrame,
     selectedKnife,
     detectionResult,
+    setStep,
+    runConfig,
   } = useAnalysisStore()
   const [busy, setBusy] = useState(false)
 
@@ -25,6 +27,7 @@ export function RobotStep() {
       use_base_frame: useBaseFrame,
       knife_name: useBaseFrame ? null : selectedKnife,
       robot_name: selectedRobot,
+      trajectory_index: runConfig.trajectory_index,
     })
     setBusy(false)
     if (!json.ok || !json.data) {
@@ -57,6 +60,13 @@ export function RobotStep() {
       >
         {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
         Load robot & preview
+      </button>
+      <button
+        type="button"
+        className="btn-secondary text-xxs w-full py-2"
+        onClick={() => setStep('action')}
+      >
+        Continue to analysis (IK/FK)
       </button>
     </div>
   )

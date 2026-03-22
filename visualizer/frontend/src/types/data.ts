@@ -92,6 +92,26 @@ export interface TeleopMetrics {
   ik_method: string
 }
 
+/** Result payload from POST /api/run-ik or run-fk (result field when done) */
+export interface KinematicsRunResult {
+  kind: 'ik' | 'fk'
+  solver: string
+  ee_frame_name: string
+  trajectory_index: number
+  n_waypoints: number
+  joints_deg: number[][]
+  tcp_xyz: number[][]
+  tcp_quat?: number[][]
+  ik_success?: boolean[]
+  waypoint_colors_hex?: string[]
+}
+
+export interface RunConfig {
+  solver: 'eaik' | 'pin'
+  ee_frame_name: string
+  trajectory_index: number
+}
+
 export type AnalysisStep = 'upload' | 'detect' | 'frame' | 'robot' | 'action' | 'config' | 'run' | 'results'
 export type AnalysisMode = 'ik_only' | 'fk_only' | 'compare' | 'feasibility'
 export type TeleopMode = 'task_space' | 'joint_space'
