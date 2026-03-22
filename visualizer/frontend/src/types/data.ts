@@ -30,6 +30,7 @@ export interface DetectionResult {
   num_waypoints_per_trajectory: number[]
   detected_columns: Record<string, string>
   unknown_columns: string[]
+  warnings?: string[]
 }
 
 export interface WaypointStatus {

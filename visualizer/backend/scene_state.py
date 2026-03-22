@@ -48,3 +48,7 @@ def cmd_clear_scene() -> Dict[str, Any]:
 
 def cmd_show_ecfx_ghosts(solutions: List[Dict]) -> Dict[str, Any]:
     return {"cmd": "show_ecfx_ghosts", "solutions": solutions}
+
+
+def cmd_clear_trajectory_preview() -> Dict[str, Any]:
+    return {"cmd": "clear_trajectory_preview"}

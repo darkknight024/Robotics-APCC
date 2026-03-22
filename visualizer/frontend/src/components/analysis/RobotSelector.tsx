@@ -3,27 +3,26 @@ import { ChevronDown, Loader2, Info } from 'lucide-react'
 import { useAnalysisStore } from '../../stores/analysisStore'
 import type { RobotOption } from '../../types/data'
 
-const API_BASE = 'http://localhost:8080'
-
-export function RobotSelector() {
+export function RobotSelector({ skipInitialViserLoad = false }: { skipInitialViserLoad?: boolean }) {
   const { robots, setRobots, selectedRobot, setSelectedRobot } = useAnalysisStore()
 
   const fetchRobots = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/robots`)
+      const res = await fetch('/api/robots')
       const json = await res.json()
       if (json.ok && json.data) {
         setRobots(json.data)
         if (json.data.length > 0 && !selectedRobot) {
           setSelectedRobot(json.data[0].name)
-          // Notify backend to load this robot in Viser
-          loadRobotInViser(json.data[0].name)
+          if (!skipInitialViserLoad) {
+            loadRobotInViser(json.data[0].name)
+          }
         }
       }
     } catch (err) {
       console.error('Failed to fetch robots:', err)
     }
-  }, [setRobots, selectedRobot, setSelectedRobot])
+  }, [setRobots, selectedRobot, setSelectedRobot, skipInitialViserLoad])
 
   useEffect(() => {
     fetchRobots()
@@ -31,7 +30,7 @@ export function RobotSelector() {
 
   const loadRobotInViser = async (robotName: string) => {
     try {
-      await fetch(`${API_BASE}/api/load-robot`, {
+      await fetch('/api/load-robot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ robot_name: robotName }),
@@ -44,6 +43,8 @@ export function RobotSelector() {
   const handleRobotChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const name = e.target.value
     setSelectedRobot(name)
+    // Always update Viser when the user changes selection; skipInitialViserLoad only
+    // suppresses the automatic load of the default robot on first fetch.
     loadRobotInViser(name)
   }
 

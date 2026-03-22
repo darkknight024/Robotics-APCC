@@ -79,6 +79,11 @@
            disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
+  .btn-secondary {
+    @apply px-4 py-2 bg-surface-3 border border-border text-text-primary rounded-md text-sm font-medium
+           hover:bg-surface-4 transition-colors duration-150;
+  }
+
   .btn-ghost {
     @apply px-3 py-1.5 text-sm text-text-secondary rounded-md
            hover:bg-surface-4 hover:text-text-primary transition-colors duration-150;

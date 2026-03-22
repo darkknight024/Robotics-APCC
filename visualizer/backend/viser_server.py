@@ -149,11 +149,21 @@ class ViserSceneServer:
         except Exception as e:
             print(f"Error setting joint config: {e}")
 
+    def _clear_trajectory_preview(self):
+        """Remove prior trajectory geometry so re-configure does not stack duplicates."""
+        if self.server is None:
+            return
+        try:
+            self.server.scene.remove_by_filter("/trajectory")
+        except Exception:
+            pass
+
     def _draw_trajectory(self, waypoints: list, colors: list):
         """Draw trajectory waypoints as a point cloud + spline."""
         if self.server is None or not waypoints:
             return
         try:
+            self._clear_trajectory_preview()
             positions = np.array(waypoints, dtype=float)
             # Draw as spline
             self.server.scene.add_spline_catmull_rom(
@@ -217,6 +227,8 @@ class ViserSceneServer:
                         )
                 elif action == "set_joint_config":
                     self._set_joint_config(cmd["q"])
+                elif action == "clear_trajectory_preview":
+                    self._clear_trajectory_preview()
                 else:
                     print(f"Unknown scene command: {action}")
 
