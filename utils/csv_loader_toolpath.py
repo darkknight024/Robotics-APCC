@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 _REQUIRED_POSE_COLUMNS = {"x", "y", "z", "qw", "qx", "qy", "qz"}
 _DEFAULT_SPEED_MM_S = 100.0
 
+# Set True to keep consecutive duplicate TCP poses (skips _remove_duplicate_waypoints).
+# Set False for normal runs (dedup helps stable Δt / spacing).  True = match raw RS row counts.
+SKIP_REMOVE_DUPLICATE_WAYPOINTS = True
+
 # RobotStudio / joint-prefixed CSVs often name TCP pose columns rs_x_mm, rs_qw, …
 # instead of x, y, z, qw, … — map those onto the canonical names used by the parser.
 _POSE_COLUMN_ALIASES = {
@@ -257,8 +261,10 @@ def _finalize_trajectory(
             traj_array = np.array(current_trajectory, dtype=float)
             speed_array = np.array(current_speeds, dtype=float)
             
-            #  Remove duplicate waypoints during preprocessing
-            traj_filtered, speed_filtered = _remove_duplicate_waypoints(traj_array, speed_array)
+            if SKIP_REMOVE_DUPLICATE_WAYPOINTS:
+                traj_filtered, speed_filtered = traj_array, speed_array
+            else:
+                traj_filtered, speed_filtered = _remove_duplicate_waypoints(traj_array, speed_array)
             
             trajectories.append(traj_filtered)
             speeds.append(speed_filtered)

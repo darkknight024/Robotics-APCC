@@ -2914,6 +2914,108 @@ def _ecfx_color(value: int, cmap_name: str = 'tab10') -> tuple:
     return cmap((value + 4) % 12)
 
 
+def _eaik_match_selected_branch_index(
+    sols: List[np.ndarray],
+    selected_joint_deg: np.ndarray,
+    atol_deg: float = 0.02,
+) -> Optional[int]:
+    """Branch index whose joint angles (deg) match the selected row, or None."""
+    if not sols:
+        return None
+    sel = np.asarray(selected_joint_deg, dtype=float).flatten()
+    if sel.size == 0 or np.any(np.isnan(sel)):
+        return None
+    n = min(int(sel.size), 6)
+    for s_idx, q_rad in enumerate(sols):
+        q_deg = np.degrees(np.asarray(q_rad, dtype=float).flatten())
+        if q_deg.size < n:
+            q_deg = np.pad(q_deg, (0, n - int(q_deg.size)), constant_values=np.nan)
+        if np.allclose(q_deg[:n], sel[:n], atol=atol_deg):
+            return s_idx
+    return None
+
+
+def write_eaik_ecfx_solutions_csv(
+    output_dir: str,
+    all_solutions_per_waypoint: List[List[np.ndarray]],
+    all_ecfx_labels: List[List[tuple]],
+    selected_joint_angles_deg: np.ndarray,
+    *,
+    limit_waypoints: int = 20,
+    traj_name: Optional[str] = None,
+    atol_deg: float = 0.02,
+) -> Optional[str]:
+    """Write one row per (waypoint, solution): joints (deg), ECFX fields, ``is_selected`` 0/1.
+
+    Same waypoint window as :func:`plot_eaik_solutions_with_ecfx` (first *limit_waypoints*).
+    Headers align with ``generate_plot_ik._write_ecfx_solutions_csv`` except ``is_selected`` is
+    integer 0/1.  ``is_selected`` uses full-vector match to *selected_joint_angles_deg* (same
+    tolerance as the ECFX plots).
+
+    Returns the path written, or None if nothing was written.
+    """
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    name = "eaik_all_solutions_ecfx.csv"
+    if traj_name:
+        safe = str(traj_name).replace("/", "_").replace("\\", "_").strip() or "trajectory"
+        name = f"eaik_all_solutions_ecfx__{safe}.csv"
+    csv_path = out_path / name
+
+    n_wp = min(limit_waypoints, len(all_solutions_per_waypoint))
+    if n_wp <= 0:
+        return None
+
+    header = [
+        "waypoint_index",
+        "solution_index",
+        "j1_deg",
+        "j2_deg",
+        "j3_deg",
+        "j4_deg",
+        "j5_deg",
+        "j6_deg",
+        "cf1",
+        "cf4",
+        "cf6",
+        "cfx",
+        "is_selected",
+    ]
+    rows: List[List] = []
+    for wp in range(n_wp):
+        sols = all_solutions_per_waypoint[wp] if wp < len(all_solutions_per_waypoint) else []
+        ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+        sel_row = (
+            selected_joint_angles_deg[wp]
+            if selected_joint_angles_deg.ndim == 2
+            else selected_joint_angles_deg
+        )
+        sel_idx = _eaik_match_selected_branch_index(sols, np.asarray(sel_row), atol_deg=atol_deg)
+        for s_idx, q_rad in enumerate(sols):
+            q_deg = np.degrees(np.asarray(q_rad).flatten())
+            if len(q_deg) < 6:
+                q_deg = np.pad(q_deg, (0, 6 - len(q_deg)), constant_values=np.nan)
+            tup = ecfx_list[s_idx] if s_idx < len(ecfx_list) else (0, 0, 0, 0)
+            cf1, cf4, cf6 = int(tup[0]), int(tup[1]), int(tup[2])
+            cfx = int(tup[3]) if len(tup) > 3 else 0
+            is_sel = 1 if (sel_idx is not None and int(sel_idx) == int(s_idx)) else 0
+            rows.append(
+                [wp, s_idx]
+                + [float(q_deg[i]) for i in range(6)]
+                + [cf1, cf4, cf6, cfx, is_sel]
+            )
+
+    if not rows:
+        return None
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(rows)
+
+    return str(csv_path)
+
+
 def plot_eaik_solutions_with_ecfx(
     all_solutions_per_waypoint: List[List[np.ndarray]],
     all_ecfx_labels: List[List[tuple]],
@@ -2929,6 +3031,11 @@ def plot_eaik_solutions_with_ecfx(
     saved.  Each subplot colours the scatter points by a different ECFX
     field (cf1, cf4, cf6).  The selected solution is highlighted with ECFX color
     and drawn on top (highest z-order) with black edge outline.
+
+    Also writes ``eaik_all_solutions_ecfx.csv`` (or
+    ``eaik_all_solutions_ecfx__{traj_name}.csv`` when *traj_name* is set) via
+    :func:`write_eaik_ecfx_solutions_csv` — all branches, joint angles (deg), cf1/cf4/cf6/cfx,
+    and ``is_selected`` (0/1) for the same waypoint window as the figures.
     """
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -2936,6 +3043,15 @@ def plot_eaik_solutions_with_ecfx(
     n_wp = min(limit_waypoints, len(all_solutions_per_waypoint))
     if n_wp <= 0:
         return
+
+    write_eaik_ecfx_solutions_csv(
+        output_dir,
+        all_solutions_per_waypoint,
+        all_ecfx_labels,
+        selected_joint_angles_deg,
+        limit_waypoints=limit_waypoints,
+        traj_name=traj_name,
+    )
     n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
     waypoints = np.arange(n_wp)
 

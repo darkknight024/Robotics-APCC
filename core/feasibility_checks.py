@@ -126,6 +126,20 @@ DEFAULT_MULTI_SOLUTION_WEIGHTS = {
     "manipulability": 0.5,
 }
 
+# EAIK multi-solution scoring: if True, replace Jacobian σ_min singularity cost with a
+# binary wrist term matching ``SingularityAnalyzer._classify_wrist`` (check_j5_only):
+# ``term_sing = w_s`` when |sin(q5)| < sin(threshold), else ``0``.
+USE_J5_SINGULARITY_ONLY = True
+J5_SINGULARITY_THRESHOLD_DEG = 0.76
+
+
+def _j5_wrist_singularity_band_active(q: np.ndarray, threshold_deg: float) -> bool:
+    """Same geometry as wrist classification with ``check_j5_only`` in ``singularity.py``."""
+    thr_rad = np.radians(float(threshold_deg))
+    q5 = float(q[4]) if len(q) > 4 else 0.0
+    dist_to_singularity = abs(np.sin(q5))
+    return bool(dist_to_singularity < np.sin(thr_rad))
+
 
 @dataclass(frozen=True)
 class IkSolutionScoreBreakdown:
@@ -150,20 +164,27 @@ def score_ik_solution_breakdown(
 
     Terms (no velocity — timing comes from TOPP-RA later):
         * **c0** — ``w_c0 · Δq`` to previous joint config (0 if no *q_prev*)
-        * **singularity** — ``w_s · log(1 + 1/max(σ_min, ε))`` where σ_min is the
-          smallest Jacobian singular value (``ε`` = :data:`_SINGULARITY_SOFT_EPS`).
-          This is a **soft** penalty vs raw ``1/σ_min``, which can explode near singularities.
+        * **singularity** — If :data:`USE_J5_SINGULARITY_ONLY` is False: ``w_s · log(1 + 1/max(σ_min, ε))``
+          (soft σ_min penalty). If True: ``w_s`` when the J5 wrist band matches
+          ``singularity.py`` (|sin(q5)| < sin(threshold deg)), else ``0``.
         * **manipulability_reward** — ``w_m · μ`` (Yoshikawa); subtracted in *total*
 
     Use ``breakdown.total`` when a single scalar cost is needed (e.g. argmin over branches).
     """
     jacobian = fk_solver.get_jacobian(q_candidate)
-    min_sv = compute_singularity_proximity(jacobian)
     manip = compute_manipulability(jacobian, characteristic_length_m)
     w_s = float(weights.get("singularity", 1.0))
     w_m = float(weights.get("manipulability", 0.5))
     w_c0 = float(weights.get("c0", 10.0))
-    term_sing = w_s * _singularity_penalty_soft(min_sv)
+    if USE_J5_SINGULARITY_ONLY:
+        term_sing = w_s * (
+            1.0
+            if _j5_wrist_singularity_band_active(q_candidate, J5_SINGULARITY_THRESHOLD_DEG)
+            else 0.0
+        )
+    else:
+        min_sv = compute_singularity_proximity(jacobian)
+        term_sing = w_s * _singularity_penalty_soft(min_sv)
     manip_reward = w_m * float(manip)
     term_c0 = 0.0
     if q_prev is not None:
@@ -319,8 +340,10 @@ class FeasibilityAnalyzer:
             return result
         
         # NOTE: Commented out for now to use the neutral-biased min_norm as starting posture
-        # if q_prev is None:
-        #     return result
+
+        # TASK: do something about how to choose first solution if q_prev is None
+        if q_prev is None:
+            return result
         if result.ik_debug_info is None:
             return result
 
