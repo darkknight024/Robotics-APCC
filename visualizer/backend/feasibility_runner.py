@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -11,6 +12,7 @@ from utils.config_loader import get_robot_by_name, load_knife_config
 
 from visualizer.backend import session_manager as sm
 from visualizer.backend.feasibility_config_merge import build_feasibility_config
+from visualizer.backend.final_trajectory_csv import load_final_trajectory_csv
 from visualizer.backend.json_sanitize import json_sanitize
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -96,4 +98,10 @@ def run_feasibility_pipeline(
     sanitized["toolpath_csv"] = active
     sanitized["robot_name"] = robot_name
     sanitized["urdf_path"] = urdf_path
+    for tr in sanitized.get("trajectory_results") or []:
+        p = tr.get("final_trajectory_csv")
+        if p and os.path.isfile(str(p)):
+            data = load_final_trajectory_csv(p)
+            if data is not None and data.get("time_ms") is not None:
+                tr["dense_time_ms"] = np.asarray(data["time_ms"], dtype=float).tolist()
     return sanitized

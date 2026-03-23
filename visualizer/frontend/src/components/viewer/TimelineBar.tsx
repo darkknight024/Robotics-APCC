@@ -16,45 +16,87 @@ function waypointCountFromStore(): number {
   return rr.n_waypoints
 }
 
+/** Delay (ms) before advancing from index `i` to `next`. */
+function delayMsForStep(i: number, next: number): number {
+  const s = useAnalysisStore.getState()
+  const sp = Math.max(0.1, s.densePlaybackSpeed)
+  const rr = s.runResult
+  if (!rr) return 280 / sp
+  if (rr.kind === 'feasibility' && s.feasibilityPlayback === 'dense') {
+    const tr = rr.trajectory_results[s.selectedTrajectoryIndex]
+    const times = tr?.dense_time_ms
+    const nw = waypointCountFromStore()
+    if (times && times.length === nw && nw > 1) {
+      let dt: number
+      if (next > i) {
+        dt = times[next]! - times[i]!
+      } else {
+        dt = 280
+      }
+      if (dt <= 0 || dt > 60000) {
+        dt = 280
+      }
+      dt = dt / sp
+      return Math.max(1, Math.min(5000, dt))
+    }
+  }
+  return 280 / sp
+}
+
 export function TimelineBar() {
   const runResult = useAnalysisStore((s) => s.runResult)
   const selectedTrajectoryIndex = useAnalysisStore((s) => s.selectedTrajectoryIndex)
   const feasibilityPlayback = useAnalysisStore((s) => s.feasibilityPlayback)
   const setFeasibilityPlayback = useAnalysisStore((s) => s.setFeasibilityPlayback)
+  const timelinePlaying = useAnalysisStore((s) => s.timelinePlaying)
+  const setTimelinePlaying = useAnalysisStore((s) => s.setTimelinePlaying)
+  const densePlaybackSpeed = useAnalysisStore((s) => s.densePlaybackSpeed)
+  const setDensePlaybackSpeed = useAnalysisStore((s) => s.setDensePlaybackSpeed)
+
   const { timelineIndex, nWaypoints, scrubTo } = useTimeline()
   const scrubRef = useRef(scrubTo)
   scrubRef.current = scrubTo
-  const playing = useRef(false)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    return () => {
-      if (timer.current) clearInterval(timer.current)
+    if (!timelinePlaying || nWaypoints <= 1) return
+    let cancelled = false
+    let handle: ReturnType<typeof setTimeout> | null = null
+
+    const tick = () => {
+      if (cancelled) return
+      const st = useAnalysisStore.getState()
+      if (!st.timelinePlaying) return
+      const nw = waypointCountFromStore()
+      if (nw <= 1) return
+      const i = st.timelineIndex
+      const next = (i + 1) % nw
+      const delay = delayMsForStep(i, next)
+      handle = setTimeout(() => {
+        if (cancelled) return
+        scrubRef.current(next)
+        tick()
+      }, delay)
     }
-  }, [])
+
+    tick()
+    return () => {
+      cancelled = true
+      if (handle !== null) clearTimeout(handle)
+    }
+  }, [
+    timelinePlaying,
+    nWaypoints,
+    runResult,
+    selectedTrajectoryIndex,
+    feasibilityPlayback,
+    densePlaybackSpeed,
+  ])
 
   useEffect(() => {
     if (runResult && nWaypoints > 0) {
       scrubTo(0)
     }
   }, [runResult, nWaypoints, scrubTo, selectedTrajectoryIndex, feasibilityPlayback])
-
-  const togglePlay = () => {
-    playing.current = !playing.current
-    if (timer.current) {
-      clearInterval(timer.current)
-      timer.current = null
-    }
-    if (playing.current) {
-      timer.current = setInterval(() => {
-        const nw = waypointCountFromStore()
-        if (nw <= 1) return
-        const s = useAnalysisStore.getState()
-        const next = (s.timelineIndex + 1) % nw
-        scrubRef.current(next)
-      }, 280)
-    }
-  }
 
   if (nWaypoints <= 0) return null
 
@@ -63,6 +105,8 @@ export function TimelineBar() {
       ? runResult.trajectory_results[selectedTrajectoryIndex]
       : null
   const hasDense = (trFeas?.dense_n_samples ?? 0) > 0
+  const showDenseSpeed =
+    runResult?.kind === 'feasibility' && feasibilityPlayback === 'dense' && hasDense
 
   return (
     <div className="border-t border-border bg-surface-1 px-3 py-2 flex flex-col gap-2 shrink-0">
@@ -82,39 +126,59 @@ export function TimelineBar() {
           </select>
         </div>
       )}
+      {showDenseSpeed && (
+        <label className="flex items-center gap-2 text-xxs text-text-muted">
+          <span className="whitespace-nowrap">Dense speed</span>
+          <input
+            type="range"
+            min={0.1}
+            max={5}
+            step={0.1}
+            value={densePlaybackSpeed}
+            onChange={(e) => setDensePlaybackSpeed(Number(e.target.value))}
+            className="flex-1 accent-accent-blue h-1"
+          />
+          <span className="font-mono w-8">{densePlaybackSpeed.toFixed(1)}×</span>
+        </label>
+      )}
       <div className="flex items-center gap-3 w-full">
-      <span className="text-xxs font-mono text-text-muted">
-        {timelineIndex + 1} / {nWaypoints}
-      </span>
-      <input
-        type="range"
-        min={0}
-        max={nWaypoints - 1}
-        value={timelineIndex}
-        onChange={(e) => scrubTo(Number(e.target.value))}
-        className="flex-1 accent-accent-blue h-1"
-      />
-      <div className="flex items-center gap-1">
-        <button
-          type="button"
-          className="btn-ghost p-1"
-          onClick={() => scrubTo(timelineIndex - 1)}
-          title="Prev"
-        >
-          <SkipBack className="w-3.5 h-3.5" />
-        </button>
-        <button type="button" className="btn-ghost p-1" onClick={togglePlay} title="Play">
-          {playing.current ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-        </button>
-        <button
-          type="button"
-          className="btn-ghost p-1"
-          onClick={() => scrubTo(timelineIndex + 1)}
-          title="Next"
-        >
-          <SkipForward className="w-3.5 h-3.5" />
-        </button>
-      </div>
+        <span className="text-xxs font-mono text-text-muted">
+          {timelineIndex + 1} / {nWaypoints}
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={nWaypoints - 1}
+          value={timelineIndex}
+          onChange={(e) => scrubTo(Number(e.target.value))}
+          className="flex-1 accent-accent-blue h-1"
+        />
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="btn-ghost p-1"
+            onClick={() => scrubTo(timelineIndex - 1)}
+            title="Prev"
+          >
+            <SkipBack className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            className="btn-ghost p-1"
+            onClick={() => setTimelinePlaying(!timelinePlaying)}
+            title="Play"
+          >
+            {timelinePlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost p-1"
+            onClick={() => scrubTo(timelineIndex + 1)}
+            title="Next"
+          >
+            <SkipForward className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   )

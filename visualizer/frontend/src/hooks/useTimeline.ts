@@ -14,6 +14,7 @@ export function useTimeline() {
   const setTimelineIndex = useAnalysisStore((s) => s.setTimelineIndex)
   const selectedTrajectoryIndex = useAnalysisStore((s) => s.selectedTrajectoryIndex)
   const feasibilityPlayback = useAnalysisStore((s) => s.feasibilityPlayback)
+  const timelinePlaying = useAnalysisStore((s) => s.timelinePlaying)
 
   const nWaypoints = useMemo(() => {
     if (!runResult) return 0
@@ -35,9 +36,20 @@ export function useTimeline() {
       let timeS: number | undefined
       if (runResult.kind === 'feasibility') {
         const tr = runResult.trajectory_results[selectedTrajectoryIndex]
-        const dur = tr?.topp_result?.duration_s
-        if (typeof dur === 'number' && dur > 0 && nWaypoints > 1) {
-          timeS = (i / (nWaypoints - 1)) * dur
+        const times = tr?.dense_time_ms
+        if (
+          feasibilityPlayback === 'dense' &&
+          times &&
+          times.length === nWaypoints &&
+          i >= 0 &&
+          i < times.length
+        ) {
+          timeS = times[i] / 1000
+        } else {
+          const dur = tr?.topp_result?.duration_s
+          if (typeof dur === 'number' && dur > 0 && nWaypoints > 1) {
+            timeS = (i / (nWaypoints - 1)) * dur
+          }
         }
       }
 
@@ -49,10 +61,18 @@ export function useTimeline() {
               ? 'dense'
               : 'sparse'
             : 'auto'
-        void postTimelineIndex(sessionId, i, selectedTrajectoryIndex, pb)
+        void postTimelineIndex(sessionId, i, selectedTrajectoryIndex, pb, timelinePlaying)
       }
     },
-    [runResult, nWaypoints, sessionId, setTimelineIndex, selectedTrajectoryIndex, feasibilityPlayback],
+    [
+      runResult,
+      nWaypoints,
+      sessionId,
+      setTimelineIndex,
+      selectedTrajectoryIndex,
+      feasibilityPlayback,
+      timelinePlaying,
+    ],
   )
 
   return {

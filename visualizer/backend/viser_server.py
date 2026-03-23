@@ -43,6 +43,7 @@ class ViserSceneServer:
         self._dense_positions_cache: Optional[np.ndarray] = None
         self._vis_show_input: bool = False
         self._vis_show_dense: bool = True
+        self._vis_ecfx_ghosts_enabled: bool = False
 
     def start(self):
         """Start the Viser server and begin processing commands."""
@@ -62,6 +63,7 @@ class ViserSceneServer:
             cmd_thread.start()
 
         self._setup_trajectory_gui()
+        self._setup_ecfx_ghost_gui()
 
         # Keep alive
         try:
@@ -98,6 +100,30 @@ class ViserSceneServer:
                     self._redraw_stored_trajectories()
         except Exception as e:
             print(f"Trajectory GUI: {e}")
+
+    def _setup_ecfx_ghost_gui(self):
+        """Local toggle: skip ECFX ghost mesh updates when disabled (performance)."""
+        if self.server is None:
+            return
+        try:
+            with self.server.gui.add_folder("ECFX"):
+                cb = self.server.gui.add_checkbox("Show ECFX ghost solutions", initial_value=False)
+
+                @cb.on_update
+                def _(_):
+                    self._vis_ecfx_ghosts_enabled = bool(cb.value)
+                    if not self._vis_ecfx_ghosts_enabled:
+                        self._clear_ecfx_ghosts_visual()
+        except Exception as e:
+            print(f"ECFX GUI: {e}")
+
+    def _clear_ecfx_ghosts_visual(self):
+        if self.server is None:
+            return
+        try:
+            self.server.scene.remove_by_filter("/ecfx_ghosts")
+        except Exception:
+            pass
 
     def _redraw_stored_trajectories(self):
         if self.server is None:
@@ -251,6 +277,7 @@ class ViserSceneServer:
 
             print(f"Robot '{robot_name}' loaded successfully ({num_joints} joints)")
             self._tcp_marker = None
+            self._clear_ecfx_ghosts_visual()
 
         except Exception as e:
             print(f"Error loading robot '{robot_name}': {e}")
@@ -315,6 +342,41 @@ class ViserSceneServer:
         except Exception as e:
             print(f"Error drawing trajectory: {e}")
 
+    def _clear_ecfx_ghosts_cmd(self, _cmd: Optional[Dict[str, Any]] = None):
+        self._clear_ecfx_ghosts_visual()
+
+    def _show_ecfx_ghosts_cmd(self, cmd: Dict[str, Any]):
+        """Semi-transparent duplicate URDF poses for alternate IK branches (current waypoint)."""
+        if self.server is None or self.current_urdf_model is None:
+            return
+        if not self._vis_ecfx_ghosts_enabled:
+            self._clear_ecfx_ghosts_visual()
+            return
+        solutions = cmd.get("solutions") or []
+        self._clear_ecfx_ghosts_visual()
+        if not solutions:
+            return
+        try:
+            urdf_model = self.current_urdf_model
+            max_g = 8
+            for i, sol in enumerate(solutions[:max_g]):
+                q = np.asarray(sol.get("q_rad") or [], dtype=float)
+                if q.size == 0:
+                    continue
+                sel = bool(sol.get("selected"))
+                rgba = (0.45, 0.75, 1.0, 0.52) if sel else (0.55, 0.55, 0.62, 0.28)
+                ghost = ViserUrdf(
+                    self.server,
+                    urdf_or_path=urdf_model,
+                    root_node_name=f"/ecfx_ghosts/g{i}",
+                    mesh_color_override=rgba,
+                    load_meshes=True,
+                    load_collision_meshes=False,
+                )
+                ghost.update_cfg(q)
+        except Exception as e:
+            print(f"ECFX ghosts: {e}")
+
     def _process_commands(self):
         """Process scene update commands from the queue."""
         while True:
@@ -357,6 +419,10 @@ class ViserSceneServer:
                     self._set_joint_config(cmd["q"])
                 elif action == "clear_trajectory_preview":
                     self._clear_trajectory_preview()
+                elif action == "show_ecfx_ghosts":
+                    self._show_ecfx_ghosts_cmd(cmd)
+                elif action == "clear_ecfx_ghosts":
+                    self._clear_ecfx_ghosts_cmd(cmd)
                 else:
                     print(f"Unknown scene command: {action}")
 

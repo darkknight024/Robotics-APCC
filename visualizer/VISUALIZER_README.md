@@ -1313,14 +1313,19 @@ Goal: Full feasibility pipeline runs, all plot groups visible.
 ### Phase 5 — ECFX Branch Plots (Week 4)
 Goal: Full ECFX-colored branch visualization.
 
-- [ ] Backend: compute `compute_ecfx()` for all EAIK solutions, store per waypoint
-- [ ] EcfxBranchPlot component: three graphs (cf1, cf4, cf6 evolution)
-- [ ] ECFX color mapping + scatter point rendering
-- [ ] Selected solution higher z-index / always visible
-- [ ] High density rendering (opacity reduction for non-selected)
-- [ ] ECFX Summary Panel (table view)
-- [ ] ECFX ghost robots in Viser for selected waypoint
-- [ ] Group hidden by default, opened via toggle button
+Section **§13.2** (“six J1–J6 ECFX subplots”) is superseded by **§14.3** (three cf-axis graphs + summary table); the shipped UI follows §14.3.
+
+- [x] Backend: serialize ECFX + all EAIK branches per waypoint from `solve()` `info` (`waypoint_ecfx`); no `compute_ecfx()` in the visualizer
+- [x] EcfxBranchPlot component: three graphs (cf1/J1, cf4/J4, cf6/J6 vs waypoint index)
+- [x] ECFX color mapping + scatter point rendering (exact vs LS markers)
+- [x] Selected solution emphasized (larger marker, black border)
+- [x] High density rendering (opacity reduction for non-selected when `n_waypoints > 200`)
+- [x] ECFX Summary Panel (counts per label per waypoint)
+- [x] ECFX ghost robots in Viser for current waypoint; Viser checkbox + **no ghosts while timeline play is active**
+- [x] ECFX group hidden by default (`ECFX details` checkbox in kinematics dashboard)
+- [x] Feasibility **dense** playback uses CSV `dense_time_ms` with configurable speed (not fixed 280 ms steps)
+
+**Manual acceptance (Phase 5):** EAIK IK run → enable ECFX details → three plots + table; scrub → cursors + summary row; Viser ghosts on scrub if enabled, off during Play until Pause. Pin IK → no ECFX block. Feasibility dense → playback follows `time_ms` between samples.
 
 ### Phase 6 — TeleOp Tab (Week 4–5)
 Goal: User can drive the robot with keyboard in both modes.

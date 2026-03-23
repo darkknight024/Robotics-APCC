@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 import numpy as np
 
@@ -15,6 +15,7 @@ from utils.config_loader import load_ik_config
 
 from visualizer.backend import session_manager as sm
 from visualizer.backend.joint_loader import load_joint_trajectory_rad
+from visualizer.backend.json_sanitize import json_sanitize
 from visualizer.backend.trajectory_session import load_toolpath_trajectory_base_frame
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -24,6 +25,63 @@ IK_CONFIG_PATH = str(PROJECT_ROOT / "config" / "ik_config.yaml")
 
 def _viser_color(success: bool) -> str:
     return "#22c55e" if success else "#ef4444"
+
+
+def _fk_pos_error_mm(fk: Any, q: np.ndarray, target_pos: np.ndarray) -> float:
+    fk_res = fk.solve(q)
+    return float(np.linalg.norm(fk_res.position_m - target_pos) * 1000.0)
+
+
+def _ecfx_waypoint_payload(
+    info: Dict[str, Any],
+    selected_q: np.ndarray,
+    n_joints: int,
+    fk: Any,
+    target_pos: np.ndarray,
+) -> Optional[Dict[str, Any]]:
+    """Build WaypointECFXData-shaped dict from EAIK solve() info."""
+    all_sols = info.get("all_solutions") or []
+    if not all_sols:
+        return None
+    ecfx_labels = info.get("ecfx_labels") or []
+    per_ls = info.get("per_solution_is_ls")
+    if not per_ls or len(per_ls) != len(all_sols):
+        per_ls = [False] * len(all_sols)
+    sq = np.asarray(selected_q, dtype=float).flatten()[:n_joints]
+    solutions: List[Dict[str, Any]] = []
+    selected_idx: Optional[int] = None
+    for i, q_raw in enumerate(all_sols):
+        q = np.asarray(q_raw, dtype=float).flatten()[:n_joints]
+        if selected_idx is None and np.allclose(q, sq, atol=1e-2, rtol=0):
+            selected_idx = i
+        lbl = ecfx_labels[i] if i < len(ecfx_labels) else (0, 0, 0, 0)
+        ecfx = {
+            "cf1": int(lbl[0]),
+            "cf4": int(lbl[1]),
+            "cf6": int(lbl[2]),
+            "cfx": int(lbl[3]) if len(lbl) > 3 else 0,
+        }
+        pos_err_mm = _fk_pos_error_mm(fk, q, target_pos)
+        solutions.append(
+            {
+                "branch_index": i,
+                "ecfx": ecfx,
+                "joint_angles_deg": np.rad2deg(q).tolist(),
+                "is_ls": bool(per_ls[i]),
+                "fk_error_mm": pos_err_mm,
+            }
+        )
+    if selected_idx is None:
+        best = 0
+        best_d = float("inf")
+        for i, q_raw in enumerate(all_sols):
+            q = np.asarray(q_raw, dtype=float).flatten()[:n_joints]
+            d = float(np.linalg.norm(q - sq))
+            if d < best_d:
+                best_d = d
+                best = i
+        selected_idx = best
+    return {"solutions": solutions, "selected_index": int(selected_idx)}
 
 
 def _build_ik_config(solver: str, ee_frame_name: str):
@@ -96,6 +154,7 @@ def run_ik_pipeline(
     tcp_xyz = np.zeros((n, 3))
     tcp_quat = np.zeros((n, 4))
     q_prev: Optional[np.ndarray] = None
+    waypoint_ecfx: List[Optional[Dict[str, Any]]] = [None] * n
 
     log(f"IK: {n} waypoints, solver={solver_lower}, ee={ee_frame_name}")
 
@@ -112,6 +171,10 @@ def run_ik_pipeline(
         success_flags.append(bool(ok))
         joints_rad[i] = q_cur
 
+        if solver_lower == "eaik" and isinstance(info, dict):
+            wp = _ecfx_waypoint_payload(info, q_cur, n_joints, fk, pos)
+            waypoint_ecfx[i] = wp
+
         if progress:
             progress({"type": "progress", "index": i + 1, "total": n})
 
@@ -121,7 +184,7 @@ def run_ik_pipeline(
 
     colors = [_viser_color(s) for s in success_flags]
 
-    return {
+    result: Dict[str, Any] = {
         "kind": "ik",
         "solver": solver_lower,
         "ee_frame_name": ee_frame_name,
@@ -134,6 +197,10 @@ def run_ik_pipeline(
         "ik_success": success_flags,
         "waypoint_colors_hex": colors,
     }
+    if solver_lower == "eaik" and any(w is not None for w in waypoint_ecfx):
+        result["waypoint_ecfx"] = waypoint_ecfx
+
+    return cast(Dict[str, Any], json_sanitize(result))
 
 
 def run_fk_pipeline(

@@ -59,6 +59,12 @@ export interface SolutionBranch {
   fk_error_mm: number
 }
 
+/** Per-waypoint multi-branch payload (EAIK IK only). */
+export interface WaypointECFXData {
+  solutions: SolutionBranch[]
+  selected_index: number
+}
+
 export interface PlotData {
   group: string
   plot_id: string
@@ -104,6 +110,8 @@ export interface KinematicsRunResult {
   tcp_quat?: number[][]
   ik_success?: boolean[]
   waypoint_colors_hex?: string[]
+  /** EAIK multi-solution / ECFX (omitted for Pin). */
+  waypoint_ecfx?: (WaypointECFXData | null)[] | null
 }
 
 export interface FeasibilityToppSeries {
@@ -132,6 +140,8 @@ export interface FeasibilityTrajectoryResult {
   /** Absolute path on server to TOPP `final_trajectory_*.csv` (dense playback). */
   final_trajectory_csv?: string | null
   dense_n_samples?: number
+  /** Milliseconds from TOPP CSV (same length as dense samples) for real-time playback. */
+  dense_time_ms?: number[]
 }
 
 /** Nested groups aligned with `config/batch_feasibility_config.yaml` (API merges into FeasibilityConfig). */

@@ -54,6 +54,13 @@ interface AnalysisState {
   /** After feasibility: dense = TOPP CSV samples, sparse = original IK waypoints. */
   feasibilityPlayback: FeasibilityPlaybackMode
   setFeasibilityPlayback: (m: FeasibilityPlaybackMode) => void
+
+  /** Timeline auto-play (suppresses ECFX ghosts on backend while true). */
+  timelinePlaying: boolean
+  setTimelinePlaying: (v: boolean) => void
+  /** Scales dense TOPP playback (1 = real-time from CSV time_ms). */
+  densePlaybackSpeed: number
+  setDensePlaybackSpeed: (v: number) => void
 }
 
 const defaultRunConfig: RunConfig = {
@@ -121,6 +128,7 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
     set({
       runResult: r,
       selectedTrajectoryIndex: 0,
+      timelinePlaying: false,
       feasibilityPlayback:
         r && r.kind === 'feasibility' && (r.trajectory_results[0]?.dense_n_samples ?? 0) > 0
           ? 'dense'
@@ -147,4 +155,10 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
 
   feasibilityPlayback: 'sparse',
   setFeasibilityPlayback: (m) => set({ feasibilityPlayback: m }),
+
+  timelinePlaying: false,
+  setTimelinePlaying: (v) => set({ timelinePlaying: v }),
+
+  densePlaybackSpeed: 1,
+  setDensePlaybackSpeed: (v) => set({ densePlaybackSpeed: v }),
 }))

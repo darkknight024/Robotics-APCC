@@ -50,6 +50,7 @@ from visualizer.backend.pipeline_runner import (
 )
 from visualizer.backend.final_trajectory_csv import load_final_trajectory_csv, row_at_index
 from visualizer.backend.scene_state import (
+    cmd_clear_ecfx_ghosts,
     cmd_clear_trajectory_preview,
     cmd_draw_trajectory,
     cmd_load_feasibility_trajectories,
@@ -57,6 +58,7 @@ from visualizer.backend.scene_state import (
     cmd_set_tcp_marker,
     cmd_set_trajectory_visibility,
     cmd_set_waypoint,
+    cmd_show_ecfx_ghosts,
 )
 
 # ---- App Setup ----
@@ -102,6 +104,39 @@ def _clear_dense_cache_for_session_dir(session_dir: Path) -> None:
     global _DENSE_TRAJ_CACHE
     s = str(session_dir.resolve())
     _DENSE_TRAJ_CACHE = {k: v for k, v in _DENSE_TRAJ_CACHE.items() if k[0] != s}
+
+
+def _ecfx_viser_solutions_from_waypoint(wp: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build Viser ghost payload: joint angles in rad + selection hint."""
+    sols = wp.get("solutions") or []
+    sel = int(wp.get("selected_index", 0))
+    out: List[Dict[str, Any]] = []
+    for s in sols:
+        deg = s.get("joint_angles_deg") or []
+        q_rad = [float(d) * np.pi / 180.0 for d in deg]
+        bi = int(s.get("branch_index", 0))
+        out.append({"q_rad": q_rad, "selected": bi == sel, "branch_index": bi})
+    return out
+
+
+def _enqueue_ecfx_ghosts_for_ik_result(
+    result: Dict[str, Any], waypoint_idx: int, playback_active: bool
+) -> None:
+    """ECFX ghosts only for IK runs with serialized waypoint_ecfx; cleared during playback."""
+    if _scene_queue is None:
+        return
+    if result.get("kind") != "ik" or playback_active:
+        _scene_queue.put(cmd_clear_ecfx_ghosts())
+        return
+    wecfx = result.get("waypoint_ecfx")
+    if not isinstance(wecfx, list) or waypoint_idx < 0 or waypoint_idx >= len(wecfx):
+        _scene_queue.put(cmd_clear_ecfx_ghosts())
+        return
+    wp = wecfx[waypoint_idx]
+    if not isinstance(wp, dict) or not wp.get("solutions"):
+        _scene_queue.put(cmd_clear_ecfx_ghosts())
+        return
+    _scene_queue.put(cmd_show_ecfx_ghosts(_ecfx_viser_solutions_from_waypoint(wp)))
 
 
 def _get_dense_traj(session_dir: Path, job_id: str, result: Dict[str, Any], ti: int):
@@ -742,6 +777,8 @@ class TimelineBody(BaseModel):
     time_s: Optional[float] = None
     """sparse = IK waypoints, dense = TOPP CSV samples, auto = dense if available."""
     playback: str = "auto"
+    """When True, Viser must not show ECFX ghost geometry (timeline auto-play)."""
+    playback_active: bool = False
 
 
 @app.post("/api/run-ik/{session_id}")
@@ -873,6 +910,7 @@ async def post_timeline(session_id: str, body: TimelineBody):
                 if _scene_queue is not None:
                     _scene_queue.put(cmd_set_waypoint(idx, q))
                     _scene_queue.put(cmd_set_tcp_marker(tcp[:3], tcp[3:7]))
+                    _scene_queue.put(cmd_clear_ecfx_ghosts())
                 return ok_response(
                     {
                         "index": idx,
@@ -890,6 +928,7 @@ async def post_timeline(session_id: str, body: TimelineBody):
         q_rad = [float(x) * np.pi / 180.0 for x in row_deg]
         if _scene_queue is not None:
             _scene_queue.put(cmd_set_waypoint(idx, q_rad))
+            _scene_queue.put(cmd_clear_ecfx_ghosts())
         return ok_response({"index": idx, "n_waypoints": n, "trajectory_index": ti, "playback": "sparse"})
 
     joints = result.get("joints_rad") or []
@@ -900,6 +939,7 @@ async def post_timeline(session_id: str, body: TimelineBody):
     q = joints[idx]
     if _scene_queue is not None:
         _scene_queue.put(cmd_set_waypoint(idx, list(map(float, q))))
+        _enqueue_ecfx_ghosts_for_ik_result(result, idx, bool(body.playback_active))
     return ok_response({"index": idx, "n_waypoints": n})
 
 
