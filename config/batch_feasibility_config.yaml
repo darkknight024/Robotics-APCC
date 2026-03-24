@@ -14,14 +14,14 @@ robots_to_use:
 knife_poses_to_use:
   - "pose_1"
 
-toolpaths_folder: "Assets/Robot APCC/Toolpaths/Sample"
-output_folder: "output/feasibility_batch"
-use_base_frame: false
+toolpaths_folder: "/home/cognitron/gitHub_Repos/Robotics-APCC/Robot_APCC/Experiments/Experiment_20/Results_robostudio_filtered"
+output_folder: "Robot_APCC/Results/Experiment_20/Fesability"
+use_base_frame: true
 
 # =============================================================================
 # Solver
 # =============================================================================
-solver: "pin"
+solver: "eaik"
 
 # =============================================================================
 # Output
@@ -39,7 +39,7 @@ max_ik_failures_per_trajectory: 1
 # Reachability (always runs — IK is the foundation)
 # =============================================================================
 reachability:
-  generate_graphs: true
+  generate_graphs: false
 
 # =============================================================================
 # EAIK Multi-Solution Optimisation
@@ -51,10 +51,10 @@ eaik_multi_solution:
   enabled: true
   weights:
     c0: 10.0
-    singularity: 1.0
-    manipulability: 0.5
+    singularity: 10.0
+    manipulability: 0.0
   generate_graphs: true
-  max_waypoints_in_graph: 25
+  max_waypoints_in_graph: 100
 
 # =============================================================================
 # Singularity
@@ -105,10 +105,11 @@ waypoint_density:
   generate_graphs: true
 
 # =============================================================================
-# TOPP-RA (always runs — cannot be disabled)
+# TOPP-RA
 # =============================================================================
 topp_ra:
-  generate_graphs: true
+  enabled: false
+  generate_graphs: false
 
 # =============================================================================
 # Ranking (used by combinatorial search only)

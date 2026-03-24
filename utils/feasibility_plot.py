@@ -2914,6 +2914,17 @@ def _ecfx_color(value: int, cmap_name: str = 'tab10') -> tuple:
     return cmap((value + 4) % 12)
 
 
+# Distinct colours for ABB cfx 0–7 (matches tab10 first eight; slot index == cfx).
+_CFX_BRANCH_COLORS = (
+    '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f',
+)
+
+
+def _cfx_branch_color(cfx: int) -> str:
+    """Map ``cfx`` in ``0..7`` to a fixed distinct colour."""
+    return _CFX_BRANCH_COLORS[max(0, min(7, int(cfx)))]
+
+
 def _eaik_match_selected_branch_index(
     sols: List[np.ndarray],
     selected_joint_deg: np.ndarray,
@@ -3153,6 +3164,205 @@ def plot_eaik_solutions_with_ecfx(
         plt.close()
 
 
+def plot_eaik_solutions_with_cfx(
+    all_solutions_per_waypoint: List[List[np.ndarray]],
+    all_ecfx_labels: List[List[tuple]],
+    selected_joint_angles_deg: np.ndarray,
+    output_dir: str,
+    scores_per_waypoint: Optional[List[List[IkSolutionScoreBreakdown]]] = None,
+    rs_joints_deg: Optional[np.ndarray] = None,
+    rs_scores: Optional[List[Optional[IkSolutionScoreBreakdown]]] = None,
+    joint_limits_deg: Optional[tuple] = None,
+    limit_waypoints: int = 20,
+    traj_name: Optional[str] = None,
+    atol_deg: float = 0.02,
+) -> None:
+    """Plot EAIK branches coloured by **cfx** (0–7), one figure per joint.
+
+    Uses the fourth ECFX tuple field (``cfx``) from the IK solver — consistent
+    with cfx-indexed ``all_solutions`` where branch index equals ``cfx``.
+    Empty / NaN solutions must be omitted from *all_solutions_per_waypoint*.
+
+    When *scores_per_waypoint* is provided (parallel to *all_solutions_per_waypoint*)
+    the score value (controlled by :data:`EAIK_SCORE_PLOT_COMPONENT`) is annotated
+    next to each point.
+
+    When *rs_joints_deg* is provided (shape ``(N, 6)``), RobotStudio reference
+    joints are overlaid as transparent blue diamonds.  *N* may differ from
+    *n_wp* — only the overlapping range is plotted.
+
+    Non-selected branches use fill colour by ``cfx``. The selected configuration
+    uses the **same** ``cfx`` colour with a black edge and higher z-order.
+    """
+    import os
+    from matplotlib.lines import Line2D
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    n_wp = min(limit_waypoints, len(all_solutions_per_waypoint))
+    if n_wp <= 0:
+        return
+
+    n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
+    waypoints = np.arange(n_wp)
+    component = EAIK_SCORE_PLOT_COMPONENT
+
+    for j in range(n_joints):
+        fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+        ax.set_axisbelow(True)
+
+        if joint_limits_deg is not None:
+            lo, hi = float(joint_limits_deg[0][j]), float(joint_limits_deg[1][j])
+            ax.axhspan(lo, hi, alpha=0.12, color='green', zorder=_Z_ECFX_LIMITS)
+            ax.axhline(lo, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
+            ax.axhline(hi, color='green', linestyle='--', alpha=0.4, linewidth=0.8)
+
+        seen_cfx_labels: set = set()
+
+        # RobotStudio reference overlay (transparent blue diamonds)
+        if rs_joints_deg is not None and len(rs_joints_deg) > 0:
+            n_rs = min(n_wp, len(rs_joints_deg))
+            rs_wp = np.arange(n_rs)
+            ax.scatter(
+                rs_wp, rs_joints_deg[:n_rs, j], marker='D', s=28,
+                color='#1565C0', alpha=0.35, edgecolors='none', zorder=2.0,
+                label='RobotStudio',
+            )
+            if rs_scores is not None:
+                for ri in range(n_rs):
+                    sc = rs_scores[ri] if ri < len(rs_scores) else None
+                    if sc is None:
+                        continue
+                    val = _eaik_plot_value_for_component(sc, component)
+                    if np.isfinite(val):
+                        ax.annotate(
+                            f'{val:.2f}', (ri, rs_joints_deg[ri, j]),
+                            textcoords='offset points', xytext=(0, -8),
+                            fontsize=4, color='#1565C0', alpha=0.6,
+                            ha='center', va='top',
+                        )
+
+        # First pass: all non-selected branches
+        for wp in range(n_wp):
+            sols = all_solutions_per_waypoint[wp]
+            ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+            wp_scores = scores_per_waypoint[wp] if scores_per_waypoint and wp < len(scores_per_waypoint) else []
+            if not sols:
+                continue
+            sel_row = (
+                selected_joint_angles_deg[wp]
+                if selected_joint_angles_deg.ndim == 2
+                else selected_joint_angles_deg
+            )
+            sel_idx = _eaik_match_selected_branch_index(
+                sols, np.asarray(sel_row), atol_deg=atol_deg
+            )
+
+            for s_idx, q_rad in enumerate(sols):
+                if np.any(np.isnan(np.asarray(q_rad, dtype=float).flatten())):
+                    continue
+                if sel_idx is not None and int(s_idx) == int(sel_idx):
+                    continue
+
+                q_deg_scalar = float(np.degrees(np.asarray(q_rad, dtype=float).flatten()[j]))
+                tup = ecfx_list[s_idx] if s_idx < len(ecfx_list) else (0, 0, 0, 0)
+                cfx = int(tup[3]) if len(tup) > 3 else 0
+                cfx = max(0, min(7, cfx))
+                color = _cfx_branch_color(cfx)
+                lbl_key = f'cfx={cfx}'
+                lbl = lbl_key if lbl_key not in seen_cfx_labels else None
+                if lbl:
+                    seen_cfx_labels.add(lbl_key)
+                ax.scatter(
+                    wp, q_deg_scalar, color=color, s=35, zorder=_Z_ECFX_BRANCHES,
+                    alpha=0.75, edgecolors='none', label=lbl,
+                )
+                if s_idx < len(wp_scores):
+                    val = _eaik_plot_value_for_component(wp_scores[s_idx], component)
+                    ax.annotate(
+                        f'{val:.2f}', (wp, q_deg_scalar), fontsize=5, ha='center',
+                        va='bottom', textcoords='offset points', xytext=(0, 4),
+                        color=color, alpha=0.85,
+                    )
+
+        # Second pass: selected (same size/shape, cfx colour, black edge on top)
+        for wp in range(n_wp):
+            sols = all_solutions_per_waypoint[wp]
+            ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+            wp_scores = scores_per_waypoint[wp] if scores_per_waypoint and wp < len(scores_per_waypoint) else []
+            if not sols:
+                continue
+            sel_row = (
+                selected_joint_angles_deg[wp]
+                if selected_joint_angles_deg.ndim == 2
+                else selected_joint_angles_deg
+            )
+            sel_idx = _eaik_match_selected_branch_index(
+                sols, np.asarray(sel_row), atol_deg=atol_deg
+            )
+            if sel_idx is None:
+                continue
+            selected_q_deg = (
+                float(selected_joint_angles_deg[wp, j])
+                if selected_joint_angles_deg.ndim == 2
+                else float(np.asarray(selected_joint_angles_deg).flatten()[j])
+            )
+            if np.isnan(selected_q_deg):
+                continue
+
+            q_rad = sols[int(sel_idx)]
+            if np.any(np.isnan(np.asarray(q_rad, dtype=float).flatten())):
+                continue
+            tup = ecfx_list[int(sel_idx)] if int(sel_idx) < len(ecfx_list) else (0, 0, 0, 0)
+            cfx = int(tup[3]) if len(tup) > 3 else 0
+            cfx = max(0, min(7, cfx))
+            color = _cfx_branch_color(cfx)
+            lbl_key = f'cfx={cfx}'
+            if lbl_key not in seen_cfx_labels:
+                seen_cfx_labels.add(lbl_key)
+                ax.scatter([], [], color=color, s=35, edgecolors='none', label=lbl_key)
+            ax.scatter(
+                wp, selected_q_deg, color=color, s=35, zorder=_Z_ECFX_SELECTED,
+                alpha=0.95, edgecolors='black', linewidths=1.5,
+            )
+            if int(sel_idx) < len(wp_scores):
+                val = _eaik_plot_value_for_component(wp_scores[int(sel_idx)], component)
+                ax.annotate(
+                    f'{val:.2f}', (wp, selected_q_deg), fontsize=6, fontweight='bold',
+                    ha='center', va='bottom', textcoords='offset points', xytext=(0, 5),
+                    color='black',
+                )
+
+        ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
+        ax.set_xlabel('Waypoint Index', fontweight='bold')
+        ax.set_xticks(waypoints)
+        ax.grid(True, alpha=0.3)
+
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        by_label['Selected'] = Line2D(
+            [0], [0], marker='o', color='w',
+            markerfacecolor='white', markeredgecolor='black',
+            markeredgewidth=1.5, markersize=7, linestyle='None', label='Selected',
+        )
+
+        comp_name = component.name
+        ax.legend(by_label.values(), by_label.keys(), loc='center left',
+                  bbox_to_anchor=(1, 0.5), fontsize=8)
+
+        title_str = f'EAIK Solutions (cfx 0–7, score={comp_name}) — J{j+1} (first {n_wp} WPs)'
+        if traj_name:
+            title_str += f'\n{traj_name}'
+        ax.set_title(title_str, fontweight='bold', fontsize=11)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(output_dir, f'eaik_solutions_cfx_j{j+1}.png'),
+            dpi=300, bbox_inches='tight',
+        )
+        plt.close()
+
+
 # =============================================================================
 # Waypoint Density
 # =============================================================================
@@ -3359,12 +3569,16 @@ def plot_task_space_positions_vs_index(
     title: str = "Task-space position (base frame)",
     sparse_original_indices: Optional[np.ndarray] = None,
     adaptive_scale: bool = False,
+    rs_tcp_pos_mm: Optional[np.ndarray] = None,
 ) -> None:
     """1×3 subplots: X, Y, Z position (mm) vs dense waypoint index.
 
     When *sparse_original_indices* is set (after ``interpolate_sparse``), draws every
     dense sample plus highlighted markers at original toolpath indices (FK-style
     colours / scaling similar to :mod:`utils.generate_plot_fk`).
+
+    When *rs_tcp_pos_mm* ``(N, 3)`` is provided, RobotStudio reference TCP positions
+    are overlaid as transparent red diamonds (length may differ from waypoints).
     """
     positions_m = np.asarray(positions_m)
     positions_mm = positions_m * 1000.0
@@ -3374,6 +3588,9 @@ def plot_task_space_positions_vs_index(
 
     if not adaptive_scale:
         all_data = [positions_mm[:, i] for i in range(3)]
+        if rs_tcp_pos_mm is not None and len(rs_tcp_pos_mm) > 0:
+            for i in range(3):
+                all_data.append(rs_tcp_pos_mm[:, i])
         y_min, y_max = _task_space_uniform_scale(all_data)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -3383,6 +3600,15 @@ def plot_task_space_positions_vs_index(
     for idx, name in enumerate(axis_names):
         ax = axes[idx]
         ycol = positions_mm[:, idx]
+
+        if rs_tcp_pos_mm is not None and len(rs_tcp_pos_mm) > 0:
+            n_rs = len(rs_tcp_pos_mm)
+            rs_wp = np.arange(n_rs, dtype=float)
+            ax.scatter(
+                rs_wp, rs_tcp_pos_mm[:, idx], marker='D', s=24,
+                color='#C62828', alpha=0.35, edgecolors='none', zorder=1.5,
+                label='RobotStudio' if idx == 0 else None,
+            )
 
         if sparse_original_indices is not None and len(sparse_original_indices) > 0:
             ax.plot(wp, ycol, "-", color="#90CAF9", linewidth=1.2, alpha=0.75, zorder=1)
@@ -3424,8 +3650,13 @@ def plot_task_space_quaternions_vs_index(
     title: str = "Task-space quaternion (base frame)",
     sparse_original_indices: Optional[np.ndarray] = None,
     adaptive_scale: bool = False,
+    rs_tcp_quat: Optional[np.ndarray] = None,
 ) -> None:
-    """2×2 subplots: qw, qx, qy, qz vs waypoint index ([w,x,y,z] order)."""
+    """2×2 subplots: qw, qx, qy, qz vs waypoint index ([w,x,y,z] order).
+
+    When *rs_tcp_quat* ``(N, 4)`` [qw, qx, qy, qz] is provided, RobotStudio
+    reference quaternions are overlaid as transparent red diamonds.
+    """
     quaternions = np.asarray(quaternions)
     n = len(quaternions)
     wp = np.arange(n, dtype=float)
@@ -3433,6 +3664,9 @@ def plot_task_space_quaternions_vs_index(
 
     if not adaptive_scale:
         all_data = [quaternions[:, i] for i in range(4)]
+        if rs_tcp_quat is not None and len(rs_tcp_quat) > 0:
+            for i in range(4):
+                all_data.append(rs_tcp_quat[:, i])
         y_min, y_max = _task_space_uniform_scale(all_data)
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -3443,6 +3677,15 @@ def plot_task_space_quaternions_vs_index(
         row, col = idx // 2, idx % 2
         ax = axes[row, col]
         ycol = quaternions[:, idx]
+
+        if rs_tcp_quat is not None and len(rs_tcp_quat) > 0:
+            n_rs = len(rs_tcp_quat)
+            rs_wp = np.arange(n_rs, dtype=float)
+            ax.scatter(
+                rs_wp, rs_tcp_quat[:, idx], marker='D', s=24,
+                color='#C62828', alpha=0.35, edgecolors='none', zorder=1.5,
+                label='RobotStudio' if idx == 0 else None,
+            )
 
         if sparse_original_indices is not None and len(sparse_original_indices) > 0:
             ax.plot(wp, ycol, "-", color="#90CAF9", linewidth=1.2, alpha=0.75, zorder=1)

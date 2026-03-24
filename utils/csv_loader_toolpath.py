@@ -387,3 +387,74 @@ def validate_toolpath_csv(csv_path: str) -> Tuple[bool, Optional[str]]:
         return False, str(e)
     except ValueError as e:
         return False, str(e)
+
+
+_RS_JOINT_COLS = ("rs_j1_deg", "rs_j2_deg", "rs_j3_deg", "rs_j4_deg", "rs_j5_deg", "rs_j6_deg")
+_RS_TCP_COLS = ("rs_x_mm", "rs_y_mm", "rs_z_mm", "rs_qw", "rs_qx", "rs_qy", "rs_qz")
+
+
+@dataclass
+class RobotStudioReference:
+    """Optional RobotStudio reference data extracted from toolpath CSV."""
+    joints_deg: Optional[np.ndarray] = None   # (N, 6) — RS joint angles in degrees
+    tcp_pos_mm: Optional[np.ndarray] = None   # (N, 3) — RS TCP XYZ in mm
+    tcp_quat: Optional[np.ndarray] = None     # (N, 4) — RS quaternion [qw, qx, qy, qz]
+
+
+def load_robotstudio_reference(csv_path: str) -> RobotStudioReference:
+    """Extract RobotStudio joint and TCP columns from a toolpath CSV (if present).
+
+    Reads the header to detect ``rs_j1_deg`` … ``rs_j6_deg`` and
+    ``rs_x_mm`` … ``rs_qz`` columns.  Returns ``None`` fields when
+    columns are missing — callers should check before use.
+    """
+    import csv as _csv
+    path = Path(csv_path)
+    if not path.exists():
+        return RobotStudioReference()
+
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = _csv.reader(f)
+        header_row = next(reader, None)
+        if header_row is None:
+            return RobotStudioReference()
+
+        cols = {token.strip().lower(): idx for idx, token in enumerate(header_row)}
+        try:
+            float(header_row[0].strip())
+            return RobotStudioReference()
+        except ValueError:
+            pass
+
+        joint_indices = [cols.get(c) for c in _RS_JOINT_COLS]
+        tcp_indices = [cols.get(c) for c in _RS_TCP_COLS]
+        has_joints = all(i is not None for i in joint_indices)
+        has_tcp = all(i is not None for i in tcp_indices)
+
+        if not has_joints and not has_tcp:
+            return RobotStudioReference()
+
+        joints_rows: List[List[float]] = []
+        tcp_pos_rows: List[List[float]] = []
+        tcp_quat_rows: List[List[float]] = []
+
+        for row in reader:
+            if len(row) < 7:
+                continue
+            try:
+                float(row[0].strip())
+            except ValueError:
+                continue
+
+            if has_joints:
+                joints_rows.append([float(row[i].strip()) for i in joint_indices])  # type: ignore[index]
+            if has_tcp:
+                vals = [float(row[i].strip()) for i in tcp_indices]  # type: ignore[index]
+                tcp_pos_rows.append(vals[:3])
+                tcp_quat_rows.append(vals[3:])
+
+    return RobotStudioReference(
+        joints_deg=np.array(joints_rows) if joints_rows else None,
+        tcp_pos_mm=np.array(tcp_pos_rows) if tcp_pos_rows else None,
+        tcp_quat=np.array(tcp_quat_rows) if tcp_quat_rows else None,
+    )

@@ -29,6 +29,7 @@ from .feasibility_checks import (
     IkSolutionScoreBreakdown,
     check_reachability,
     score_ik_solution_breakdown,
+    select_best_cfx_branch,
 )
 
 # --- Modular checks (core.checks sub-package) ---
@@ -136,7 +137,7 @@ __all__ = [
     # Feasibility orchestrator
     'FeasibilityAnalyzer', 'FeasibilityResult',
     'IkSolutionScoreBreakdown',
-    'check_reachability', 'score_ik_solution_breakdown',
+    'check_reachability', 'score_ik_solution_breakdown', 'select_best_cfx_branch',
     # Consolidated singularity
     'SingularityAnalyzer', 'SingularityReport', 'SingularityType', 'SingularityMode',
     # Low-level checks

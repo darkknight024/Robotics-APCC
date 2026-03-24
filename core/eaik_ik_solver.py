@@ -80,9 +80,10 @@ logger = logging.getLogger(__name__)
 class ECFXLabel(NamedTuple):
     """Configuration label replicating ABB's confdata (cf1, cf4, cf6, cfx).
 
-    For IRB 1400 / 2400 / 3400 / 4400 / 6400 family, cfx is unused and
-    always set to 0.  cf1, cf4, cf6 are quadrant numbers computed as
-    ``floor(theta_deg / 90)`` for axes 1, 4, 6 respectively.
+    For IRB 1400 / 2400 / 3400 / 4400 / 6400 family, cfx is unused; use 0.
+    For IRB 1300 / IRB 140 family, ``compute_ecfx`` fills cfx from raw angles
+    (see ABB RobotWare confdata).  cf1, cf4, cf6 are quadrant numbers computed
+    as ``floor(theta_deg / 90)`` for axes 1, 4, 6 respectively.
     """
     cf1: int
     cf4: int
@@ -100,14 +101,86 @@ def compute_ecfx(q_rad: np.ndarray) -> ECFXLabel:
     do the same.
 
     Uses ``math.floor(theta_deg / 90)`` for joints 1, 4, 6
-    (0-indexed: 0, 3, 5).  cfx is always 0 for IRB 1400.
+    (0-indexed: 0, 3, 5).  For IRB 1300 / IRB 140 family, cfx is a 3-bit index
+    (0–7) from binary flags on the **raw** radians: axis 1 sign, lower-arm
+    sum (axes 2+3), and axis 5 sign.
     """
     q_deg = np.degrees(q_rad)
-    return ECFXLabel(
-        cf1=int(math.floor(q_deg[0] / 90.0)),
-        cf4=int(math.floor(q_deg[3] / 90.0)),
-        cf6=int(math.floor(q_deg[5] / 90.0)),
-        cfx=0,
+    cf1 = int(math.floor(q_deg[0] / 90.0))
+    cf4 = int(math.floor(q_deg[3] / 90.0))
+    cf6 = int(math.floor(q_deg[5] / 90.0))
+    behind_axis1 = int(q_rad[0] < 0)
+    behind_lower_arm = int((q_rad[1] + q_rad[2]) < 0)
+    axis5_negative = int(q_rad[4] < 0)
+    
+    cfx = (4 * behind_axis1) + (2 * behind_lower_arm) + axis5_negative
+    #print(f"behind_axis1: {behind_axis1}, behind_lower_arm: {behind_lower_arm}, axis5_negative: {axis5_negative} cfx: {cfx}")
+    return ECFXLabel(cf1=cf1, cf4=cf4, cf6=cf6, cfx=cfx)
+
+
+def build_cfx_sorted_solutions(
+    raw_solutions: List[np.ndarray],
+    is_ls_flags: List[bool],
+) -> Tuple[
+    List[np.ndarray],
+    List[Optional[bool]],
+    List[Optional[ECFXLabel]],
+    List[tuple],
+    List[Optional[ECFXLabel]],
+]:
+    """
+    Re-order EAIK raw solutions into 8 fixed cfx slots.
+
+    ``compute_ecfx`` is called **once per non-LS raw solution** here; slot index
+    equals ``label.cfx``.  Per-slot labels and boundary flags are reused for
+    ``info`` — no second pass over angles.
+
+    Returns:
+        cfx_solutions — list[8] of shape (6,); NaN row if no solution for that cfx
+        cfx_is_ls — list[8] of bool or None; None if slot is empty
+        slot_ecfx_labels — list[8] of ``ECFXLabel`` or ``None`` (parallel to slots)
+        slot_boundary_flags — list[8] of ``(cf1_b, cf4_b, cf6_b)`` tuples
+        ecfx_per_raw_index — length ``len(raw_solutions)``; label for each raw
+            solution index (``None`` for LS), for arbitrary-order selection logic
+
+    Index ``i`` of ``cfx_solutions`` always corresponds to cfx=i.
+    If two raw solutions map to the same cfx, the first one encountered is kept
+    and a warning is logged.
+    """
+    nan_sol = np.full(6, np.nan)
+    n_raw = len(raw_solutions)
+    cfx_solutions: List[np.ndarray] = [nan_sol.copy() for _ in range(8)]
+    cfx_is_ls: List[Optional[bool]] = [None] * 8
+    slot_ecfx_labels: List[Optional[ECFXLabel]] = [None] * 8
+    slot_boundary_flags: List[tuple] = [(False, False, False)] * 8
+    ecfx_per_raw_index: List[Optional[ECFXLabel]] = [None] * n_raw
+
+    for i, (q_raw, is_ls) in enumerate(zip(raw_solutions, is_ls_flags)):
+        if is_ls:
+            continue
+        label = compute_ecfx(q_raw)
+        ecfx_per_raw_index[i] = label
+        slot = label.cfx
+        if slot < 0 or slot > 7:
+            #logger.warning("cfx=%d out of 0–7 range — skipping", slot)
+            continue
+        if not np.all(np.isnan(cfx_solutions[slot])):
+            #logger.warning(
+            #    "cfx=%d slot already occupied — duplicate EAIK solution, keeping first",
+            #    slot,
+            #)
+            continue
+        cfx_solutions[slot] = q_raw.copy()
+        cfx_is_ls[slot] = False
+        slot_ecfx_labels[slot] = label
+        slot_boundary_flags[slot] = _cf_boundary_flags(q_raw)
+
+    return (
+        cfx_solutions,
+        cfx_is_ls,
+        slot_ecfx_labels,
+        slot_boundary_flags,
+        ecfx_per_raw_index,
     )
 
 
@@ -241,6 +314,12 @@ class EAIKIKSolver(BaseIKSolver):
         }
 
         if n_sol == 0:
+            nan_sol = np.full(self.n_joints, np.nan)
+            info['all_solutions'] = [nan_sol.copy() for _ in range(8)]
+            info['ecfx_labels'] = [None] * 8
+            info['ecfx_boundary_flags'] = [(False, False, False)] * 8
+            info['cfx_sorted_raw_solutions'] = [nan_sol.copy() for _ in range(8)]
+            info['cfx_sorted_is_ls'] = [None] * 8
             info['reason'] = 'no_solution'
             info['solve_method'] = 'no_solution'
             return False, np.zeros(self.n_joints), info
@@ -248,16 +327,35 @@ class EAIKIKSolver(BaseIKSolver):
         # --- Phase 1: normalise raw EAIK angles into URDF joint ranges ---
         raw_solutions = [Q[i, :] for i in range(n_sol)]
 
-        # ECFX must be computed from the RAW angle (before normalisation).
-        # _normalize_to_joint_limits can shift by ±360° to fit URDF limits,
-        # which changes the quadrant but not the physical configuration.
-        all_ecfx = [compute_ecfx(s) for s in raw_solutions]
-        all_boundary = [_cf_boundary_flags(s) for s in raw_solutions]
-        info['ecfx_labels'] = [tuple(lbl) for lbl in all_ecfx]
-        info['ecfx_boundary_flags'] = all_boundary
+        # ECFX from raw angles: single pass in ``build_cfx_sorted_solutions``
+        # (per-slot labels + parallel list for arbitrary-order selection).
+        is_ls_per_sol = [
+            bool(is_ls_raw[i]) if hasattr(is_ls_raw, '__len__') else bool(is_ls_raw)
+            for i in range(n_sol)
+        ]
+        (
+            cfx_sorted_raw,
+            cfx_sorted_is_ls,
+            slot_ecfx_labels,
+            slot_boundary_flags,
+            all_ecfx,
+        ) = build_cfx_sorted_solutions(raw_solutions, is_ls_per_sol)
+        info['cfx_sorted_raw_solutions'] = cfx_sorted_raw
+        info['cfx_sorted_is_ls'] = cfx_sorted_is_ls
 
+        # Build cfx-indexed info arrays (8 slots, NaN for missing cfx)
+        info['all_solutions'] = [
+            self._normalize_to_joint_limits(q) if not np.all(np.isnan(q)) else q.copy()
+            for q in cfx_sorted_raw
+        ]
+        info['ecfx_labels'] = [
+            tuple(lbl) if lbl is not None else None
+            for lbl in slot_ecfx_labels
+        ]
+        info['ecfx_boundary_flags'] = slot_boundary_flags
+
+        # Arbitrary-order normalized solutions for internal exact/LS classification
         normalized_solutions = [self._normalize_to_joint_limits(s) for s in raw_solutions]
-        info['all_solutions'] = normalized_solutions
 
         # --- Phase 2: classify exact vs least-squares ---
         exact_sols: List[np.ndarray] = []
@@ -479,9 +577,9 @@ class EAIKIKSolver(BaseIKSolver):
                 orig_idx = compliant_indices[local_idx]
                 return solutions[orig_idx], ecfx_labels[orig_idx]
             else:
-                logger.warning(
+                logger.debug(
                     "No compliant ECFX solution found (prev=%s) — "
-                    "configuration jump, falling back to min_norm",
+                    "falling back to min_norm (global cfx selection overrides later)",
                     prev,
                 )
                 idx = self._select_min_norm(solutions)

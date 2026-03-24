@@ -23,8 +23,9 @@ All low-level metric functions (compute_*) are re-exported from
 ``core.checks`` for backward compatibility.
 """
 
+import logging
 import numpy as np
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 
 from utils.math import (
@@ -63,6 +64,8 @@ from utils.config_loader import (
     get_default_velocity_limits_rad_s,
     get_default_joint_jump_limit_rad
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── Per-waypoint result ──────────────────────────────────────────────────────
@@ -198,6 +201,84 @@ def score_ik_solution_breakdown(
     )
 
 
+_N_CFX = 8
+
+
+def select_best_cfx_branch(
+    per_wp_results: List['FeasibilityResult'],
+    fk_solver,
+    characteristic_length_m: float,
+    weights: dict,
+    lower_limits: np.ndarray,
+    upper_limits: np.ndarray,
+) -> Tuple[int, np.ndarray, np.ndarray]:
+    """Score all 8 cfx branches across the full trajectory and pick the best.
+
+    For each cfx (0–7) the trajectory cost is the **mean** per-scored-waypoint
+    cost, so branches with different coverage levels are comparable.
+
+    * **First scored waypoint** — singularity + manipulability only (no C0).
+    * **Subsequent scored waypoints** — C0 (distance to same cfx at previous
+      scored waypoint) + singularity − manipulability.
+
+    A waypoint is *skipped* (not scored) for a cfx if the solution is NaN, LS,
+    or violates joint limits — this does **not** disqualify the branch.  The
+    branch is invalid only if it has **zero** scored waypoints.
+
+    Returns:
+        best_cfx       — cfx index (0–7) with the lowest mean cost.
+        branch_costs   — shape (8,) mean cost per branch (inf if no scored wp).
+        branch_coverage — shape (8,) number of scored waypoints per branch.
+    """
+    branch_totals = np.zeros(_N_CFX)
+    branch_coverage = np.zeros(_N_CFX, dtype=int)
+    tol = 1e-6
+    prev_q_per_cfx: List[Optional[np.ndarray]] = [None] * _N_CFX
+
+    for result in per_wp_results:
+        if not result.is_reachable:
+            continue
+
+        dbg = result.ik_debug_info or {}
+        sols = dbg.get('all_solutions', [])
+        is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
+
+        for cfx in range(_N_CFX):
+            if cfx >= len(sols) or np.any(np.isnan(sols[cfx])):
+                continue
+            if cfx < len(is_ls_list) and is_ls_list[cfx]:
+                continue
+            q = sols[cfx]
+            if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
+                continue
+
+            branch_totals[cfx] += score_ik_solution_breakdown(
+                q, prev_q_per_cfx[cfx], fk_solver, characteristic_length_m, weights,
+            ).total
+            prev_q_per_cfx[cfx] = q
+            branch_coverage[cfx] += 1
+
+    branch_costs = np.full(_N_CFX, np.inf)
+    for cfx in range(_N_CFX):
+        if branch_coverage[cfx] > 0:
+            branch_costs[cfx] = branch_totals[cfx] / branch_coverage[cfx]
+
+    n_reachable = sum(1 for r in per_wp_results if r.is_reachable)
+
+    if np.all(np.isinf(branch_costs)):
+        logger.warning(
+            "No cfx branch has any valid waypoint out of %d reachable", n_reachable,
+        )
+        return 0, branch_costs, branch_coverage
+
+    best_cfx = int(np.argmin(branch_costs))
+    logger.info(
+        "cfx branch selection: best_cfx=%d  mean_cost=%.4f  coverage=%d/%d",
+        best_cfx, branch_costs[best_cfx], branch_coverage[best_cfx], n_reachable,
+    )
+    return best_cfx, branch_costs, branch_coverage
+
+
 # ── FeasibilityAnalyzer ──────────────────────────────────────────────────────
 
 class FeasibilityAnalyzer:
@@ -323,65 +404,20 @@ class FeasibilityAnalyzer:
             and np.all(q <= self.upper_position_limit + tol)
         )
 
-    def _select_best_multi_solution(
-        self,
-        result: FeasibilityResult,
-        q_prev: Optional[np.ndarray],
-    ) -> FeasibilityResult:
-        """Re-evaluate EAIK candidates and pick the lowest-cost one.
 
-        For the first waypoint (``q_prev is None``) the EAIK solver's own
-        selection (min_norm) is accepted as-is — there is no previous
-        configuration to compute a C0 distance from, and the singularity /
-        manipulability terms alone can pick a worse starting posture than
-        the neutral-biased min_norm.
-        """
-        if self.multi_solution_weights is None:
-            return result
-        
-        # NOTE: Commented out for now to use the neutral-biased min_norm as starting posture
+    # ── Global cfx branch selection ──
 
-        # TASK: do something about how to choose first solution if q_prev is None
-        if q_prev is None:
-            return result
-        if result.ik_debug_info is None:
-            return result
-
-        all_sols = result.ik_debug_info.get("all_solutions", [])
-        if len(all_sols) < 2:
-            return result
-
-        candidates = [q for q in all_sols if self._is_within_joint_limits(q)]
-        if len(candidates) < 2:
-            return result
-
-        best_cost = float("inf")
-        best_q = result.joint_positions_rad
-
-        for q_cand in candidates:
-            cost = score_ik_solution_breakdown(
-                q_cand,
-                q_prev,
-                self.fk_solver,
-                self.characteristic_length_m,
-                self.multi_solution_weights,
-            ).total
-            if cost < best_cost:
-                best_cost = cost
-                best_q = q_cand
-
-        if best_q is result.joint_positions_rad:
-            return result
-
-        jacobian = self.fk_solver.get_jacobian(best_q)
-        result.joint_positions_rad = best_q
+    def _update_result_metrics(self, result: FeasibilityResult, q: np.ndarray) -> None:
+        """Recompute kinematic metrics after overriding ``joint_positions_rad``."""
+        jacobian = self.fk_solver.get_jacobian(q)
+        result.joint_positions_rad = q
         result.manipulability = compute_manipulability(jacobian, self.characteristic_length_m)
         result.min_singular_value = compute_singularity_proximity(jacobian)
         result.max_singular_value = compute_max_singular_value(jacobian)
         result.condition_number = compute_condition_number(jacobian)
         result.near_singularity = result.min_singular_value < self.singularity_threshold
         result.distance_to_joint_limits = compute_distance_to_joint_limits(
-            best_q, self.lower_position_limit, self.upper_position_limit
+            q, self.lower_position_limit, self.upper_position_limit
         )
         result.translational_manipulability = compute_translational_manipulability(jacobian)
         result.rotational_manipulability = compute_rotational_manipulability(jacobian)
@@ -391,7 +427,57 @@ class FeasibilityAnalyzer:
             else self.characteristic_length_m
         )
         result.normalized_manipulability = compute_normalized_manipulability(jacobian, Lc)
-        return result
+
+    def _apply_global_cfx_selection(
+        self,
+        results: List[FeasibilityResult],
+    ) -> Tuple[Optional[int], Optional[np.ndarray]]:
+        """Select the globally best cfx branch and override per-waypoint results.
+
+        Returns ``(best_cfx, branch_costs)`` or ``(None, None)`` when global
+        selection is not applicable (weights not set, or non-cfx solver).
+        """
+        if self.multi_solution_weights is None:
+            return None, None
+
+        first_reachable = next((r for r in results if r.is_reachable), None)
+        if first_reachable is None:
+            return None, None
+        dbg = first_reachable.ik_debug_info or {}
+        if len(dbg.get('all_solutions', [])) != _N_CFX:
+            return None, None
+
+        best_cfx, branch_costs, branch_coverage = select_best_cfx_branch(
+            results,
+            self.fk_solver,
+            self.characteristic_length_m,
+            self.multi_solution_weights,
+            self.lower_position_limit,
+            self.upper_position_limit,
+        )
+
+        if np.isinf(branch_costs[best_cfx]):
+            logger.warning(
+                "Global cfx selection: no valid branch — keeping solver per-waypoint choice"
+            )
+            return best_cfx, branch_costs
+
+        tol = 1e-6
+        for result in results:
+            if not result.is_reachable:
+                continue
+            sols = (result.ik_debug_info or {}).get('all_solutions', [])
+            if best_cfx < len(sols) and not np.any(np.isnan(sols[best_cfx])):
+                q = sols[best_cfx]
+                if np.all(q >= self.lower_position_limit - tol) and np.all(q <= self.upper_position_limit + tol):
+                    self._update_result_metrics(result, q)
+
+        n_reachable = sum(1 for r in results if r.is_reachable)
+        logger.info(
+            "Global cfx selection: best_cfx=%d  mean_cost=%.4f  coverage=%d/%d",
+            best_cfx, branch_costs[best_cfx], branch_coverage[best_cfx], n_reachable,
+        )
+        return best_cfx, branch_costs
 
     # ── Phase 1: trajectory IK + C0 ──
 
@@ -413,26 +499,12 @@ class FeasibilityAnalyzer:
         results: List[FeasibilityResult] = []
         q_prev: Optional[np.ndarray] = None
 
-        reachable_count = 0
-        singularity_count = 0
-        manipulability_values: List[float] = []
-        min_sv_values: List[float] = []
-        max_sv_values: List[float] = []
-        condition_numbers: List[float] = []
-        joint_limit_distances: List[float] = []
-        trans_manip_values: List[float] = []
-        rot_manip_values: List[float] = []
-        norm_manip_values: List[float] = []
-        dir_manip_values: List[float] = []
-
         ik_failure_count = 0
         early_terminated = False
 
+        # ── Pass 1: solve all waypoints (collect solutions) ──
         for i in range(n_waypoints):
             result = self.analyze_waypoint(positions[i], quaternions[i], q_prev)
-
-            if result.is_reachable and self.multi_solution_weights is not None:
-                result = self._select_best_multi_solution(result, q_prev)
 
             if not result.is_reachable:
                 ik_failure_count += 1
@@ -461,6 +533,29 @@ class FeasibilityAnalyzer:
             results.append(result)
 
             if result.is_reachable:
+                q_prev = result.joint_positions_rad
+
+        # ── Pass 2: global cfx branch selection ──
+        best_cfx: Optional[int] = None
+        cfx_branch_costs: Optional[np.ndarray] = None
+        if self.multi_solution_weights is not None:
+            best_cfx, cfx_branch_costs = self._apply_global_cfx_selection(results)
+
+        # ── Pass 3: aggregate metrics from (possibly overridden) results ──
+        reachable_count = 0
+        singularity_count = 0
+        manipulability_values: List[float] = []
+        min_sv_values: List[float] = []
+        max_sv_values: List[float] = []
+        condition_numbers: List[float] = []
+        joint_limit_distances: List[float] = []
+        trans_manip_values: List[float] = []
+        rot_manip_values: List[float] = []
+        norm_manip_values: List[float] = []
+        dir_manip_values: List[float] = []
+
+        for result in results:
+            if result.is_reachable:
                 reachable_count += 1
                 manipulability_values.append(result.manipulability)
                 min_sv_values.append(result.min_singular_value)
@@ -474,14 +569,13 @@ class FeasibilityAnalyzer:
                     rot_manip_values.append(result.rotational_manipulability)
                 if result.normalized_manipulability is not None:
                     norm_manip_values.append(result.normalized_manipulability)
-
                 if result.near_singularity:
                     singularity_count += 1
 
-                q_prev = result.joint_positions_rad
-
         # Directional manipulability (needs path tangent)
         for i in range(n_waypoints):
+            if i >= len(results):
+                break
             r = results[i]
             if not r.is_reachable or r.joint_positions_rad is None:
                 continue
@@ -538,6 +632,8 @@ class FeasibilityAnalyzer:
                 "reachability_ok": reachability_ok,
                 "c0_ok": c0_ok,
             },
+            "selected_cfx_branch": best_cfx,
+            "cfx_branch_costs": cfx_branch_costs.tolist() if cfx_branch_costs is not None else None,
             "safety_score": safety_score,
             "dexterity_score": dexterity_score,
             # Manipulability stats

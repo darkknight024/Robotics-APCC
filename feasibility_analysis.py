@@ -57,6 +57,7 @@ from utils.feasibility_plot import (
     plot_singularity_per_waypoint,
     plot_eaik_solutions_with_scores,
     plot_eaik_solutions_with_ecfx,
+    plot_eaik_solutions_with_cfx,
     plot_waypoint_density,
     plot_topp_velocity_profile,
     plot_decomposed_manipulability_per_waypoint,
@@ -71,7 +72,7 @@ from utils.feasibility_plot import (
     export_final_trajectory_csv,
 )
 from utils.math import compute_normalized_joint_energy, compute_safety_tier
-from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S
+from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S, load_robotstudio_reference
 from utils.time_parameterization import (
     compute_arc_lengths,
     check_waypoint_density,
@@ -224,6 +225,8 @@ def process_toolpath(
     trajectory_speeds = load_result.speeds
     speed_extracted = load_result.speed_extracted
 
+    rs_ref = load_robotstudio_reference(toolpath_path)
+
     if config.use_base_frame:
         trajectories_t_b_p = trajectories_t_p_k
     else:
@@ -312,11 +315,12 @@ def process_toolpath(
         if verbose:
             print(f"  {traj_name}: {traj_result['reachable_count']}/{n_waypoints} reachable")
 
-        # ── Phase 2: TOPP-RA (ALWAYS runs) ─────────────────────────────────
+        # ── Phase 2: TOPP-RA ──────────────────────────────────────────────
         topp_result_raw: Optional[ToppraResult] = None
         topp_dict: Optional[Dict] = None
         can_run_topp = (
-            reachability_ok
+            getattr(config.topp_ra, 'enabled', True)
+            and reachability_ok
             and len(joint_angles_rad) >= 2
             and final_vel_lims is not None
             and final_accel_lims is not None
@@ -448,13 +452,23 @@ def process_toolpath(
         # Continuity graphs
         if config.continuity.enabled and config.continuity.generate_graphs:
             if c0_result is not None:
+                n_c0_segments = len(c0_result.joint_space_distances)
+                reachable_indices = [
+                    i for i, r in enumerate(per_wp) if r.joint_positions_rad is not None
+                ]
+                c0_cart_dists = np.zeros(n_c0_segments)
+                for seg_idx in range(n_c0_segments):
+                    if seg_idx + 1 < len(reachable_indices):
+                        idx_a = reachable_indices[seg_idx]
+                        idx_b = reachable_indices[seg_idx + 1]
+                        if idx_a < len(positions) and idx_b < len(positions):
+                            c0_cart_dists[seg_idx] = float(
+                                np.linalg.norm(positions[idx_b] - positions[idx_a])
+                            )
                 plot_c0_continuity_per_waypoint(
                     joint_space_distances=c0_result.joint_space_distances,
                     per_joint_jumps=c0_result.per_joint_deltas,
-                    cartesian_distances=np.array([
-                        float(np.linalg.norm(positions[i+1] - positions[i]))
-                        for i in range(len(positions) - 1)
-                    ]) if len(positions) > 1 else np.array([]),
+                    cartesian_distances=c0_cart_dists,
                     output_path=str(traj_out / f"c0_continuity_{traj_name}.png"),
                     title=f"C0 Continuity — {toolpath_name} — {traj_name}",
                     joint_jump_limit_rad=final_joint_jump,
@@ -518,9 +532,23 @@ def process_toolpath(
             w = ms_weights or {"c0": 10.0, "singularity": 1.0, "manipulability": 0.5}
             for wp_i, r in enumerate(per_wp):
                 dbg = r.ik_debug_info or {}
-                sols = dbg.get("all_solutions", [])
-                all_sols_per_wp.append(sols)
-                all_ecfx_per_wp.append(dbg.get("ecfx_labels", []))
+                raw_sols = dbg.get("all_solutions", [])
+                raw_ecfx = dbg.get("ecfx_labels", [])
+                # Filter NaN cfx slots for graphing / scoring
+                valid_sols: List[np.ndarray] = []
+                valid_ecfx: List[tuple] = []
+                for s_idx, s in enumerate(raw_sols):
+                    if np.any(np.isnan(s)):
+                        continue
+                    valid_sols.append(s)
+                    e = raw_ecfx[s_idx] if s_idx < len(raw_ecfx) else None
+                    if e is None and len(raw_sols) == 8:
+                        e = (0, 0, 0, s_idx)
+                    elif e is None:
+                        e = (0, 0, 0, 0)
+                    valid_ecfx.append(e)
+                all_sols_per_wp.append(valid_sols)
+                all_ecfx_per_wp.append(valid_ecfx)
                 q_prev = (
                     per_wp[wp_i - 1].joint_positions_rad
                     if wp_i > 0 and per_wp[wp_i - 1].joint_positions_rad is not None
@@ -528,7 +556,7 @@ def process_toolpath(
                 )
                 wp_scores = [
                     score_ik_solution_breakdown(sol, q_prev, fk_solver, robot_reach_m, w)
-                    for sol in sols
+                    for sol in valid_sols
                 ]
                 scores_per_wp.append(wp_scores)
 
@@ -547,6 +575,28 @@ def process_toolpath(
                 plot_eaik_solutions_with_ecfx(
                     all_sols_per_wp, all_ecfx_per_wp, selected_deg,
                     eaik_out,
+                    limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
+                    traj_name=f"{toolpath_name} - {traj_name}",
+                )
+                rs_scored = None
+                if rs_ref.joints_deg is not None and len(rs_ref.joints_deg) > 0:
+                    rs_scored = []
+                    for ri in range(len(rs_ref.joints_deg)):
+                        q_rs_rad = np.radians(rs_ref.joints_deg[ri])
+                        q_rs_prev = np.radians(rs_ref.joints_deg[ri - 1]) if ri > 0 else None
+                        try:
+                            rs_scored.append(
+                                score_ik_solution_breakdown(q_rs_rad, q_rs_prev, fk_solver, robot_reach_m, w)
+                            )
+                        except Exception:
+                            rs_scored.append(None)
+
+                plot_eaik_solutions_with_cfx(
+                    all_sols_per_wp, all_ecfx_per_wp, selected_deg,
+                    eaik_out,
+                    scores_per_waypoint=scores_per_wp,
+                    rs_joints_deg=rs_ref.joints_deg,
+                    rs_scores=rs_scored,
                     limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
                     traj_name=f"{toolpath_name} - {traj_name}",
                 )
@@ -575,6 +625,7 @@ def process_toolpath(
                 title=f"Task-space position — {toolpath_name} — {traj_name}",
                 sparse_original_indices=sparse_idx,
                 adaptive_scale=ts_adaptive,
+                rs_tcp_pos_mm=rs_ref.tcp_pos_mm,
             )
             plot_task_space_quaternions_vs_index(
                 quaternions,
@@ -582,6 +633,7 @@ def process_toolpath(
                 title=f"Task-space quaternion — {toolpath_name} — {traj_name}",
                 sparse_original_indices=sparse_idx,
                 adaptive_scale=ts_adaptive,
+                rs_tcp_quat=rs_ref.tcp_quat,
             )
 
         # TOPP-RA final trajectory (time, task space via FK, joints, qdot, qddot)
