@@ -40,7 +40,7 @@ _DEFAULT_SPEED_MM_S = 100.0
 SKIP_REMOVE_DUPLICATE_WAYPOINTS = True
 
 # If True and the CSV header includes ``is_at_waypoint``, keep only rows where it equals 1.
-FILTER_ONLY_IS_AT_WAYPOINT = False
+FILTER_ONLY_IS_AT_WAYPOINT = True
 
 # RobotStudio / joint-prefixed CSVs often name TCP pose columns rs_x_mm, rs_qw, …
 # instead of x, y, z, qw, … — map those onto the canonical names used by the parser.

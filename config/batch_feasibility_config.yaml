@@ -13,9 +13,9 @@ robots_to_use:
 
 knife_poses_to_use:
   - "pose_1"
-
-toolpaths_folder: "/home/cognitron/gitHub_Repos/Robotics-APCC/Robot_APCC/Experiments/Experiment_20/Results_robostudio_filtered"
-output_folder: "Robot_APCC/Results/Experiment_20/Fesability"
+  
+toolpaths_folder: "Robot_APCC/Experiments/Experiment_20/test"
+output_folder: "Robot_APCC/Results/Experiment_20/test"
 use_base_frame: true
 
 # =============================================================================
@@ -53,8 +53,9 @@ eaik_multi_solution:
     c0: 10.0
     singularity: 10.0
     manipulability: 0.0
+    branch_discontinuity: 5.0
   generate_graphs: true
-  max_waypoints_in_graph: 100
+  max_waypoints_in_graph: 10000
 
 # =============================================================================
 # Singularity
@@ -94,13 +95,13 @@ continuity:
   generate_graphs: true
 
 # =============================================================================
-# Waypoint Density (pre-IK check)
+# Waypoint Density (pre-IK check)false
 # =============================================================================
 waypoint_density:
   enabled: true
-  check_frequency_hz: 50.0
-  max_gap_mm: 5.0
-  interpolate_sparse: false
+  check_frequency_hz: 80.0
+  max_gap_mm: 1.5
+  interpolate_sparse: true
   default_speed_mm_s: 100.0
   generate_graphs: true
 
@@ -108,8 +109,8 @@ waypoint_density:
 # TOPP-RA
 # =============================================================================
 topp_ra:
-  enabled: false
-  generate_graphs: false
+  enabled: true
+  generate_graphs: true
 
 # =============================================================================
 # Ranking (used by combinatorial search only)

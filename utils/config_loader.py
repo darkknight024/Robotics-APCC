@@ -242,7 +242,7 @@ class ReachabilityGraphConfig:
 class EaikMultiSolutionConfig:
     """EAIK multi-solution optimisation settings."""
     enabled: bool = True
-    weights: Dict[str, float] = field(default_factory=lambda: {"c0": 10.0, "singularity": 1.0, "manipulability": 0.5})
+    weights: Dict[str, float] = field(default_factory=lambda: {"c0": 10.0, "singularity": 1.0, "manipulability": 0.5, "branch_discontinuity": 5.0})
     generate_graphs: bool = True
     max_waypoints_in_graph: int = 25
 

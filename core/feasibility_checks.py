@@ -154,6 +154,17 @@ class IkSolutionScoreBreakdown:
     total: float
 
 
+@dataclass
+class MixedBranchResult:
+    """Output of greedy mixed-branch CFX selection."""
+    selected_cfx_per_waypoint: List[Optional[int]]
+    n_branch_switches: int
+    total_cost: float
+    per_branch_total_costs: np.ndarray   # (8,) sum of waypoint costs per pure branch
+    per_branch_coverage: np.ndarray      # (8,) scored waypoints per pure branch
+    per_branch_nan_waypoint_count: np.ndarray  # (8,) reachable WPs where branch slot invalid
+
+
 def score_ik_solution_breakdown(
     q_candidate: np.ndarray,
     q_prev: Optional[np.ndarray],
@@ -203,7 +214,6 @@ def score_ik_solution_breakdown(
 
 _N_CFX = 8
 
-
 def select_best_cfx_branch(
     per_wp_results: List['FeasibilityResult'],
     fk_solver,
@@ -211,7 +221,7 @@ def select_best_cfx_branch(
     weights: dict,
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
-) -> Tuple[int, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
+) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
     """Score all 8 cfx branches across the full trajectory and pick the best.
 
     **Selection order**
@@ -222,25 +232,25 @@ def select_best_cfx_branch(
     2. **Cost second** — Among branches tied on maximum coverage, pick the one
        with the **lowest mean** per-scored-waypoint cost.
 
-    For each cfx (0–7) the trajectory cost is the **mean** per-scored-waypoint
+    For each cfx (0-7) the trajectory cost is the **mean** per-scored-waypoint
     cost (only over covered waypoints).
 
     * **First scored waypoint** — singularity + manipulability only (no C0).
     * **Subsequent scored waypoints** — C0 (distance to same cfx at previous
-      scored waypoint) + singularity − manipulability.
+      scored waypoint) + singularity - manipulability.
 
     A waypoint is *skipped* (not scored) for a cfx if the solution is NaN, LS,
     or violates joint limits — that branch simply gets no increment in coverage
     at that waypoint.
 
     Returns:
-        best_cfx       — cfx index (0–7) after coverage-then-cost selection.
-        branch_costs   — shape (8,) mean cost per branch (inf if no scored wp).
+        best_cfx       — cfx index (0-7) after coverage-then-cost selection.
+        branch_costs   — shape (8,) **mean** cost per branch (inf if no scored wp).
+        branch_totals  — shape (8,) **sum** of all waypoint costs per branch (0 if none).
         branch_coverage — shape (8,) number of scored waypoints per branch.
         per_wp_cfx_breakdowns — len(per_wp_results) rows, each a length-8 list of
-            :class:`IkSolutionScoreBreakdown` or ``None`` (same slotting as
-            ``all_solutions``); entries are set only when that cfx is scored
-            at that waypoint (for graphs / diagnostics).
+            :class:`IkSolutionScoreBreakdown` or ``None``; entries are set only
+            when that cfx is scored at that waypoint.
     """
     n_wp = len(per_wp_results)
     per_wp_cfx_breakdowns: List[List[Optional[IkSolutionScoreBreakdown]]] = [
@@ -287,7 +297,7 @@ def select_best_cfx_branch(
         logger.warning(
             "No cfx branch has any valid waypoint out of %d reachable", n_reachable,
         )
-        return 0, branch_costs, branch_coverage, per_wp_cfx_breakdowns
+        return 0, branch_costs, branch_totals, branch_coverage, per_wp_cfx_breakdowns
 
     max_cov = int(np.max(branch_coverage))
     # Primary: maximum waypoint success count; secondary: lowest mean cost among ties.
@@ -300,7 +310,154 @@ def select_best_cfx_branch(
         best_cfx, branch_costs[best_cfx], branch_coverage[best_cfx], n_reachable,
         max_cov,
     )
-    return best_cfx, branch_costs, branch_coverage, per_wp_cfx_breakdowns
+    return best_cfx, branch_costs, branch_totals, branch_coverage, per_wp_cfx_breakdowns
+
+
+def _q_for_cfx_if_valid(
+    sols: List[np.ndarray],
+    is_ls_list: List,
+    cfx: int,
+    lower_limits: np.ndarray,
+    upper_limits: np.ndarray,
+    tol: float,
+) -> Optional[np.ndarray]:
+    """Return ``all_solutions[cfx]`` if usable (finite, not LS, in joint limits), else None."""
+    if cfx >= len(sols) or np.any(np.isnan(sols[cfx])):
+        return None
+    if cfx < len(is_ls_list) and is_ls_list[cfx]:
+        return None
+    q = sols[cfx]
+    if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
+        return None
+    return q
+
+
+def select_mixed_cfx_branches(
+    per_wp_results: List['FeasibilityResult'],
+    fk_solver,
+    characteristic_length_m: float,
+    weights: dict,
+    lower_limits: np.ndarray,
+    upper_limits: np.ndarray,
+) -> Tuple[MixedBranchResult, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
+    """Greedy forward mixed-branch selection with branch-discontinuity penalty.
+
+    1. Pre-compute per-branch pure costs via :func:`select_best_cfx_branch`.
+    2. Build a validity matrix ``valid[wp][cfx]`` (bool).
+    3. Pick starting branch (max coverage, then min cost).
+    4. Walk waypoints: stay on current branch while valid; when invalid, switch
+       to the branch with the longest unbroken valid run from that waypoint to
+       the end, ties broken by lowest ``branch_costs``.  Each switch incurs the
+       ``branch_discontinuity`` weight as a one-time penalty.
+    5. After the walk, score the mixed trajectory (C0 uses previous *selected*
+       waypoint regardless of branch) and sum costs.
+
+    Returns ``(mixed_result, branch_costs, branch_coverage, per_wp_cfx_breakdowns)``.
+    """
+    n_wp = len(per_wp_results)
+    tol = 1e-6
+    w_bd = float(weights.get("branch_discontinuity", 5.0))
+
+    best_cfx_single, branch_costs, branch_totals, branch_coverage, per_wp_cfx_breakdowns = (
+        select_best_cfx_branch(
+            per_wp_results, fk_solver, characteristic_length_m,
+            weights, lower_limits, upper_limits,
+        )
+    )
+
+    # -- validity matrix (n_wp × _N_CFX) --
+    valid = [[False] * _N_CFX for _ in range(n_wp)]
+    for wi, result in enumerate(per_wp_results):
+        if not result.is_reachable:
+            continue
+        dbg = result.ik_debug_info or {}
+        sols = dbg.get('all_solutions', [])
+        is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
+        for cfx in range(_N_CFX):
+            if _q_for_cfx_if_valid(sols, is_ls_list, cfx, lower_limits, upper_limits, tol) is not None:
+                valid[wi][cfx] = True
+
+    # -- helper: consecutive valid run length from wp onward for a given cfx --
+    run_len = [[0] * _N_CFX for _ in range(n_wp + 1)]
+    for wi in range(n_wp - 1, -1, -1):
+        for cfx in range(_N_CFX):
+            run_len[wi][cfx] = (run_len[wi + 1][cfx] + 1) if valid[wi][cfx] else 0
+
+    # -- greedy forward walk --
+    selected: List[Optional[int]] = [None] * n_wp
+    current_cfx = best_cfx_single
+    n_switches = 0
+
+    for wi in range(n_wp):
+        if valid[wi][current_cfx]:
+            selected[wi] = current_cfx
+            continue
+
+        # need to switch: find candidate with longest run from wi, then lowest branch_costs
+        best_cand: Optional[int] = None
+        best_run = -1
+        best_cost = np.inf
+        for cfx in range(_N_CFX):
+            if not valid[wi][cfx]:
+                continue
+            rl = run_len[wi][cfx]
+            bc = branch_costs[cfx] if np.isfinite(branch_costs[cfx]) else np.inf
+            if (rl > best_run) or (rl == best_run and bc < best_cost):
+                best_cand = cfx
+                best_run = rl
+                best_cost = bc
+
+        if best_cand is not None:
+            selected[wi] = best_cand
+            if best_cand != current_cfx:
+                n_switches += 1
+            current_cfx = best_cand
+        else:
+            selected[wi] = None
+
+    # -- score the mixed trajectory --
+    mixed_total = 0.0
+    q_prev_mixed: Optional[np.ndarray] = None
+    for wi, result in enumerate(per_wp_results):
+        cfx_i = selected[wi]
+        if cfx_i is None or not result.is_reachable:
+            continue
+        dbg = result.ik_debug_info or {}
+        sols = dbg.get('all_solutions', [])
+        is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
+        q = _q_for_cfx_if_valid(sols, is_ls_list, cfx_i, lower_limits, upper_limits, tol)
+        if q is None:
+            continue
+        bd = score_ik_solution_breakdown(
+            q, q_prev_mixed, fk_solver, characteristic_length_m, weights,
+        )
+        mixed_total += bd.total
+        q_prev_mixed = q
+
+    mixed_total += n_switches * w_bd
+
+    n_reachable = sum(1 for r in per_wp_results if r.is_reachable)
+    per_branch_nan = np.array(
+        [max(0, n_reachable - int(branch_coverage[cfx])) for cfx in range(_N_CFX)],
+        dtype=int,
+    )
+
+    mixed = MixedBranchResult(
+        selected_cfx_per_waypoint=selected,
+        n_branch_switches=n_switches,
+        total_cost=mixed_total,
+        per_branch_total_costs=branch_totals.copy(),
+        per_branch_coverage=branch_coverage.copy(),
+        per_branch_nan_waypoint_count=per_branch_nan,
+    )
+
+    logger.info(
+        "Mixed-branch cfx selection: start_cfx=%d  switches=%d  total_cost=%.4f  "
+        "bd_penalty=%.1f×%d=%.1f",
+        best_cfx_single, n_switches, mixed_total,
+        w_bd, n_switches, w_bd * n_switches,
+    )
+    return mixed, branch_costs, branch_coverage, per_wp_cfx_breakdowns
 
 
 # ── FeasibilityAnalyzer ──────────────────────────────────────────────────────
@@ -472,21 +629,19 @@ class FeasibilityAnalyzer:
     def _apply_global_cfx_selection(
         self,
         results: List[FeasibilityResult],
-    ) -> Tuple[Optional[int], Optional[np.ndarray], Optional[List[List[Optional[IkSolutionScoreBreakdown]]]]]:
-        """Select the globally best cfx branch and make it the only joint trajectory.
+    ) -> Tuple[
+        Optional[MixedBranchResult],
+        Optional[np.ndarray],
+        Optional[List[List[Optional[IkSolutionScoreBreakdown]]]],
+    ]:
+        """Run mixed-branch CFX selection and apply per-waypoint joint solutions.
 
-        For every waypoint that had IK success, either:
+        Uses :func:`select_mixed_cfx_branches` to determine the optimal
+        per-waypoint branch assignment, then writes ``joint_positions_rad``
+        accordingly. Waypoints without a valid branch slot are cleared.
 
-        * apply ``all_solutions[best_cfx]`` (recompute metrics), or
-        * clear joints and mark unreachable — **never** keep a different cfx from
-          per-waypoint IK (no mixed-branch ``joint_positions_rad``).
-
-        If no branch has finite cost, all previously successful waypoints are cleared.
-
-        Returns ``(best_cfx, branch_costs, per_wp_cfx_breakdowns)`` or three
-        ``None`` values when global selection is not applicable (weights not set,
-        or non-cfx solver).  *per_wp_cfx_breakdowns* matches branch scoring
-        (``prev_q_per_cfx``) for EAIK graphs.
+        Returns ``(mixed_result, branch_costs, per_wp_cfx_breakdowns)`` or three
+        ``None`` values when global selection is not applicable.
         """
         if self.multi_solution_weights is None:
             return None, None, None
@@ -498,54 +653,52 @@ class FeasibilityAnalyzer:
         if len(dbg.get('all_solutions', [])) != _N_CFX:
             return None, None, None
 
-        best_cfx, branch_costs, branch_coverage, per_wp_breakdowns = select_best_cfx_branch(
-            results,
-            self.fk_solver,
-            self.characteristic_length_m,
-            self.multi_solution_weights,
-            self.lower_position_limit,
-            self.upper_position_limit,
-        )
-
-        if np.isinf(branch_costs[best_cfx]):
-            logger.warning(
-                "Global cfx selection: no valid branch — clearing joint solutions (no mixed branches)"
+        mixed, branch_costs, branch_coverage, per_wp_breakdowns = (
+            select_mixed_cfx_branches(
+                results,
+                self.fk_solver,
+                self.characteristic_length_m,
+                self.multi_solution_weights,
+                self.lower_position_limit,
+                self.upper_position_limit,
             )
-            for result in results:
-                if result.joint_positions_rad is not None:
-                    self._clear_result_for_missing_global_branch(result)
-            return best_cfx, branch_costs, per_wp_breakdowns
+        )
 
         tol = 1e-6
         n_cleared = 0
-        for result in results:
-            if not result.is_reachable:
+        for wi, result in enumerate(results):
+            cfx_i = mixed.selected_cfx_per_waypoint[wi] if wi < len(mixed.selected_cfx_per_waypoint) else None
+            if not result.is_reachable and result.joint_positions_rad is None:
                 continue
-            sols = (result.ik_debug_info or {}).get('all_solutions', [])
-            if best_cfx < len(sols) and not np.any(np.isnan(sols[best_cfx])):
-                q = sols[best_cfx]
-                if self._is_within_joint_limits(q, tol):
+            if cfx_i is not None:
+                dbg = result.ik_debug_info or {}
+                sols = dbg.get('all_solutions', [])
+                is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
+                q = _q_for_cfx_if_valid(
+                    sols, is_ls_list, cfx_i,
+                    self.lower_position_limit, self.upper_position_limit, tol,
+                )
+                if q is not None:
                     self._update_result_metrics(result, q)
                 else:
                     self._clear_result_for_missing_global_branch(result)
                     n_cleared += 1
             else:
-                self._clear_result_for_missing_global_branch(result)
-                n_cleared += 1
+                if result.joint_positions_rad is not None:
+                    self._clear_result_for_missing_global_branch(result)
+                    n_cleared += 1
 
         if n_cleared > 0:
             logger.warning(
-                "Global cfx selection: best_cfx=%d missing or invalid at %d waypoint(s) "
-                "(NaN slot or joint limits) — joint angles cleared there (no fallback to other cfx).",
-                best_cfx, n_cleared,
+                "Mixed cfx selection: cleared joints at %d waypoint(s) (no valid branch).",
+                n_cleared,
             )
         n_with_q = sum(1 for r in results if r.joint_positions_rad is not None)
         logger.info(
-            "Global cfx selection: best_cfx=%d  mean_cost=%.4f  scored_wp_on_branch=%d  waypoints_with_q=%d/%d",
-            best_cfx, branch_costs[best_cfx], branch_coverage[best_cfx],
-            n_with_q, len(results),
+            "Mixed cfx selection: switches=%d  total_cost=%.4f  waypoints_with_q=%d/%d",
+            mixed.n_branch_switches, mixed.total_cost, n_with_q, len(results),
         )
-        return best_cfx, branch_costs, per_wp_breakdowns
+        return mixed, branch_costs, per_wp_breakdowns
 
     # ── Phase 1: trajectory IK + C0 ──
 
@@ -603,12 +756,12 @@ class FeasibilityAnalyzer:
             if result.is_reachable:
                 q_prev = result.joint_positions_rad
 
-        # ── Pass 2: global cfx branch selection ──
-        best_cfx: Optional[int] = None
+        # ── Pass 2: mixed-branch cfx selection ──
+        mixed_result: Optional[MixedBranchResult] = None
         cfx_branch_costs: Optional[np.ndarray] = None
         cfx_per_waypoint_breakdowns: Optional[List[List[Optional[IkSolutionScoreBreakdown]]]] = None
         if self.multi_solution_weights is not None:
-            best_cfx, cfx_branch_costs, cfx_per_waypoint_breakdowns = self._apply_global_cfx_selection(results)
+            mixed_result, cfx_branch_costs, cfx_per_waypoint_breakdowns = self._apply_global_cfx_selection(results)
 
         # ── Pass 3: aggregate metrics from (possibly overridden) results ──
         reachable_count = 0
@@ -707,7 +860,8 @@ class FeasibilityAnalyzer:
                 "reachability_ok": reachability_ok,
                 "c0_ok": c0_ok,
             },
-            "selected_cfx_branch": best_cfx,
+            "mixed_branch_result": mixed_result,
+            "selected_cfx_branch": next((c for c in mixed_result.selected_cfx_per_waypoint if c is not None), None) if mixed_result else None,
             "cfx_branch_costs": cfx_branch_costs.tolist() if cfx_branch_costs is not None else None,
             "cfx_per_waypoint_breakdowns": cfx_per_waypoint_breakdowns,
             "safety_score": safety_score,

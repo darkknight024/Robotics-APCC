@@ -595,7 +595,12 @@ def process_toolpath(
                 np.degrees(r.joint_positions_rad) if r.joint_positions_rad is not None
                 else np.full(6, np.nan) for r in per_wp
             ])
-            selected_cfx_branch = traj_result.get("selected_cfx_branch")
+            mixed_br = traj_result.get("mixed_branch_result")
+            selected_cfx_per_wp = mixed_br.selected_cfx_per_waypoint if mixed_br else None
+            branch_costs_arr = mixed_br.per_branch_total_costs if mixed_br else None
+            branch_nan_counts = mixed_br.per_branch_nan_waypoint_count if mixed_br else None
+            mixed_total_cost = mixed_br.total_cost if mixed_br else None
+            n_branch_switches = mixed_br.n_branch_switches if mixed_br else 0
             eaik_out = str(out_path / f"eaik_solutions_{traj_name}")
             plot_eaik_solutions_with_scores(
                 all_sols_per_wp, scores_per_wp, selected_deg,
@@ -609,7 +614,9 @@ def process_toolpath(
                     eaik_out,
                     limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
                     traj_name=f"{toolpath_name} - {traj_name}",
-                    selected_cfx_branch=selected_cfx_branch,
+                    selected_cfx_branch=selected_cfx_per_wp[0] if selected_cfx_per_wp else None,
+                    selected_cfx_per_waypoint=selected_cfx_per_wp,
+                    scores_per_waypoint=scores_per_wp,
                 )
                 rs_scored = None
                 if rs_ref.joints_deg is not None and len(rs_ref.joints_deg) > 0:
@@ -632,7 +639,11 @@ def process_toolpath(
                     rs_scores=rs_scored,
                     limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
                     traj_name=f"{toolpath_name} - {traj_name}",
-                    selected_cfx_branch=selected_cfx_branch,
+                    selected_cfx_per_waypoint=selected_cfx_per_wp,
+                    branch_total_costs=branch_costs_arr,
+                    branch_nan_counts=branch_nan_counts,
+                    mixed_branch_total_cost=mixed_total_cost,
+                    n_branch_switches=n_branch_switches,
                 )
 
         # Waypoint density graphs
