@@ -1,0 +1,21 @@
+======================================================================
+FEASIBILITY ANALYSIS REPORT
+Generated: 2026-03-25 21:13:15
+======================================================================
+
+Toolpath: wrist_sing_01_conf_off_with_sing_wirst_interpolation
+Trajectories: 1
+
+----------------------------------------------------------------------
+TRAJECTORY 1
+----------------------------------------------------------------------
+  Waypoints: 64
+  Reachable: 64/64 (100.0%)
+  Singularity: 0 near-singular waypoints
+  Mean σ_min: 0.254075
+  Mean manipulability: 0.101874
+  Min manipulability: 0.096908
+  C0: PASS
+  Feasibility: PASS
+
+======================================================================
