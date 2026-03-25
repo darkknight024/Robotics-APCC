@@ -3001,6 +3001,35 @@ def _eaik_match_selected_branch_index(
     return None
 
 
+def _eaik_first_branch_index_by_cfx(
+    ecfx_list: List[tuple],
+    target_cfx: int,
+) -> Optional[int]:
+    """First *solution_index* in *ecfx_list* whose fourth field equals *target_cfx* (0–7)."""
+    t = int(target_cfx)
+    for s_idx, tup in enumerate(ecfx_list):
+        if len(tup) < 4:
+            continue
+        if int(tup[3]) == t:
+            return s_idx
+    return None
+
+
+def _eaik_resolve_selected_solution_index(
+    sols: List[np.ndarray],
+    ecfx_list: List[tuple],
+    sel_row: np.ndarray,
+    selected_cfx_branch: Optional[int],
+    atol_deg: float,
+) -> Optional[int]:
+    """Prefer global *selected_cfx_branch* when that cfx row exists; else vector match to *sel_row*."""
+    if selected_cfx_branch is not None:
+        by_cfx = _eaik_first_branch_index_by_cfx(ecfx_list, selected_cfx_branch)
+        if by_cfx is not None and by_cfx < len(sols):
+            return by_cfx
+    return _eaik_match_selected_branch_index(sols, np.asarray(sel_row), atol_deg=atol_deg)
+
+
 def write_eaik_ecfx_solutions_csv(
     output_dir: str,
     all_solutions_per_waypoint: List[List[np.ndarray]],
@@ -3010,13 +3039,18 @@ def write_eaik_ecfx_solutions_csv(
     limit_waypoints: int = 20,
     traj_name: Optional[str] = None,
     atol_deg: float = 0.02,
+    selected_cfx_branch: Optional[int] = None,
 ) -> Optional[str]:
     """Write one row per (waypoint, solution): joints (deg), ECFX fields, ``is_selected`` 0/1.
 
     Same waypoint window as :func:`plot_eaik_solutions_with_ecfx` (first *limit_waypoints*).
     Headers align with ``generate_plot_ik._write_ecfx_solutions_csv`` except ``is_selected`` is
-    integer 0/1.  ``is_selected`` uses full-vector match to *selected_joint_angles_deg* (same
-    tolerance as the ECFX plots).
+    integer 0/1.
+
+    When *selected_cfx_branch* is set (global CFX from :class:`~core.feasibility_checks.FeasibilityAnalyzer`),
+    ``is_selected`` is 1 iff the row's ``cfx`` column equals that branch — one consistent branch
+    for the whole CSV. When *selected_cfx_branch* is None, ``is_selected`` uses full-vector match
+    to *selected_joint_angles_deg* (same tolerance as the ECFX plots).
 
     Returns the path written, or None if nothing was written.
     """
@@ -3056,7 +3090,9 @@ def write_eaik_ecfx_solutions_csv(
             if selected_joint_angles_deg.ndim == 2
             else selected_joint_angles_deg
         )
-        sel_idx = _eaik_match_selected_branch_index(sols, np.asarray(sel_row), atol_deg=atol_deg)
+        sel_idx = _eaik_resolve_selected_solution_index(
+            sols, ecfx_list, np.asarray(sel_row), selected_cfx_branch, atol_deg,
+        )
         for s_idx, q_rad in enumerate(sols):
             q_deg = np.degrees(np.asarray(q_rad).flatten())
             if len(q_deg) < 6:
@@ -3064,7 +3100,10 @@ def write_eaik_ecfx_solutions_csv(
             tup = ecfx_list[s_idx] if s_idx < len(ecfx_list) else (0, 0, 0, 0)
             cf1, cf4, cf6 = int(tup[0]), int(tup[1]), int(tup[2])
             cfx = int(tup[3]) if len(tup) > 3 else 0
-            is_sel = 1 if (sel_idx is not None and int(sel_idx) == int(s_idx)) else 0
+            if selected_cfx_branch is not None:
+                is_sel = 1 if int(cfx) == int(selected_cfx_branch) else 0
+            else:
+                is_sel = 1 if (sel_idx is not None and int(sel_idx) == int(s_idx)) else 0
             rows.append(
                 [wp, s_idx]
                 + [float(q_deg[i]) for i in range(6)]
@@ -3090,6 +3129,7 @@ def plot_eaik_solutions_with_ecfx(
     joint_limits_deg: Optional[tuple] = None,
     limit_waypoints: int = 20,
     traj_name: Optional[str] = None,
+    selected_cfx_branch: Optional[int] = None,
 ) -> None:
     """Plot EAIK solutions coloured by ECFX quadrant values.
 
@@ -3097,6 +3137,11 @@ def plot_eaik_solutions_with_ecfx(
     saved.  Each subplot colours the scatter points by a different ECFX
     field (cf1, cf4, cf6).  The selected solution is highlighted with ECFX color
     and drawn on top (highest z-order) with black edge outline.
+
+    When *selected_cfx_branch* is set (global CFX), the highlighted branch is that
+    cfx slot at each waypoint (not per-joint angle matching). If that slot is
+    missing from the filtered solution list, falls back to full-vector match to
+    *selected_joint_angles_deg*.
 
     Also writes ``eaik_all_solutions_ecfx.csv`` (or
     ``eaik_all_solutions_ecfx__{traj_name}.csv`` when *traj_name* is set) via
@@ -3117,9 +3162,26 @@ def plot_eaik_solutions_with_ecfx(
         selected_joint_angles_deg,
         limit_waypoints=limit_waypoints,
         traj_name=traj_name,
+        selected_cfx_branch=selected_cfx_branch,
     )
     n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
     waypoints = np.arange(n_wp)
+
+    atol_deg = 0.02
+    sel_idx_per_wp: List[Optional[int]] = []
+    for wp in range(n_wp):
+        sols = all_solutions_per_waypoint[wp]
+        ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+        sel_row = (
+            selected_joint_angles_deg[wp]
+            if selected_joint_angles_deg.ndim == 2
+            else selected_joint_angles_deg
+        )
+        sel_idx_per_wp.append(
+            _eaik_resolve_selected_solution_index(
+                sols, ecfx_list, np.asarray(sel_row), selected_cfx_branch, atol_deg,
+            )
+        )
 
     cf_fields = [
         (0, 'cf1'),
@@ -3148,16 +3210,11 @@ def plot_eaik_solutions_with_ecfx(
                 ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
                 if not sols:
                     continue
+                sel_idx = sel_idx_per_wp[wp]
                 for s_idx, q_rad in enumerate(sols):
-                    # Check if this is the selected solution for this waypoint
-                    selected_q_deg = selected_joint_angles_deg[wp, j]
-                    q_deg_scalar = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
-                    is_selected = not np.isnan(selected_q_deg) and np.isclose(q_deg_scalar, selected_q_deg, atol=0.02)
-                    
-                    # Skip selected for this pass (draw it later on top)
-                    if is_selected:
+                    if sel_idx is not None and int(s_idx) == int(sel_idx):
                         continue
-                    
+                    q_deg_scalar = float(np.degrees(np.asarray(q_rad, dtype=float).flatten()[j]))
                     cf_val = ecfx_list[s_idx][cf_index] if s_idx < len(ecfx_list) else 0
                     color = _ecfx_color(cf_val)
                     lbl_key = f'{cf_name}={cf_val}'
@@ -3172,22 +3229,18 @@ def plot_eaik_solutions_with_ecfx(
                 ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
                 if not sols:
                     continue
-                
-                selected_q_deg = selected_joint_angles_deg[wp, j]
-                if np.isnan(selected_q_deg):
+                sel_idx = sel_idx_per_wp[wp]
+                if sel_idx is None or int(sel_idx) >= len(sols):
                     continue
-                
-                # Find the matching solution
-                for s_idx, q_rad in enumerate(sols):
-                    q_deg_scalar = np.degrees(q_rad[j]) if hasattr(q_rad, '__len__') else float(q_rad)
-                    if np.isclose(q_deg_scalar, selected_q_deg, atol=0.02):
-                        cf_val = ecfx_list[s_idx][cf_index] if s_idx < len(ecfx_list) else 0
-                        color = _ecfx_color(cf_val)
-                        lbl = 'Selected' if wp == 0 else None
-                        # Draw with larger marker and black edge, ON TOP, ECFX-colored
-                        ax.scatter(wp, selected_q_deg, color=color, s=120, zorder=_Z_ECFX_SELECTED,
-                                   alpha=0.95, edgecolors='black', linewidths=2.5, label=lbl)
-                        break
+                q_rad = sols[int(sel_idx)]
+                if np.any(np.isnan(np.asarray(q_rad, dtype=float).flatten())):
+                    continue
+                plot_y = float(np.degrees(np.asarray(q_rad, dtype=float).flatten()[j]))
+                cf_val = ecfx_list[int(sel_idx)][cf_index] if int(sel_idx) < len(ecfx_list) else 0
+                color = _ecfx_color(cf_val)
+                lbl = 'Selected' if wp == 0 else None
+                ax.scatter(wp, plot_y, color=color, s=120, zorder=_Z_ECFX_SELECTED,
+                           alpha=0.95, edgecolors='black', linewidths=2.5, label=lbl)
 
             ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
             ax.set_title(f'Coloured by {cf_name}', fontsize=10, fontweight='bold')
@@ -3219,6 +3272,42 @@ def plot_eaik_solutions_with_ecfx(
         plt.close()
 
 
+# Waypoint subsampling for :func:`plot_eaik_solutions_with_cfx` and RobotStudio TCP
+# overlays in :func:`plot_task_space_positions_vs_index` /
+# :func:`plot_task_space_quaternions_vs_index` (same underlying arrays; fewer
+# markers/lines drawn).  ``0`` = every index; ``N > 0`` = indices ``0, N, 2N, …``.
+_EAIK_CFX_PLOT_WAYPOINT_STRIDE = 3
+
+# X-axis numeric tick labels only (0, 1, 2, …); keep small for dense runs.
+_EAIK_CFX_XAXIS_TICK_FONTSIZE = 3.2
+
+
+def _eaik_cfx_stride_includes_wp(wp: int, stride: int, n_wp: int) -> bool:
+    """Whether to draw waypoint *wp* when striding.  Last index is always included."""
+    if stride <= 0:
+        return True
+    if n_wp > 0 and wp == n_wp - 1:
+        return True
+    return wp % stride == 0
+
+
+def _waypoint_stride_indices(n: int, stride: int) -> np.ndarray:
+    """Row indices ``0 … n-1`` subsampled by *stride*.
+
+    Last index ``n - 1`` is always included when ``stride > 0`` (unless ``n <= 0``),
+    so the trajectory end matches EAIK cfx scatter rules.
+    """
+    if n <= 0:
+        return np.arange(0, dtype=int)
+    if stride <= 0:
+        return np.arange(n, dtype=int)
+    idx = np.arange(0, n, stride, dtype=int)
+    last = n - 1
+    if idx.size == 0 or int(idx[-1]) != last:
+        idx = np.unique(np.concatenate([idx, np.array([last], dtype=int)]))
+    return idx
+
+
 def plot_eaik_solutions_with_cfx(
     all_solutions_per_waypoint: List[List[np.ndarray]],
     all_ecfx_labels: List[List[tuple]],
@@ -3231,6 +3320,7 @@ def plot_eaik_solutions_with_cfx(
     limit_waypoints: int = 20,
     traj_name: Optional[str] = None,
     atol_deg: float = 0.02,
+    selected_cfx_branch: Optional[int] = None,
 ) -> None:
     """Plot EAIK branches coloured by **cfx** (0–7), one figure per joint.
 
@@ -3243,27 +3333,47 @@ def plot_eaik_solutions_with_cfx(
     next to each point.
 
     When *rs_joints_deg* is provided (shape ``(N, 6)``), RobotStudio reference
-    joints are overlaid as transparent blue diamonds.  *N* may differ from
-    *n_wp* — only the overlapping range is plotted.
+    joints are overlaid (same style as ``generate_plot_ik``).  RS samples use
+    :data:`_EAIK_CFX_PLOT_WAYPOINT_STRIDE` like EAIK (``0`` = every index).
+    The horizontal extent is
+    ``min(limit_waypoints, max(len(all_solutions_per_waypoint), len(rs_joints_deg)))``
+    so longer RS runs still appear when IK rows end earlier (indices beyond IK
+    show RS only).
 
     Non-selected branches use fill colour by ``cfx``. The selected configuration
     uses the **same** ``cfx`` colour with a black edge and higher z-order.
+
+    When *selected_cfx_branch* is set (global CFX from the feasibility analyzer),
+    the highlighted point is that branch when present; otherwise the branch matching
+    *selected_joint_angles_deg* is used.
+
+    Subsampling for drawing only is controlled by module constant
+    :data:`_EAIK_CFX_PLOT_WAYPOINT_STRIDE`.
     """
     import os
     from matplotlib.lines import Line2D
 
     os.makedirs(output_dir, exist_ok=True)
 
-    n_wp = min(limit_waypoints, len(all_solutions_per_waypoint))
+    n_ik = len(all_solutions_per_waypoint)
+    n_rs = len(rs_joints_deg) if rs_joints_deg is not None else 0
+    n_wp = min(limit_waypoints, max(n_ik, n_rs))
     if n_wp <= 0:
         return
 
+    stride = _EAIK_CFX_PLOT_WAYPOINT_STRIDE
+
     n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
-    waypoints = np.arange(n_wp)
     component = EAIK_SCORE_PLOT_COMPONENT
 
+    # X-axis tick step: align with plot stride when set; else thin out dense runs.
+    if stride > 0:
+        xtick_step = stride
+    else:
+        xtick_step = max(1, n_wp // 50) if n_wp > 50 else 1
+
     for j in range(n_joints):
-        fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+        fig, ax = plt.subplots(1, 1, figsize=(24, 5))
         ax.set_axisbelow(True)
 
         if joint_limits_deg is not None:
@@ -3277,29 +3387,34 @@ def plot_eaik_solutions_with_cfx(
         # RobotStudio reference (circles + glow; same style as generate_plot_ik)
         if rs_joints_deg is not None and len(rs_joints_deg) > 0:
             n_rs = min(n_wp, len(rs_joints_deg))
-            rs_wp = np.arange(n_rs, dtype=float)
+            rs_idx = _waypoint_stride_indices(n_rs, stride)
+            rs_wp = rs_idx.astype(float)
             _plot_robotstudio_reference_series(
-                ax, rs_wp, rs_joints_deg[:n_rs, j],
+                ax, rs_wp, rs_joints_deg[rs_idx, j],
                 label="RobotStudio",
                 zorder_base=2.0,
                 eai_marker_s=35.0,
             )
             if rs_scores is not None:
-                for ri in range(n_rs):
+                for ri in rs_idx:
                     sc = rs_scores[ri] if ri < len(rs_scores) else None
                     if sc is None:
                         continue
                     val = _eaik_plot_value_for_component(sc, component)
                     if np.isfinite(val):
                         ax.annotate(
-                            f'{val:.2f}', (ri, rs_joints_deg[ri, j]),
-                            textcoords='offset points', xytext=(0, -8),
-                            fontsize=4, color='#1565C0', alpha=0.6,
+                            f'{val:.2f}', (float(ri), rs_joints_deg[ri, j]),
+                            textcoords='offset points', xytext=(0, -6),
+                            fontsize=3, color='#1565C0', alpha=0.6,
                             ha='center', va='top',
                         )
 
-        # First pass: all non-selected branches
+        # First pass: all non-selected branches (IK only where waypoint index exists)
         for wp in range(n_wp):
+            if not _eaik_cfx_stride_includes_wp(wp, stride, n_wp):
+                continue
+            if wp >= n_ik:
+                continue
             sols = all_solutions_per_waypoint[wp]
             ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
             wp_scores = scores_per_waypoint[wp] if scores_per_waypoint and wp < len(scores_per_waypoint) else []
@@ -3310,8 +3425,8 @@ def plot_eaik_solutions_with_cfx(
                 if selected_joint_angles_deg.ndim == 2
                 else selected_joint_angles_deg
             )
-            sel_idx = _eaik_match_selected_branch_index(
-                sols, np.asarray(sel_row), atol_deg=atol_deg
+            sel_idx = _eaik_resolve_selected_solution_index(
+                sols, ecfx_list, np.asarray(sel_row), selected_cfx_branch, atol_deg,
             )
 
             for s_idx, q_rad in enumerate(sols):
@@ -3336,13 +3451,17 @@ def plot_eaik_solutions_with_cfx(
                 if s_idx < len(wp_scores):
                     val = _eaik_plot_value_for_component(wp_scores[s_idx], component)
                     ax.annotate(
-                        f'{val:.2f}', (wp, q_deg_scalar), fontsize=5, ha='center',
-                        va='bottom', textcoords='offset points', xytext=(0, 4),
+                        f'{val:.2f}', (wp, q_deg_scalar), fontsize=3, ha='center',
+                        va='bottom', textcoords='offset points', xytext=(0, 3),
                         color=color, alpha=0.85,
                     )
 
         # Second pass: selected (same size/shape, cfx colour, black edge on top)
         for wp in range(n_wp):
+            if not _eaik_cfx_stride_includes_wp(wp, stride, n_wp):
+                continue
+            if wp >= n_ik:
+                continue
             sols = all_solutions_per_waypoint[wp]
             ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
             wp_scores = scores_per_waypoint[wp] if scores_per_waypoint and wp < len(scores_per_waypoint) else []
@@ -3353,22 +3472,16 @@ def plot_eaik_solutions_with_cfx(
                 if selected_joint_angles_deg.ndim == 2
                 else selected_joint_angles_deg
             )
-            sel_idx = _eaik_match_selected_branch_index(
-                sols, np.asarray(sel_row), atol_deg=atol_deg
+            sel_idx = _eaik_resolve_selected_solution_index(
+                sols, ecfx_list, np.asarray(sel_row), selected_cfx_branch, atol_deg,
             )
             if sel_idx is None:
-                continue
-            selected_q_deg = (
-                float(selected_joint_angles_deg[wp, j])
-                if selected_joint_angles_deg.ndim == 2
-                else float(np.asarray(selected_joint_angles_deg).flatten()[j])
-            )
-            if np.isnan(selected_q_deg):
                 continue
 
             q_rad = sols[int(sel_idx)]
             if np.any(np.isnan(np.asarray(q_rad, dtype=float).flatten())):
                 continue
+            selected_q_deg = float(np.degrees(np.asarray(q_rad, dtype=float).flatten()[j]))
             tup = ecfx_list[int(sel_idx)] if int(sel_idx) < len(ecfx_list) else (0, 0, 0, 0)
             cfx = int(tup[3]) if len(tup) > 3 else 0
             cfx = max(0, min(7, cfx))
@@ -3384,14 +3497,16 @@ def plot_eaik_solutions_with_cfx(
             if int(sel_idx) < len(wp_scores):
                 val = _eaik_plot_value_for_component(wp_scores[int(sel_idx)], component)
                 ax.annotate(
-                    f'{val:.2f}', (wp, selected_q_deg), fontsize=6, fontweight='bold',
-                    ha='center', va='bottom', textcoords='offset points', xytext=(0, 5),
+                    f'{val:.2f}', (wp, selected_q_deg), fontsize=3.5, fontweight='bold',
+                    ha='center', va='bottom', textcoords='offset points', xytext=(0, 4),
                     color='black',
                 )
 
         ax.set_ylabel(f'J{j+1} (deg)', fontweight='bold')
         ax.set_xlabel('Waypoint Index', fontweight='bold')
-        ax.set_xticks(waypoints)
+        ax.set_xticks(np.arange(0, n_wp, xtick_step))
+        ax.set_xlim(-0.5, n_wp - 0.5)
+        plt.setp(ax.get_xticklabels(), fontsize=_EAIK_CFX_XAXIS_TICK_FONTSIZE)
         ax.grid(True, alpha=0.3)
 
         handles, labels = ax.get_legend_handles_labels()
@@ -3404,7 +3519,7 @@ def plot_eaik_solutions_with_cfx(
 
         comp_name = component.name
         ax.legend(by_label.values(), by_label.keys(), loc='center left',
-                  bbox_to_anchor=(1, 0.5), fontsize=8)
+                  bbox_to_anchor=(1, 0.5), fontsize=7)
 
         title_str = f'EAIK Solutions (cfx 0–7, score={comp_name}) — J{j+1} (first {n_wp} WPs)'
         if traj_name:
@@ -3643,7 +3758,8 @@ def plot_task_space_positions_vs_index(
 
     When *rs_tcp_pos_mm* ``(N, 3)`` is provided, RobotStudio TCP positions are
     overlaid with the same circular reference style as ``generate_plot_ik`` (length
-    may differ from waypoints).
+    may differ from waypoints).  RS points use :data:`_EAIK_CFX_PLOT_WAYPOINT_STRIDE`
+    the same way as the cfx joint plot (``0`` = every index).
     """
     positions_m = np.asarray(positions_m)
     positions_mm = positions_m * 1000.0
@@ -3668,11 +3784,11 @@ def plot_task_space_positions_vs_index(
 
         if rs_tcp_pos_mm is not None and len(rs_tcp_pos_mm) > 0:
             n_rs = len(rs_tcp_pos_mm)
-            rs_wp = np.arange(n_rs, dtype=float)
+            rs_ix = _waypoint_stride_indices(n_rs, _EAIK_CFX_PLOT_WAYPOINT_STRIDE)
             _plot_robotstudio_reference_series(
                 ax,
-                rs_wp,
-                rs_tcp_pos_mm[:, idx],
+                rs_ix.astype(float),
+                rs_tcp_pos_mm[rs_ix, idx],
                 label="RobotStudio" if idx == 0 else None,
                 zorder_base=1.75,
                 eai_marker_s=14.0,
@@ -3735,7 +3851,8 @@ def plot_task_space_quaternions_vs_index(
     (sparse endpoint indices along the densified path; dense samples are green, line is light blue).
 
     When *rs_tcp_quat* ``(N, 4)`` [qw, qx, qy, qz] is provided, RobotStudio
-    quaternions use the same circular reference style as :func:`_plot_robotstudio_reference_series`.
+    quaternions use the same circular reference style as :func:`_plot_robotstudio_reference_series`,
+    subsampled by :data:`_EAIK_CFX_PLOT_WAYPOINT_STRIDE` (``0`` = every index).
     """
     quaternions = np.asarray(quaternions)
     n = len(quaternions)
@@ -3760,11 +3877,11 @@ def plot_task_space_quaternions_vs_index(
 
         if rs_tcp_quat is not None and len(rs_tcp_quat) > 0:
             n_rs = len(rs_tcp_quat)
-            rs_wp = np.arange(n_rs, dtype=float)
+            rs_ix = _waypoint_stride_indices(n_rs, _EAIK_CFX_PLOT_WAYPOINT_STRIDE)
             _plot_robotstudio_reference_series(
                 ax,
-                rs_wp,
-                rs_tcp_quat[:, idx],
+                rs_ix.astype(float),
+                rs_tcp_quat[rs_ix, idx],
                 label="RobotStudio" if idx == 0 else None,
                 zorder_base=1.75,
                 eai_marker_s=14.0,

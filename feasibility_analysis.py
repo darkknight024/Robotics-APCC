@@ -340,10 +340,15 @@ def process_toolpath(
         # ── Phase 2: TOPP-RA ──────────────────────────────────────────────
         topp_result_raw: Optional[ToppraResult] = None
         topp_dict: Optional[Dict] = None
+        joint_finite = (
+            joint_angles_rad.size > 0
+            and np.all(np.isfinite(joint_angles_rad))
+        )
         can_run_topp = (
             getattr(config.topp_ra, 'enabled', True)
             and reachability_ok
-            and len(joint_angles_rad) >= 2
+            and joint_finite
+            and joint_angles_rad.shape[0] >= 2
             and final_vel_lims is not None
             and final_accel_lims is not None
         )
@@ -516,7 +521,7 @@ def process_toolpath(
                 title=f"Joint Trajectory — {toolpath_name} — {traj_name}",
                 velocity_limits_rad_s=final_vel_lims,
             )
-            if len(joint_angles_rad) >= 2:
+            if joint_angles_rad.shape[0] >= 2:
                 orig_before_dense = original_trajectories_before_dense[local_idx]
                 if orig_before_dense is not None:
                     # Original sparse CSV waypoints (pre-interpolation); no IK overlay.
@@ -590,6 +595,7 @@ def process_toolpath(
                 np.degrees(r.joint_positions_rad) if r.joint_positions_rad is not None
                 else np.full(6, np.nan) for r in per_wp
             ])
+            selected_cfx_branch = traj_result.get("selected_cfx_branch")
             eaik_out = str(out_path / f"eaik_solutions_{traj_name}")
             plot_eaik_solutions_with_scores(
                 all_sols_per_wp, scores_per_wp, selected_deg,
@@ -603,6 +609,7 @@ def process_toolpath(
                     eaik_out,
                     limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
                     traj_name=f"{toolpath_name} - {traj_name}",
+                    selected_cfx_branch=selected_cfx_branch,
                 )
                 rs_scored = None
                 if rs_ref.joints_deg is not None and len(rs_ref.joints_deg) > 0:
@@ -625,6 +632,7 @@ def process_toolpath(
                     rs_scores=rs_scored,
                     limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
                     traj_name=f"{toolpath_name} - {traj_name}",
+                    selected_cfx_branch=selected_cfx_branch,
                 )
 
         # Waypoint density graphs

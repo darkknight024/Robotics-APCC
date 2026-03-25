@@ -214,19 +214,27 @@ def select_best_cfx_branch(
 ) -> Tuple[int, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
     """Score all 8 cfx branches across the full trajectory and pick the best.
 
+    **Selection order**
+
+    1. **Coverage first** — Among branches, prefer the largest number of
+       successful waypoints (non-NaN slot, not least-squares, within joint limits).
+       This is ``branch_coverage[cfx]`` (count of scored waypoints for that branch).
+    2. **Cost second** — Among branches tied on maximum coverage, pick the one
+       with the **lowest mean** per-scored-waypoint cost.
+
     For each cfx (0–7) the trajectory cost is the **mean** per-scored-waypoint
-    cost, so branches with different coverage levels are comparable.
+    cost (only over covered waypoints).
 
     * **First scored waypoint** — singularity + manipulability only (no C0).
     * **Subsequent scored waypoints** — C0 (distance to same cfx at previous
       scored waypoint) + singularity − manipulability.
 
     A waypoint is *skipped* (not scored) for a cfx if the solution is NaN, LS,
-    or violates joint limits — this does **not** disqualify the branch.  The
-    branch is invalid only if it has **zero** scored waypoints.
+    or violates joint limits — that branch simply gets no increment in coverage
+    at that waypoint.
 
     Returns:
-        best_cfx       — cfx index (0–7) with the lowest mean cost.
+        best_cfx       — cfx index (0–7) after coverage-then-cost selection.
         branch_costs   — shape (8,) mean cost per branch (inf if no scored wp).
         branch_coverage — shape (8,) number of scored waypoints per branch.
         per_wp_cfx_breakdowns — len(per_wp_results) rows, each a length-8 list of
@@ -281,10 +289,16 @@ def select_best_cfx_branch(
         )
         return 0, branch_costs, branch_coverage, per_wp_cfx_breakdowns
 
-    best_cfx = int(np.argmin(branch_costs))
+    max_cov = int(np.max(branch_coverage))
+    # Primary: maximum waypoint success count; secondary: lowest mean cost among ties.
+    candidates = np.where(branch_coverage == max_cov)[0]
+    best_cfx = int(candidates[np.argmin(branch_costs[candidates])])
+
     logger.info(
-        "cfx branch selection: best_cfx=%d  mean_cost=%.4f  coverage=%d/%d",
+        "cfx branch selection: best_cfx=%d  mean_cost=%.4f  coverage=%d/%d "
+        "(priority=max coverage %d, then min cost)",
         best_cfx, branch_costs[best_cfx], branch_coverage[best_cfx], n_reachable,
+        max_cov,
     )
     return best_cfx, branch_costs, branch_coverage, per_wp_cfx_breakdowns
 
@@ -417,6 +431,23 @@ class FeasibilityAnalyzer:
 
     # ── Global cfx branch selection ──
 
+    def _clear_result_for_missing_global_branch(self, result: FeasibilityResult) -> None:
+        """No configuration on the chosen global cfx branch — drop joints (single-branch truth)."""
+        result.is_reachable = False
+        result.joint_positions_rad = None
+        result.manipulability = 0.0
+        result.min_singular_value = 0.0
+        result.max_singular_value = 0.0
+        result.condition_number = np.inf
+        result.near_singularity = False
+        result.distance_to_joint_limits = None
+        result.joint_velocity_ratio = None
+        result.joint_space_distance = None
+        result.translational_manipulability = None
+        result.rotational_manipulability = None
+        result.normalized_manipulability = None
+        result.directional_manipulability = None
+
     def _update_result_metrics(self, result: FeasibilityResult, q: np.ndarray) -> None:
         """Recompute kinematic metrics after overriding ``joint_positions_rad``."""
         jacobian = self.fk_solver.get_jacobian(q)
@@ -442,7 +473,15 @@ class FeasibilityAnalyzer:
         self,
         results: List[FeasibilityResult],
     ) -> Tuple[Optional[int], Optional[np.ndarray], Optional[List[List[Optional[IkSolutionScoreBreakdown]]]]]:
-        """Select the globally best cfx branch and override per-waypoint results.
+        """Select the globally best cfx branch and make it the only joint trajectory.
+
+        For every waypoint that had IK success, either:
+
+        * apply ``all_solutions[best_cfx]`` (recompute metrics), or
+        * clear joints and mark unreachable — **never** keep a different cfx from
+          per-waypoint IK (no mixed-branch ``joint_positions_rad``).
+
+        If no branch has finite cost, all previously successful waypoints are cleared.
 
         Returns ``(best_cfx, branch_costs, per_wp_cfx_breakdowns)`` or three
         ``None`` values when global selection is not applicable (weights not set,
@@ -470,24 +509,41 @@ class FeasibilityAnalyzer:
 
         if np.isinf(branch_costs[best_cfx]):
             logger.warning(
-                "Global cfx selection: no valid branch — keeping solver per-waypoint choice"
+                "Global cfx selection: no valid branch — clearing joint solutions (no mixed branches)"
             )
+            for result in results:
+                if result.joint_positions_rad is not None:
+                    self._clear_result_for_missing_global_branch(result)
             return best_cfx, branch_costs, per_wp_breakdowns
 
         tol = 1e-6
+        n_cleared = 0
         for result in results:
             if not result.is_reachable:
                 continue
             sols = (result.ik_debug_info or {}).get('all_solutions', [])
             if best_cfx < len(sols) and not np.any(np.isnan(sols[best_cfx])):
                 q = sols[best_cfx]
-                if np.all(q >= self.lower_position_limit - tol) and np.all(q <= self.upper_position_limit + tol):
+                if self._is_within_joint_limits(q, tol):
                     self._update_result_metrics(result, q)
+                else:
+                    self._clear_result_for_missing_global_branch(result)
+                    n_cleared += 1
+            else:
+                self._clear_result_for_missing_global_branch(result)
+                n_cleared += 1
 
-        n_reachable = sum(1 for r in results if r.is_reachable)
+        if n_cleared > 0:
+            logger.warning(
+                "Global cfx selection: best_cfx=%d missing or invalid at %d waypoint(s) "
+                "(NaN slot or joint limits) — joint angles cleared there (no fallback to other cfx).",
+                best_cfx, n_cleared,
+            )
+        n_with_q = sum(1 for r in results if r.joint_positions_rad is not None)
         logger.info(
-            "Global cfx selection: best_cfx=%d  mean_cost=%.4f  coverage=%d/%d",
-            best_cfx, branch_costs[best_cfx], branch_coverage[best_cfx], n_reachable,
+            "Global cfx selection: best_cfx=%d  mean_cost=%.4f  scored_wp_on_branch=%d  waypoints_with_q=%d/%d",
+            best_cfx, branch_costs[best_cfx], branch_coverage[best_cfx],
+            n_with_q, len(results),
         )
         return best_cfx, branch_costs, per_wp_breakdowns
 
@@ -607,16 +663,22 @@ class FeasibilityAnalyzer:
             r.directional_manipulability = w_d
             dir_manip_values.append(w_d)
 
-        # Joint angles for downstream phases
-        joint_angles_rad = np.array(
-            [r.joint_positions_rad for r in results if r.joint_positions_rad is not None]
-        )
+        # Joint angles for downstream phases: always (n_waypoints, n_joints), NaN = no selected branch q
+        n_joints = len(self.lower_position_limit)
+        joint_angles_rad = np.full((n_waypoints, n_joints), np.nan, dtype=float)
+        for i, r in enumerate(results):
+            if r.joint_positions_rad is not None:
+                qv = np.asarray(r.joint_positions_rad, dtype=float).flatten()
+                m = min(int(qv.size), n_joints)
+                joint_angles_rad[i, :m] = qv[:m]
 
-        # C0 analysis (delegated to core.checks.c0_continuity)
+        # C0 on consecutive waypoints that have a finite global-branch configuration
         c0_result = None
-        if len(joint_angles_rad) >= 2:
+        finite_mask = np.all(np.isfinite(joint_angles_rad), axis=1)
+        q_c0 = joint_angles_rad[finite_mask]
+        if len(q_c0) >= 2:
             c0_result = check_c0_continuity(
-                joint_angles_rad,
+                q_c0,
                 joint_jump_limit_rad=self.joint_jump_limit_rad,
             )
 
@@ -625,9 +687,9 @@ class FeasibilityAnalyzer:
 
         # Joint-limit violations
         joint_limit_stats: Dict[str, Any] = {}
-        if len(joint_angles_rad) > 0:
+        if len(q_c0) > 0:
             joint_limit_stats = compute_joint_limit_violations(
-                joint_angles_rad, self.lower_position_limit, self.upper_position_limit
+                q_c0, self.lower_position_limit, self.upper_position_limit
             )
 
         safety_score = float(np.max(condition_numbers)) if condition_numbers else np.inf

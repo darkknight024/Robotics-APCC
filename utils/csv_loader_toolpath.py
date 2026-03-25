@@ -39,6 +39,9 @@ _DEFAULT_SPEED_MM_S = 100.0
 # Set False for normal runs (dedup helps stable Δt / spacing).  True = match raw RS row counts.
 SKIP_REMOVE_DUPLICATE_WAYPOINTS = True
 
+# If True and the CSV header includes ``is_at_waypoint``, keep only rows where it equals 1.
+FILTER_ONLY_IS_AT_WAYPOINT = False
+
 # RobotStudio / joint-prefixed CSVs often name TCP pose columns rs_x_mm, rs_qw, …
 # instead of x, y, z, qw, … — map those onto the canonical names used by the parser.
 _POSE_COLUMN_ALIASES = {
@@ -124,6 +127,11 @@ def load_toolpath_trajectories_ext(
     """
     Extended loader that also reports whether speed was extracted from the CSV.
 
+    When :data:`FILTER_ONLY_IS_AT_WAYPOINT` is True and the header includes an
+    optional column ``is_at_waypoint``, only rows whose value is ``1`` are kept
+    (``0`` and other values are dropped). If that flag is False, all rows are kept.
+    Headerless / legacy numeric rows are unchanged.
+
     Returns:
         ToolpathLoadResult with trajectories, speeds, and speed_extracted flag.
     """
@@ -172,6 +180,20 @@ def load_toolpath_trajectories_ext(
 
                 if len(clean_row) < 7:
                     continue
+
+                if (
+                    FILTER_ONLY_IS_AT_WAYPOINT
+                    and col_map is not None
+                    and "is_at_waypoint" in col_map
+                ):
+                    iaw_i = col_map["is_at_waypoint"]
+                    if iaw_i >= len(clean_row):
+                        continue
+                    try:
+                        if int(float(str(clean_row[iaw_i]).strip())) != 1:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
 
                 try:
                     point, row_speed = _parse_waypoint_mapped(clean_row, col_map)
@@ -392,6 +414,9 @@ def validate_toolpath_csv(csv_path: str) -> Tuple[bool, Optional[str]]:
 _RS_JOINT_COLS = ("rs_j1_deg", "rs_j2_deg", "rs_j3_deg", "rs_j4_deg", "rs_j5_deg", "rs_j6_deg")
 _RS_TCP_COLS = ("rs_x_mm", "rs_y_mm", "rs_z_mm", "rs_qw", "rs_qx", "rs_qy", "rs_qz")
 
+# If True and the header includes ``is_at_waypoint``, RS joint/TCP rows are kept only when it equals 1.
+filter_is_At_Waypoint_Rs_data = False
+
 
 @dataclass
 class RobotStudioReference:
@@ -407,6 +432,11 @@ def load_robotstudio_reference(csv_path: str) -> RobotStudioReference:
     Reads the header to detect ``rs_j1_deg`` … ``rs_j6_deg`` and
     ``rs_x_mm`` … ``rs_qz`` columns.  Returns ``None`` fields when
     columns are missing — callers should check before use.
+
+    When :data:`filter_is_At_Waypoint_Rs_data` is False, **all** data rows are loaded
+    so overlays can use the full RobotStudio signal. When it is True and the header
+    includes ``is_at_waypoint``, only rows with value ``1`` are kept (same rule as
+    :data:`FILTER_ONLY_IS_AT_WAYPOINT` for :func:`load_toolpath_trajectories_ext`).
     """
     import csv as _csv
     path = Path(csv_path)
@@ -434,6 +464,8 @@ def load_robotstudio_reference(csv_path: str) -> RobotStudioReference:
         if not has_joints and not has_tcp:
             return RobotStudioReference()
 
+        iaw_idx = cols.get("is_at_waypoint") if filter_is_At_Waypoint_Rs_data else None
+
         joints_rows: List[List[float]] = []
         tcp_pos_rows: List[List[float]] = []
         tcp_quat_rows: List[List[float]] = []
@@ -445,6 +477,15 @@ def load_robotstudio_reference(csv_path: str) -> RobotStudioReference:
                 float(row[0].strip())
             except ValueError:
                 continue
+
+            if iaw_idx is not None:
+                if iaw_idx >= len(row):
+                    continue
+                try:
+                    if int(float(str(row[iaw_idx]).strip())) != 1:
+                        continue
+                except (ValueError, TypeError):
+                    continue
 
             if has_joints:
                 joints_rows.append([float(row[i].strip()) for i in joint_indices])  # type: ignore[index]
