@@ -28,7 +28,9 @@ from .csv_loader_toolpath import (
     ToolpathLoadResult,
     get_trajectory_count,
     validate_toolpath_csv,
-    extract_toolpath_speed
+    extract_toolpath_speed,
+    load_robotstudio_reference,
+    RobotStudioReference,
 )
 
 from .csv_loader_robostudio import (
@@ -131,6 +133,8 @@ from .time_parameterization import (
     compute_arc_lengths,
     check_waypoint_density,
     interpolate_sparse_segments,
+    sparse_waypoint_dense_indices,
+    waypoint_times_ms_from_positions_and_speeds,
 )
 
 from .math import (
@@ -232,6 +236,8 @@ __all__ = [
     'compute_arc_lengths',
     'check_waypoint_density',
     'interpolate_sparse_segments',
+    'sparse_waypoint_dense_indices',
+    'waypoint_times_ms_from_positions_and_speeds',
     # Math utilities
     'shortest_angular_distance',
     'compute_joint_space_distance',

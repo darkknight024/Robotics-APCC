@@ -143,3 +143,94 @@ def interpolate_sparse_segments(
         dense_poses.append(trajectory[i + 1])
 
     return np.array(dense_poses)
+
+
+def sparse_waypoint_dense_indices(
+    n_sparse: int,
+    arc_lengths_mm: np.ndarray,
+    max_spacing_mm: np.ndarray,
+) -> np.ndarray:
+    """Dense row index of each sparse waypoint after :func:`interpolate_sparse_segments`.
+
+    Uses the **same** segment rules (``n_sub``, insert count, append order) as
+    interpolation — no pose matching.  Then ``out[0] == 0``,
+    ``out[-1] == len(dense) - 1`` for the dense array produced from the same
+    *arc_lengths_mm* / *max_spacing_mm*, and all dense samples lie on segments
+    between consecutive sparse poses.
+
+    Args:
+        n_sparse: Number of sparse waypoints (``len(traj)`` before densify).
+        arc_lengths_mm: ``(n_sparse - 1,)`` segment lengths in mm.
+        max_spacing_mm: ``(n_sparse - 1,)`` per-segment max spacing (from
+            :func:`check_waypoint_density`).
+
+    Returns:
+        ``(n_sparse,)`` int — dense index where sparse waypoint ``k`` appears as
+        a segment endpoint (first row is ``0``, last row equals the final dense
+        index).
+    """
+    arc_lengths_mm = np.asarray(arc_lengths_mm, dtype=float)
+    max_spacing_mm = np.asarray(max_spacing_mm, dtype=float)
+    n_seg = int(len(arc_lengths_mm))
+    if n_sparse != n_seg + 1:
+        raise ValueError(
+            f"n_sparse ({n_sparse}) must equal len(arc_lengths_mm)+1 ({n_seg + 1})"
+        )
+    if len(max_spacing_mm) != n_seg:
+        raise ValueError(
+            f"len(max_spacing_mm) ({len(max_spacing_mm)}) must equal len(arc_lengths_mm) ({n_seg})"
+        )
+    out = np.empty(n_sparse, dtype=int)
+    idx = 0
+    out[0] = 0
+    for i in range(n_seg):
+        gap = arc_lengths_mm[i]
+        allowed = max_spacing_mm[i]
+        if gap > allowed and allowed > 1e-6:
+            n_sub = int(np.ceil(gap / allowed))
+            idx += n_sub - 1
+        idx += 1
+        out[i + 1] = idx
+    return out
+
+
+def waypoint_times_ms_from_positions_and_speeds(
+    positions_m: np.ndarray,
+    speeds_mm_s: np.ndarray,
+    *,
+    default_speed_mm_s: float = 100.0,
+) -> np.ndarray:
+    """Synthetic cumulative time (ms) along a task-space polyline.
+
+    For each segment *i* → *i*+1, uses Euclidean distance in metres and the CSV
+    speed at index *i* (mm/s) to get ``Δt = Δs / (v_mm_s / 1000)``.  First
+    waypoint time is ``0``.  Used when no TOPP-RA time law exists yet.
+
+    Args:
+        positions_m: ``(N, 3)`` TCP positions in **metres**.
+        speeds_mm_s: Per-waypoint speeds in **mm/s** (length ≥ 1; padded or
+            truncated to *N* with *default_speed_mm_s*).
+        default_speed_mm_s: Used when *speeds_mm_s* is short or non-positive.
+
+    Returns:
+        ``(N,)`` cumulative times in **milliseconds**.
+    """
+    positions_m = np.asarray(positions_m, dtype=float)
+    speeds_mm_s = np.asarray(speeds_mm_s, dtype=float).reshape(-1)
+    n = len(positions_m)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    if len(speeds_mm_s) < n:
+        pad = np.full(n - len(speeds_mm_s), float(default_speed_mm_s), dtype=float)
+        speeds_mm_s = np.concatenate([speeds_mm_s, pad])
+    elif len(speeds_mm_s) > n:
+        speeds_mm_s = speeds_mm_s[:n].copy()
+    t_s = np.zeros(n, dtype=float)
+    for i in range(n - 1):
+        seg_len = float(np.linalg.norm(positions_m[i + 1, :3] - positions_m[i, :3]))
+        v = float(speeds_mm_s[i])
+        if not np.isfinite(v) or v < 1e-6:
+            v = float(default_speed_mm_s)
+        dt_s = seg_len / (v / 1000.0)
+        t_s[i + 1] = t_s[i] + dt_s
+    return t_s * 1000.0

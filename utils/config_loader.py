@@ -296,7 +296,8 @@ class WaypointDensityGroupConfig:
 
 @dataclass
 class ToppRaGroupConfig:
-    """TOPP-RA settings (always runs — only graph toggle)."""
+    """TOPP-RA settings."""
+    enabled: bool = True
     generate_graphs: bool = True
 
 

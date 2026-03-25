@@ -24,6 +24,11 @@ _Z_ECFX_LIMITS = 1.0
 _Z_ECFX_BRANCHES = 4.0
 _Z_ECFX_SELECTED = 100.0
 
+# Task-space index plots: line (interpolated path) vs dense samples (distinct hue).
+_TASK_SPACE_DENSE_LINE = "#90CAF9"
+_TASK_SPACE_DENSE_SCATTER_FACE = "#43A047"
+_TASK_SPACE_DENSE_SCATTER_EDGE = "#1B5E20"
+
 
 def _add_threshold_yticks(ax, threshold_values: List[float], color: str = "red") -> None:
     """Merge *threshold_values* into the y-axis ticks so readers see the exact numbers."""
@@ -39,6 +44,56 @@ def _add_threshold_yticks(ax, threshold_values: List[float], color: str = "red")
         ticklabel.set_color(c)
         if c == color:
             ticklabel.set_fontweight("bold")
+
+
+def _plot_robotstudio_reference_series(
+    ax,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    label: Optional[str] = "RobotStudio",
+    zorder_base: float = 1.8,
+    eai_marker_s: float = 35.0,
+) -> None:
+    """RobotStudio reference: soft line glow + line + circular markers.
+
+    Matches :func:`utils.generate_plot_ik._plot_robotstudio_reference_curve`
+    (circle markers, area ``eai_marker_s × 2.5²`` vs the reference scatter size).
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(x) == 0 or len(y) == 0:
+        return
+    blue = "#1976D2"
+    ax.plot(
+        x,
+        y,
+        color=blue,
+        linewidth=6.0,
+        alpha=0.07,
+        zorder=zorder_base - 0.35,
+        solid_capstyle="round",
+    )
+    ax.plot(
+        x,
+        y,
+        color=blue,
+        linewidth=1.15,
+        alpha=0.42,
+        zorder=zorder_base - 0.25,
+    )
+    rs_marker_s = float(eai_marker_s) * (2.5 ** 2)
+    sc_kw: Dict[str, Any] = dict(
+        s=rs_marker_s,
+        c="#7EB7E8",
+        alpha=0.58,
+        edgecolors="#1565C0",
+        linewidths=0.75,
+        zorder=zorder_base,
+    )
+    if label is not None:
+        sc_kw["label"] = label
+    ax.scatter(x, y, **sc_kw)
 
 
 def plot_singularity_per_waypoint(
@@ -3219,14 +3274,15 @@ def plot_eaik_solutions_with_cfx(
 
         seen_cfx_labels: set = set()
 
-        # RobotStudio reference overlay (transparent blue diamonds)
+        # RobotStudio reference (circles + glow; same style as generate_plot_ik)
         if rs_joints_deg is not None and len(rs_joints_deg) > 0:
             n_rs = min(n_wp, len(rs_joints_deg))
-            rs_wp = np.arange(n_rs)
-            ax.scatter(
-                rs_wp, rs_joints_deg[:n_rs, j], marker='D', s=28,
-                color='#1565C0', alpha=0.35, edgecolors='none', zorder=2.0,
-                label='RobotStudio',
+            rs_wp = np.arange(n_rs, dtype=float)
+            _plot_robotstudio_reference_series(
+                ax, rs_wp, rs_joints_deg[:n_rs, j],
+                label="RobotStudio",
+                zorder_base=2.0,
+                eai_marker_s=35.0,
             )
             if rs_scores is not None:
                 for ri in range(n_rs):
@@ -3546,6 +3602,11 @@ def match_sparse_indices_in_dense_trajectory(
 ) -> np.ndarray:
     """Map each sparse waypoint to the closest dense row index (by XYZ in metres).
 
+    Prefer :func:`utils.time_parameterization.sparse_waypoint_dense_indices` when
+    dense poses come from :func:`interpolate_sparse_segments` — it preserves
+    endpoint indices (last sparse = last dense index).  This nearest-neighbour
+    method can map multiple sparse rows to early dense indices if poses repeat.
+
     Args:
         dense_traj: (n_dense, 7) — [x,y,z,qw,qx,qy,qz] in **metres** (same units as sparse).
         sparse_traj: (n_sparse, 7) — original toolpath before densification.
@@ -3573,12 +3634,16 @@ def plot_task_space_positions_vs_index(
 ) -> None:
     """1×3 subplots: X, Y, Z position (mm) vs dense waypoint index.
 
-    When *sparse_original_indices* is set (after ``interpolate_sparse``), draws every
-    dense sample plus highlighted markers at original toolpath indices (FK-style
-    colours / scaling similar to :mod:`utils.generate_plot_fk`).
+    When *sparse_original_indices* is set (from
+    :func:`utils.time_parameterization.sparse_waypoint_dense_indices` after
+    ``interpolate_sparse``), draws a light-blue **polyline** plus **green** dense
+    markers (distinct from the line when samples are tight), and orange markers at the
+    **actual** sparse waypoint indices along the path (first index ``0``, last
+    dense index = last sparse waypoint).
 
-    When *rs_tcp_pos_mm* ``(N, 3)`` is provided, RobotStudio reference TCP positions
-    are overlaid as transparent red diamonds (length may differ from waypoints).
+    When *rs_tcp_pos_mm* ``(N, 3)`` is provided, RobotStudio TCP positions are
+    overlaid with the same circular reference style as ``generate_plot_ik`` (length
+    may differ from waypoints).
     """
     positions_m = np.asarray(positions_m)
     positions_mm = positions_m * 1000.0
@@ -3604,16 +3669,28 @@ def plot_task_space_positions_vs_index(
         if rs_tcp_pos_mm is not None and len(rs_tcp_pos_mm) > 0:
             n_rs = len(rs_tcp_pos_mm)
             rs_wp = np.arange(n_rs, dtype=float)
-            ax.scatter(
-                rs_wp, rs_tcp_pos_mm[:, idx], marker='D', s=24,
-                color='#C62828', alpha=0.35, edgecolors='none', zorder=1.5,
-                label='RobotStudio' if idx == 0 else None,
+            _plot_robotstudio_reference_series(
+                ax,
+                rs_wp,
+                rs_tcp_pos_mm[:, idx],
+                label="RobotStudio" if idx == 0 else None,
+                zorder_base=1.75,
+                eai_marker_s=14.0,
             )
 
         if sparse_original_indices is not None and len(sparse_original_indices) > 0:
-            ax.plot(wp, ycol, "-", color="#90CAF9", linewidth=1.2, alpha=0.75, zorder=1)
+            ax.plot(
+                wp, ycol, "-",
+                color=_TASK_SPACE_DENSE_LINE, linewidth=1.2, alpha=0.75, zorder=1,
+            )
             ax.scatter(
-                wp, ycol, s=14, c="#BBDEFB", alpha=0.9, edgecolors="none", zorder=2, label=dense_label if idx == 0 else None,
+                wp, ycol, s=14,
+                c=_TASK_SPACE_DENSE_SCATTER_FACE,
+                alpha=0.9,
+                edgecolors=_TASK_SPACE_DENSE_SCATTER_EDGE,
+                linewidths=0.35,
+                zorder=2,
+                label=dense_label if idx == 0 else None,
             )
             si = np.asarray(sparse_original_indices, dtype=int)
             ax.scatter(
@@ -3654,8 +3731,11 @@ def plot_task_space_quaternions_vs_index(
 ) -> None:
     """2×2 subplots: qw, qx, qy, qz vs waypoint index ([w,x,y,z] order).
 
+    *sparse_original_indices* is interpreted like :func:`plot_task_space_positions_vs_index`
+    (sparse endpoint indices along the densified path; dense samples are green, line is light blue).
+
     When *rs_tcp_quat* ``(N, 4)`` [qw, qx, qy, qz] is provided, RobotStudio
-    reference quaternions are overlaid as transparent red diamonds.
+    quaternions use the same circular reference style as :func:`_plot_robotstudio_reference_series`.
     """
     quaternions = np.asarray(quaternions)
     n = len(quaternions)
@@ -3681,16 +3761,28 @@ def plot_task_space_quaternions_vs_index(
         if rs_tcp_quat is not None and len(rs_tcp_quat) > 0:
             n_rs = len(rs_tcp_quat)
             rs_wp = np.arange(n_rs, dtype=float)
-            ax.scatter(
-                rs_wp, rs_tcp_quat[:, idx], marker='D', s=24,
-                color='#C62828', alpha=0.35, edgecolors='none', zorder=1.5,
-                label='RobotStudio' if idx == 0 else None,
+            _plot_robotstudio_reference_series(
+                ax,
+                rs_wp,
+                rs_tcp_quat[:, idx],
+                label="RobotStudio" if idx == 0 else None,
+                zorder_base=1.75,
+                eai_marker_s=14.0,
             )
 
         if sparse_original_indices is not None and len(sparse_original_indices) > 0:
-            ax.plot(wp, ycol, "-", color="#90CAF9", linewidth=1.2, alpha=0.75, zorder=1)
+            ax.plot(
+                wp, ycol, "-",
+                color=_TASK_SPACE_DENSE_LINE, linewidth=1.2, alpha=0.75, zorder=1,
+            )
             ax.scatter(
-                wp, ycol, s=14, c="#BBDEFB", alpha=0.9, edgecolors="none", zorder=2, label=dense_label if idx == 0 else None,
+                wp, ycol, s=14,
+                c=_TASK_SPACE_DENSE_SCATTER_FACE,
+                alpha=0.9,
+                edgecolors=_TASK_SPACE_DENSE_SCATTER_EDGE,
+                linewidths=0.35,
+                zorder=2,
+                label=dense_label if idx == 0 else None,
             )
             si = np.asarray(sparse_original_indices, dtype=int)
             ax.scatter(
@@ -3814,6 +3906,73 @@ def export_final_trajectory_csv(
                 line.append(float(qdot_rad_s[row, j]))
             for j in range(nj):
                 line.append(float(qddot_rad_s2[row, j]))
+            w.writerow(line)
+
+
+def export_dense_ik_trajectory_csv(
+    output_path: Union[str, Path],
+    time_ms: np.ndarray,
+    q_rad: np.ndarray,
+    position_m: np.ndarray,
+    quaternion_wxyz: np.ndarray,
+) -> None:
+    """Write dense task-space waypoints and IK joints with synthetic time (ms).
+
+    Column order: ``time_ms``, ``j1_rad`` … ``j6_rad``, ``x_m``, ``y_m``, ``z_m``,
+    ``qw``, ``qx``, ``qy``, ``qz`` (wxyz).  Use :func:`waypoint_times_ms_from_positions_and_speeds`
+    for *time_ms* from arc length and CSV speeds.
+
+    Unreachable IK rows have ``NaN`` joint entries; task-space columns still
+    reflect the requested Cartesian path.
+
+    Args:
+        output_path: Path to ``.csv``.
+        time_ms: ``(N,)`` cumulative time in ms.
+        q_rad: ``(N, n_joints)`` joint angles (rad); may contain NaN.
+        position_m: ``(N, 3)`` TCP position (m).
+        quaternion_wxyz: ``(N, 4)`` unit quaternion [qw, qx, qy, qz].
+    """
+    time_ms = np.asarray(time_ms, dtype=float).reshape(-1)
+    q_rad = np.asarray(q_rad, dtype=float)
+    position_m = np.asarray(position_m, dtype=float)
+    quaternion_wxyz = np.asarray(quaternion_wxyz, dtype=float)
+
+    n = len(time_ms)
+    if not (q_rad.shape[0] == n and position_m.shape[0] == n and quaternion_wxyz.shape[0] == n):
+        raise ValueError(
+            "export_dense_ik_trajectory_csv: mismatched row counts for time, joints, and pose"
+        )
+    if position_m.shape[1] != 3 or quaternion_wxyz.shape[1] != 4:
+        raise ValueError("export_dense_ik_trajectory_csv: expected position (N,3) and quaternion (N,4)")
+    nj = q_rad.shape[1]
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    header: List[str] = ["time_ms"]
+    for i in range(nj):
+        header.append(f"j{i + 1}_rad")
+    header.extend(["x_m", "y_m", "z_m", "qw", "qx", "qy", "qz"])
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        for row in range(n):
+            line: List[Any] = [float(time_ms[row])]
+            for j in range(nj):
+                v = float(q_rad[row, j])
+                line.append(v if np.isfinite(v) else float("nan"))
+            line.extend(
+                [
+                    float(position_m[row, 0]),
+                    float(position_m[row, 1]),
+                    float(position_m[row, 2]),
+                    float(quaternion_wxyz[row, 0]),
+                    float(quaternion_wxyz[row, 1]),
+                    float(quaternion_wxyz[row, 2]),
+                    float(quaternion_wxyz[row, 3]),
+                ]
+            )
             w.writerow(line)
 
 

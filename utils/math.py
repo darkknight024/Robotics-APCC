@@ -29,6 +29,9 @@ def shortest_angular_distance(q1: float, q2: float) -> float:
     diff = q2 - q1
     # Wrap to [-π, π]
     diff = np.arctan2(np.sin(diff), np.cos(diff))
+
+    # differnt way to do it 
+    diff = ((q2 - q1 + np.pi) % (2 * np.pi)) - np.pi
     return abs(diff)
 
 

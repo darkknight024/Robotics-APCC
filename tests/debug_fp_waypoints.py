@@ -297,7 +297,7 @@ def main():
         target_pos = d['target_pos']
         target_quat = d['target_quat']
         _, _, info = ik_solver.solve(target_pos, target_quat)
-        all_sols = info['all_solutions']
+        all_sols = [s for s in info['all_solutions'] if not np.any(np.isnan(s))]
         abb_valid = []
         for sol in all_sols:
             if np.all(sol >= abb_lower_rad - 1e-6) and np.all(sol <= abb_upper_rad + 1e-6):

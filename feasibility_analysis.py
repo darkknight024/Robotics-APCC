@@ -68,8 +68,8 @@ from utils.feasibility_plot import (
     plot_3d_spline_trajectory,
     plot_task_space_positions_vs_index,
     plot_task_space_quaternions_vs_index,
-    match_sparse_indices_in_dense_trajectory,
     export_final_trajectory_csv,
+    export_dense_ik_trajectory_csv,
 )
 from utils.math import compute_normalized_joint_energy, compute_safety_tier
 from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S, load_robotstudio_reference
@@ -77,6 +77,8 @@ from utils.time_parameterization import (
     compute_arc_lengths,
     check_waypoint_density,
     interpolate_sparse_segments,
+    sparse_waypoint_dense_indices,
+    waypoint_times_ms_from_positions_and_speeds,
 )
 
 
@@ -315,6 +317,26 @@ def process_toolpath(
         if verbose:
             print(f"  {traj_name}: {traj_result['reachable_count']}/{n_waypoints} reachable")
 
+        traj_out = out_path / traj_name
+        traj_out.mkdir(parents=True, exist_ok=True)
+
+        time_ms_dense = waypoint_times_ms_from_positions_and_speeds(
+            positions,
+            speeds,
+            default_speed_mm_s=float(wp_cfg.default_speed_mm_s),
+        )
+        q_dense_export = np.full((n_waypoints, 6), np.nan)
+        for i, r in enumerate(per_wp):
+            if r.joint_positions_rad is not None:
+                q_dense_export[i, :] = r.joint_positions_rad
+        export_dense_ik_trajectory_csv(
+            traj_out / f"dense_ik_trajectory_{traj_name}.csv",
+            time_ms_dense,
+            q_dense_export,
+            positions,
+            quaternions,
+        )
+
         # ── Phase 2: TOPP-RA ──────────────────────────────────────────────
         topp_result_raw: Optional[ToppraResult] = None
         topp_dict: Optional[Dict] = None
@@ -411,9 +433,6 @@ def process_toolpath(
         rot_manip = np.array([r.rotational_manipulability or 0.0 for r in per_wp])
         norm_manip = np.array([r.normalized_manipulability or 0.0 for r in per_wp])
         dir_manip = np.array([r.directional_manipulability or 0.0 for r in per_wp])
-
-        traj_out = out_path / traj_name
-        traj_out.mkdir(parents=True, exist_ok=True)
 
         # Reachability graphs
         if config.reachability.generate_graphs:
@@ -528,8 +547,9 @@ def process_toolpath(
                 and config.solver == "eaik"):
             all_sols_per_wp: List[List[np.ndarray]] = []
             all_ecfx_per_wp: List[List[tuple]] = []
-            scores_per_wp: List[List[float]] = []
+            scores_per_wp: List[List[Any]] = []
             w = ms_weights or {"c0": 10.0, "singularity": 1.0, "manipulability": 0.5}
+            cfx_pw = traj_result.get("cfx_per_waypoint_breakdowns")
             for wp_i, r in enumerate(per_wp):
                 dbg = r.ik_debug_info or {}
                 raw_sols = dbg.get("all_solutions", [])
@@ -554,10 +574,16 @@ def process_toolpath(
                     if wp_i > 0 and per_wp[wp_i - 1].joint_positions_rad is not None
                     else None
                 )
-                wp_scores = [
-                    score_ik_solution_breakdown(sol, q_prev, fk_solver, robot_reach_m, w)
-                    for sol in valid_sols
-                ]
+                wp_scores = []
+                for s_idx, sol in enumerate(raw_sols):
+                    if np.any(np.isnan(sol)):
+                        continue
+                    bd = None
+                    if cfx_pw is not None and wp_i < len(cfx_pw) and s_idx < len(cfx_pw[wp_i]):
+                        bd = cfx_pw[wp_i][s_idx]
+                    if bd is None:
+                        bd = score_ik_solution_breakdown(sol, q_prev, fk_solver, robot_reach_m, w)
+                    wp_scores.append(bd)
                 scores_per_wp.append(wp_scores)
 
             selected_deg = np.array([
@@ -617,7 +643,13 @@ def process_toolpath(
             orig_t = original_trajectories_before_dense[local_idx]
             sparse_idx = None
             if orig_t is not None:
-                sparse_idx = match_sparse_indices_in_dense_trajectory(trajectory, orig_t)
+                dens = density_results[local_idx]
+                if dens is not None:
+                    arc_mm = np.asarray(dens["actual_spacing_mm"], dtype=float)
+                    max_sp = np.asarray(dens["max_spacing_mm"], dtype=float)
+                    sparse_idx = sparse_waypoint_dense_indices(
+                        len(orig_t), arc_mm, max_sp,
+                    )
             ts_adaptive = getattr(wp_cfg, "task_space_adaptive_scale", False)
             plot_task_space_positions_vs_index(
                 positions,
