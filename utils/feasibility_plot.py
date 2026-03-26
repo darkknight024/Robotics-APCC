@@ -4,8 +4,9 @@ Feasibility Analysis Plot Generation
 
 Generates plots for trajectory feasibility analysis:
 1. Singularity per waypoint
-2. Kinematic reachability per waypoint (0/1 binary)
-3. Manipulability per waypoint
+2. J5 wrist singularity binary per waypoint (0/1)
+3. Kinematic reachability per waypoint (0/1 binary)
+4. Manipulability per waypoint
 4. Reachability summary across trajectories
 """
 
@@ -54,11 +55,20 @@ def _plot_robotstudio_reference_series(
     label: Optional[str] = "RobotStudio",
     zorder_base: float = 1.8,
     eai_marker_s: float = 35.0,
+    blue_x: Optional[np.ndarray] = None,
+    blue_y: Optional[np.ndarray] = None,
+    red_x: Optional[np.ndarray] = None,
+    red_y: Optional[np.ndarray] = None,
+    switch_label: str = "RobotStudio switch",
 ) -> None:
     """RobotStudio reference: soft line glow + line + circular markers.
 
     Matches :func:`utils.generate_plot_ik._plot_robotstudio_reference_curve`
     (circle markers, area ``eai_marker_s × 2.5²`` vs the reference scatter size).
+
+    When *blue_x* / *blue_y* are set, they are used for blue markers instead of *x*, *y*
+    (same size as default). When *red_x* / *red_y* are non-empty, additional red markers
+    are drawn for cfx branch switches (same marker area, red styling).
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -83,7 +93,9 @@ def _plot_robotstudio_reference_series(
         zorder=zorder_base - 0.25,
     )
     rs_marker_s = float(eai_marker_s) * (2.5 ** 2)
-    sc_kw: Dict[str, Any] = dict(
+    bx = x if blue_x is None else np.asarray(blue_x, dtype=float)
+    by = y if blue_y is None else np.asarray(blue_y, dtype=float)
+    sc_kw_blue: Dict[str, Any] = dict(
         s=rs_marker_s,
         c="#7EB7E8",
         alpha=0.58,
@@ -92,8 +104,28 @@ def _plot_robotstudio_reference_series(
         zorder=zorder_base,
     )
     if label is not None:
-        sc_kw["label"] = label
-    ax.scatter(x, y, **sc_kw)
+        sc_kw_blue["label"] = label
+    if len(bx) > 0:
+        ax.scatter(bx, by, **sc_kw_blue)
+    elif (
+        red_x is not None
+        and len(red_x) > 0
+        and label is not None
+    ):
+        ax.scatter([], [], **sc_kw_blue)
+    if red_x is not None and len(red_x) > 0:
+        rx = np.asarray(red_x, dtype=float)
+        ry = np.asarray(red_y, dtype=float)
+        ax.scatter(
+            rx, ry,
+            s=rs_marker_s,
+            c="#FFCDD2",
+            alpha=0.75,
+            edgecolors="#C62828",
+            linewidths=0.75,
+            zorder=zorder_base + 0.05,
+            label=switch_label,
+        )
 
 
 def plot_singularity_per_waypoint(
@@ -133,6 +165,50 @@ def plot_singularity_per_waypoint(
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_j5_wrist_singularity_binary(
+    binary_flags: np.ndarray,
+    output_path: str,
+    title: str = "J5 wrist singularity (binary)",
+    threshold_deg: float = 0.76,
+) -> None:
+    """Plot per-waypoint binary J5 wrist singularity (0 = safe, 1 = in wrist band).
+
+    Matches :func:`core.feasibility_checks._j5_wrist_singularity_band_active`:
+    active when ``|sin(q5)| < sin(threshold_deg)`` (near q5=0 or π).
+
+    Args:
+        binary_flags: shape ``(n_waypoints,)``, values 0 or 1 (int/float).
+        output_path: PNG path.
+        title: Figure title.
+        threshold_deg: Shown in the subtitle for traceability.
+    """
+    n = int(len(binary_flags))
+    if n <= 0:
+        return
+    waypoints = np.arange(n)
+    y = np.asarray(binary_flags, dtype=float).clip(0.0, 1.0)
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.set_axisbelow(True)
+    ax.step(waypoints, y, where="post", color="#C62828", linewidth=2.0, label="J5 singularity")
+    ax.fill_between(waypoints, 0, y, step="post", alpha=0.15, color="#C62828")
+
+    ax.set_xlabel("Waypoint Index", fontweight="bold")
+    ax.set_ylabel("J5 wrist singularity", fontweight="bold")
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["0 (no)", "1 (yes)"])
+    ax.set_ylim(-0.15, 1.15)
+    ax.set_xlim(-0.5, n - 0.5)
+    ax.grid(True, alpha=0.3, axis="both")
+
+    full_title = f"{title}\n(threshold: |sin(q5)| < sin({threshold_deg:g}°))"
+    ax.set_title(full_title, fontweight="bold", fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
 
 
@@ -3349,6 +3425,9 @@ def plot_eaik_solutions_with_cfx(
     scores_per_waypoint: Optional[List[List[IkSolutionScoreBreakdown]]] = None,
     rs_joints_deg: Optional[np.ndarray] = None,
     rs_scores: Optional[List[Optional[IkSolutionScoreBreakdown]]] = None,
+    rs_branch_switches: int = 0,
+    rs_branch_discontinuity_weight: float = 5.0,
+    rs_cfx_switch_waypoints: Optional[List[int]] = None,
     joint_limits_deg: Optional[tuple] = None,
     limit_waypoints: int = 20,
     traj_name: Optional[str] = None,
@@ -3391,6 +3470,11 @@ def plot_eaik_solutions_with_cfx(
     else:
         xtick_step = max(1, n_wp // 50) if n_wp > 50 else 1
 
+    rs_switch_set: set = set()
+    if rs_joints_deg is not None and len(rs_joints_deg) > 0 and rs_cfx_switch_waypoints:
+        n_rs_pre = min(n_wp, len(rs_joints_deg))
+        rs_switch_set = {i for i in rs_cfx_switch_waypoints if 0 <= i < n_rs_pre}
+
     # -- resolve selected solution index per waypoint (once, shared across joints) --
     sel_idx_per_wp: List[Optional[int]] = [None] * n_wp
     for wp in range(min(n_wp, n_ik)):
@@ -3427,16 +3511,35 @@ def plot_eaik_solutions_with_cfx(
             rs_wp = rs_idx.astype(float)
             rs_total = None
             if rs_scores is not None:
-                rs_total = sum(s.total for s in rs_scores if s is not None)
+                rs_wp_sum = sum(s.total for s in rs_scores if s is not None)
+                rs_bd_penalty = rs_branch_switches * rs_branch_discontinuity_weight
+                rs_total = rs_wp_sum + rs_bd_penalty
             rs_label = "RobotStudio"
             if rs_total is not None:
-                rs_label += f" (cost={rs_total:.2f})"
-            _plot_robotstudio_reference_series(
-                ax, rs_wp, rs_joints_deg[rs_idx, j],
-                label=rs_label,
-                zorder_base=2.0,
-                eai_marker_s=35.0,
-            )
+                rs_label += f" (cost={rs_total:.2f}"
+                if rs_branch_switches > 0:
+                    rs_label += f", {rs_branch_switches} switches"
+                rs_label += ")"
+            if rs_switch_set:
+                blue_idx = np.array([i for i in rs_idx if i not in rs_switch_set], dtype=int)
+                red_idx = np.array(sorted(rs_switch_set), dtype=int)
+                _plot_robotstudio_reference_series(
+                    ax, rs_wp, rs_joints_deg[rs_idx, j],
+                    label=rs_label,
+                    zorder_base=2.0,
+                    eai_marker_s=35.0,
+                    blue_x=blue_idx.astype(float),
+                    blue_y=rs_joints_deg[blue_idx, j],
+                    red_x=red_idx.astype(float),
+                    red_y=rs_joints_deg[red_idx, j],
+                )
+            else:
+                _plot_robotstudio_reference_series(
+                    ax, rs_wp, rs_joints_deg[rs_idx, j],
+                    label=rs_label,
+                    zorder_base=2.0,
+                    eai_marker_s=35.0,
+                )
             if SHOW_INDIVIDUAL_WAYPOINT_SCORES and rs_scores is not None:
                 for ri in rs_idx:
                     sc = rs_scores[ri] if ri < len(rs_scores) else None

@@ -28,6 +28,7 @@ import numpy as np
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 
+from utils.config_loader import SingularityGroupConfig
 from utils.math import (
     compute_joint_space_distance,
     compute_distance_to_joint_limits,
@@ -133,7 +134,6 @@ DEFAULT_MULTI_SOLUTION_WEIGHTS = {
 # binary wrist term matching ``SingularityAnalyzer._classify_wrist`` (check_j5_only):
 # ``term_sing = w_s`` when |sin(q5)| < sin(threshold), else ``0``.
 USE_J5_SINGULARITY_ONLY = True
-J5_SINGULARITY_THRESHOLD_DEG = 0.76
 
 
 def _j5_wrist_singularity_band_active(q: np.ndarray, threshold_deg: float) -> bool:
@@ -171,6 +171,7 @@ def score_ik_solution_breakdown(
     fk_solver,
     characteristic_length_m: float,
     weights: dict,
+    j5_threshold_deg: Optional[float] = None,
 ) -> IkSolutionScoreBreakdown:
     """Score one IK candidate vs previous config. Lower ``total`` is better.
 
@@ -180,11 +181,15 @@ def score_ik_solution_breakdown(
         * **c0** — ``w_c0 · Δq`` to previous joint config (0 if no *q_prev*)
         * **singularity** — If :data:`USE_J5_SINGULARITY_ONLY` is False: ``w_s · log(1 + 1/max(σ_min, ε))``
           (soft σ_min penalty). If True: ``w_s`` when the J5 wrist band matches
-          ``singularity.py`` (|sin(q5)| < sin(threshold deg)), else ``0``.
+          ``singularity.py`` (|sin(q5)| < sin(*j5_threshold_deg*)), else ``0``.
+          *j5_threshold_deg* defaults to :class:`~utils.config_loader.SingularityGroupConfig`
+          ``j5_threshold_deg`` when omitted.
         * **manipulability_reward** — ``w_m · μ`` (Yoshikawa); subtracted in *total*
 
     Use ``breakdown.total`` when a single scalar cost is needed (e.g. argmin over branches).
     """
+    if j5_threshold_deg is None:
+        j5_threshold_deg = SingularityGroupConfig().j5_threshold_deg
     jacobian = fk_solver.get_jacobian(q_candidate)
     manip = compute_manipulability(jacobian, characteristic_length_m)
     w_s = float(weights.get("singularity", 1.0))
@@ -193,7 +198,7 @@ def score_ik_solution_breakdown(
     if USE_J5_SINGULARITY_ONLY:
         term_sing = w_s * (
             1.0
-            if _j5_wrist_singularity_band_active(q_candidate, J5_SINGULARITY_THRESHOLD_DEG)
+            if _j5_wrist_singularity_band_active(q_candidate, float(j5_threshold_deg))
             else 0.0
         )
     else:
@@ -221,6 +226,7 @@ def select_best_cfx_branch(
     weights: dict,
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
+    j5_threshold_deg: Optional[float] = None,
 ) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
     """Score all 8 cfx branches across the full trajectory and pick the best.
 
@@ -243,6 +249,9 @@ def select_best_cfx_branch(
     or violates joint limits — that branch simply gets no increment in coverage
     at that waypoint.
 
+    *j5_threshold_deg* is passed to :func:`score_ik_solution_breakdown` (defaults to
+    :class:`~utils.config_loader.SingularityGroupConfig` when omitted).
+
     Returns:
         best_cfx       — cfx index (0-7) after coverage-then-cost selection.
         branch_costs   — shape (8,) **mean** cost per branch (inf if no scored wp).
@@ -260,6 +269,8 @@ def select_best_cfx_branch(
     branch_coverage = np.zeros(_N_CFX, dtype=int)
     tol = 1e-6
     prev_q_per_cfx: List[Optional[np.ndarray]] = [None] * _N_CFX
+    if j5_threshold_deg is None:
+        j5_threshold_deg = SingularityGroupConfig().j5_threshold_deg
 
     for wi, result in enumerate(per_wp_results):
         if not result.is_reachable:
@@ -280,6 +291,7 @@ def select_best_cfx_branch(
 
             bd = score_ik_solution_breakdown(
                 q, prev_q_per_cfx[cfx], fk_solver, characteristic_length_m, weights,
+                j5_threshold_deg=j5_threshold_deg,
             )
             branch_totals[cfx] += bd.total
             per_wp_cfx_breakdowns[wi][cfx] = bd
@@ -339,6 +351,7 @@ def select_mixed_cfx_branches(
     weights: dict,
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
+    j5_threshold_deg: Optional[float] = None,
 ) -> Tuple[MixedBranchResult, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
     """Greedy forward mixed-branch selection with branch-discontinuity penalty.
 
@@ -357,25 +370,48 @@ def select_mixed_cfx_branches(
     n_wp = len(per_wp_results)
     tol = 1e-6
     w_bd = float(weights.get("branch_discontinuity", 5.0))
+    if j5_threshold_deg is None:
+        j5_threshold_deg = SingularityGroupConfig().j5_threshold_deg
 
     best_cfx_single, branch_costs, branch_totals, branch_coverage, per_wp_cfx_breakdowns = (
         select_best_cfx_branch(
             per_wp_results, fk_solver, characteristic_length_m,
             weights, lower_limits, upper_limits,
+            j5_threshold_deg=j5_threshold_deg,
         )
     )
 
     # -- validity matrix (n_wp × _N_CFX) --
     valid = [[False] * _N_CFX for _ in range(n_wp)]
+    _dbg_reject_nan = np.zeros(_N_CFX, dtype=int)
+    _dbg_reject_ls = np.zeros(_N_CFX, dtype=int)
+    _dbg_reject_jl = np.zeros(_N_CFX, dtype=int)
+    _dbg_reject_unreach = 0
     for wi, result in enumerate(per_wp_results):
         if not result.is_reachable:
+            _dbg_reject_unreach += 1
             continue
         dbg = result.ik_debug_info or {}
         sols = dbg.get('all_solutions', [])
         is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
         for cfx in range(_N_CFX):
-            if _q_for_cfx_if_valid(sols, is_ls_list, cfx, lower_limits, upper_limits, tol) is not None:
-                valid[wi][cfx] = True
+            if cfx >= len(sols) or np.any(np.isnan(sols[cfx])):
+                _dbg_reject_nan[cfx] += 1
+                continue
+            if cfx < len(is_ls_list) and is_ls_list[cfx]:
+                _dbg_reject_ls[cfx] += 1
+                continue
+            q = sols[cfx]
+            if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
+                _dbg_reject_jl[cfx] += 1
+                continue
+            valid[wi][cfx] = True
+    logger.info(
+        "Mixed-branch validity: %d wp, %d unreachable | "
+        "rejected NaN=%s  LS=%s  JointLimits=%s",
+        n_wp, _dbg_reject_unreach,
+        _dbg_reject_nan.tolist(), _dbg_reject_ls.tolist(), _dbg_reject_jl.tolist(),
+    )
 
     # -- helper: consecutive valid run length from wp onward for a given cfx --
     run_len = [[0] * _N_CFX for _ in range(n_wp + 1)]
@@ -430,6 +466,7 @@ def select_mixed_cfx_branches(
             continue
         bd = score_ik_solution_breakdown(
             q, q_prev_mixed, fk_solver, characteristic_length_m, weights,
+            j5_threshold_deg=j5_threshold_deg,
         )
         mixed_total += bd.total
         q_prev_mixed = q
@@ -451,11 +488,15 @@ def select_mixed_cfx_branches(
         per_branch_nan_waypoint_count=per_branch_nan,
     )
 
+    n_none = sum(1 for s in selected if s is None)
+    n_stayed = sum(1 for s in selected if s is not None)
+    unique_cfx_used = set(s for s in selected if s is not None)
     logger.info(
         "Mixed-branch cfx selection: start_cfx=%d  switches=%d  total_cost=%.4f  "
-        "bd_penalty=%.1f×%d=%.1f",
+        "bd_penalty=%.1f×%d=%.1f  assigned=%d  none=%d  branches_used=%s",
         best_cfx_single, n_switches, mixed_total,
         w_bd, n_switches, w_bd * n_switches,
+        n_stayed, n_none, sorted(unique_cfx_used),
     )
     return mixed, branch_costs, branch_coverage, per_wp_cfx_breakdowns
 
@@ -488,6 +529,7 @@ class FeasibilityAnalyzer:
         joint_jump_limit_rad: Optional[float] = None,
         max_ik_failures_per_trajectory: Optional[int] = None,
         multi_solution_weights: Optional[dict] = None,
+        j5_threshold_deg: Optional[float] = None,
     ):
         if isinstance(robot_model_or_limits, tuple):
             pin_model = robot_model_or_limits[0]
@@ -519,6 +561,11 @@ class FeasibilityAnalyzer:
         )
         self.max_ik_failures_per_trajectory = max_ik_failures_per_trajectory
         self.multi_solution_weights = multi_solution_weights
+        self.j5_threshold_deg = (
+            float(j5_threshold_deg)
+            if j5_threshold_deg is not None
+            else SingularityGroupConfig().j5_threshold_deg
+        )
 
     # ── per-waypoint ──
 
@@ -661,6 +708,7 @@ class FeasibilityAnalyzer:
                 self.multi_solution_weights,
                 self.lower_position_limit,
                 self.upper_position_limit,
+                j5_threshold_deg=self.j5_threshold_deg,
             )
         )
 

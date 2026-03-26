@@ -63,6 +63,7 @@ from .generate_plot_fk import (
 
 from .feasibility_plot import (
     plot_singularity_per_waypoint,
+    plot_j5_wrist_singularity_binary,
     plot_reachability_per_waypoint,
     plot_manipulability_per_waypoint,
     plot_reachability_summary,
@@ -184,6 +185,7 @@ __all__ = [
     'plot_all_eaik_solutions',
     'eaik_selected_branch_index',
     'plot_singularity_per_waypoint',
+    'plot_j5_wrist_singularity_binary',
     'plot_reachability_per_waypoint',
     'plot_manipulability_per_waypoint',
     'plot_reachability_summary',

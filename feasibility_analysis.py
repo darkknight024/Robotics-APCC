@@ -26,7 +26,11 @@ from typing import Dict, List, Any, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core import create_solvers, FeasibilityAnalyzer
-from core.feasibility_checks import score_ik_solution_breakdown
+from core.feasibility_checks import (
+    score_ik_solution_breakdown,
+    _j5_wrist_singularity_band_active,
+)
+from core.eaik_ik_solver import compute_ecfx
 from core.topp_check import parameterize_trajectory, ToppraResult
 from core.checks import (
     check_c1_continuity,
@@ -55,6 +59,7 @@ from utils.feasibility_plot import (
     plot_continuity_dashboard,
     plot_manipulability_per_waypoint,
     plot_singularity_per_waypoint,
+    plot_j5_wrist_singularity_binary,
     plot_eaik_solutions_with_scores,
     plot_eaik_solutions_with_ecfx,
     plot_eaik_solutions_with_cfx,
@@ -219,6 +224,7 @@ def process_toolpath(
         joint_jump_limit_rad=final_joint_jump,
         max_ik_failures_per_trajectory=config.max_ik_failures_per_trajectory,
         multi_solution_weights=ms_weights,
+        j5_threshold_deg=config.singularity.j5_threshold_deg,
     )
 
     # ── Step 2: Load and transform trajectories ─────────────────────────────
@@ -455,6 +461,40 @@ def process_toolpath(
                 title=f"Singularity — {toolpath_name} — {traj_name}",
                 threshold=config.singularity.threshold,
             )
+            j5_bin = np.zeros(len(per_wp), dtype=np.int8)
+            for wi, res in enumerate(per_wp):
+                q_wp = res.joint_positions_rad
+                if q_wp is not None and len(q_wp) >= 5:
+                    j5_bin[wi] = int(
+                        _j5_wrist_singularity_band_active(
+                            q_wp, config.singularity.j5_threshold_deg,
+                        )
+                    )
+            plot_j5_wrist_singularity_binary(
+                j5_bin,
+                str(traj_out / f"j5_wrist_singularity_binary_{traj_name}.png"),
+                title=f"J5 wrist singularity (binary) — {toolpath_name} — {traj_name}",
+                threshold_deg=config.singularity.j5_threshold_deg,
+            )
+            if rs_ref.joints_deg is not None and len(rs_ref.joints_deg) > 0:
+                rs_j5_bin = np.zeros(len(rs_ref.joints_deg), dtype=np.int8)
+                for ri in range(len(rs_ref.joints_deg)):
+                    q_rs = np.radians(rs_ref.joints_deg[ri])
+                    if len(q_rs) >= 5:
+                        rs_j5_bin[ri] = int(
+                            _j5_wrist_singularity_band_active(
+                                q_rs, config.singularity.j5_threshold_deg,
+                            )
+                        )
+                plot_j5_wrist_singularity_binary(
+                    rs_j5_bin,
+                    str(traj_out / f"j5_wrist_singularity_binary_robotstudio_{traj_name}.png"),
+                    title=(
+                        f"robostudio_data — J5 wrist singularity (binary) — "
+                        f"{toolpath_name} — {traj_name}"
+                    ),
+                    threshold_deg=config.singularity.j5_threshold_deg,
+                )
 
         # Manipulability graphs
         if config.manipulability.enabled and config.manipulability.generate_graphs:
@@ -587,7 +627,10 @@ def process_toolpath(
                     if cfx_pw is not None and wp_i < len(cfx_pw) and s_idx < len(cfx_pw[wp_i]):
                         bd = cfx_pw[wp_i][s_idx]
                     if bd is None:
-                        bd = score_ik_solution_breakdown(sol, q_prev, fk_solver, robot_reach_m, w)
+                        bd = score_ik_solution_breakdown(
+                            sol, q_prev, fk_solver, robot_reach_m, w,
+                            j5_threshold_deg=config.singularity.j5_threshold_deg,
+                        )
                     wp_scores.append(bd)
                 scores_per_wp.append(wp_scores)
 
@@ -619,24 +662,47 @@ def process_toolpath(
                     scores_per_waypoint=scores_per_wp,
                 )
                 rs_scored = None
+                rs_branch_switches = 0
+                rs_cfx_switch_waypoints: List[int] = []
                 if rs_ref.joints_deg is not None and len(rs_ref.joints_deg) > 0:
                     rs_scored = []
+                    rs_prev_cfx: Optional[int] = None
                     for ri in range(len(rs_ref.joints_deg)):
                         q_rs_rad = np.radians(rs_ref.joints_deg[ri])
                         q_rs_prev = np.radians(rs_ref.joints_deg[ri - 1]) if ri > 0 else None
                         try:
                             rs_scored.append(
-                                score_ik_solution_breakdown(q_rs_rad, q_rs_prev, fk_solver, robot_reach_m, w)
+                                score_ik_solution_breakdown(
+                                    q_rs_rad, q_rs_prev, fk_solver, robot_reach_m, w,
+                                    j5_threshold_deg=config.singularity.j5_threshold_deg,
+                                )
                             )
                         except Exception:
                             rs_scored.append(None)
+                        try:
+                            rs_cfx = compute_ecfx(q_rs_rad).cfx
+                            if rs_prev_cfx is not None and rs_cfx != rs_prev_cfx:
+                                rs_branch_switches += 1
+                                rs_cfx_switch_waypoints.append(ri)
+                            rs_prev_cfx = rs_cfx
+                        except Exception:
+                            pass
 
+                w_bd = float(w.get("branch_discontinuity", 5.0))
+                jl_deg = (
+                    np.degrees(analyzer.lower_position_limit),
+                    np.degrees(analyzer.upper_position_limit),
+                )
                 plot_eaik_solutions_with_cfx(
                     all_sols_per_wp, all_ecfx_per_wp, selected_deg,
                     eaik_out,
                     scores_per_waypoint=scores_per_wp,
                     rs_joints_deg=rs_ref.joints_deg,
                     rs_scores=rs_scored,
+                    rs_branch_switches=rs_branch_switches,
+                    rs_branch_discontinuity_weight=w_bd,
+                    rs_cfx_switch_waypoints=rs_cfx_switch_waypoints or None,
+                    joint_limits_deg=jl_deg,
                     limit_waypoints=config.eaik_multi_solution.max_waypoints_in_graph,
                     traj_name=f"{toolpath_name} - {traj_name}",
                     selected_cfx_per_waypoint=selected_cfx_per_wp,
