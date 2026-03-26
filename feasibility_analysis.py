@@ -680,7 +680,15 @@ def process_toolpath(
                         except Exception:
                             rs_scored.append(None)
                         try:
-                            rs_cfx = compute_ecfx(q_rs_rad).cfx
+                            rs_tcp_mm = None
+                            if (
+                                rs_ref.tcp_pos_mm is not None
+                                and len(rs_ref.tcp_pos_mm) > ri
+                            ):
+                                rs_tcp_mm = rs_ref.tcp_pos_mm[ri]
+                            rs_cfx = compute_ecfx(
+                                q_rs_rad, target_position=rs_tcp_mm
+                            ).cfx
                             if rs_prev_cfx is not None and rs_cfx != rs_prev_cfx:
                                 rs_branch_switches += 1
                                 rs_cfx_switch_waypoints.append(ri)

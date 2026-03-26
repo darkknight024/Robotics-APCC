@@ -91,7 +91,17 @@ class ECFXLabel(NamedTuple):
     cfx: int = 0
 
 
-def compute_ecfx(q_rad: np.ndarray) -> ECFXLabel:
+# Tolerance for the lower-arm sum used as the IK elbow flag.
+# At a wrist singularity (j5 ≈ 90°) j2+j3 can be ~1e-17 rad due to
+# floating-point noise — treat values in (-EPS, 0) as non-negative so
+# IK_elbow stays False and cfx stays consistent with RobotStudio.
+_ELBOW_ZERO_TOL = 1e-10  # radians
+
+
+def compute_ecfx(
+    q_rad: np.ndarray,
+    target_position: Optional[np.ndarray] = None,
+) -> ECFXLabel:
     """Compute ECFX label from a joint-angle vector (radians).
 
     **Must be called on the raw EAIK angle, before normalisation.**
@@ -101,26 +111,69 @@ def compute_ecfx(q_rad: np.ndarray) -> ECFXLabel:
     do the same.
 
     Uses ``math.floor(theta_deg / 90)`` for joints 1, 4, 6
-    (0-indexed: 0, 3, 5).  For IRB 1300 / IRB 140 family, cfx is a 3-bit index
-    (0–7) from binary flags on the **raw** radians: axis 1 sign, lower-arm
-    sum (axes 2+3), and axis 5 sign.
+    (0-indexed: 0, 3, 5).
+
+    cfx encoding (matches ABB RAPID confdata and visose/Robots
+    ``RapidPostProcessor.cs``):
+
+        shoulder — bit 2 (+4): j1 points ~180° away from the wrist-center
+                   direction (robot reaching behind/overhead).
+        elbow    — bit 1 (+2): lower-arm sum (j2+j3) selects elbow branch.
+                   Inverted when shoulder is set (ABB convention).
+        wrist    — bit 0 (+1): j5 < 0 (wrist flip).
+
+        cfx = 4*shoulder + 2*elbow + 1*wrist
+
+    Shoulder flag — geometric test (preferred):
+        Pass ``target_position`` (TCP xyz in mm, robot-base frame).  The XY
+        projection of the TCP is used as a proxy for the wrist-center XY.
+        shoulder=True iff j1 is more than 90° away from atan2(ty, tx),
+        i.e. the robot is pointing away from the target.
+
+        Fallback (no target_position): ``shoulder = (j1 < 0)``.  This is a
+        coarse sign-based heuristic that **fails** whenever j1 is legitimately
+        negative in a shoulder=False configuration.  Always prefer passing
+        ``target_position``.
     """
     q_deg = np.degrees(q_rad)
     cf1 = int(math.floor(q_deg[0] / 90.0))
     cf4 = int(math.floor(q_deg[3] / 90.0))
     cf6 = int(math.floor(q_deg[5] / 90.0))
-    behind_axis1 = int(q_rad[0] < 0)
-    behind_lower_arm = int((q_rad[1] + q_rad[2]) < 0)
-    axis5_negative = int(q_rad[4] < 0)
-    
-    cfx = (4 * behind_axis1) + (2 * behind_lower_arm) + axis5_negative
-    #print(f"behind_axis1: {behind_axis1}, behind_lower_arm: {behind_lower_arm}, axis5_negative: {axis5_negative} cfx: {cfx}")
+
+    # --- shoulder flag ---
+    if target_position is not None:
+        # Geometric test: j1 vs natural direction to wrist center (TCP proxy).
+        # Wrap difference to [-π, π]; shoulder=True iff |diff| > π/2.
+        natural_j1 = math.atan2(float(target_position[1]), float(target_position[0]))
+        diff = (float(q_rad[0]) - natural_j1 + math.pi) % (2.0 * math.pi) - math.pi
+        shoulder = abs(diff) > (math.pi / 2.0)
+    else:
+        # Fallback: sign-based (unreliable for negative-j1 shoulder=False poses)
+        logger.debug(
+            "compute_ecfx: target_position not provided — using sign(j1) heuristic "
+            "for shoulder flag; pass target_position for reliable cfx."
+        )
+        shoulder = bool(q_rad[0] < 0)
+
+    # --- elbow flag (ABB: invert when shoulder is set) ---
+    # Use a small dead-zone (1e-1 rad ≈ 0.1°) so floating-point noise at
+    # singularities (j2+j3 ≈ 0) does not flip the elbow bit.
+    _EPS = 1e-1
+    elbow = bool((q_rad[1] + q_rad[2]) < -_EPS)
+    if shoulder:
+        elbow = not elbow
+
+    # --- wrist flag (dead-zone around j5=0) ---
+    wrist = bool(q_rad[4] < -_EPS)
+
+    cfx = (4 * int(shoulder)) + (2 * int(elbow)) + int(wrist)
     return ECFXLabel(cf1=cf1, cf4=cf4, cf6=cf6, cfx=cfx)
 
 
 def build_cfx_sorted_solutions(
     raw_solutions: List[np.ndarray],
     is_ls_flags: List[bool],
+    target_position: Optional[np.ndarray] = None,
 ) -> Tuple[
     List[np.ndarray],
     List[Optional[bool]],
@@ -158,7 +211,7 @@ def build_cfx_sorted_solutions(
     for i, (q_raw, is_ls) in enumerate(zip(raw_solutions, is_ls_flags)):
         if is_ls:
             continue
-        label = compute_ecfx(q_raw)
+        label = compute_ecfx(q_raw, target_position=target_position)
         ecfx_per_raw_index[i] = label
         slot = label.cfx
         if slot < 0 or slot > 7:
@@ -339,7 +392,7 @@ class EAIKIKSolver(BaseIKSolver):
             slot_ecfx_labels,
             slot_boundary_flags,
             all_ecfx,
-        ) = build_cfx_sorted_solutions(raw_solutions, is_ls_per_sol)
+        ) = build_cfx_sorted_solutions(raw_solutions, is_ls_per_sol, target_position=target_position)
         info['cfx_sorted_raw_solutions'] = cfx_sorted_raw
         info['cfx_sorted_is_ls'] = cfx_sorted_is_ls
 
