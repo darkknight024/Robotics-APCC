@@ -40,6 +40,7 @@ from .checks.singularity import (
     compute_condition_number,
     compute_max_singular_value,
     analyze_singularity_spectrum,
+    j5_wrist_singularity_band_active,
     SingularityAnalyzer,
     SingularityReport,
     SingularityType,
@@ -143,6 +144,7 @@ __all__ = [
     'select_best_cfx_branch', 'select_mixed_cfx_branches',
     # Consolidated singularity
     'SingularityAnalyzer', 'SingularityReport', 'SingularityType', 'SingularityMode',
+    'j5_wrist_singularity_band_active',
     # Low-level checks
     'compute_singularity_proximity', 'compute_condition_number',
     'compute_max_singular_value', 'analyze_singularity_spectrum',

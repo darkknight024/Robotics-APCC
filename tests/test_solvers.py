@@ -356,11 +356,18 @@ def process_single_csv(
             
         ik_solve_methods[i] = solve_method
         ik_violated_joints[i] = info.get('violated_joints', None)
-        all_sols = info.get('all_solutions', [])
-        ik_all_solutions.append(all_sols)
-        ik_all_ecfx_labels.append(info.get('ecfx_labels', []))
+        raw_all_sols = info.get('all_solutions', [])
+        raw_ecfx = info.get('ecfx_labels', [])
+        valid_sols = [s for s in raw_all_sols if not np.any(np.isnan(s))]
+        valid_ecfx = [
+            e if e is not None else (0, 0, 0, 0)
+            for s, e in zip(raw_all_sols, raw_ecfx)
+            if not np.any(np.isnan(s))
+        ]
+        ik_all_solutions.append(valid_sols)
+        ik_all_ecfx_labels.append(valid_ecfx)
         ik_selected_ecfx.append(info.get('selected_ecfx', None))
-        ik_selected_solution_indices.append(eaik_selected_branch_index(all_sols, q))
+        ik_selected_solution_indices.append(eaik_selected_branch_index(valid_sols, q))
         if success:
             ik_joints_rad[i] = q
             q_prev = q

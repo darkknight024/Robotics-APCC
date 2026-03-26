@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Human-readable text reports for feasibility runs."""
+
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
+
+
+def generate_analysis_report(results: Dict[str, Any], output_path: Path) -> None:
+    """Write a human-readable feasibility analysis report to disk.
+
+    Args:
+        results: Aggregated result dict from the pipeline (``toolpath_name``,
+            ``trajectory_results``, etc.).
+        output_path: Destination ``analysis_report.txt`` path.
+    """
+    lines: List[str] = []
+    lines.append("=" * 70)
+    lines.append("FEASIBILITY ANALYSIS REPORT")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("=" * 70)
+    lines.append("")
+    lines.append(f"Toolpath: {results['toolpath_name']}")
+    lines.append(f"Trajectories: {results['num_trajectories']}")
+    lines.append("")
+
+    for traj in (t for t in results["trajectory_results"] if t is not None):
+        lines.append("-" * 70)
+        lines.append(f"TRAJECTORY {traj['trajectory_index']}")
+        lines.append("-" * 70)
+        lines.append(f"  Waypoints: {traj['num_waypoints']}")
+        lines.append(f"  Reachable: {traj['reachable_count']}/{traj['num_waypoints']} "
+                      f"({traj['reachability_percent']:.1f}%)")
+
+        lines.append(f"  Singularity: {traj['singularity_count']} near-singular waypoints")
+        lines.append(f"  Mean σ_min: {traj['mean_min_singular_value']:.6f}")
+        lines.append(f"  Mean manipulability: {traj['mean_manipulability']:.6f}")
+        lines.append(f"  Min manipulability: {traj['min_manipulability']:.6f}")
+
+        flags = traj.get("feasibility_flags", {})
+        lines.append(f"  C0: {'PASS' if flags.get('c0_ok', True) else 'FAIL'}")
+
+        c1 = traj.get("c1_result")
+        if c1 is not None:
+            lines.append(f"  C1: {'PASS' if c1['passed'] else 'FAIL'}")
+
+        topp = traj.get("topp_result")
+        if topp and topp.get("duration_s"):
+            lines.append(f"  TOPP-RA duration: {topp['duration_s']:.3f} s")
+
+        ts_vel = traj.get("task_space_velocity")
+        if ts_vel:
+            lines.append(f"  Max linear speed: {ts_vel['max_linear_speed_m_s']*1000:.1f} mm/s")
+
+        lines.append(f"  Feasibility: {'PASS' if traj['level1_valid'] else 'FAIL'}")
+        lines.append("")
+
+    lines.append("=" * 70)
+    with open(output_path, "w") as f:
+        f.write("\n".join(lines))
+
+
+def generate_batch_summary(results: List[Dict[str, Any]], output_path: Path) -> None:
+    """Write a human-readable batch feasibility summary to disk.
+
+    Args:
+        results: List of per-combination dicts (``success``, ``robot``, ``toolpath``, ...).
+        output_path: Destination ``batch_summary.txt`` path (parent dirs created if needed).
+    """
+    lines: List[str] = []
+    lines.append("=" * 70)
+    lines.append("BATCH FEASIBILITY ANALYSIS SUMMARY")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("=" * 70)
+    lines.append("")
+
+    successful = [r for r in results if r.get("success")]
+    failed = [r for r in results if not r.get("success")]
+
+    lines.append(f"Total combinations: {len(results)}")
+    lines.append(f"Successful: {len(successful)}")
+    lines.append(f"Failed: {len(failed)}")
+    lines.append("")
+
+    if successful:
+        lines.append("-" * 70)
+        lines.append("SUCCESSFUL ANALYSES")
+        lines.append("-" * 70)
+        for r in successful:
+            lines.append(f"\n  Robot: {r['robot']}")
+            lines.append(f"  Knife: {r['knife_pose']}")
+            lines.append(f"  Toolpath: {r['toolpath']}")
+            lines.append(f"  Trajectories: {r['num_trajectories']}")
+            if "summary" in r and r["summary"]:
+                total_wp = sum(t.get("num_waypoints", 0) for t in r["summary"])
+                total_reach = sum(t.get("reachable_count", 0) for t in r["summary"])
+                pct = 100 * total_reach / total_wp if total_wp > 0 else 0
+                lines.append(f"  Reachability: {total_reach}/{total_wp} ({pct:.1f}%)")
+
+    if failed:
+        lines.append("")
+        lines.append("-" * 70)
+        lines.append("FAILED ANALYSES")
+        lines.append("-" * 70)
+        for r in failed:
+            lines.append(f"\n  Robot: {r['robot']}")
+            lines.append(f"  Knife: {r['knife_pose']}")
+            lines.append(f"  Toolpath: {r['toolpath']}")
+            lines.append(f"  Error: {r.get('error', 'Unknown')}")
+
+    lines.append("")
+    lines.append("=" * 70)
+    lines.append("END OF SUMMARY")
+    lines.append("=" * 70)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write("\n".join(lines))

@@ -176,7 +176,7 @@ def plot_j5_wrist_singularity_binary(
 ) -> None:
     """Plot per-waypoint binary J5 wrist singularity (0 = safe, 1 = in wrist band).
 
-    Matches :func:`core.feasibility_checks._j5_wrist_singularity_band_active`:
+    Matches :func:`core.checks.singularity.j5_wrist_singularity_band_active`:
     active when ``|sin(q5)| < sin(threshold_deg)`` (near q5=0 or π).
 
     Args:
@@ -2867,7 +2867,11 @@ def plot_directional_manipulability_per_waypoint(
         title: Plot title
         threshold: Optional warning threshold line
     """
-    n = len(dir_manip)https://drive.google.com/drive/folders/1aCSgnIJ3qKLjDO2goaaskGQqnyyuv6qu?usp=sharingp, alpha=0.25, color='red')
+    n = len(dir_manip)
+    waypoints = np.arange(n)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(waypoints, dir_manip, 'r-o', linewidth=2, markersize=4)
+    ax.fill_between(waypoints, 0, dir_manip, alpha=0.25, color='red')
 
     mean_d = float(np.nanmean(dir_manip))
     min_d = float(np.nanmin(dir_manip))

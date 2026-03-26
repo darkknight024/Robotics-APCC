@@ -28,13 +28,13 @@ import argparse
 import sys
 import numpy as np
 from pathlib import Path
-from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.config_loader import load_batch_config, load_knife_config, FeasibilityConfig
+from utils.feasibility.reports import generate_batch_summary
 from feasibility_analysis import process_toolpath
 
 
@@ -90,63 +90,6 @@ def _run_single(
             "success": False,
             "error": str(e),
         }
-
-
-# =============================================================================
-# Batch summary report
-# =============================================================================
-
-def _generate_batch_summary(results: List[Dict], output_path: Path) -> None:
-    """Write a human-readable batch summary."""
-    lines: List[str] = []
-    lines.append("=" * 70)
-    lines.append("BATCH FEASIBILITY ANALYSIS SUMMARY")
-    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("=" * 70)
-    lines.append("")
-
-    successful = [r for r in results if r.get("success")]
-    failed = [r for r in results if not r.get("success")]
-
-    lines.append(f"Total combinations: {len(results)}")
-    lines.append(f"Successful: {len(successful)}")
-    lines.append(f"Failed: {len(failed)}")
-    lines.append("")
-
-    if successful:
-        lines.append("-" * 70)
-        lines.append("SUCCESSFUL ANALYSES")
-        lines.append("-" * 70)
-        for r in successful:
-            lines.append(f"\n  Robot: {r['robot']}")
-            lines.append(f"  Knife: {r['knife_pose']}")
-            lines.append(f"  Toolpath: {r['toolpath']}")
-            lines.append(f"  Trajectories: {r['num_trajectories']}")
-            if "summary" in r and r["summary"]:
-                total_wp = sum(t.get("num_waypoints", 0) for t in r["summary"])
-                total_reach = sum(t.get("reachable_count", 0) for t in r["summary"])
-                pct = 100 * total_reach / total_wp if total_wp > 0 else 0
-                lines.append(f"  Reachability: {total_reach}/{total_wp} ({pct:.1f}%)")
-
-    if failed:
-        lines.append("")
-        lines.append("-" * 70)
-        lines.append("FAILED ANALYSES")
-        lines.append("-" * 70)
-        for r in failed:
-            lines.append(f"\n  Robot: {r['robot']}")
-            lines.append(f"  Knife: {r['knife_pose']}")
-            lines.append(f"  Toolpath: {r['toolpath']}")
-            lines.append(f"  Error: {r.get('error', 'Unknown')}")
-
-    lines.append("")
-    lines.append("=" * 70)
-    lines.append("END OF SUMMARY")
-    lines.append("=" * 70)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        f.write("\n".join(lines))
 
 
 # =============================================================================
@@ -276,7 +219,7 @@ def process_batch(
                     print(f"  ERROR: {tp_name} — {e}")
 
     summary_path = output_dir / "batch_summary.txt"
-    _generate_batch_summary(results, summary_path)
+    generate_batch_summary(results, summary_path)
 
     print(f"\n{'='*60}")
     print(f"Batch processing complete!")

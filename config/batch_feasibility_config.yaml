@@ -14,8 +14,8 @@ robots_to_use:
 knife_poses_to_use:
   - "pose_1"
   
-toolpaths_folder: "Robot_APCC/Experiments/Experiment_20/test"
-output_folder: "Robot_APCC/Results/Experiment_20/test"
+toolpaths_folder: "/home/cognitron/gitHub_Repos/Robotics-APCC/Robot_APCC/Experiments/Experiment_21/Results - RobotStudio"
+output_folder: "Robot_APCC/Results/Experiment_21/Fesability_refactor"
 use_base_frame: true
 
 # =============================================================================
@@ -53,7 +53,7 @@ eaik_multi_solution:
     c0: 10.0
     singularity: 10.0
     manipulability: 0.0
-    branch_discontinuity: 5.0
+    branch_discontinuity: 10.0
   generate_graphs: true
   max_waypoints_in_graph: 10000
 
@@ -99,8 +99,8 @@ continuity:
 # =============================================================================
 waypoint_density:
   enabled: true
-  check_frequency_hz: 80.0
-  max_gap_mm: 1.5
+  check_frequency_hz: 50.0
+  max_gap_mm: 4.5
   interpolate_sparse: true
   default_speed_mm_s: 100.0
   generate_graphs: true

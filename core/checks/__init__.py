@@ -3,7 +3,7 @@ Modular feasibility check modules.
 
 Each check lives in its own script for clarity and testability:
 - singularity: SingularityAnalyzer (unified + classified modes),
-  low-level helpers (sigma_min, condition number, spectrum)
+  low-level helpers (sigma_min, condition number, spectrum, j5 wrist band)
 - manipulability: Yoshikawa, translational, rotational, normalised, directional
 - c0_continuity: joint delta spikes / config flip detection
 - c1_continuity: joint velocity smoothness from TOPP-RA output
@@ -15,6 +15,7 @@ from .singularity import (
     compute_condition_number,
     compute_max_singular_value,
     analyze_singularity_spectrum,
+    j5_wrist_singularity_band_active,
     SingularityAnalyzer,
     SingularityReport,
     SingularityType,
@@ -48,6 +49,7 @@ __all__ = [
     "compute_condition_number",
     "compute_max_singular_value",
     "analyze_singularity_spectrum",
+    "j5_wrist_singularity_band_active",
     "SingularityAnalyzer",
     "SingularityReport",
     "SingularityType",

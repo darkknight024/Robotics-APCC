@@ -26,7 +26,7 @@ Provides
 - :class:`SingularityAnalyzer` class  (main entry point)
 - Low-level helpers: :func:`compute_singularity_proximity`,
   :func:`compute_max_singular_value`, :func:`compute_condition_number`,
-  :func:`analyze_singularity_spectrum`
+  :func:`analyze_singularity_spectrum`, :func:`j5_wrist_singularity_band_active`
 """
 
 import csv
@@ -188,6 +188,26 @@ def analyze_singularity_spectrum(jacobian: np.ndarray) -> Dict[str, Any]:
         "sigma_max": float(np.max(svs)),
         "condition_number": compute_condition_number(jacobian),
     }
+
+
+def j5_wrist_singularity_band_active(q: np.ndarray, threshold_deg: float) -> bool:
+    """True when joint 5 lies in the wrist singularity band for *threshold_deg*.
+
+    Same geometry as :meth:`SingularityAnalyzer._classify_wrist` with
+    ``check_j5_only=True``: flag when ``|sin(q5)| < sin(threshold_rad)``.
+    Used by EAIK branch scoring, feasibility plots, and RobotStudio overlays.
+
+    Args:
+        q: Joint vector in radians; uses ``q[4]`` as J5 when ``len(q) > 4``.
+        threshold_deg: Angular half-width of the singular band (degrees).
+
+    Returns:
+        ``True`` if the configuration is classified as wrist-singular for this band.
+    """
+    thr_rad = np.radians(float(threshold_deg))
+    q5 = float(q[4]) if len(q) > 4 else 0.0
+    dist_to_singularity = abs(np.sin(q5))
+    return bool(dist_to_singularity < np.sin(thr_rad))
 
 
 # ============================================================================
@@ -453,7 +473,6 @@ class SingularityAnalyzer:
         ``check_j5_only=True`` uses a fast geometric check on joint 5.
         ``check_j5_only=False`` uses SVD of the 3x3 wrist sub-Jacobian.
         """
-        _J5_THRESHOLD_RAD = np.radians(self.j5_threshold_deg)
         metrics: Dict[str, float] = {}
 
         J_wrist_orient = J[0:3, 3:6]
@@ -474,7 +493,7 @@ class SingularityAnalyzer:
         metrics["j5_distance_to_singularity_rad"] = dist_to_singularity
 
         if self.check_j5_only:
-            is_active = dist_to_singularity < np.sin(_J5_THRESHOLD_RAD)
+            is_active = j5_wrist_singularity_band_active(q, self.j5_threshold_deg)
         else:
             threshold = self.type_thresholds.get("wrist", 0.01)
             is_active = sigma_min_w < threshold
