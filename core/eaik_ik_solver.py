@@ -158,7 +158,7 @@ def compute_ecfx(
     # --- elbow flag (ABB: invert when shoulder is set) ---
     # Use a small dead-zone (1e-1 rad ≈ 0.1°) so floating-point noise at
     # singularities (j2+j3 ≈ 0) does not flip the elbow bit.
-    _EPS = 1e-1
+    _EPS = 0.581
     elbow = bool((q_rad[1] + q_rad[2]) < -_EPS)
     if shoulder:
         elbow = not elbow

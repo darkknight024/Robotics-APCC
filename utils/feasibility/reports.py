@@ -3,7 +3,23 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+
+
+def aggregate_reachability_totals(
+    summary: Optional[List[Optional[Dict[str, Any]]]],
+) -> Tuple[int, int]:
+    """Sum reachable_count and num_waypoints across trajectory entries (skips None)."""
+    if not summary:
+        return 0, 0
+    total_wp = 0
+    total_reach = 0
+    for t in summary:
+        if t is None:
+            continue
+        total_wp += int(t.get("num_waypoints", 0) or 0)
+        total_reach += int(t.get("reachable_count", 0) or 0)
+    return total_reach, total_wp
 
 
 def generate_analysis_report(results: Dict[str, Any], output_path: Path) -> None:
@@ -92,8 +108,7 @@ def generate_batch_summary(results: List[Dict[str, Any]], output_path: Path) -> 
             lines.append(f"  Toolpath: {r['toolpath']}")
             lines.append(f"  Trajectories: {r['num_trajectories']}")
             if "summary" in r and r["summary"]:
-                total_wp = sum(t.get("num_waypoints", 0) for t in r["summary"])
-                total_reach = sum(t.get("reachable_count", 0) for t in r["summary"])
+                total_reach, total_wp = aggregate_reachability_totals(r["summary"])
                 pct = 100 * total_reach / total_wp if total_wp > 0 else 0
                 lines.append(f"  Reachability: {total_reach}/{total_wp} ({pct:.1f}%)")
 
@@ -106,6 +121,13 @@ def generate_batch_summary(results: List[Dict[str, Any]], output_path: Path) -> 
             lines.append(f"\n  Robot: {r['robot']}")
             lines.append(f"  Knife: {r['knife_pose']}")
             lines.append(f"  Toolpath: {r['toolpath']}")
+            if r.get("num_trajectories") is not None:
+                lines.append(f"  Trajectories: {r['num_trajectories']}")
+            if "summary" in r and r["summary"]:
+                tr, tw = aggregate_reachability_totals(r["summary"])
+                if tw > 0:
+                    pct = 100 * tr / tw
+                    lines.append(f"  Reachability: {tr}/{tw} ({pct:.1f}%)")
             lines.append(f"  Error: {r.get('error', 'Unknown')}")
 
     lines.append("")

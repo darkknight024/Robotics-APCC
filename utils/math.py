@@ -49,8 +49,8 @@ def compute_joint_space_distance(q1: np.ndarray, q2: np.ndarray) -> float:
     Returns:
         Euclidean distance in joint space (radians)
     """
-    # Use shortest angular distance for each joint to handle wrapping
-    distances = np.array([shortest_angular_distance(q1[i], q2[i]) for i in range(len(q1))])
+    # Pure physical delta, no wrapping
+    distances = np.abs(q2 - q1)
     return float(np.linalg.norm(distances))
 
 

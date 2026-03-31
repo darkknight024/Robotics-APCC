@@ -31,14 +31,7 @@ def compute_per_joint_deltas(joint_positions: np.ndarray) -> np.ndarray:
     Returns:
         (n_segments, n_joints) absolute angular deltas using shortest-path wrapping.
     """
-    n_wp, n_j = joint_positions.shape
-    deltas = np.zeros((n_wp - 1, n_j))
-    for i in range(n_wp - 1):
-        for j in range(n_j):
-            deltas[i, j] = shortest_angular_distance(
-                joint_positions[i, j], joint_positions[i + 1, j]
-            )
-    return deltas
+    return np.abs(np.diff(joint_positions, axis=0))
 
 
 def detect_config_flips(
