@@ -272,8 +272,13 @@ class ManipulabilityGroupConfig:
 
 @dataclass
 class ContinuityGroupConfig:
-    """Continuity (C0 + C1) check settings."""
+    """Continuity settings.
+
+    ``enabled`` gates C0 continuity graphs (with ``generate_graphs``).
+    ``enable_c1`` gates C1 velocity-level checks and C1 graphs.
+    """
     enabled: bool = True
+    enable_c1: bool = True
     pose_scale_m_per_rad: float = 0.1
     safety_factor: float = 1.05
     default_speed_mm_s: float = 100.0

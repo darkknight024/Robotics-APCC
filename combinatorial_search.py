@@ -1633,7 +1633,11 @@ def _load_configs(
     }
     feas_dict = {
         'thresholds': {'singularity_warning': cfg.singularity.threshold},
-        'continuity': {'enabled': cfg.continuity.enabled, 'default_speed_mm_s': cfg.continuity.default_speed_mm_s},
+        'continuity': {
+            'enabled': cfg.continuity.enabled,
+            'enable_c1': cfg.continuity.enable_c1,
+            'default_speed_mm_s': cfg.continuity.default_speed_mm_s,
+        },
         'performance': {'max_ik_failures_per_trajectory': cfg.max_ik_failures_per_trajectory},
     }
 

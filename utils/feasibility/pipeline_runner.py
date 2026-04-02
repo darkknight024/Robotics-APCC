@@ -274,7 +274,7 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
 
         c1_dict: Optional[Dict] = None
         c1_ok = True
-        if topp_result_raw is not None and final_vel_lims is not None and config.continuity.enabled:
+        if topp_result_raw is not None and final_vel_lims is not None and config.continuity.enable_c1:
             c1_res = check_c1_continuity(
                 topp_result_raw.t_samples, topp_result_raw.qdot_t,
                 topp_result_raw.qddot_t, final_vel_lims,

@@ -68,9 +68,11 @@ performance:
 # Continuity Analysis Settings
 # =============================================================================
 continuity:
-  # Enable continuity analysis
+  # Enable C0 continuity graphs (batch feasibility); combinatorial uses this section for metadata
   enabled: true
-  
+  # C1 (TOPP-RA) checks and graphs in feasibility pipeline
+  enable_c1: true
+
   # Pose scale factor (meters per radian) for unified pose metric
   pose_scale_m_per_rad: 0.1
   

@@ -77,6 +77,7 @@ def plot_aggregated_outputs(
                 title=f"C0 Summary\n{toolpath_name}",
                 joint_jump_limit_rad=final_joint_jump,
             )
+    if config.continuity.enable_c1 and config.continuity.generate_graphs:
         if any(t.get("continuity") is not None for t in traj_results):
             plot_continuity_summary(
                 traj_results,

@@ -7,7 +7,7 @@ Processes one toolpath through a clearly phased pipeline:
 
   Phase 1  IK → joint positions → C0 continuity check
   Phase 2  TOPP-RA time parameterisation (always runs)
-  Phase 3  Downstream checks (C1, task-space velocity, singularity, manipulability)
+  Phase 3  Downstream checks (C1 if ``continuity.enable_c1``, task-space velocity, singularity, manipulability)
   Phase 4  Graph generation (per-group ``generate_graphs`` toggle)
   Phase 5  Report
 
@@ -124,9 +124,16 @@ def main():
                         help="Override solver backend from config")
     parser.add_argument('--base_frame', action='store_true')
     parser.add_argument('--skip-plots', action='store_true')
+    parser.add_argument(
+        '--no-c1',
+        action='store_true',
+        help='Disable C1 continuity checks and graphs (overrides config continuity.enable_c1)',
+    )
     args = parser.parse_args()
 
     cfg = load_batch_config(args.config)
+    if args.no_c1:
+        cfg.continuity.enable_c1 = False
     if args.solver:
         cfg.solver = args.solver
     if args.skip_plots:

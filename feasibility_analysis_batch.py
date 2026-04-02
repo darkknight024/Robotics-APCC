@@ -125,6 +125,7 @@ def process_batch(
     config_path: str,
     output_base: Optional[str] = None,
     num_workers: int = 1,
+    enable_c1: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Run feasibility analysis on all combinations defined in config.
 
@@ -132,11 +133,14 @@ def process_batch(
         config_path: Path to batch_feasibility_config.yaml.
         output_base: Override output directory (uses config default otherwise).
         num_workers: Number of parallel workers (1 = sequential).
+        enable_c1: If False, disable C1 checks/graphs; if None, use config file.
 
     Returns:
         Dict with batch results.
     """
     config = load_batch_config(config_path)
+    if enable_c1 is not None:
+        config.continuity.enable_c1 = enable_c1
 
     knife_config_path = str(Path(__file__).parent / "config" / "knife_config.yaml")
     knife_poses = {}
@@ -154,6 +158,7 @@ def process_batch(
     n_robots = len(config.robots)
     n_knives = len(config.knife_poses_to_use) if not config.use_base_frame else 1
     print(f"Solver: {config.solver}")
+    print(f"C1 continuity: {'on' if config.continuity.enable_c1 else 'off'}")
     print(f"Robots: {n_robots}")
     if not config.use_base_frame:
         print(f"Knives: {n_knives}")
@@ -276,9 +281,14 @@ def main():
     parser.add_argument("--output", "-o", help="Output directory (overrides config)")
     parser.add_argument("--workers", "-w", type=int, default=1,
                         help="Number of parallel workers (1 = sequential)")
+    parser.add_argument(
+        "--no-c1",
+        action="store_true",
+        help="Disable C1 continuity checks and graphs (overrides config continuity.enable_c1)",
+    )
     args = parser.parse_args()
 
-    process_batch(args.config, args.output, args.workers)
+    process_batch(args.config, args.output, args.workers, enable_c1=False if args.no_c1 else None)
 
 
 if __name__ == "__main__":

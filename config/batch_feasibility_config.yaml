@@ -14,7 +14,7 @@ robots_to_use:
 knife_poses_to_use:
   - "pose_1"
   
-toolpaths_folder: "/home/cognitron/gitHub_Repos/Robotics-APCC/Robot_APCC/Experiments/Experiment_21/Results - RobotStudio"
+toolpaths_folder: "Robot_APCC/Experiments/Experiment_21/Results - RobotStudio"
 output_folder: "Robot_APCC/Results/Experiment_21/Fesability_refactor"
 use_base_frame: true
 
@@ -89,6 +89,8 @@ manipulability:
 # =============================================================================
 continuity:
   enabled: true
+  # C1 (TOPP-RA velocity-level) checks and C1 graphs; C0 uses ``enabled`` above
+  enable_c1: false
   pose_scale_m_per_rad: 0.1
   safety_factor: 1.05
   default_speed_mm_s: 100.0
