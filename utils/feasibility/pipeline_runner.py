@@ -307,7 +307,11 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
         level1_valid = reachability_ok and c0_ok and c1_ok
         if verbose:
             status = "PASS" if level1_valid else "FAIL"
-            print(f"    Feasibility: {status} (reach={reachability_ok}, C0={c0_ok}, C1={c1_ok})")
+            if config.continuity.enable_c1:
+                c1_status = f"C1={c1_ok}"
+            else:
+                c1_status = "C1=not evaluated (disabled)"
+            print(f"    Feasibility: {status} (reach={reachability_ok}, C0={c0_ok}, {c1_status})")
 
         plot_single_trajectory_outputs(
             config=config,
