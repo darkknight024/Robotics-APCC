@@ -1,0 +1,39 @@
+# =============================================================================
+# Fixture / End-Effector Configuration
+# =============================================================================
+# Defines fixtures (end-effectors) attachable to the robot's last link.
+# Each fixture creates a fixed joint + link appended to the base URDF at runtime.
+#
+# The fixture is attached to the parent_link (default: Link_6) via a fixed joint.
+# Position (xyz) is in meters, orientation (rpy) is in radians.
+#
+# Format:
+#   fixtures:
+#     fixture_name:
+#       description: "Description"
+#       parent_link: "Link_6"         # Which link to attach to (default: Link_6)
+#       link_name: "ee_link"          # Name of the new link created in URDF
+#       joint_name: "ee_joint"        # Name of the fixed joint created in URDF
+#       origin:
+#         xyz: [x, y, z]             # meters
+#         rpy: [r, p, y]             # radians
+
+fixtures:
+  ee_link:
+    description: "Default APCC fixture (calibrated tool center point)"
+    parent_link: "Link_6"
+    link_name: "ee_link"
+    joint_name: "ee_joint"
+    origin:
+      xyz: [0.0998237, 0.123033, 0.0828027]
+      rpy: [0.001199, 0.000599, 2.782547]
+
+  # Example: users can define additional fixtures
+  # gripper_v1:
+  #   description: "Custom gripper fixture"
+  #   parent_link: "Link_6"
+  #   link_name: "gripper_tcp"
+  #   joint_name: "gripper_joint"
+  #   origin:
+  #     xyz: [0.0, 0.0, 0.15]
+  #     rpy: [0.0, 0.0, 0.0]

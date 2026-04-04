@@ -90,7 +90,7 @@ def build_command(test_script: str, run_cfg: dict, experiment_cfg: dict) -> list
 
     solver = get('solver')
     robot = get('robot')
-    ee_frame = get('ee_frame')
+    fixture = get('fixture')
     input_path = get('input')
     knife_pose = get('knife_pose')
 
@@ -114,8 +114,8 @@ def build_command(test_script: str, run_cfg: dict, experiment_cfg: dict) -> list
             cmd.extend(['--output', str(output)])
         if solver:
             cmd.extend(['--solver', solver])
-        if ee_frame:
-            cmd.extend(['--ee-frame', ee_frame])
+        if fixture:
+            cmd.extend(['--fixture', fixture])
         if get('use_robostudio_seed'):
             cmd.append('--use-robostudio-seed')
 
@@ -132,8 +132,8 @@ def build_command(test_script: str, run_cfg: dict, experiment_cfg: dict) -> list
             cmd.extend(['--output', str(output)])
         if solver:
             cmd.extend(['--solver', solver])
-        if ee_frame:
-            cmd.extend(['--ee-frame', ee_frame])
+        if fixture:
+            cmd.extend(['--fixture', fixture])
 
     elif test_script == "test_toolpaths":
         if solver:

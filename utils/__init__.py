@@ -101,11 +101,14 @@ from .config_loader import (
     load_robostudio_test_config,
     load_robots_config,
     get_robot_by_name,
+    load_fixtures_config,
+    get_fixture_by_name,
     load_yaml,
     get_default_ik_config,
     load_ik_config_as_object,
     KnifePose,
-    RobotConfig
+    RobotConfig,
+    FixtureConfig
 )
 
 from .urdf_loader import (
@@ -198,6 +201,9 @@ __all__ = [
     'load_ik_config_as_object',
     'KnifePose',
     'RobotConfig',
+    'FixtureConfig',
+    'load_fixtures_config',
+    'get_fixture_by_name',
     # URDF Loading
     'load_robot_model',
     'resolve_urdf_path',

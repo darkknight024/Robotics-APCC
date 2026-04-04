@@ -36,6 +36,12 @@ options:
   # Solver backend: "pin" (Pinocchio numerical) or "eaik" (EAIK analytical)
   solver: "eaik"
 
+  # End-effector fixture name from config/fixtures_config.yaml
+  # Dynamically injects fixture link/joint into the base URDF at runtime.
+  # Set to `null` or omit to use Link_6 (last actuated link) as end-effector.
+  # WARNING: Do not use the string "none". Use `null`.
+  fixture: null
+
 # =============================================================================
 # Singularity Analysis
 # =============================================================================

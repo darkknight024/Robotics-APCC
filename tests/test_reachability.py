@@ -748,7 +748,7 @@ def process_combination(
     toolpath_path: str,
     output_dir: Path,
     solver_type: str = "pin",
-    ee_frame_override: str = None,
+    fixture_name: Optional[str] = None,
     use_base_frame: bool = False,
     knife_name: Optional[str] = None,
     knife_translation_m: Optional[np.ndarray] = None,
@@ -763,13 +763,17 @@ def process_combination(
     toolpath_name = Path(toolpath_path).stem
     print(f"\n  Toolpath: {toolpath_name}")
 
-    # Create solvers via factory
-    ik_config = load_ik_config_as_object(solver=solver_type)
-    if ee_frame_override:
-        ik_config.ee_frame_name = ee_frame_override
+    # Create solvers via factory — with optional fixture injection
+    fixture_config = None
+    ee_frame_name = "Link_6"  # Default: last actuated link (no fixture)
+    if fixture_name:
+        from utils import get_fixture_by_name
+        fixture_config = get_fixture_by_name(fixture_name)
+        ee_frame_name = fixture_config.link_name
+    ik_config = load_ik_config_as_object(solver=solver_type, ee_frame_name=ee_frame_name)
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name
+        ee_frame_name=ee_frame_name, fixture_config=fixture_config
     )
 
     use_robostudio_seed = ik_config.use_robostudio_seed if hasattr(ik_config, 'use_robostudio_seed') else False
@@ -1006,7 +1010,9 @@ def main():
     parser.add_argument('--toolpaths-folder', help="Override toolpaths input folder")
     parser.add_argument('--output', '-o', help="Override output directory")
     parser.add_argument('--solver', choices=['pin', 'eaik'], help="Override solver backend")
-    parser.add_argument('--ee-frame', help="Override end-effector frame name")
+    parser.add_argument('--fixture', '-f', default=None,
+                        help="Fixture name from config/fixtures_config.yaml "
+                             "(default: none, uses last link as end-effector)")
     parser.add_argument('--base_frame', action='store_true',
                         help="Toolpath CSV is already in robot base frame; skip knife transform")
     parser.add_argument('--check_self_collision', action='store_true',
@@ -1069,7 +1075,7 @@ def main():
 
     options = config.get('options', {})
     solver_type = args.solver or options.get('solver', 'pin')
-    ee_frame_override = args.ee_frame
+    fixture_name = args.fixture or options.get('fixture')
 
     # Singularity analysis: config is the only place to turn on/off. Mode "none" or null skips entirely.
     singularity_config = config.get('singularity_analysis', {})
@@ -1142,7 +1148,7 @@ def main():
                     toolpath_path=str(toolpath_file),
                     output_dir=robot_output,
                     solver_type=solver_type,
-                    ee_frame_override=ee_frame_override,
+                    fixture_name=fixture_name,
                     use_base_frame=True,
                     collision_checker=coll_checker,
                     export_singularity_graphs=export_singularity_graphs,
@@ -1170,7 +1176,7 @@ def main():
                         toolpath_path=str(toolpath_file),
                         output_dir=robot_knife_output,
                         solver_type=solver_type,
-                        ee_frame_override=ee_frame_override,
+                        fixture_name=fixture_name,
                         use_base_frame=False,
                         knife_name=knife_name,
                         knife_translation_m=knife.translation_m,
@@ -1190,7 +1196,7 @@ def main():
         'toolpaths_folder': str(toolpaths_folder),
         'output': str(args.output) if args.output else None,
         'solver': solver_type,
-        'ee_frame': ee_frame_override,
+        'fixture': fixture_name,
         'base_frame': use_base_frame,
         'check_self_collision': check_self_collision,
         'singularity_mode': singularity_mode,

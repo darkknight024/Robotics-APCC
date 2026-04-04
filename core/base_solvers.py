@@ -39,7 +39,7 @@ class FKResult:
 @dataclass
 class BaseIKConfig:
     """Base configuration shared by all IK solvers."""
-    ee_frame_name: str = "ee_link"
+    ee_frame_name: str = "Link_6"
 
 
 class BaseFKSolver(ABC):

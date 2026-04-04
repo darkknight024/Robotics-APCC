@@ -289,14 +289,21 @@ class SingularityAnalyzer:
         if not reports:
             return
         rows = []
+        fieldnames_set = set()
+        fieldnames_list = []
+        
         for idx, r in enumerate(reports):
             row = {"waypoint_index": idx}
             row.update(r.to_flat_dict())
             rows.append(row)
+            
+            for key in row.keys():
+                if key not in fieldnames_set:
+                    fieldnames_set.add(key)
+                    fieldnames_list.append(key)
 
-        fieldnames = list(rows[0].keys())
         with open(output_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames_list)
             writer.writeheader()
             writer.writerows(rows)
 

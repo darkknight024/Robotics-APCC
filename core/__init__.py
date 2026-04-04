@@ -47,7 +47,8 @@ from .collision_checker import SelfCollisionChecker, CollisionResult
 
 
 def create_solvers(urdf_path: str, solver: str = "eaik",
-                   ik_config=None, ee_frame_name: str = "ee_link"):
+                   ik_config=None, ee_frame_name: str = "Link_6",
+                   fixture_config=None):
     """
     Factory: create an (fk_solver, ik_solver) pair for the requested backend.
 
@@ -57,6 +58,9 @@ def create_solvers(urdf_path: str, solver: str = "eaik",
         ik_config: Pre-built IKConfig object (EAIKConfig or PinocchioIKConfig).
                    If None, default config for the backend is used.
         ee_frame_name: End-effector frame name
+        fixture_config: Optional FixtureConfig to inject into the URDF.
+                       If provided, ee_frame_name is automatically derived
+                       from fixture_config.link_name.
 
     Returns:
         (fk_solver, ik_solver, robot_model_or_tuple)
@@ -66,8 +70,13 @@ def create_solvers(urdf_path: str, solver: str = "eaik",
     """
     solver = solver.lower().strip()
 
+    # Derive ee_frame_name from fixture if provided
+    if fixture_config is not None:
+        ee_frame_name = fixture_config.link_name
+
     if solver == "eaik":
-        robot_model = load_robot_model_eaik(urdf_path, ee_frame_name=ee_frame_name)
+        robot_model = load_robot_model_eaik(urdf_path, ee_frame_name=ee_frame_name,
+                                           fixture_config=fixture_config)
         fk = EAIKFKSolver(robot_model)
         if ik_config is None:
             ik_config = EAIKConfig(ee_frame_name=ee_frame_name)
@@ -77,7 +86,7 @@ def create_solvers(urdf_path: str, solver: str = "eaik",
     elif solver in ("pin", "pinocchio"):
         from .pin_fk_solver import PinocchioFKSolver
         from .pin_ik_solver import PinocchioIKSolver, PinocchioIKConfig
-        model, data = load_robot_model_pin(urdf_path)
+        model, data = load_robot_model_pin(urdf_path, fixture_config=fixture_config)
         fk = PinocchioFKSolver(model, data, ee_frame_name=ee_frame_name)
         if ik_config is None:
             ik_config = PinocchioIKConfig(ee_frame_name=ee_frame_name)

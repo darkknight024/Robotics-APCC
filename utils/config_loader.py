@@ -23,7 +23,6 @@ from dataclasses import dataclass
 # To change IK solver defaults, modify this dictionary.
 # The config file (config/ik_config.yaml) should match these values.
 _DEFAULT_IK_CONFIG = {
-    'ee_frame_name': 'ee_link',
     # EAIK-specific
     'solution_selection': 'closest',
     'fk_pos_tolerance_m': 1e-3,
@@ -63,6 +62,18 @@ class RobotConfig:
     velocity_limits_rad_s: Optional[List[float]] = None
     acceleration_limits_rad_s2: Optional[List[float]] = None
     joint_jump_limit_rad: Optional[float] = None  # From constants section
+
+
+@dataclass
+class FixtureConfig:
+    """Fixture / end-effector configuration."""
+    name: str
+    description: str
+    parent_link: str          # Link to attach to (default: Link_6)
+    link_name: str            # Name of the new link in URDF
+    joint_name: str           # Name of the fixed joint
+    origin_xyz: List[float]   # [x, y, z] in meters
+    origin_rpy: List[float]   # [r, p, y] in radians
 
 
 def load_yaml(config_path: str) -> Dict[str, Any]:
@@ -166,6 +177,72 @@ def load_knife_config(config_path: str) -> Dict[str, KnifePose]:
         )
     
     return result
+
+
+def load_fixtures_config(config_path: str = None) -> Dict[str, 'FixtureConfig']:
+    """
+    Load fixture / end-effector configuration.
+
+    Expected format:
+        fixtures:
+          fixture_name:
+            description: "..."
+            parent_link: "Link_6"
+            link_name: "ee_link"
+            joint_name: "ee_joint"
+            origin:
+              xyz: [x, y, z]
+              rpy: [r, p, y]
+
+    Args:
+        config_path: Path to fixtures config YAML. If None, uses default.
+
+    Returns:
+        Dictionary mapping fixture name to FixtureConfig objects
+    """
+    if config_path is None:
+        config_path = str(Path(__file__).parent.parent / "config" / "fixtures_config.yaml")
+
+    config = load_yaml(config_path)
+    fixtures = config.get('fixtures', {})
+
+    result = {}
+    for name, data in fixtures.items():
+        origin = data.get('origin', {})
+        result[name] = FixtureConfig(
+            name=name,
+            description=data.get('description', ''),
+            parent_link=data.get('parent_link', 'Link_6'),
+            link_name=data.get('link_name', name),
+            joint_name=data.get('joint_name', f"{name}_joint"),
+            origin_xyz=origin.get('xyz', [0.0, 0.0, 0.0]),
+            origin_rpy=origin.get('rpy', [0.0, 0.0, 0.0]),
+        )
+
+    return result
+
+
+def get_fixture_by_name(fixture_name: str, fixtures_config_path: str = None) -> 'FixtureConfig':
+    """
+    Get fixture configuration by name.
+
+    Args:
+        fixture_name: Name of fixture (e.g., "ee_link")
+        fixtures_config_path: Path to fixtures_config.yaml
+
+    Returns:
+        FixtureConfig for the specified fixture
+
+    Raises:
+        ValueError: If fixture not found
+    """
+    fixtures = load_fixtures_config(fixtures_config_path)
+
+    if fixture_name not in fixtures:
+        available = list(fixtures.keys())
+        raise ValueError(f"Fixture '{fixture_name}' not found. Available: {available}")
+
+    return fixtures[fixture_name]
 
 
 def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
@@ -288,6 +365,8 @@ def load_toolpath_config(config_path: str) -> Dict[str, Any]:
         'output_folder': config.get('output_folder', 'output/toolpath_comparison'),
         'toolpaths': config.get('toolpaths', []),
         'output': config.get('output', {}),
+        'fixture': config.get('fixture', config.get('options', {}).get('fixture')),
+        'solver': config.get('solver', config.get('options', {}).get('solver', 'pin')),
         'options': config.get('options', {
             'save_joint_csv': True,
             'generate_plots': True,
@@ -344,7 +423,8 @@ def get_default_ik_config() -> Dict[str, Any]:
     return _DEFAULT_IK_CONFIG.copy()
 
 
-def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
+def load_ik_config_as_object(config_path: str = None, solver: str = "eaik",
+                            ee_frame_name: str = "Link_6"):
     """
     Load IK configuration and return the appropriate IKConfig object.
 
@@ -354,9 +434,13 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
     batch_feasibility_config.yaml). The ik_config.yaml file itself does NOT
     contain a solver field -- it only holds IK tuning parameters.
 
+    The *ee_frame_name* is provided by the caller (derived from the fixture
+    config). It is NOT read from ik_config.yaml.
+
     Args:
         config_path: Path to IK config YAML. If None, uses default at config/ik_config.yaml
         solver: Which backend to build config for: "eaik" or "pin"
+        ee_frame_name: End-effector frame name (from fixture config or default to last link)
 
     Returns:
         EAIKConfig or PinocchioIKConfig instance
@@ -376,8 +460,6 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
         params = {}
 
     solver = solver.lower().strip()
-
-    ee_frame_name = str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name']))
 
     if solver in ("pin", "pinocchio"):
         from core.pin_ik_solver import PinocchioIKConfig

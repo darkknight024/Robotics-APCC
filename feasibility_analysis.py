@@ -502,6 +502,7 @@ def process_toolpath(
     output_dir: str,
     robot_model_name: str,
     knife_pose_name: str,
+    fixture_name: Optional[str] = None,
     robot_reach_m: float = 1.0,
     singularity_threshold: float = 0.01,
     velocity_limits_rad_s: Optional[np.ndarray] = None,
@@ -533,6 +534,8 @@ def process_toolpath(
         output_dir: Base output directory
         robot_model_name: Robot model name (e.g., "IRB-1300-1.4")
         knife_pose_name: Knife pose name (e.g., "pose_1")
+        fixture_name: Fixture name from config/fixtures_config.yaml.
+                     If None, uses the last link as end-effector.
         robot_reach_m: Robot workspace reach in meters
         singularity_threshold: Threshold for singularity warning (unified mode σ_min)
         velocity_limits_rad_s: Per-joint velocity limits for continuity
@@ -561,11 +564,24 @@ def process_toolpath(
     toolpath_name = Path(toolpath_path).stem
     print(f"\nAnalyzing: {toolpath_name}")
     
+    # Load fixture config if specified
+    fixture_config = None
+    ee_frame_name = "Link_6"  # Default: last actuated link (no fixture)
+    if fixture_name:
+        from utils import get_fixture_by_name
+        fixture_config = get_fixture_by_name(fixture_name)
+        ee_frame_name = fixture_config.link_name
+        if verbose:
+            print(f"  Fixture: {fixture_name} -> EE frame: {ee_frame_name}")
+    else:
+        if verbose:
+            print(f"  No fixture specified, using last link ({ee_frame_name}) as end-effector")
+    
     # Create solvers via factory
-    ik_config = load_ik_config_as_object(solver=solver_type)
+    ik_config = load_ik_config_as_object(solver=solver_type, ee_frame_name=ee_frame_name)
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name
+        ee_frame_name=ee_frame_name, fixture_config=fixture_config
     )
     
     # Try to load robot config for velocity limits and joint jump limit
@@ -1024,8 +1040,11 @@ def main():
         description="Analyze kinematic feasibility of toolpath trajectories"
     )
     parser.add_argument('--toolpath', '-t', required=True, help="Toolpath CSV file")
-    parser.add_argument('--urdf', '-u', default="Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf",
-                        help="Path to URDF file")
+    parser.add_argument('--urdf', '-u', default="Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf",
+                        help="Path to URDF file (base URDF without fixture)")
+    parser.add_argument('--fixture', '-f', default=None,
+                        help="Fixture name from config/fixtures_config.yaml "
+                             "(default: none, uses last link as end-effector)")
     parser.add_argument('--knife-config', '-k', default="config/knife_config.yaml",
                         help="Path to knife config YAML")
     parser.add_argument('--knife-pose', default='pose_1', help="Knife pose name")
@@ -1090,6 +1109,7 @@ def main():
         args.output,
         robot_model_name=robot_model_name,
         knife_pose_name=args.knife_pose,
+        fixture_name=args.fixture,
         robot_reach_m=args.reach,
         singularity_threshold=singularity_threshold,
         velocity_limits_rad_s=velocity_limits,

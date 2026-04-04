@@ -19,6 +19,14 @@ knife_poses_to_use:
   - "pose_1"
 
 # =============================================================================
+# Fixture (End-Effector) to Use
+# =============================================================================
+# Reference fixture name from config/fixtures_config.yaml
+# If not specified or if set to `null`, uses the robot's last link (Link_6) as end-effector.
+# WARNING: Do not use the word "none" (it will look for a fixture named "none"). Use `null`.
+fixture: "ee_link"
+
+# =============================================================================
 # I/O Directories
 # =============================================================================
 toolpaths_folder: "Assets/Robot APCC/Toolpaths/Successful"
@@ -115,7 +123,7 @@ output:
   per_trajectory_plots: false
   
   # Generate trajectory summary plots (aggregated)
-  summary_plots: true
+  summary_plots: false
   
   # Save analysis report to text file
   save_analysis: true

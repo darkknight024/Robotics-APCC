@@ -64,6 +64,7 @@ class FeasibilityTask:
     level1_only: bool = True
     detailed_per_trajectory_report: bool = False
     export_waypoint_validity: bool = False
+    fixture_name: Optional[str] = None
 
 
 def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
@@ -90,6 +91,7 @@ def run_single_analysis(task: FeasibilityTask) -> Dict[str, Any]:
             detailed_per_trajectory_report=task.detailed_per_trajectory_report,
             solver_type=task.solver_type,
             export_waypoint_validity=task.export_waypoint_validity,
+            fixture_name=task.fixture_name,
         )
         
         return {
@@ -242,7 +244,12 @@ def process_batch(
     print(f"Processing with {len(config['robots'])} robot(s) and {len(config.get('knife_poses_to_use', []))} knife pose(s)")
     print(f"Continuity analysis: {'Enabled' if run_continuity else 'Disabled'}")
     solver_type = config.get('solver', 'pin')
+    fixture_name = config.get('fixture', None)  # From fixtures_config.yaml
     print(f"Solver: {solver_type}")
+    if fixture_name:
+        print(f"Fixture: {fixture_name}")
+    else:
+        print(f"Fixture: none (using last link as end-effector)")
     print(f"Level 1 only: {level1_only} | Per-trajectory plots: {detailed_per_trajectory_report}")
     
     # Build task list
@@ -283,6 +290,7 @@ def process_batch(
                     level1_only=level1_only,
                     detailed_per_trajectory_report=detailed_per_trajectory_report,
                     export_waypoint_validity=export_waypoint_validity,
+                    fixture_name=fixture_name,
                 ))
     
     print(f"\nPrepared {len(tasks)} analysis tasks")

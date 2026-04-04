@@ -12,8 +12,10 @@ Separates file system operations from core IK solving logic.
 from __future__ import annotations
 
 import numpy as np
+import tempfile
+import os
 from pathlib import Path
-from typing import Any, List, Tuple, Union
+from typing import Any, List, Tuple, Union, Optional
 from dataclasses import dataclass
 
 
@@ -345,20 +347,82 @@ def _find_ee_link(robot, joints, ee_frame_name: str):
     return None
 
 
-def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> RobotModel:
+def inject_fixture_into_urdf(urdf_path: str, fixture_config) -> str:
+    """
+    Inject a fixture (end-effector) into a base URDF file.
+
+    Creates a temporary URDF file in the OS temp directory with the fixture's
+    link and fixed joint appended before </robot>. The caller is responsible
+    for cleaning up the temp file after loading.
+
+    Args:
+        urdf_path: Path to the base URDF file (resolved)
+        fixture_config: FixtureConfig dataclass with fixture geometry
+
+    Returns:
+        Path to the temporary URDF file with fixture injected
+    """
+    # Read the base URDF
+    resolved_path = resolve_urdf_path(urdf_path)
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        urdf_xml = f.read()
+
+    # Build fixture XML
+    xyz = fixture_config.origin_xyz
+    rpy = fixture_config.origin_rpy
+    fixture_xml = (
+        f'  <link name="{fixture_config.link_name}" />\n'
+        f'  <joint\n'
+        f'    name="{fixture_config.joint_name}"\n'
+        f'    type="fixed">\n'
+        f'    <parent link="{fixture_config.parent_link}" />\n'
+        f'    <child link="{fixture_config.link_name}" />\n'
+        f'    <origin xyz="{xyz[0]} {xyz[1]} {xyz[2]}" rpy="{rpy[0]} {rpy[1]} {rpy[2]}" />\n'
+        f'  </joint>\n'
+    )
+
+    # Inject before </robot>
+    modified_xml = urdf_xml.replace('</robot>', fixture_xml + '</robot>')
+
+    # Write to OS temp directory — works on both Linux and Windows
+    # Use the same directory as the original URDF for relative mesh paths
+    urdf_dir = str(resolved_path.parent)
+    robot_name = resolved_path.stem
+    fd, temp_path = tempfile.mkstemp(
+        suffix='.urdf',
+        prefix=f'{robot_name}_fixture_',
+        dir=urdf_dir  # Same dir so relative mesh paths still work
+    )
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(modified_xml)
+    except Exception:
+        os.close(fd)
+        raise
+
+    return temp_path
+
+
+def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "Link_6",
+                         fixture_config=None) -> RobotModel:
     """
     Load robot model from URDF file using urchin and EAIK.
     
     This function:
-    1. Resolves the URDF path (with fuzzy matching)
-    2. Parses the URDF with urchin to extract joint axes, offsets, and limits
-    3. Computes the end-effector offset from the last actuated joint to ee_frame_name
-    4. Creates an EAIK.Robot with the proper end-effector transformation
+    1. Optionally injects a fixture into the base URDF (via temp file)
+    2. Resolves the URDF path (with fuzzy matching)
+    3. Parses the URDF with urchin to extract joint axes, offsets, and limits
+    4. Computes the end-effector offset from the last actuated joint to ee_frame_name
+    5. Creates an EAIK.Robot with the proper end-effector transformation
+    6. Cleans up temp file if one was created
     
     Args:
         urdf_path: Path to URDF file (can be relative or absolute)
-        ee_frame_name: Name of end-effector frame in URDF (default: "ee_link").
+        ee_frame_name: Name of end-effector frame in URDF (default: "Link_6").
                        If the frame doesn't exist, falls back to last actuated link.
+        fixture_config: Optional FixtureConfig to inject into the URDF.
+                       If provided, ee_frame_name is automatically set to
+                       fixture_config.link_name.
         
     Returns:
         RobotModel containing EAIK robot and joint metadata
@@ -369,6 +433,13 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
     """
     from urchin import URDF
     import eaik.pybindings.EAIK as EAIK
+
+    # Handle fixture injection
+    temp_urdf_path = None
+    if fixture_config is not None:
+        ee_frame_name = fixture_config.link_name
+        temp_urdf_path = inject_fixture_into_urdf(urdf_path, fixture_config)
+        urdf_path = temp_urdf_path
 
     # Resolve path (handles fuzzy matching)
     urdf_file = resolve_urdf_path(urdf_path)
@@ -481,9 +552,16 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
             f"Error: {str(e)}\n"
             f"Please verify the URDF file is valid."
         ) from e
+    finally:
+        # Clean up temp file if we created one
+        if temp_urdf_path is not None:
+            try:
+                os.remove(temp_urdf_path)
+            except OSError:
+                pass
 
 
-def load_robot_model_pin(urdf_path: str):
+def load_robot_model_pin(urdf_path: str, fixture_config=None):
     """
     Load robot model from URDF file using Pinocchio.
 
@@ -491,6 +569,7 @@ def load_robot_model_pin(urdf_path: str):
 
     Args:
         urdf_path: Path to URDF file (can be relative or absolute)
+        fixture_config: Optional FixtureConfig to inject into the URDF.
 
     Returns:
         (model, data): Pinocchio model and data objects
@@ -500,6 +579,12 @@ def load_robot_model_pin(urdf_path: str):
         ValueError: If URDF file is invalid
     """
     import pinocchio as pin
+
+    # Handle fixture injection
+    temp_urdf_path = None
+    if fixture_config is not None:
+        temp_urdf_path = inject_fixture_into_urdf(urdf_path, fixture_config)
+        urdf_path = temp_urdf_path
 
     # Resolve path (handles fuzzy matching)
     urdf_file = resolve_urdf_path(urdf_path)
@@ -517,9 +602,17 @@ def load_robot_model_pin(urdf_path: str):
             f"Error: {str(e)}\n"
             f"Please verify the URDF file is valid."
         ) from e
+    finally:
+        # Clean up temp file if we created one
+        if temp_urdf_path is not None:
+            try:
+                os.remove(temp_urdf_path)
+            except OSError:
+                pass
 
 
-def load_robot_model(urdf_path: str, solver: str = "eaik", ee_frame_name: str = "ee_link"):
+def load_robot_model(urdf_path: str, solver: str = "eaik", ee_frame_name: str = "Link_6",
+                    fixture_config=None):
     """
     Dispatcher: load robot model using the requested backend.
 
@@ -528,6 +621,9 @@ def load_robot_model(urdf_path: str, solver: str = "eaik", ee_frame_name: str = 
         solver: "eaik" or "pin"
         ee_frame_name: End-effector frame name (used by EAIK loader;
                        for Pinocchio, pass to the FK/IK solver instead)
+        fixture_config: Optional FixtureConfig to inject into the URDF.
+                       If provided, ee_frame_name is automatically derived
+                       from fixture_config.link_name.
 
     Returns:
         - If solver == "eaik": RobotModel dataclass
@@ -535,8 +631,9 @@ def load_robot_model(urdf_path: str, solver: str = "eaik", ee_frame_name: str = 
     """
     solver = solver.lower().strip()
     if solver == "eaik":
-        return load_robot_model_eaik(urdf_path, ee_frame_name=ee_frame_name)
+        return load_robot_model_eaik(urdf_path, ee_frame_name=ee_frame_name,
+                                    fixture_config=fixture_config)
     elif solver in ("pin", "pinocchio"):
-        return load_robot_model_pin(urdf_path)
+        return load_robot_model_pin(urdf_path, fixture_config=fixture_config)
     else:
         raise ValueError(f"Unknown solver backend: '{solver}'. Use 'eaik' or 'pin'.")

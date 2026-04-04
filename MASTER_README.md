@@ -78,7 +78,7 @@ solver: "pin"    # or "eaik"
 
 **Via CLI Override:**
 ```bash
-python tests/test_solvers.py --solver eaik --ee-frame Link_6 ...
+python tests/test_solvers.py --solver eaik --fixture ee_link ...
 ```
 
 ### Pinocchio (Numerical)
@@ -127,7 +127,8 @@ Robotics-APCC/
 │   └── generate_plot_ik.py        # IK comparison & solver outcome plots
 │
 ├── config/                         # Main configuration files
-│   ├── robots_config.yaml         # Robot definitions (URDF, limits)
+│   ├── robots_config.yaml         # Robot definitions (base URDF, limits)
+│   ├── fixtures_config.yaml       # End-effector dynamic fixtures
 │   ├── knife_config.yaml          # Knife poses (T_B_K transforms)
 │   ├── ik_config.yaml             # IK solver parameters (all solvers)
 │   ├── batch_feasibility_config.yaml
@@ -194,7 +195,7 @@ python tests/test_solvers.py \
     --input Robot_APCC/Experiments/Experiment_7/trajectories \
     --output Robot_APCC/Results/Experiment_7/EAIK \
     --solver eaik \
-    --ee-frame Link_6
+    --fixture ee_link
 ```
 
 **Config:** `tests/configs/test_solvers_config.yaml`
@@ -399,7 +400,7 @@ experiments:
         solver: "pin"
 ```
 
-Each run executes the specified test script with CLI overrides for solver, robot, ee-frame, and I/O paths. Existing config options (e.g., `generate_plots`, adaptive scaling) are still loaded from test script configs.
+Each run executes the specified test script with CLI overrides for solver, robot, fixture, and I/O paths. Existing config options (e.g., `generate_plots`, adaptive scaling) are still loaded from test script configs.
 
 ### Output
 
@@ -540,7 +541,8 @@ class BaseIKSolver(ABC):
 
 | Config | Purpose |
 |--------|---------|
-| `config/robots_config.yaml` | Robot definitions (URDF, reach, velocity limits) |
+| `config/robots_config.yaml` | Robot definitions (base URDF, reach, velocity limits) |
+| `config/fixtures_config.yaml` | Dynamic end-effector geometries for URDF injection |
 | `config/knife_config.yaml` | Knife poses (T_B_K transforms) |
 | `config/ik_config.yaml` | IK solver parameters (both Pinocchio & EAIK) |
 | `config/batch_feasibility_config.yaml` | Batch feasibility settings |
