@@ -19,6 +19,14 @@ output_folder: "Robot_APCC/Results/Experiment_21/Fesability_refactor"
 use_base_frame: true
 
 # =============================================================================
+# Fixture (End-Effector)
+# =============================================================================
+# Reference fixture name from config/fixtures_config.yaml
+# If not specified or set to `null`, uses the robot's last link as end-effector.
+# WARNING: Do not use the word "none" (it will look for a fixture named "none"). Use `null`.
+fixture: "ee_link"
+
+# =============================================================================
 # Solver
 # =============================================================================
 solver: "eaik"

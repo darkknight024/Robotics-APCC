@@ -45,10 +45,23 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
     except (ValueError, Exception):
         pass
 
-    ik_cfg = load_ik_config_as_object(solver=inputs.config.solver)
+    fixture_config = None
+    ee_frame_name = "ee_link"
+    if inputs.config.fixture:
+        from utils.config_loader import get_fixture_by_name
+        fixture_config = get_fixture_by_name(inputs.config.fixture)
+        ee_frame_name = fixture_config.link_name
+        if inputs.verbose:
+            print(f"  Fixture: {inputs.config.fixture} -> EE frame: {ee_frame_name}")
+    elif inputs.verbose:
+        print(f"  No fixture specified, using EE frame: {ee_frame_name}")
+
+    ik_cfg = load_ik_config_as_object(
+        solver=inputs.config.solver, ee_frame_name=ee_frame_name,
+    )
     fk_solver, ik_solver, robot_data = create_solvers(
         inputs.urdf_path, solver=inputs.config.solver, ik_config=ik_cfg,
-        ee_frame_name=ik_cfg.ee_frame_name,
+        ee_frame_name=ee_frame_name, fixture_config=fixture_config,
     )
 
     final_vel_lims = inputs.velocity_limits_rad_s

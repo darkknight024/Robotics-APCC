@@ -426,7 +426,7 @@ def process_combination(
     toolpath_path: str,
     output_dir: Path,
     solver_type: str = "pin",
-    ee_frame_override: str = None,
+    fixture_name: Optional[str] = None,
     use_base_frame: bool = False,
     knife_name: Optional[str] = None,
     knife_translation_m: Optional[np.ndarray] = None,
@@ -440,12 +440,16 @@ def process_combination(
     toolpath_name = Path(toolpath_path).stem
     print(f"\n  Toolpath: {toolpath_name}")
 
-    ik_config = load_ik_config_as_object(solver=solver_type)
-    if ee_frame_override:
-        ik_config.ee_frame_name = ee_frame_override
+    fixture_config = None
+    ee_frame_name = "ee_link"
+    if fixture_name:
+        from utils import get_fixture_by_name
+        fixture_config = get_fixture_by_name(fixture_name)
+        ee_frame_name = fixture_config.link_name
+    ik_config = load_ik_config_as_object(solver=solver_type, ee_frame_name=ee_frame_name)
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name,
+        ee_frame_name=ee_frame_name, fixture_config=fixture_config,
     )
 
     trajectories_t_p_k, speeds = load_toolpath_trajectories(toolpath_path)
@@ -545,7 +549,9 @@ def main():
     parser.add_argument('--toolpaths-folder', help="Override toolpaths input folder")
     parser.add_argument('--output', '-o', help="Override output directory")
     parser.add_argument('--solver', choices=['pin', 'eaik'], help="Override solver backend")
-    parser.add_argument('--ee-frame', help="Override end-effector frame name")
+    parser.add_argument('--fixture', '-f', default=None,
+                        help="Fixture name from config/fixtures_config.yaml "
+                             "(default: none, uses last link as end-effector)")
     parser.add_argument('--base_frame', action='store_true',
                         help="Toolpath CSV is already in robot base frame")
     parser.add_argument('--check_self_collision', action='store_true',
@@ -591,6 +597,7 @@ def main():
 
     options = config.get('options', {})
     solver_type = args.solver or options.get('solver', 'pin')
+    fixture_name = args.fixture or options.get('fixture')
 
     output_dir = _determine_output_directory(
         cli_output=args.output,
@@ -640,7 +647,7 @@ def main():
                 result = process_combination(
                     robot_name=robot.name, urdf_path=robot.urdf_path,
                     toolpath_path=str(toolpath_file), output_dir=robot_output,
-                    solver_type=solver_type, ee_frame_override=args.ee_frame,
+                    solver_type=solver_type, fixture_name=fixture_name,
                     use_base_frame=True, collision_checker=coll_checker,
                 )
                 all_results.append(result)
@@ -658,7 +665,7 @@ def main():
                     result = process_combination(
                         robot_name=robot.name, urdf_path=robot.urdf_path,
                         toolpath_path=str(toolpath_file), output_dir=robot_knife_output,
-                        solver_type=solver_type, ee_frame_override=args.ee_frame,
+                        solver_type=solver_type, fixture_name=fixture_name,
                         use_base_frame=False, knife_name=knife_name,
                         knife_translation_m=knife.translation_m,
                         knife_quaternion=knife.quaternion,
@@ -669,6 +676,7 @@ def main():
     report_path = output_dir / "reachability_analysis.txt"
     _generate_report(all_results, report_path, cli_args={
         'config': args.config, 'robot': args.robot, 'solver': solver_type,
+        'fixture': fixture_name,
         'base_frame': use_base_frame, 'check_self_collision': args.check_self_collision,
     })
     print(f"\nReport saved: {report_path}")

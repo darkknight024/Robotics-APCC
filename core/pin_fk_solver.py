@@ -41,7 +41,7 @@ class PinocchioFKSolver(BaseFKSolver):
         self,
         model: pin.Model,
         data: pin.Data,
-        ee_frame_name: str = "ee_link"
+        ee_frame_name: str = "Link_6"
     ):
         """
         Initialize FK solver.

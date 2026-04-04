@@ -210,6 +210,8 @@ def main():
     parser.add_argument("--joints-csv", help="Override: single joint-config CSV to process")
     parser.add_argument("--robot", help="Override robot name from config")
     parser.add_argument("--solver", choices=["pin", "eaik"], help="Override solver")
+    parser.add_argument("--fixture", "-f", default=None,
+                        help="Fixture name from config/fixtures_config.yaml")
     parser.add_argument("--output", "-o", help="Override output directory")
     args = parser.parse_args()
 
@@ -229,10 +231,20 @@ def main():
     robot = robots_db[robot_name]
 
     solver_type = args.solver or config.get("options", {}).get("solver", "eaik")
-    ik_config = load_ik_config_as_object(solver=solver_type)
+
+    # Fixture support
+    fixture_config = None
+    ee_frame_name = "Link_6"
+    fixture_name = args.fixture if hasattr(args, 'fixture') and args.fixture else config.get("options", {}).get("fixture")
+    if fixture_name:
+        from utils import get_fixture_by_name
+        fixture_config = get_fixture_by_name(fixture_name)
+        ee_frame_name = fixture_config.link_name
+
+    ik_config = load_ik_config_as_object(solver=solver_type, ee_frame_name=ee_frame_name)
     fk_solver, _, _ = create_solvers(
         robot.urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name,
+        ee_frame_name=ee_frame_name, fixture_config=fixture_config,
     )
 
     sing_cfg = config.get("singularity_analysis", {})

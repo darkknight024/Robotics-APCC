@@ -74,12 +74,17 @@ def get_default_ik_config() -> Dict[str, Any]:
     return _DEFAULT_IK_CONFIG.copy()
 
 
-def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
+def load_ik_config_as_object(config_path: str = None, solver: str = "eaik",
+                            ee_frame_name: str = "ee_link"):
     """Load IK configuration and return the appropriate IKConfig object.
+
+    The *ee_frame_name* is provided by the caller (from fixture config when set).
+    It is not read from ``ik_config.yaml``.
 
     Args:
         config_path: Path to IK config YAML.  Uses default if None.
         solver: Which backend to build config for: ``"eaik"`` or ``"pin"``.
+        ee_frame_name: End-effector frame name (from fixture or default).
 
     Returns:
         EAIKConfig or PinocchioIKConfig instance.
@@ -95,7 +100,6 @@ def load_ik_config_as_object(config_path: str = None, solver: str = "eaik"):
         params = {}
 
     solver = solver.lower().strip()
-    ee_frame_name = str(params.get('ee_frame_name', _DEFAULT_IK_CONFIG['ee_frame_name']))
 
     if solver in ("pin", "pinocchio"):
         from core.pin_ik_solver import PinocchioIKConfig
@@ -159,6 +163,59 @@ def load_knife_config(config_path: str) -> Dict[str, KnifePose]:
             translation_m=translation_m, quaternion=quaternion,
         )
     return result
+
+
+# =============================================================================
+# Fixture Configuration
+# =============================================================================
+
+@dataclass
+class FixtureConfig:
+    """Fixture / end-effector configuration."""
+    name: str
+    description: str
+    parent_link: str
+    link_name: str
+    joint_name: str
+    origin_xyz: List[float]
+    origin_rpy: List[float]
+
+
+def load_fixtures_config(config_path: str = None) -> Dict[str, FixtureConfig]:
+    """Load fixture definitions from ``config/fixtures_config.yaml``."""
+    if config_path is None:
+        config_path = str(Path(__file__).parent.parent / "config" / "fixtures_config.yaml")
+
+    config = load_yaml(config_path)
+    fixtures = config.get('fixtures', {})
+
+    result = {}
+    for name, data in fixtures.items():
+        origin = data.get('origin', {})
+        result[name] = FixtureConfig(
+            name=name,
+            description=data.get('description', ''),
+            parent_link=data.get('parent_link', 'Link_6'),
+            link_name=data.get('link_name', name),
+            joint_name=data.get('joint_name', f"{name}_joint"),
+            origin_xyz=origin.get('xyz', [0.0, 0.0, 0.0]),
+            origin_rpy=origin.get('rpy', [0.0, 0.0, 0.0]),
+        )
+    return result
+
+
+def get_fixture_by_name(fixture_name: str, fixtures_config_path: str = None) -> FixtureConfig:
+    """Get a fixture configuration by name.
+
+    Raises:
+        ValueError: If fixture not found.
+    """
+    fixtures = load_fixtures_config(fixtures_config_path)
+    if fixture_name not in fixtures:
+        raise ValueError(
+            f"Fixture '{fixture_name}' not found. Available: {list(fixtures.keys())}"
+        )
+    return fixtures[fixture_name]
 
 
 # =============================================================================
@@ -380,8 +437,9 @@ class FeasibilityConfig:
     output_folder: str = "output/feasibility_batch"
     use_base_frame: bool = False
 
-    # Solver
+    # Solver / end-effector
     solver: str = "pin"
+    fixture: Optional[str] = None
 
     # Performance
     max_ik_failures_per_trajectory: int = 1
@@ -454,6 +512,7 @@ def load_batch_config(config_path: str) -> FeasibilityConfig:
         output_folder=raw.get('output_folder', 'output/feasibility_batch'),
         use_base_frame=raw.get('use_base_frame', False),
         solver=raw.get('solver', 'pin'),
+        fixture=raw.get('fixture'),
         max_ik_failures_per_trajectory=int(raw.get('max_ik_failures_per_trajectory', 1)),
         output=output_cfg,
         reachability=_load_group(raw, 'reachability', ReachabilityGraphConfig),

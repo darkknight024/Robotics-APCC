@@ -50,11 +50,7 @@ def process_toolpath(
     traj_id: Optional[int] = None,
     use_flat_output_structure: bool = False,
 ) -> dict:
-    """Process a single toolpath through the Feature 2 feasibility pipeline.
-
-    Returns:
-        Dictionary with complete analysis results.
-    """
+    """Process a single toolpath through the Feature 2 feasibility pipeline."""
     inputs = FeasibilityPipelineInputs(
         toolpath_path=toolpath_path,
         urdf_path=urdf_path,
@@ -97,10 +93,16 @@ def main():
     parser.add_argument(
         "--urdf", "-u",
         default="Assets/Robot APCC/IRB_1300_1400_URDF/urdf/"
-                "IRB_1300_1400_URDF_with_fixture.urdf",
+                "IRB_1300_1400_URDF.urdf",
+        help="Path to base URDF (fixture injected at runtime when --fixture is set)",
     )
     parser.add_argument(
         "--config", "-c", default="config/batch_feasibility_config.yaml",
+    )
+    parser.add_argument(
+        "--fixture", "-f", default=None,
+        help="Fixture name from config/fixtures_config.yaml "
+             "(default: from batch config, or last link as end-effector)",
     )
     parser.add_argument("--knife-config", "-k", default="config/knife_config.yaml")
     parser.add_argument("--knife-pose", default="pose_1")
@@ -138,6 +140,9 @@ def main():
     cfg.use_base_frame = args.base_frame
     if args.feature3:
         cfg.feature3_d1.enabled = True
+
+    if args.fixture is not None:
+        cfg.fixture = args.fixture
 
     knife_translation_m = None
     knife_quaternion = None

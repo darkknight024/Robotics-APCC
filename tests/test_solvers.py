@@ -615,8 +615,9 @@ def main():
                         help="Use adaptive scaling for plots")
     parser.add_argument('--solver', choices=['pin', 'eaik'],
                         help="Override solver backend (pin or eaik)")
-    parser.add_argument('--ee-frame',
-                        help="Override end-effector frame name (e.g. ee_link, Link_6)")
+    parser.add_argument('--fixture', '-f', default=None,
+                        help="Fixture name from config/fixtures_config.yaml "
+                             "(default: none, uses last link as end-effector)")
     parser.add_argument('--use-robostudio-seed', action='store_true',
                         help="Force use_robostudio_seed to true, overriding config")
     
@@ -672,17 +673,29 @@ def main():
         generate_eaik_solutions_graph = True
         eaik_solutions_max_waypoints = 20
     
+    # Load fixture if specified, derive ee_frame_name
+    fixture_config = None
+    ee_frame_name = "Link_6"  # Default: last actuated link (no fixture)
+    
+    # Get fixture from CLI or config
+    fixture_name = args.fixture
+    if not fixture_name and args.config and 'options' in locals():
+        fixture_name = options.get('fixture')
+        
+    if fixture_name:
+        from utils import get_fixture_by_name
+        fixture_config = get_fixture_by_name(fixture_name)
+        ee_frame_name = fixture_config.link_name
+
     # Load IK config for the chosen solver
-    ik_config = load_ik_config_as_object(args.ik_config, solver=solver_type)
-    if args.ee_frame:
-        ik_config.ee_frame_name = args.ee_frame
+    ik_config = load_ik_config_as_object(args.ik_config, solver=solver_type, ee_frame_name=ee_frame_name)
     print(f"IK Config: solver={solver_type}, ee_frame={ik_config.ee_frame_name}")
     
     # Create solvers via factory
     print(f"Loading robot model: {urdf_path}")
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name
+        ee_frame_name=ee_frame_name, fixture_config=fixture_config
     )
     n_joints = robot_data.n_joints if hasattr(robot_data, 'n_joints') else robot_data[0].nq
     print(f"  Solver: {ik_solver.solver_name}, Joints: {n_joints}")

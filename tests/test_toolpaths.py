@@ -72,6 +72,7 @@ class TrajectoryComparisonTask:
     adaptive_scale: bool
     save_csv: bool
     generate_plots: bool
+    fixture_config: object = None  # FixtureConfig or None
 
 
 def load_robostudio_joints_csv(csv_path: str) -> Dict[int, np.ndarray]:
@@ -183,7 +184,8 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
         fk_solver, ik_solver, robot_data = create_solvers(
             task.urdf_path, solver=task.solver_type,
             ik_config=task.ik_config,
-            ee_frame_name=task.ik_config.ee_frame_name
+            ee_frame_name=task.ik_config.ee_frame_name,
+            fixture_config=task.fixture_config
         )
         
         # Run IK on all waypoints
@@ -308,7 +310,16 @@ def process_batch(config_path: str) -> Dict[str, Any]:
     adaptive_scale = options.get('adaptive_plot_scale', False)
     num_workers = options.get('num_workers', 0)
     
-    ik_config = load_ik_config_as_object(solver=solver_type)
+    # Load fixture if specified
+    fixture_name = options.get('fixture', None)
+    fixture_config = None
+    ee_frame_name = "Link_6"
+    if fixture_name:
+        from utils import get_fixture_by_name
+        fixture_config = get_fixture_by_name(fixture_name)
+        ee_frame_name = fixture_config.link_name
+
+    ik_config = load_ik_config_as_object(solver=solver_type, ee_frame_name=ee_frame_name)
     
     if num_workers <= 0:
         num_workers = os.cpu_count() or 4
@@ -318,6 +329,7 @@ def process_batch(config_path: str) -> Dict[str, Any]:
     print(f"  RobotStudio folder: {robostudio_folder}")
     print(f"  Output folder: {output_folder}")
     print(f"  Parallel workers: {num_workers}")
+    print(f"  Fixture: {fixture_name or 'none (using Link_6)'}")
     print(f"  IK frame: {ik_config.ee_frame_name}")
     
     # Find toolpath files
@@ -388,7 +400,8 @@ def process_batch(config_path: str) -> Dict[str, Any]:
                         solver_type=solver_type,
                         adaptive_scale=adaptive_scale,
                         save_csv=save_csv,
-                        generate_plots=generate_plots
+                        generate_plots=generate_plots,
+                        fixture_config=fixture_config
                     ))
     
     print(f"\nPrepared {len(tasks)} trajectory comparison tasks")

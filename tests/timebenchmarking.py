@@ -43,20 +43,29 @@ def resolve_urdf(robot_name: str, project_root: Path) -> str:
 
     raise ValueError(f"Robot '{robot_name}' not found in {robots_path}")
 
-def benchmark_solvers(input_folder, output_folder, urdf_path, ee_frame, ik_config_path):
+def benchmark_solvers(input_folder, output_folder, urdf_path, fixture_name, ik_config_path):
     input_path = Path(input_folder)
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
     
+    # Load fixture if specified
+    fixture_config = None
+    ee_frame_name = "Link_6"  # Default: last actuated link
+    if fixture_name:
+        from utils import get_fixture_by_name
+        fixture_config = get_fixture_by_name(fixture_name)
+        ee_frame_name = fixture_config.link_name
+
     # Initialize both solvers
-    print(f"Loading robot model: {urdf_path} with EE frame: {ee_frame}")
-    pin_ik_config = load_ik_config_as_object(ik_config_path, solver="pin")
-    eaik_ik_config = load_ik_config_as_object(ik_config_path, solver="eaik")
+    print(f"Loading robot model: {urdf_path}")
+    print(f"  Fixture: {fixture_name or 'none (using Link_6)'}")
+    pin_ik_config = load_ik_config_as_object(ik_config_path, solver="pin", ee_frame_name=ee_frame_name)
+    eaik_ik_config = load_ik_config_as_object(ik_config_path, solver="eaik", ee_frame_name=ee_frame_name)
     
     use_robostudio_seed = pin_ik_config.use_robostudio_seed if hasattr(pin_ik_config, 'use_robostudio_seed') else False
     
-    _, pin_ik_solver, _ = create_solvers(urdf_path, solver="pin", ik_config=pin_ik_config, ee_frame_name=ee_frame)
-    _, eaik_solver, _ = create_solvers(urdf_path, solver="eaik", ik_config=eaik_ik_config, ee_frame_name=ee_frame)
+    _, pin_ik_solver, _ = create_solvers(urdf_path, solver="pin", ik_config=pin_ik_config, ee_frame_name=ee_frame_name, fixture_config=fixture_config)
+    _, eaik_solver, _ = create_solvers(urdf_path, solver="eaik", ik_config=eaik_ik_config, ee_frame_name=ee_frame_name, fixture_config=fixture_config)
     
     csv_files = find_robostudio_csvs(input_path)
     if not csv_files:
@@ -226,7 +235,8 @@ if __name__ == "__main__":
     parser.add_argument('--input', '-i', required=True, help="Input directory containing RobotStudio CSVs")
     parser.add_argument('--output', '-o', required=True, help="Output directory for analytical plots")
     parser.add_argument('--robot', '-r', default="IRB 1300-7/1.4", help="Name of the robot to run IK on")
-    parser.add_argument('--ee-frame', default="ee_link", help="End-effector frame name")
+    parser.add_argument('--fixture', '-f', default=None,
+                        help="Fixture name from config/fixtures_config.yaml (default: none, uses Link_6)")
     parser.add_argument('--ik-config', default="config/ik_config.yaml", help="Path to IK config YAML")
     
     args = parser.parse_args()
@@ -237,4 +247,4 @@ if __name__ == "__main__":
         print(f"Error: {e}")
         sys.exit(1)
         
-    benchmark_solvers(args.input, args.output, urdf_path, args.ee_frame, args.ik_config)
+    benchmark_solvers(args.input, args.output, urdf_path, args.fixture, args.ik_config)

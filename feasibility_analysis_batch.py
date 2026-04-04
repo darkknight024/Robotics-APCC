@@ -220,6 +220,10 @@ def process_batch(
     n_robots = len(config.robots)
     n_knives = len(config.knife_poses_to_use) if not config.use_base_frame else 1
     print(f"Solver: {config.solver}")
+    if config.fixture:
+        print(f"Fixture: {config.fixture}")
+    else:
+        print("Fixture: none (using last link as end-effector)")
     print(f"C1 continuity: {'on' if config.continuity.enable_c1 else 'off'}")
     print(f"Robots: {n_robots}")
     if not config.use_base_frame:

@@ -92,12 +92,31 @@ except ImportError:
 
 
 def create_solvers(urdf_path: str, solver: str = "eaik",
-                   ik_config=None, ee_frame_name: str = "ee_link"):
-    """Factory: create an (fk_solver, ik_solver) pair for the requested backend."""
+                   ik_config=None, ee_frame_name: str = "ee_link",
+                   fixture_config=None):
+    """Factory: create an (fk_solver, ik_solver) pair for the requested backend.
+
+    Args:
+        urdf_path: Path to URDF file
+        solver: ``"eaik"`` or ``"pin"``
+        ik_config: Pre-built IKConfig object (EAIKConfig or PinocchioIKConfig).
+        ee_frame_name: End-effector frame name (overridden when *fixture_config* is set)
+        fixture_config: Optional :class:`~utils.config_loader.FixtureConfig` to inject
+            into the URDF at runtime.
+
+    Returns:
+        (fk_solver, ik_solver, robot_data) where *robot_data* is
+        :class:`~utils.urdf_loader.RobotModel` (eaik) or a Pinocchio (model, data) tuple.
+    """
     solver = solver.lower().strip()
 
+    # Derive ee_frame_name from fixture if provided
+    if fixture_config is not None:
+        ee_frame_name = fixture_config.link_name
+
     if solver == "eaik":
-        robot_model = load_robot_model_eaik(urdf_path, ee_frame_name=ee_frame_name)
+        robot_model = load_robot_model_eaik(urdf_path, ee_frame_name=ee_frame_name,
+                                           fixture_config=fixture_config)
         fk = EAIKFKSolver(robot_model)
         if ik_config is None:
             ik_config = EAIKConfig(ee_frame_name=ee_frame_name)
@@ -107,7 +126,7 @@ def create_solvers(urdf_path: str, solver: str = "eaik",
     elif solver in ("pin", "pinocchio"):
         from .pin_fk_solver import PinocchioFKSolver
         from .pin_ik_solver import PinocchioIKSolver, PinocchioIKConfig
-        model, data = load_robot_model_pin(urdf_path)
+        model, data = load_robot_model_pin(urdf_path, fixture_config=fixture_config)
         fk = PinocchioFKSolver(model, data, ee_frame_name=ee_frame_name)
         if ik_config is None:
             ik_config = PinocchioIKConfig(ee_frame_name=ee_frame_name)

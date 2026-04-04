@@ -11,7 +11,6 @@ import pinocchio as pin
 from typing import Optional, Tuple, Dict, Any
 from dataclasses import dataclass
 
-# Import default config values from config_loader to ensure single source of truth
 try:
     from utils.config_loader import _DEFAULT_IK_CONFIG
     _DEFAULT_MAX_ITERATIONS = _DEFAULT_IK_CONFIG['max_iterations']
@@ -22,7 +21,6 @@ try:
     _DEFAULT_LAMBDA_MAX = _DEFAULT_IK_CONFIG['lambda_max']
     _DEFAULT_MAX_STEP = _DEFAULT_IK_CONFIG['max_step']
     _DEFAULT_BACKTRACK = _DEFAULT_IK_CONFIG['backtrack']
-    _DEFAULT_EE_FRAME_NAME = _DEFAULT_IK_CONFIG['ee_frame_name']
 except ImportError:
     # Fallback if config_loader is not available (shouldn't happen in normal usage)
     _DEFAULT_MAX_ITERATIONS = 50
@@ -33,7 +31,9 @@ except ImportError:
     _DEFAULT_LAMBDA_MAX = 1e1
     _DEFAULT_MAX_STEP = 0.2
     _DEFAULT_BACKTRACK = True
-    _DEFAULT_EE_FRAME_NAME = "ee_link"
+
+# Default end-effector frame name (last actuated link, no fixture)
+_DEFAULT_EE_FRAME_NAME = "Link_6"
 
 
 @dataclass

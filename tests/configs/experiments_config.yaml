@@ -13,7 +13,7 @@ enable_benchmarking: true  # Set to false to disable ground-truth comparison
 #   - test_toolpaths     (tests/test_toolpaths.py)
 #
 # Per-run fields that can override experiment-level defaults:
-#   solver, robot, ee_frame, input, output, knife_pose, ground_truth
+#   solver, robot, fixture, input, output, knife_pose, ground_truth
 #
 # Output path: If not specified per-run, auto-generated as:
 #   <output_base>/<run_name>
@@ -34,7 +34,7 @@ experiments:
   - name: "Experiment_7"
     test_script: "test_solvers"
     robot: "IRB 1300-7/1.4"
-    ee_frame: "Link_6"
+    # fixture: null  # No fixture = use Link_6 as end-effector
     input: "Robot_APCC/Experiments/Experiment_7/trajectories_with_square_profile/full_trajectories_sampled"
     output_base: "Robot_APCC/Results/Experiment_7"
     runs:
@@ -51,7 +51,7 @@ experiments:
   - name: "Experiment_8"
     test_script: "test_solvers"
     robot: "IRB 1300-7/1.4"
-    ee_frame: "ee_link"
+    fixture: "ee_link"  # Dynamically inject ee_link fixture into base URDF
     input: "Robot_APCC/Experiments/Experiment_8/square_profile_trajectories_sampled"
     output_base: "Robot_APCC/Results/Experiment_8"
     runs:
@@ -67,7 +67,7 @@ experiments:
   # ===========================================================================
   - name: "Experiment_9"
     test_script: "test_solvers"
-    ee_frame: "Link_6"
+    # fixture: null  # No fixture = use Link_6 as end-effector
     output_base: "Robot_APCC/Results/Experiment_9"
     runs:
       # IRB 1300-11/0.9
@@ -99,7 +99,7 @@ experiments:
   - name: "Experiment_10"
     test_script: "test_solvers"
     robot: "IRB 1300-7/1.4"
-    ee_frame: "ee_link"
+    fixture: "ee_link"
     input: "Robot_APCC/Experiments/Experiment_10/inputs"
     output_base: "Robot_APCC/Results/Experiment_10"
     runs:
@@ -116,7 +116,7 @@ experiments:
   - name: "Experiment_12"
     test_script: "test_reachability"
     robot: "IRB 1300-7/1.4"
-    ee_frame: "ee_link"
+    fixture: "ee_link"
     knife_pose: "Zund"
     input: "Robot_APCC/Experiments/Experiment_12/Toolpaths"
     output_base: "Robot_APCC/Results/Experiment_12"
@@ -134,7 +134,7 @@ experiments:
   - name: "Experiment_13"
     test_script: "test_solvers"
     robot: "IRB 1300-7/1.4"
-    ee_frame: "ee_link"
+    fixture: "ee_link"
     input: "Robot_APCC/Experiments/Experiment_13/Results"
     output_base: "Robot_APCC/Results/Experiment_13"
     use_robostudio_seed: true
