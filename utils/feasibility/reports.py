@@ -22,6 +22,27 @@ def aggregate_reachability_totals(
     return total_reach, total_wp
 
 
+def count_trajectory_feasibility(
+    summary: Optional[List[Optional[Dict[str, Any]]]],
+) -> Tuple[int, int]:
+    """Count trajectories that pass ``level1_valid`` vs total non-None entries.
+
+    Returns:
+        (n_passed, n_total). Missing ``level1_valid`` is treated as failed.
+    """
+    if not summary:
+        return 0, 0
+    n_pass = 0
+    n_total = 0
+    for t in summary:
+        if t is None:
+            continue
+        n_total += 1
+        if t.get("level1_valid", False):
+            n_pass += 1
+    return n_pass, n_total
+
+
 def generate_analysis_report(results: Dict[str, Any], output_path: Path) -> None:
     """Write a human-readable feasibility analysis report to disk.
 
@@ -108,9 +129,11 @@ def generate_batch_summary(results: List[Dict[str, Any]], output_path: Path) -> 
             lines.append(f"  Toolpath: {r['toolpath']}")
             lines.append(f"  Trajectories: {r['num_trajectories']}")
             if "summary" in r and r["summary"]:
-                total_reach, total_wp = aggregate_reachability_totals(r["summary"])
-                pct = 100 * total_reach / total_wp if total_wp > 0 else 0
-                lines.append(f"  Reachability: {total_reach}/{total_wp} ({pct:.1f}%)")
+                n_pass, n_tot = count_trajectory_feasibility(r["summary"])
+                if n_tot > 0:
+                    lines.append(
+                        f"  Feasibility (level1): {n_pass}/{n_tot} trajectories PASS"
+                    )
 
     if failed:
         lines.append("")
@@ -124,10 +147,13 @@ def generate_batch_summary(results: List[Dict[str, Any]], output_path: Path) -> 
             if r.get("num_trajectories") is not None:
                 lines.append(f"  Trajectories: {r['num_trajectories']}")
             if "summary" in r and r["summary"]:
-                tr, tw = aggregate_reachability_totals(r["summary"])
-                if tw > 0:
-                    pct = 100 * tr / tw
-                    lines.append(f"  Reachability: {tr}/{tw} ({pct:.1f}%)")
+                n_pass, n_tot = count_trajectory_feasibility(r["summary"])
+                if n_tot > 0:
+                    n_fail = n_tot - n_pass
+                    lines.append(
+                        f"  Feasibility (level1): {n_pass}/{n_tot} trajectories PASS "
+                        f"({n_fail} failed)"
+                    )
             lines.append(f"  Error: {r.get('error', 'Unknown')}")
 
     lines.append("")

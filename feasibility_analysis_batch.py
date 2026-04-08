@@ -34,7 +34,7 @@ from typing import List, Dict, Any, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.config_loader import load_batch_config, load_knife_config, FeasibilityConfig
-from utils.feasibility.reports import aggregate_reachability_totals, generate_batch_summary
+from utils.feasibility.reports import count_trajectory_feasibility, generate_batch_summary
 from feasibility_analysis import process_toolpath
 
 
@@ -75,26 +75,27 @@ def _run_single(
             use_flat_output_structure=True,
         )
         summary = result["trajectory_results"]
-        total_reach, total_wp = aggregate_reachability_totals(summary)
-        if total_wp <= 0:
+        n_pass, n_total = count_trajectory_feasibility(summary)
+        if n_total <= 0:
             return {
                 "robot": robot_model_name,
                 "knife_pose": knife_pose_name,
                 "toolpath": toolpath_name,
                 "success": False,
-                "error": "No waypoints processed",
+                "error": "No trajectories processed",
                 "num_trajectories": result.get("num_trajectories"),
                 "summary": summary,
             }
-        if total_reach < total_wp:
-            pct = 100.0 * total_reach / total_wp
+        n_fail = n_total - n_pass
+        if n_fail > 0:
             return {
                 "robot": robot_model_name,
                 "knife_pose": knife_pose_name,
                 "toolpath": toolpath_name,
                 "success": False,
                 "error": (
-                    f"Incomplete reachability: {total_reach}/{total_wp} ({pct:.1f}%)"
+                    f"Feasibility: {n_fail} of {n_total} trajectories failed "
+                    f"({n_pass} passed)"
                 ),
                 "num_trajectories": result["num_trajectories"],
                 "summary": summary,
@@ -226,7 +227,10 @@ def process_batch(
             result = _run_single(**kwargs)
             results.append(result)
             if result["success"]:
-                print(f"  Completed: {result['num_trajectories']} trajectories (100% reachable)")
+                print(
+                    f"  Completed: {result['num_trajectories']} trajectories "
+                    "(all feasibility PASS)"
+                )
             else:
                 print(f"  FAILED: {result.get('error', 'Unknown')}")
     else:
@@ -244,7 +248,7 @@ def process_batch(
                     if result["success"]:
                         print(
                             f"  Completed: {tp_name} ({result['num_trajectories']} traj, "
-                            "100% reachable)"
+                            "all feasibility PASS)"
                         )
                     else:
                         print(f"  FAILED: {tp_name} — {result.get('error', 'Unknown')}")
