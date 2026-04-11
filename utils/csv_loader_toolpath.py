@@ -411,6 +411,205 @@ def validate_toolpath_csv(csv_path: str) -> Tuple[bool, Optional[str]]:
         return False, str(e)
 
 
+# =============================================================================
+# Feature 3 — M7: Extended loader for zone + v_cmd columns
+# =============================================================================
+
+@dataclass
+class ToolpathLoadResultF3:
+    """Return value of :func:`load_toolpath_f3` with zone and speed data.
+
+    Attributes:
+        waypoints:   List of (N_i, 7) arrays per trajectory [x_m, y_m, z_m, qw, qx, qy, qz].
+        v_cmd:       List of (N_i,) arrays — commanded TCP speed per waypoint (mm/s).
+        zone_specs:  List of per-trajectory lists of zone specs (tuples or strings).
+        metadata:    Source file info and parsing diagnostics.
+    """
+
+    waypoints: List[np.ndarray]
+    v_cmd: List[np.ndarray]
+    zone_specs: List[List]
+    metadata: dict
+
+
+def load_toolpath_f3(
+    csv_path: str,
+    default_zone: str = "fine",
+    default_v_cmd: float = 300.0,
+    max_trajectories: Optional[int] = None,
+) -> ToolpathLoadResultF3:
+    """Load toolpath CSV in the Feature 3 format with per-waypoint zone data.
+
+    Supports the T0-marker headerless format with columns::
+
+        x, y, z, qw, qx, qy, qz, pzone_tcp, pzone_ori, zone_ori [, v_cmd]
+
+    Columns 0–6 are the SE(3) pose (positions in mm, converted to metres).
+    Columns 7–9 are zone data (pzone_tcp mm, pzone_ori mm, zone_ori degrees).
+    Column 10 is optional commanded speed in mm/s.
+
+    If zone columns are absent (row has only 7–8 columns), the ``default_zone``
+    is used for all waypoints.  If speed column is absent, ``default_v_cmd``
+    is used.
+
+    Also supports the existing 14-column format::
+
+        x, y, z, qw, qx, qy, qz, speed, pzone_tcp, pzone_ori, pzone_eax,
+        zone_ori, zone_leax, zone_reax
+
+    Args:
+        csv_path:          Path to the toolpath CSV file.
+        default_zone:      Fallback zone when zone columns are absent.
+        default_v_cmd:     Fallback speed (mm/s) when speed column is absent.
+        max_trajectories:  Maximum number of trajectories to load.
+
+    Returns:
+        :class:`ToolpathLoadResultF3` with per-trajectory waypoints, speeds,
+        and zone specifications.
+
+    Raises:
+        FileNotFoundError: If CSV file doesn't exist.
+        ValueError: If CSV format is invalid.
+    """
+    csv_path_p = Path(csv_path)
+    if not csv_path_p.exists():
+        raise FileNotFoundError(f"Toolpath CSV not found: {csv_path}")
+
+    all_waypoints: List[np.ndarray] = []
+    all_v_cmd: List[np.ndarray] = []
+    all_zone_specs: List[List] = []
+
+    cur_wps: List[List[float]] = []
+    cur_speeds: List[float] = []
+    cur_zones: List = []
+
+    zone_extracted = False
+    speed_extracted = False
+
+    def _finalize():
+        if not cur_wps:
+            return
+        if max_trajectories is not None and len(all_waypoints) >= max_trajectories:
+            return
+        all_waypoints.append(np.array(cur_wps, dtype=float))
+        all_v_cmd.append(np.array(cur_speeds, dtype=float))
+        all_zone_specs.append(list(cur_zones))
+
+    with open(csv_path_p, "r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            clean = [tok.strip() for tok in row if tok.strip()]
+            if not clean:
+                continue
+
+            # T0 separator
+            if len(clean) == 1 and clean[0] == "T0":
+                _finalize()
+                cur_wps, cur_speeds, cur_zones = [], [], []
+                if max_trajectories and len(all_waypoints) >= max_trajectories:
+                    break
+                continue
+
+            # Skip metadata rows (single numbers, counts, etc.)
+            if len(clean) < 7:
+                continue
+
+            # Try to parse as a data row
+            try:
+                vals = [float(v) for v in clean]
+            except ValueError:
+                continue
+
+            n_cols = len(vals)
+
+            # Parse pose: columns 0–6
+            x_mm, y_mm, z_mm = vals[0], vals[1], vals[2]
+            qw, qx, qy, qz = vals[3], vals[4], vals[5], vals[6]
+
+            x_m = x_mm / 1000.0
+            y_m = y_mm / 1000.0
+            z_m = z_mm / 1000.0
+
+            quat = np.array([qw, qx, qy, qz])
+            qn = np.linalg.norm(quat)
+            if qn < 1e-10:
+                quat = np.array([1.0, 0.0, 0.0, 0.0])
+            else:
+                quat = quat / qn
+
+            wp = [x_m, y_m, z_m, quat[0], quat[1], quat[2], quat[3]]
+
+            # Parse zone and speed depending on column count
+            zone_spec = default_zone
+            v_cmd_val = default_v_cmd
+
+            if n_cols >= 14:
+                # Legacy 14-column format:
+                # 7=speed, 8=pzone_tcp, 9=pzone_ori, 10=pzone_eax, 11=zone_ori,
+                # 12=zone_leax, 13=zone_reax
+                v_cmd_val = vals[7]
+                pz_tcp = vals[8]
+                pz_ori = vals[9]
+                zone_ori_deg = vals[11]
+                zone_spec = (pz_tcp, pz_ori, zone_ori_deg)
+                zone_extracted = True
+                speed_extracted = True
+
+            elif n_cols >= 11:
+                # New 11-column format: 7=pzone_tcp, 8=pzone_ori, 9=zone_ori, 10=v_cmd
+                pz_tcp = vals[7]
+                pz_ori = vals[8]
+                zone_ori_deg = vals[9]
+                v_cmd_val = vals[10]
+                zone_spec = (pz_tcp, pz_ori, zone_ori_deg)
+                zone_extracted = True
+                speed_extracted = True
+
+            elif n_cols >= 10:
+                # New 10-column format: 7=pzone_tcp, 8=pzone_ori, 9=zone_ori (no speed)
+                pz_tcp = vals[7]
+                pz_ori = vals[8]
+                zone_ori_deg = vals[9]
+                zone_spec = (pz_tcp, pz_ori, zone_ori_deg)
+                zone_extracted = True
+
+            elif n_cols >= 8:
+                # 8 columns: pose + speed only (Feature 2 fallback)
+                v_cmd_val = vals[7]
+                speed_extracted = True
+
+            cur_wps.append(wp)
+            cur_speeds.append(v_cmd_val)
+            cur_zones.append(zone_spec)
+
+    _finalize()
+
+    if not zone_extracted:
+        logger.warning(
+            "Zone columns not found in %s — using default '%s' for all waypoints.",
+            csv_path, default_zone,
+        )
+    if not speed_extracted:
+        logger.warning(
+            "Speed column not found in %s — using default %.0f mm/s.",
+            csv_path, default_v_cmd,
+        )
+
+    return ToolpathLoadResultF3(
+        waypoints=all_waypoints,
+        v_cmd=all_v_cmd,
+        zone_specs=all_zone_specs,
+        metadata={
+            "source_file": str(csv_path),
+            "n_trajectories": len(all_waypoints),
+            "zone_extracted": zone_extracted,
+            "speed_extracted": speed_extracted,
+            "default_zone": default_zone,
+            "default_v_cmd": default_v_cmd,
+        },
+    )
+
+
 _RS_JOINT_COLS = ("rs_j1_deg", "rs_j2_deg", "rs_j3_deg", "rs_j4_deg", "rs_j5_deg", "rs_j6_deg")
 _RS_TCP_COLS = ("rs_x_mm", "rs_y_mm", "rs_z_mm", "rs_qw", "rs_qx", "rs_qy", "rs_qz")
 

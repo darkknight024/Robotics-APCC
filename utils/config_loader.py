@@ -322,6 +322,24 @@ class RankingConfig:
 
 
 @dataclass
+class Feature3D1Config:
+    """Feature 3 Deliverable 1 — Speed Profile configuration.
+
+    Controls the blend-zone speed prediction pipeline.
+    """
+
+    enabled: bool = False
+    a_tcp_mm_s2: float = 2500.0
+    T_settle_s: float = 0.2
+    is_calibrated: bool = False
+    ds_mm: float = 1.0
+    default_zone: str = "fine"
+    default_v_cmd_mm_s: float = 300.0
+    generate_plots: bool = True
+    generate_report: bool = True
+
+
+@dataclass
 class FeasibilityConfig:
     """All settings for batch feasibility analysis, loaded from YAML.
 
@@ -355,6 +373,9 @@ class FeasibilityConfig:
 
     # Ranking (combinatorial search only)
     ranking: RankingConfig = field(default_factory=RankingConfig)
+
+    # Feature 3 Deliverable 1 — Speed Profile
+    feature3_d1: Feature3D1Config = field(default_factory=Feature3D1Config)
 
 
 # =============================================================================
@@ -416,6 +437,7 @@ def load_batch_config(config_path: str) -> FeasibilityConfig:
         waypoint_density=_load_group(raw, 'waypoint_density', WaypointDensityGroupConfig),
         topp_ra=_load_group(raw, 'topp_ra', ToppRaGroupConfig),
         ranking=ranking_cfg,
+        feature3_d1=_load_group(raw, 'feature3_d1', Feature3D1Config),
     )
 
 

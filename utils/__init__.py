@@ -31,6 +31,9 @@ from .csv_loader_toolpath import (
     extract_toolpath_speed,
     load_robotstudio_reference,
     RobotStudioReference,
+    # Feature 3 — M7
+    ToolpathLoadResultF3,
+    load_toolpath_f3,
 )
 
 from .csv_loader_robostudio import (
@@ -120,6 +123,7 @@ from .config_loader import (
     KnifePose,
     RobotConfig,
     FeasibilityConfig,
+    Feature3D1Config,
 )
 
 from .urdf_loader import (

@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from utils.config_loader import load_batch_config, load_knife_config, FeasibilityConfig
 from utils.feasibility.reports import count_trajectory_feasibility, generate_batch_summary
 from feasibility_analysis import process_toolpath
+from core.blend_zone import run_feature3_d1
 
 
 # =============================================================================
@@ -56,9 +57,44 @@ def _run_single(
     accel_limits_rad_s2: Optional[np.ndarray],
     speed_mm_s: float,
 ) -> Dict[str, Any]:
-    """Run a single combination; returns a result dict."""
+    """Run a single combination; returns a result dict.
+
+    When ``config.feature3_d1.enabled`` is True, runs the Feature 3 D1
+    speed profile pipeline instead of (or in addition to) the standard
+    Feature 2 pipeline.
+    """
     toolpath_name = Path(toolpath_path).stem
     try:
+        # ── Feature 3 D1 branch ──
+        if config.feature3_d1.enabled:
+            f3_result = run_feature3_d1(
+                toolpath_csv=toolpath_path,
+                urdf_path=urdf_path,
+                config=config,
+                output_dir=output_dir,
+                knife_translation_m=knife_translation_m,
+                knife_quaternion=knife_quaternion,
+                robot_model_name=robot_model_name,
+                knife_pose_name=knife_pose_name,
+                robot_reach_m=robot_reach_m,
+                velocity_limits_rad_s=velocity_limits_rad_s,
+                accel_limits_rad_s2=accel_limits_rad_s2,
+                verbose=False,
+            )
+            return {
+                "robot": robot_model_name,
+                "knife_pose": knife_pose_name,
+                "toolpath": toolpath_name,
+                "success": f3_result.feasible,
+                "error": f3_result.infeasible_reason if not f3_result.feasible else None,
+                "feature3_d1": True,
+                "blend_arcs": f3_result.blend_geom_count,
+                "dense_samples": f3_result.dense_path_samples,
+                "arc_length_mm": f3_result.total_arc_length_mm,
+                "is_calibrated": f3_result.is_calibrated,
+            }
+
+        # ── Standard Feature 2 branch ──
         result = process_toolpath(
             toolpath_path=toolpath_path,
             urdf_path=urdf_path,
@@ -290,8 +326,16 @@ def main():
         action="store_true",
         help="Disable C1 continuity checks and graphs (overrides config continuity.enable_c1)",
     )
+    parser.add_argument(
+        "--feature3",
+        action="store_true",
+        help="Enable Feature 3 D1 speed profile prediction (overrides config feature3_d1.enabled)",
+    )
     args = parser.parse_args()
 
+    config = load_batch_config(args.config)
+    if args.feature3:
+        config.feature3_d1.enabled = True
     process_batch(args.config, args.output, args.workers, enable_c1=False if args.no_c1 else None)
 
 

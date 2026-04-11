@@ -63,6 +63,10 @@ from .checks.task_space_velocity import (
     compute_task_space_velocity,
     check_speed_limits,
     TaskSpaceVelocityResult,
+    # Feature 3 — M6
+    JointVelocityResult,
+    compute_omega_e_from_dense_path,
+    compute_joint_velocities_from_twist,
 )
 
 # --- Time parameterization (waypoint density) ---
@@ -158,4 +162,8 @@ __all__ = [
     'parameterize_trajectory', 'ToppraResult',
     # Self-collision
     'SelfCollisionChecker', 'CollisionResult',
+    # Feature 3 — M6
+    'JointVelocityResult',
+    'compute_omega_e_from_dense_path',
+    'compute_joint_velocities_from_twist',
 ]
