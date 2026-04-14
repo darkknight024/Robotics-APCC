@@ -121,6 +121,7 @@ topp_ra:
 # Requires toolpath CSV with zone columns (pzone_tcp, pzone_ori, zone_ori).
 feature3_d1:
   enabled: false
+  custom_zone: false            # false → preset zone number (z0,z1,…); true → (pzone_tcp,pzone_ori,zone_ori)
   # Calibration constants (from site experiments V1 and V2)
   a_tcp_mm_s2: 2500.0         # Effective TCP acceleration capability (mm/s²) — PLACEHOLDER
   T_settle_s: 0.2             # Fine-point settling time (seconds) — PLACEHOLDER

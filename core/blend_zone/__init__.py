@@ -17,7 +17,9 @@ Modules
 from .zone_resolver import (
     ZoneParams,
     PREDEFINED_ZONES,
+    ZONE_NUMBER_MAP,
     resolve_zone_spec,
+    resolve_zone_from_number,
     resolve_zone_list,
     apply_overlap_reduction,
 )
@@ -47,8 +49,9 @@ from .pipeline import (
 
 __all__ = [
     # M1
-    "ZoneParams", "PREDEFINED_ZONES",
-    "resolve_zone_spec", "resolve_zone_list", "apply_overlap_reduction",
+    "ZoneParams", "PREDEFINED_ZONES", "ZONE_NUMBER_MAP",
+    "resolve_zone_spec", "resolve_zone_from_number",
+    "resolve_zone_list", "apply_overlap_reduction",
     # M2
     "BlendArcGeometry", "compute_blend_geometry", "compute_blend_geometries",
     # M3

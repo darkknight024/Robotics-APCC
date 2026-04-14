@@ -329,6 +329,7 @@ class Feature3D1Config:
     """
 
     enabled: bool = False
+    custom_zone: bool = False
     a_tcp_mm_s2: float = 2500.0
     T_settle_s: float = 0.2
     is_calibrated: bool = False

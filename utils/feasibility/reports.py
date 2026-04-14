@@ -127,7 +127,14 @@ def generate_batch_summary(results: List[Dict[str, Any]], output_path: Path) -> 
             lines.append(f"\n  Robot: {r['robot']}")
             lines.append(f"  Knife: {r['knife_pose']}")
             lines.append(f"  Toolpath: {r['toolpath']}")
-            lines.append(f"  Trajectories: {r['num_trajectories']}")
+            if r.get("feature3_d1"):
+                lines.append("  Pipeline: Feature 3 D1")
+                lines.append(f"  Blend arcs: {r.get('blend_arcs', 0)}")
+                lines.append(f"  Dense samples: {r.get('dense_samples', 0)}")
+                lines.append(f"  Arc length (mm): {r.get('arc_length_mm', 0.0):.3f}")
+                lines.append(f"  Calibrated: {bool(r.get('is_calibrated', False))}")
+            elif r.get("num_trajectories") is not None:
+                lines.append(f"  Trajectories: {r['num_trajectories']}")
             if "summary" in r and r["summary"]:
                 n_pass, n_tot = count_trajectory_feasibility(r["summary"])
                 if n_tot > 0:

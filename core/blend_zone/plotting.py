@@ -246,9 +246,15 @@ def _plot_tcp_pose_deviation(
             dot_q = np.clip(np.abs(np.dot(dp_quats[k], q_interp)), 0.0, 1.0)
             ori_dev_deg[k] = np.degrees(2.0 * np.arccos(dot_q))
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    # Use independent x-axis for the distribution panel (categorical data),
+    # otherwise shared arc-length ticks from upper plots become unreadable.
+    fig = plt.figure(figsize=(14, 10))
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.0, 1.0, 0.9])
+    ax_pos = fig.add_subplot(gs[0, 0])
+    ax_ori = fig.add_subplot(gs[1, 0], sharex=ax_pos)
+    ax_dist = fig.add_subplot(gs[2, 0])
 
-    ax = axes[0]
+    ax = ax_pos
     ax.plot(arc_s, pos_dev_mm, "b-", linewidth=0.8, label="Position deviation")
     if np.any(is_blend):
         ax.fill_between(
@@ -260,7 +266,7 @@ def _plot_tcp_pose_deviation(
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
 
-    ax = axes[1]
+    ax = ax_ori
     ax.plot(arc_s, ori_dev_deg, "r-", linewidth=0.8, label="Orientation deviation")
     if np.any(is_blend):
         ax.fill_between(
@@ -272,7 +278,7 @@ def _plot_tcp_pose_deviation(
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
 
-    ax = axes[2]
+    ax = ax_dist
     blend_dev = pos_dev_mm[is_blend] if np.any(is_blend) else np.array([])
     straight_dev = pos_dev_mm[~is_blend]
     labels, data = [], []
@@ -288,10 +294,26 @@ def _plot_tcp_pose_deviation(
         for patch, color in zip(bp["boxes"], colors_bp[:len(data)]):
             patch.set_facecolor(color)
     ax.set_ylabel("Position Deviation (mm)")
-    ax.set_title("Deviation Distribution: Blend Arc vs Straight Segments")
+    ax.set_xlabel("Path region")
+    ax.set_title(
+        "Position-Deviation Distribution by Region (Blend Arc vs Straight)"
+    )
     ax.grid(True, alpha=0.3, axis="y")
+    ax.text(
+        0.01,
+        0.98,
+        (
+            f"Counts use dense-path samples: blend={len(blend_dev)}, "
+            f"straight={len(straight_dev)}, total={len(pos_dev_mm)}"
+        ),
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=8,
+        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.6, edgecolor="none"),
+    )
 
-    plt.tight_layout()
+    fig.tight_layout(h_pad=1.0)
     fig.savefig(out / "tcp_pose_deviation.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 

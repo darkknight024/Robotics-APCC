@@ -432,33 +432,120 @@ class ToolpathLoadResultF3:
     metadata: dict
 
 
+def _parse_zone_preset(zone_num: float, fine: bool = False) -> str:
+    """Map a numeric zone value to its predefined ABB zone name."""
+    from core.blend_zone.zone_resolver import resolve_zone_from_number
+    return resolve_zone_from_number(zone_num, fine=fine)
+
+
+def _parse_f3_pose(vals: List[float]) -> Optional[List[float]]:
+    """Extract [x_m, y_m, z_m, qw, qx, qy, qz] from first 7 values (mm→m)."""
+    x_m = vals[0] / 1000.0
+    y_m = vals[1] / 1000.0
+    z_m = vals[2] / 1000.0
+    quat = np.array([vals[3], vals[4], vals[5], vals[6]])
+    qn = np.linalg.norm(quat)
+    if qn < 1e-10:
+        quat = np.array([1.0, 0.0, 0.0, 0.0])
+    else:
+        quat = quat / qn
+    return [x_m, y_m, z_m, quat[0], quat[1], quat[2], quat[3]]
+
+
+def _parse_f3_headerless_preset(vals: List[float], n_cols: int, default_v_cmd: float, default_zone: str):
+    """Parse zone + speed from a headerless row in PRESET zone mode.
+
+    Layout: x,y,z,qw,qx,qy,qz, speed, zone_number [, ... ignored ...]
+    """
+    zone_spec = default_zone
+    v_cmd = default_v_cmd
+    zone_ok = False
+    speed_ok = False
+
+    if n_cols >= 9:
+        v_cmd = vals[7]
+        zone_spec = _parse_zone_preset(vals[8])
+        zone_ok = True
+        speed_ok = True
+    elif n_cols >= 8:
+        v_cmd = vals[7]
+        speed_ok = True
+
+    return zone_spec, v_cmd, zone_ok, speed_ok
+
+
+def _parse_f3_headerless_custom(vals: List[float], n_cols: int, default_v_cmd: float, default_zone: str):
+    """Parse zone + speed from a headerless row in CUSTOM zone mode.
+
+    Layout A (14-col): x,y,z,qw,qx,qy,qz, speed, pzone_tcp, pzone_ori, pzone_eax, zone_ori, ...
+    Layout B (10/11):  x,y,z,qw,qx,qy,qz, pzone_tcp, pzone_ori, zone_ori [, v_cmd]
+    """
+    zone_spec = default_zone
+    v_cmd = default_v_cmd
+    zone_ok = False
+    speed_ok = False
+
+    if n_cols >= 14:
+        v_cmd = vals[7]
+        zone_spec = (vals[8], vals[9], vals[11])
+        zone_ok = True
+        speed_ok = True
+    elif n_cols >= 11:
+        zone_spec = (vals[7], vals[8], vals[9])
+        v_cmd = vals[10]
+        zone_ok = True
+        speed_ok = True
+    elif n_cols >= 10:
+        zone_spec = (vals[7], vals[8], vals[9])
+        zone_ok = True
+    elif n_cols >= 8:
+        v_cmd = vals[7]
+        speed_ok = True
+
+    return zone_spec, v_cmd, zone_ok, speed_ok
+
+
+# Column name aliases for header-based zone/speed parsing
+_SPEED_ALIASES = ("speed", "speed_mm_s", "v_cmd", "tcp_speed")
+_ZONE_ALIASES = ("zone",)
+_FINE_ALIASES = ("fine", "finep")
+
+
 def load_toolpath_f3(
     csv_path: str,
+    custom_zone: bool = False,
     default_zone: str = "fine",
     default_v_cmd: float = 300.0,
     max_trajectories: Optional[int] = None,
 ) -> ToolpathLoadResultF3:
-    """Load toolpath CSV in the Feature 3 format with per-waypoint zone data.
+    """Load toolpath CSV with per-waypoint zone blending and speed data.
 
-    Supports the T0-marker headerless format with columns::
+    Two zone-parsing modes controlled by *custom_zone*:
 
-        x, y, z, qw, qx, qy, qz, pzone_tcp, pzone_ori, zone_ori [, v_cmd]
+    **Preset zone mode** (``custom_zone=False``, default):
+        Expects a single numeric zone column (0, 1, 5, 10, …) that is
+        looked up in ABB's predefined zone table.  Column layout::
 
-    Columns 0–6 are the SE(3) pose (positions in mm, converted to metres).
-    Columns 7–9 are zone data (pzone_tcp mm, pzone_ori mm, zone_ori degrees).
-    Column 10 is optional commanded speed in mm/s.
+            x, y, z, qw, qx, qy, qz, speed_mm_s, zone_number [, ...]
 
-    If zone columns are absent (row has only 7–8 columns), the ``default_zone``
-    is used for all waypoints.  If speed column is absent, ``default_v_cmd``
-    is used.
+        Header-based CSVs: uses ``speed_mm_s`` / ``zone`` / ``fine`` columns.
 
-    Also supports the existing 14-column format::
+    **Custom zone mode** (``custom_zone=True``):
+        Expects explicit ``(pzone_tcp, pzone_ori, zone_ori)`` triplet.
+        Column layout (headerless)::
 
-        x, y, z, qw, qx, qy, qz, speed, pzone_tcp, pzone_ori, pzone_eax,
-        zone_ori, zone_leax, zone_reax
+            x, y, z, qw, qx, qy, qz, pzone_tcp, pzone_ori, zone_ori [, v_cmd]
+
+        Or 14-column ABB-struct layout::
+
+            x, y, z, qw, qx, qy, qz, speed, pzone_tcp, pzone_ori, pzone_eax,
+            zone_ori, zone_leax, zone_reax
+
+    Both modes support T0-marker multi-trajectory files and header-based CSVs.
 
     Args:
         csv_path:          Path to the toolpath CSV file.
+        custom_zone:       True → 3-value zone triplet; False → preset number.
         default_zone:      Fallback zone when zone columns are absent.
         default_v_cmd:     Fallback speed (mm/s) when speed column is absent.
         max_trajectories:  Maximum number of trajectories to load.
@@ -466,10 +553,6 @@ def load_toolpath_f3(
     Returns:
         :class:`ToolpathLoadResultF3` with per-trajectory waypoints, speeds,
         and zone specifications.
-
-    Raises:
-        FileNotFoundError: If CSV file doesn't exist.
-        ValueError: If CSV format is invalid.
     """
     csv_path_p = Path(csv_path)
     if not csv_path_p.exists():
@@ -486,6 +569,9 @@ def load_toolpath_f3(
     zone_extracted = False
     speed_extracted = False
 
+    col_map: Optional[Dict[str, int]] = None
+    header_checked = False
+
     def _finalize():
         if not cur_wps:
             return
@@ -495,12 +581,26 @@ def load_toolpath_f3(
         all_v_cmd.append(np.array(cur_speeds, dtype=float))
         all_zone_specs.append(list(cur_zones))
 
+    def _find_col(aliases, cmap):
+        for a in aliases:
+            if a in cmap:
+                return cmap[a]
+        return None
+
     with open(csv_path_p, "r", newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         for row in reader:
             clean = [tok.strip() for tok in row if tok.strip()]
             if not clean:
                 continue
+
+            # --- Header detection (first row with >=7 tokens) ---
+            if not header_checked and len(clean) >= 7:
+                maybe_map = _detect_header(clean)
+                header_checked = True
+                if maybe_map is not None:
+                    col_map = maybe_map
+                    continue
 
             # T0 separator
             if len(clean) == 1 and clean[0] == "T0":
@@ -510,11 +610,57 @@ def load_toolpath_f3(
                     break
                 continue
 
-            # Skip metadata rows (single numbers, counts, etc.)
             if len(clean) < 7:
                 continue
 
-            # Try to parse as a data row
+            # ── Header-based row ──
+            if col_map is not None:
+                try:
+                    pose_vals = [
+                        float(clean[col_map[c]]) for c in ("x", "y", "z", "qw", "qx", "qy", "qz")
+                    ]
+                except (ValueError, KeyError, IndexError):
+                    continue
+
+                wp = _parse_f3_pose(pose_vals)
+                if wp is None:
+                    continue
+
+                v_cmd_val = default_v_cmd
+                zone_spec = default_zone
+
+                speed_idx = _find_col(_SPEED_ALIASES, col_map)
+                if speed_idx is not None and speed_idx < len(clean):
+                    try:
+                        v_cmd_val = float(clean[speed_idx])
+                        speed_extracted = True
+                    except ValueError:
+                        pass
+
+                zone_idx = _find_col(_ZONE_ALIASES, col_map)
+                fine_idx = _find_col(_FINE_ALIASES, col_map)
+                is_fine = False
+                if fine_idx is not None and fine_idx < len(clean):
+                    is_fine = clean[fine_idx].lower() in ("true", "1", "yes")
+
+                if not custom_zone and zone_idx is not None and zone_idx < len(clean):
+                    try:
+                        zone_spec = _parse_zone_preset(float(clean[zone_idx]), fine=is_fine)
+                        zone_extracted = True
+                    except ValueError:
+                        if is_fine:
+                            zone_spec = "fine"
+                            zone_extracted = True
+                elif is_fine:
+                    zone_spec = "fine"
+                    zone_extracted = True
+
+                cur_wps.append(wp)
+                cur_speeds.append(v_cmd_val)
+                cur_zones.append(zone_spec)
+                continue
+
+            # ── Headerless numeric row ──
             try:
                 vals = [float(v) for v in clean]
             except ValueError:
@@ -522,60 +668,22 @@ def load_toolpath_f3(
 
             n_cols = len(vals)
 
-            # Parse pose: columns 0–6
-            x_mm, y_mm, z_mm = vals[0], vals[1], vals[2]
-            qw, qx, qy, qz = vals[3], vals[4], vals[5], vals[6]
+            wp = _parse_f3_pose(vals)
+            if wp is None:
+                continue
 
-            x_m = x_mm / 1000.0
-            y_m = y_mm / 1000.0
-            z_m = z_mm / 1000.0
-
-            quat = np.array([qw, qx, qy, qz])
-            qn = np.linalg.norm(quat)
-            if qn < 1e-10:
-                quat = np.array([1.0, 0.0, 0.0, 0.0])
+            if custom_zone:
+                zone_spec, v_cmd_val, z_ok, s_ok = _parse_f3_headerless_custom(
+                    vals, n_cols, default_v_cmd, default_zone,
+                )
             else:
-                quat = quat / qn
+                zone_spec, v_cmd_val, z_ok, s_ok = _parse_f3_headerless_preset(
+                    vals, n_cols, default_v_cmd, default_zone,
+                )
 
-            wp = [x_m, y_m, z_m, quat[0], quat[1], quat[2], quat[3]]
-
-            # Parse zone and speed depending on column count
-            zone_spec = default_zone
-            v_cmd_val = default_v_cmd
-
-            if n_cols >= 14:
-                # Legacy 14-column format:
-                # 7=speed, 8=pzone_tcp, 9=pzone_ori, 10=pzone_eax, 11=zone_ori,
-                # 12=zone_leax, 13=zone_reax
-                v_cmd_val = vals[7]
-                pz_tcp = vals[8]
-                pz_ori = vals[9]
-                zone_ori_deg = vals[11]
-                zone_spec = (pz_tcp, pz_ori, zone_ori_deg)
+            if z_ok:
                 zone_extracted = True
-                speed_extracted = True
-
-            elif n_cols >= 11:
-                # New 11-column format: 7=pzone_tcp, 8=pzone_ori, 9=zone_ori, 10=v_cmd
-                pz_tcp = vals[7]
-                pz_ori = vals[8]
-                zone_ori_deg = vals[9]
-                v_cmd_val = vals[10]
-                zone_spec = (pz_tcp, pz_ori, zone_ori_deg)
-                zone_extracted = True
-                speed_extracted = True
-
-            elif n_cols >= 10:
-                # New 10-column format: 7=pzone_tcp, 8=pzone_ori, 9=zone_ori (no speed)
-                pz_tcp = vals[7]
-                pz_ori = vals[8]
-                zone_ori_deg = vals[9]
-                zone_spec = (pz_tcp, pz_ori, zone_ori_deg)
-                zone_extracted = True
-
-            elif n_cols >= 8:
-                # 8 columns: pose + speed only (Feature 2 fallback)
-                v_cmd_val = vals[7]
+            if s_ok:
                 speed_extracted = True
 
             cur_wps.append(wp)
@@ -604,6 +712,7 @@ def load_toolpath_f3(
             "n_trajectories": len(all_waypoints),
             "zone_extracted": zone_extracted,
             "speed_extracted": speed_extracted,
+            "custom_zone": custom_zone,
             "default_zone": default_zone,
             "default_v_cmd": default_v_cmd,
         },

@@ -39,6 +39,20 @@ from feasibility_analysis import process_toolpath
 from core.blend_zone import run_feature3_d1
 
 
+def _format_result_success(result: Dict[str, Any], toolpath_name: str) -> str:
+    """Format a concise completion line for either Feature 2 or Feature 3."""
+    if result.get("feature3_d1"):
+        return (
+            f"  Completed: {toolpath_name} "
+            f"(Feature3, dense={result.get('dense_samples', 0)}, "
+            f"arcs={result.get('blend_arcs', 0)})"
+        )
+    n_traj = result.get("num_trajectories")
+    if n_traj is not None:
+        return f"  Completed: {toolpath_name} ({n_traj} traj, all feasibility PASS)"
+    return f"  Completed: {toolpath_name}"
+
+
 # =============================================================================
 # Single-combination wrapper (for parallel execution)
 # =============================================================================
@@ -80,6 +94,7 @@ def _run_single(
                 velocity_limits_rad_s=velocity_limits_rad_s,
                 accel_limits_rad_s2=accel_limits_rad_s2,
                 verbose=False,
+                custom_zone=getattr(config.feature3_d1, 'custom_zone', False),
             )
             return {
                 "robot": robot_model_name,
@@ -263,10 +278,7 @@ def process_batch(
             result = _run_single(**kwargs)
             results.append(result)
             if result["success"]:
-                print(
-                    f"  Completed: {result['num_trajectories']} trajectories "
-                    "(all feasibility PASS)"
-                )
+                print(_format_result_success(result, tp_name))
             else:
                 print(f"  FAILED: {result.get('error', 'Unknown')}")
     else:
@@ -282,10 +294,7 @@ def process_batch(
                     result = future.result()
                     results.append(result)
                     if result["success"]:
-                        print(
-                            f"  Completed: {tp_name} ({result['num_trajectories']} traj, "
-                            "all feasibility PASS)"
-                        )
+                        print(_format_result_success(result, tp_name))
                     else:
                         print(f"  FAILED: {tp_name} — {result.get('error', 'Unknown')}")
                 except Exception as e:

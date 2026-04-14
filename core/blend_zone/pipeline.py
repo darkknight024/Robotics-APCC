@@ -105,6 +105,7 @@ def run_feature3_d1(
     accel_limits_rad_s2: Optional[np.ndarray] = None,
     verbose: bool = True,
     traj_id: Optional[int] = None,
+    custom_zone: bool = False,
     plots: bool = True,
     reports: bool = True,
 ) -> Feature3D1Result:
@@ -152,6 +153,7 @@ def run_feature3_d1(
 
     load_result = load_toolpath_f3(
         toolpath_csv,
+        custom_zone=custom_zone,
         default_zone=f3_cfg.default_zone,
         default_v_cmd=f3_cfg.default_v_cmd_mm_s,
     )
@@ -161,6 +163,19 @@ def run_feature3_d1(
             feasible=False,
             infeasible_reason="No trajectories found in CSV",
         )
+
+    # ── Apply knife transform (T_P_K → T_B_P) when not in base frame ──
+    use_base_frame = getattr(config, "use_base_frame", False)
+    if not use_base_frame and knife_translation_m is not None and knife_quaternion is not None:
+        from utils.transform_handler import transform_trajectory_to_base_frame
+        load_result.waypoints = [
+            transform_trajectory_to_base_frame(wp, knife_translation_m, knife_quaternion)
+            for wp in load_result.waypoints
+        ]
+        if verbose:
+            print("  Applied knife transform (T_P_K → T_B_P)")
+    elif use_base_frame and verbose:
+        print("  Base frame mode — no knife transform applied")
 
     traj_indices = range(len(load_result.waypoints))
     if traj_id is not None:
@@ -394,6 +409,44 @@ def run_feature3_d1(
                 traj_out, dense_path, speed_result, joint_vel_result,
                 blend_geoms, waypoints, final_vel_lims, traj_name,
             )
+            # Reuse existing Feature-2 EAIK branch visualization style for F3.
+            if config.solver == "eaik":
+                from utils.feasibility_plot import plot_eaik_branches_all_joints_subplots
+                all_sols_per_wp: List[List[np.ndarray]] = []
+                all_ecfx_per_wp: List[List[tuple]] = []
+                for r in per_wp:
+                    dbg = r.ik_debug_info or {}
+                    raw_sols = dbg.get("all_solutions", [])
+                    raw_ecfx = dbg.get("ecfx_labels", [])
+                    valid_sols: List[np.ndarray] = []
+                    valid_ecfx: List[tuple] = []
+                    for s_idx, s in enumerate(raw_sols):
+                        if np.any(np.isnan(s)):
+                            continue
+                        valid_sols.append(s)
+                        e = raw_ecfx[s_idx] if s_idx < len(raw_ecfx) else None
+                        if e is None and len(raw_sols) == 8:
+                            e = (0, 0, 0, s_idx)
+                        elif e is None:
+                            e = (0, 0, 0, 0)
+                        valid_ecfx.append(e)
+                    all_sols_per_wp.append(valid_sols)
+                    all_ecfx_per_wp.append(valid_ecfx)
+
+                selected_deg = np.array([
+                    np.degrees(r.joint_positions_rad) if r.joint_positions_rad is not None
+                    else np.full(6, np.nan) for r in per_wp
+                ])
+                plot_eaik_branches_all_joints_subplots(
+                    all_solutions_per_waypoint=all_sols_per_wp,
+                    all_ecfx_labels=all_ecfx_per_wp,
+                    selected_joint_angles_deg=selected_deg,
+                    output_path=str(traj_out / "eaik_branches_all_joints.png"),
+                    limit_waypoints=getattr(
+                        config.eaik_multi_solution, "max_waypoints_in_graph", 10000
+                    ),
+                    traj_name=traj_name,
+                )
             if verbose:
                 print(f"    Plots saved to: {traj_out}")
 
@@ -405,6 +458,16 @@ def run_feature3_d1(
             )
             if verbose:
                 print(f"    Report saved to: {traj_out / 'f3_d1_report.json'}")
+
+        # ── Step 11: Export RobotStudio-format CSV for comparison ──
+        from .reporting import export_robotstudio_csv
+        rs_csv_path = export_robotstudio_csv(
+            traj_out, dense_path, speed_result,
+            joint_angles_rad, waypoints, traj_name,
+            use_base_frame=use_base_frame,
+        )
+        if verbose:
+            print(f"    Result CSV saved to: {rs_csv_path}")
 
         all_results.append(result)
 

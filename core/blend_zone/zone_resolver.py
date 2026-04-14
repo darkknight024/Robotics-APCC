@@ -89,6 +89,40 @@ PREDEFINED_ZONES: Dict[str, Tuple[float, float, float]] = {
 }
 
 
+# Numeric zone value → predefined zone name.
+# ABB preset zones use the pzone_tcp value as identifier (z5 → 5, z10 → 10).
+ZONE_NUMBER_MAP: Dict[int, str] = {
+    int(tcp): name
+    for name, (tcp, _, _) in PREDEFINED_ZONES.items()
+    if name != "fine"
+}
+
+
+def resolve_zone_from_number(zone_num: float, fine: bool = False) -> str:
+    """Map a numeric zone preset value to its predefined zone name.
+
+    Args:
+        zone_num:  The zone preset number (e.g. 0, 1, 5, 10, 50, 100).
+        fine:      If True, force ``'fine'`` regardless of *zone_num*.
+
+    Returns:
+        Zone name string (``'z0'``, ``'z1'``, ``'z5'``, …) or ``'fine'``.
+
+    Raises:
+        ValueError: If *zone_num* does not match any predefined ABB zone.
+    """
+    if fine:
+        return "fine"
+    int_val = int(round(zone_num))
+    name = ZONE_NUMBER_MAP.get(int_val)
+    if name is None:
+        raise ValueError(
+            f"Unknown zone number {zone_num}. "
+            f"Valid preset numbers: {sorted(ZONE_NUMBER_MAP.keys())}"
+        )
+    return name
+
+
 def resolve_zone_spec(spec: Union[str, Tuple[float, float, float]]) -> ZoneParams:
     """Resolve a single zone specification into :class:`ZoneParams`.
 

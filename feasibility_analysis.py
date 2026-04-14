@@ -114,6 +114,9 @@ def main():
                         help="Disable C1 continuity checks")
     parser.add_argument("--feature3", action="store_true",
                         help="Run Feature 3 D1 speed profile prediction")
+    parser.add_argument("--custom_zone", action="store_true",
+                        help="Parse zone as (pzone_tcp, pzone_ori, zone_ori) "
+                             "triplet instead of preset zone number")
     parser.add_argument("--no-f3-plots", action="store_true")
     parser.add_argument("--no-f3-report", action="store_true")
     args = parser.parse_args()
@@ -132,8 +135,7 @@ def main():
         cfg.waypoint_density.generate_graphs = False
         cfg.waypoint_density.task_space_graphs = False
         cfg.eaik_multi_solution.generate_graphs = False
-    if args.base_frame:
-        cfg.use_base_frame = True
+    cfg.use_base_frame = args.base_frame
     if args.feature3:
         cfg.feature3_d1.enabled = True
 
@@ -166,6 +168,7 @@ def main():
             knife_pose_name=knife_pose_name,
             robot_reach_m=args.reach,
             velocity_limits_rad_s=velocity_limits,
+            custom_zone=args.custom_zone,
             plots=not args.no_f3_plots,
             reports=not args.no_f3_report,
         )

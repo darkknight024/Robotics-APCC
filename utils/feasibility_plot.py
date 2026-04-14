@@ -3699,6 +3699,114 @@ def plot_eaik_solutions_with_cfx(
         plt.close()
 
 
+def plot_eaik_branches_all_joints_subplots(
+    all_solutions_per_waypoint: List[List[np.ndarray]],
+    all_ecfx_labels: List[List[tuple]],
+    selected_joint_angles_deg: np.ndarray,
+    output_path: str,
+    limit_waypoints: int = 10000,
+    traj_name: Optional[str] = None,
+) -> None:
+    """Single image with 6 subplots: EAIK branches per joint coloured by cfx."""
+    import os
+    from matplotlib.lines import Line2D
+
+    n_wp = min(limit_waypoints, len(all_solutions_per_waypoint))
+    if n_wp <= 0:
+        return
+
+    n_joints = selected_joint_angles_deg.shape[1] if selected_joint_angles_deg.ndim == 2 else 6
+    n_joints = min(6, n_joints)
+    fig, axes = plt.subplots(n_joints, 1, figsize=(20, 3.2 * n_joints), sharex=True)
+    if n_joints == 1:
+        axes = [axes]
+
+    for j in range(n_joints):
+        ax = axes[j]
+        seen_cfx_labels: set = set()
+        selected_cfx_seen: set = set()
+
+        for wp in range(n_wp):
+            sols = all_solutions_per_waypoint[wp]
+            ecfx_list = all_ecfx_labels[wp] if wp < len(all_ecfx_labels) else []
+            if not sols:
+                continue
+
+            for s_idx, q_rad in enumerate(sols):
+                q_arr = np.asarray(q_rad, dtype=float).flatten()
+                if np.any(np.isnan(q_arr)):
+                    continue
+                tup = ecfx_list[s_idx] if s_idx < len(ecfx_list) else (0, 0, 0, 0)
+                cfx = int(tup[3]) if len(tup) > 3 else 0
+                cfx = max(0, min(7, cfx))
+                color = _cfx_branch_color(cfx)
+                lbl = f"cfx={cfx}" if f"cfx={cfx}" not in seen_cfx_labels else None
+                if lbl is not None:
+                    seen_cfx_labels.add(lbl)
+                ax.scatter(wp, float(np.degrees(q_arr[j])), color=color, s=10, alpha=0.65, label=lbl)
+
+            if selected_joint_angles_deg.ndim == 2 and wp < len(selected_joint_angles_deg):
+                q_sel = selected_joint_angles_deg[wp]
+                if j < len(q_sel) and np.isfinite(q_sel[j]):
+                    if wp < len(all_ecfx_labels):
+                        ecfx_list = all_ecfx_labels[wp]
+                        sols = all_solutions_per_waypoint[wp]
+                        if sols and ecfx_list:
+                            # Resolve selected branch by angle match (same policy as plotting).
+                            sel_idx = _eaik_resolve_selected_solution_index(
+                                sols,
+                                ecfx_list,
+                                np.asarray(q_sel),
+                                None,
+                                0.02,
+                            )
+                            if sel_idx is not None and sel_idx < len(ecfx_list):
+                                tup = ecfx_list[sel_idx]
+                                if tup is not None and len(tup) > 3:
+                                    selected_cfx_seen.add(int(tup[3]))
+                    ax.scatter(
+                        wp,
+                        float(q_sel[j]),
+                        color="white",
+                        edgecolors="black",
+                        linewidths=0.8,
+                        s=16,
+                        zorder=5,
+                    )
+
+        ax.set_ylabel(f"J{j+1} (deg)")
+        ax.grid(True, alpha=0.3)
+        selected_label = "Selected branch"
+        if selected_cfx_seen:
+            selected_label = (
+                f"Selected branch (cfx={','.join(str(c) for c in sorted(selected_cfx_seen))})"
+            )
+        selected_proxy = Line2D(
+            [0], [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor="white",
+            markeredgecolor="black",
+            markeredgewidth=1.0,
+            markersize=5,
+            label=selected_label,
+        )
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        by_label[selected_label] = selected_proxy
+        ax.legend(by_label.values(), by_label.keys(), loc="upper right", fontsize=7, ncol=3)
+
+    axes[-1].set_xlabel("Waypoint index")
+    title = "EAIK Branches by Joint (cfx-coloured)"
+    if traj_name:
+        title += f" — {traj_name}"
+    fig.suptitle(title, fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=250, bbox_inches="tight")
+    plt.close(fig)
+
+
 # =============================================================================
 # Waypoint Density
 # =============================================================================
