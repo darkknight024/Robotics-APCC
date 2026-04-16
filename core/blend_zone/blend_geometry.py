@@ -103,21 +103,22 @@ def _compute_arc_length_gauss(
 def _compute_rho_min(r_tcp_mm: float, corner_angle_rad: float) -> float:
     """Minimum radius of curvature at the apex of the parabolic blend arc.
 
-    Formula::
+    Derived from the curvature of the quadratic Bézier B(t) at t = 0.5::
 
-        ρ_min = r_tcp × cos²(θ/2) / (2 × (1 − cos(θ/2)))
+        κ(0.5) = sin(θ/2) / (r_tcp × cos²(θ/2))
+        ρ_min  = r_tcp × cos²(θ/2) / sin(θ/2)
 
-    where θ is the corner deflection angle.
+    where θ is the corner deflection angle (0 = straight, π = U-turn).
 
     For straight paths (θ → 0), ρ_min → ∞ (no curvature constraint).
     For U-turns (θ → π), ρ_min → 0 (robot must stop).
     """
     half_theta = corner_angle_rad / 2.0
-    cos_half = np.cos(half_theta)
-    denom = 2.0 * (1.0 - cos_half)
-    if denom < 1e-12:
+    sin_half = np.sin(half_theta)
+    if sin_half < 1e-12:
         return np.inf
-    return r_tcp_mm * cos_half ** 2 / denom
+    cos_half = np.cos(half_theta)
+    return r_tcp_mm * cos_half ** 2 / sin_half
 
 
 def compute_blend_geometry(

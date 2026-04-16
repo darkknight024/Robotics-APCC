@@ -231,11 +231,19 @@ def run_feature3_d1(
         j5_threshold_deg=config.singularity.j5_threshold_deg,
     )
 
-    calibration = SpeedCalibration(
-        a_tcp_mm_s2=f3_cfg.a_tcp_mm_s2,
-        T_settle_s=f3_cfg.T_settle_s,
-        is_calibrated=f3_cfg.is_calibrated,
-    )
+    # Calibration: prefer robot config (robots_config.yaml) over batch config
+    if robot_config and robot_config.is_calibrated:
+        calibration = SpeedCalibration(
+            a_tcp_mm_s2=robot_config.a_tcp_mm_s2,
+            T_settle_s=robot_config.T_settle_s,
+            is_calibrated=True,
+        )
+    else:
+        calibration = SpeedCalibration(
+            a_tcp_mm_s2=f3_cfg.a_tcp_mm_s2,
+            T_settle_s=f3_cfg.T_settle_s,
+            is_calibrated=f3_cfg.is_calibrated,
+        )
 
     # ── Process each trajectory ──
     all_results: List[Feature3D1Result] = []

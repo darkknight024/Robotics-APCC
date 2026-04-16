@@ -46,6 +46,31 @@ from .pipeline import (
     Feature3D1Result,
     run_feature3_d1,
 )
+from .calibration import (
+    CalibrationResult,
+    CalibrationOffset,
+    run_calibration,
+    compute_calibration_offsets,
+    save_calibration_report,
+    generate_calibration_plots,
+    load_rs_csv,
+)
+from .verification import (
+    TrajectoryVerification,
+    verify_trajectory,
+    verify_batch,
+    generate_verification_report,
+    generate_verification_plots,
+    generate_trajectory_comparison_plots,
+    show_3d_blend_comparison,
+)
+from .blend_comparison import (
+    BlendArcComparisonResult,
+    WaypointBlendComparison,
+    compare_blend_arcs,
+    generate_blend_comparison_plots,
+    show_3d_blend_arc_comparison,
+)
 
 __all__ = [
     # M1
@@ -63,4 +88,19 @@ __all__ = [
     "SpeedCalibration", "SpeedProfileResult", "predict_speed_profile",
     # Pipeline
     "Feature3D1Result", "run_feature3_d1",
+    # Calibration
+    "CalibrationResult", "CalibrationOffset",
+    "run_calibration", "compute_calibration_offsets",
+    "save_calibration_report", "generate_calibration_plots",
+    "load_rs_csv",
+    # Verification
+    "TrajectoryVerification",
+    "verify_trajectory", "verify_batch",
+    "generate_verification_report", "generate_verification_plots",
+    "generate_trajectory_comparison_plots",
+    "show_3d_blend_comparison",
+    # Blend arc comparison
+    "BlendArcComparisonResult", "WaypointBlendComparison",
+    "compare_blend_arcs", "generate_blend_comparison_plots",
+    "show_3d_blend_arc_comparison",
 ]

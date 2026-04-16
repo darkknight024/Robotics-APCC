@@ -167,13 +167,20 @@ def load_knife_config(config_path: str) -> Dict[str, KnifePose]:
 
 @dataclass
 class RobotConfig:
-    """Robot configuration."""
+    """Robot configuration including calibrated dynamic parameters."""
     name: str
     urdf_path: str
     reach_m: float
     velocity_limits_rad_s: Optional[List[float]] = None
     acceleration_limits_rad_s2: Optional[List[float]] = None
     joint_jump_limit_rad: Optional[float] = None
+    # Calibration (populated from robots_config.yaml calibration section)
+    a_tcp_mm_s2: float = 2500.0
+    a_tcp_decel_mm_s2: float = 2500.0
+    T_settle_s: float = 0.2
+    is_calibrated: bool = False
+    blend_model_rmse_mm_s: float = 0.0
+    calibration_source: str = ""
 
 
 def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
@@ -188,6 +195,7 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
     result = {}
     for robot_data in config.get('robots', []):
         name = robot_data.get('name', 'Unknown')
+        cal = robot_data.get('calibration', {}) or {}
         result[name] = RobotConfig(
             name=name,
             urdf_path=robot_data.get('urdf_path', ''),
@@ -195,6 +203,12 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
             velocity_limits_rad_s=robot_data.get('velocity_limits_rad_s'),
             acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2'),
             joint_jump_limit_rad=joint_jump_limit_rad,
+            a_tcp_mm_s2=float(cal.get('a_tcp_mm_s2', 2500.0)),
+            a_tcp_decel_mm_s2=float(cal.get('a_tcp_decel_mm_s2', 2500.0)),
+            T_settle_s=float(cal.get('T_settle_s', 0.2)),
+            is_calibrated=bool(cal.get('is_calibrated', False)),
+            blend_model_rmse_mm_s=float(cal.get('blend_model_rmse_mm_s', 0.0)),
+            calibration_source=str(cal.get('calibration_source', '')),
         )
     return result
 

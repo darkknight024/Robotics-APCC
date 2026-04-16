@@ -123,11 +123,12 @@ feature3_d1:
   enabled: false
   custom_zone: false            # false → preset zone number (z0,z1,…); true → (pzone_tcp,pzone_ori,zone_ori)
   # Calibration constants (from site experiments V1 and V2)
+  # Real calibration param will be updated in robot_config.yaml
   a_tcp_mm_s2: 2500.0         # Effective TCP acceleration capability (mm/s²) — PLACEHOLDER
   T_settle_s: 0.2             # Fine-point settling time (seconds) — PLACEHOLDER
   is_calibrated: false         # Set true ONLY after V1/V2 calibration
   # Path sampling resolution
-  ds_mm: 1.0                  # Arc-length spacing between dense samples (mm)
+  ds_mm: 5.0                  # Arc-length spacing between dense samples (mm)
   # Defaults when CSV columns are absent
   default_zone: "fine"         # Fallback zone if zone columns missing
   default_v_cmd_mm_s: 300.0   # Fallback commanded speed if speed column missing

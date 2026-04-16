@@ -21,6 +21,15 @@ robots:
     payload_kg: 7
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
     acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0] # just for testing not an actual limit (FIX ME)
+    # Calibration — from Experiment 23 RobotStudio data (2026-04-15)
+    calibration:
+      a_tcp_mm_s2: 6128.0              # Effective TCP acceleration (distance-based from V1 straight-line)
+      a_tcp_decel_mm_s2: 14244.0       # Effective TCP deceleration (asymmetric — ABB brakes harder)
+      T_settle_s: 0.2                  # Fine-point settling time (NOT calibrated — proposal default)
+      is_calibrated: true
+      blend_model_rmse_mm_s: 56.9      # v_blend model RMSE against 30 corner observations
+      calibration_source: "Experiment_23"
+      calibrated_date: "2026-04-15"
 
   # -------------------------------------------------------------------------
   # IRB 1300-10/1.15 - Higher payload, shorter reach variant

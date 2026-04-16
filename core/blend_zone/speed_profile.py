@@ -215,17 +215,19 @@ def predict_speed_profile(
         if is_blend[k]:
             v_profile[k] = min(v_cmd[k], v_blend_ceil[k])
 
-    # Apply trapezoidal acceleration/deceleration on straight segments
-    # Forward pass: accelerate from each blend exit / path start
+    # Apply trapezoidal acceleration/deceleration to ALL samples (including
+    # blend arcs).  The blend ceiling is already baked into v_profile for
+    # blend samples; this pass additionally enforces the kinematic ramp-rate
+    # constraint v² ≤ v_prev² + 2·a·Δs, preventing instantaneous speed
+    # jumps at straight→blend and start/end transitions.
     v_forward = np.copy(v_profile)
     for k in range(1, M):
         ds = arc_s[k] - arc_s[k - 1]
         if ds < 1e-9:
             v_forward[k] = v_forward[k - 1]
             continue
-        if not is_blend[k]:
-            v_max_accel = np.sqrt(max(v_forward[k - 1] ** 2 + 2.0 * a_tcp * ds, 0.0))
-            v_forward[k] = min(v_cmd[k], v_max_accel)
+        v_max_accel = np.sqrt(max(v_forward[k - 1] ** 2 + 2.0 * a_tcp * ds, 0.0))
+        v_forward[k] = min(v_forward[k], v_max_accel)
 
     # Backward pass: decelerate toward each blend entry / path end
     v_backward = np.copy(v_profile)
@@ -235,9 +237,8 @@ def predict_speed_profile(
         if ds < 1e-9:
             v_backward[k] = v_backward[k + 1]
             continue
-        if not is_blend[k]:
-            v_max_decel = np.sqrt(max(v_backward[k + 1] ** 2 + 2.0 * a_tcp * ds, 0.0))
-            v_backward[k] = min(v_cmd[k], v_max_decel)
+        v_max_decel = np.sqrt(max(v_backward[k + 1] ** 2 + 2.0 * a_tcp * ds, 0.0))
+        v_backward[k] = min(v_backward[k], v_max_decel)
 
     # Combine: v_actual = min(v_cmd, v_blend_ceiling, v_forward, v_backward, v_topp)
     v_actual = np.minimum(v_forward, v_backward)

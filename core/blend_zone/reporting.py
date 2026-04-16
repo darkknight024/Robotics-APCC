@@ -102,12 +102,12 @@ def generate_f3_report(
 
 _RESULT_HEADER = [
     "time_ms",
-    "j1_deg", "j2_deg", "j3_deg",
-    "j4_deg", "j5_deg", "j6_deg",
+    "rs_j1_deg", "rs_j2_deg", "rs_j3_deg",
+    "rs_j4_deg", "rs_j5_deg", "rs_j6_deg",
     "speed_mm_per_s",
     "cf1", "cf4", "cf6", "cfx",
-    "x_mm", "y_mm", "z_mm",
-    "qw", "qx", "qy", "qz",
+    "rs_x_mm", "rs_y_mm", "rs_z_mm",
+    "rs_qw", "rs_qx", "rs_qy", "rs_qz",
     "linear_acceleration_mm_s_2",
     "is_at_waypoint",
 ]
@@ -147,6 +147,79 @@ def _find_waypoint_indices(
     return wp_set
 
 
+def _reconstruct_time(
+    arc_lengths_mm: np.ndarray,
+    v_actual: np.ndarray,
+) -> np.ndarray:
+    """Integrate time from arc-length increments and predicted speed.
+
+    At near-zero speed (fine-point stops, path start/end) the average
+    speed is clamped to a physical floor of **1.0 mm/s** instead of the
+    previous 1e-6 mm/s, preventing degenerate multi-billion-ms timestamps.
+    After integration, monotonicity is enforced with a 1 µs epsilon so
+    that downstream derivatives are always well-conditioned.
+    """
+    n = len(arc_lengths_mm)
+    ds = np.diff(arc_lengths_mm)
+    v_avg = 0.5 * (v_actual[:-1] + v_actual[1:])
+    v_avg = np.maximum(v_avg, 1.0)           # physical floor: 1 mm/s
+    dt_s = ds / v_avg
+    time_s = np.zeros(n)
+    time_s[1:] = np.cumsum(dt_s)
+
+    # Enforce strict monotonicity (resolve any remaining ties).
+    for k in range(1, n):
+        if time_s[k] <= time_s[k - 1]:
+            time_s[k] = time_s[k - 1] + 1e-6
+    return time_s
+
+
+def _compute_tcp_linear_acceleration(
+    v_actual: np.ndarray,
+    arc_lengths_mm: np.ndarray,
+) -> np.ndarray:
+    """Compute signed tangential TCP acceleration (mm/s²).
+
+    Uses the chain rule ``a = v · dv/ds`` to compute the rate of change
+    of scalar TCP speed along the path, matching RobotStudio's
+    ``linear_acceleration_mm_s_2`` convention:
+
+        - positive → robot is speeding up
+        - negative → robot is slowing down
+        - ≈ 0     → cruise at constant speed
+
+    This formulation operates entirely in the arc-length domain, avoiding
+    the degenerate dt=0 and v=0 singularities that plagued the earlier
+    ``d²pos/dt²`` approach.
+    """
+    n = len(v_actual)
+    if n < 3:
+        return np.zeros(n)
+
+    s = arc_lengths_mm
+
+    # Central-difference dv/ds (interior samples only)
+    dv_ds = np.zeros(n)
+    for k in range(1, n - 1):
+        ds_local = s[k + 1] - s[k - 1]
+        if ds_local > 1e-9:
+            dv_ds[k] = (v_actual[k + 1] - v_actual[k - 1]) / ds_local
+
+    accel = v_actual * dv_ds
+
+    # Boundary handling: the chain-rule product naturally gives 0 at v=0
+    # endpoints, but the first/last non-zero samples may spike because the
+    # central difference spans across the v=0 boundary where dv/ds → ∞.
+    # Propagate from the nearest stable interior sample instead.
+    if n > 3:
+        accel[0] = accel[2]
+        accel[1] = accel[2]
+        accel[-1] = accel[-3]
+        accel[-2] = accel[-3]
+
+    return accel
+
+
 def export_robotstudio_csv(
     output_dir: Path,
     dense_path,
@@ -181,28 +254,17 @@ def export_robotstudio_csv(
     poses = dense_path.poses
     arcs = dense_path.arc_lengths
 
-    # Compute time from arc-length / speed
-    ds = np.diff(arcs)
-    v_avg = 0.5 * (v_actual[:-1] + v_actual[1:])
-    v_avg = np.maximum(v_avg, 1e-6)
-    dt_s = ds / v_avg
-    time_s = np.zeros(n)
-    time_s[1:] = np.cumsum(dt_s)
-    time_ms = time_s * 1000.0
+    # TCP positions (back to mm) and quaternions
+    tcp_mm = poses[:, :3] * 1000.0
+    tcp_quat = poses[:, 3:7]
 
     # Joint angles in degrees
     joints_deg = np.degrees(joint_angles_rad)
 
-    # TCP positions (back to mm)
-    tcp_mm = poses[:, :3] * 1000.0
-    tcp_quat = poses[:, 3:7]
-
-    # Acceleration: dv/dt
-    accel = np.zeros(n)
-    for k in range(1, n - 1):
-        dt_local = time_s[k + 1] - time_s[k - 1]
-        if dt_local > 1e-9:
-            accel[k] = (v_actual[k + 1] - v_actual[k - 1]) / dt_local
+    # Time axis and acceleration (arc-length domain, robust at v≈0)
+    time_s = _reconstruct_time(arcs, v_actual)
+    time_ms = time_s * 1000.0
+    accel = _compute_tcp_linear_acceleration(v_actual, arcs)
 
     # Waypoint marking
     wp_indices = _find_waypoint_indices(poses, waypoints_m)
