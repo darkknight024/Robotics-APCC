@@ -678,7 +678,7 @@ def _plot_tcp_absolute_poses(
         if row == 0:
             ax.legend(fontsize=8, loc="best")
 
-    # Bottom-left: Euclidean deviation (aligned, arc-length interpolated)
+    # Bottom-left: Euclidean deviation (arc-length interpolated, primary visualization)
     ax = axes[3][0]
     rs_interp = np.column_stack([
         np.interp(s_sol, s_rs_aligned, rs_tcp_aligned[:, c]) for c in range(3)
@@ -733,37 +733,29 @@ def _plot_tcp_pose_deviation(
     Left column: position deviation (mm) with mean/min/max annotation.
     Right column: quaternion deviation with mean/min/max annotation.
 
-    Uses arc-length interpolation (not nearest-neighbour) to align RS onto
-    the solver's arc-length grid, avoiding artefacts from sample-density
-    mismatch.
+    Uses nearest-point matching to compute per-sample deviation, which is
+    robust to different arc-length totals at corners.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-
-    # Align RS origin to solver start, then interpolate RS onto solver arc-lengths
-    rs_origin = _align_rs_origin(rs.tcp_mm, sol.tcp_mm[0])
-    rs_tcp_a = rs.tcp_mm[rs_origin:]
-    rs_quat_a = rs.tcp_quat[rs_origin:]
+    from scipy.spatial import cKDTree as _cKDTree
 
     s_sol = _arc_length_from_tcp(sol.tcp_mm)
-    s_rs = _arc_length_from_tcp(rs_tcp_a)
 
-    # Interpolate RS position and quaternion onto solver arc-length grid
-    rs_xyz_interp = np.column_stack([
-        np.interp(s_sol, s_rs, rs_tcp_a[:, c]) for c in range(3)
-    ])
-    rs_quat_interp = np.column_stack([
-        np.interp(s_sol, s_rs, rs_quat_a[:, c]) for c in range(4)
-    ])
+    # Nearest-point matching: for each solver point, find closest RS point
+    _tree = _cKDTree(rs.tcp_mm)
+    _, nn_idx = _tree.query(sol.tcp_mm)
+    rs_nn_xyz = rs.tcp_mm[nn_idx]
+    rs_nn_quat = rs.tcp_quat[nn_idx]
 
-    dx = sol.tcp_mm[:, 0] - rs_xyz_interp[:, 0]
-    dy = sol.tcp_mm[:, 1] - rs_xyz_interp[:, 1]
-    dz = sol.tcp_mm[:, 2] - rs_xyz_interp[:, 2]
-    dqw = sol.tcp_quat[:, 0] - rs_quat_interp[:, 0]
-    dqx = sol.tcp_quat[:, 1] - rs_quat_interp[:, 1]
-    dqy = sol.tcp_quat[:, 2] - rs_quat_interp[:, 2]
-    dqz = sol.tcp_quat[:, 3] - rs_quat_interp[:, 3]
+    dx = sol.tcp_mm[:, 0] - rs_nn_xyz[:, 0]
+    dy = sol.tcp_mm[:, 1] - rs_nn_xyz[:, 1]
+    dz = sol.tcp_mm[:, 2] - rs_nn_xyz[:, 2]
+    dqw = sol.tcp_quat[:, 0] - rs_nn_quat[:, 0]
+    dqx = sol.tcp_quat[:, 1] - rs_nn_quat[:, 1]
+    dqy = sol.tcp_quat[:, 2] - rs_nn_quat[:, 2]
+    dqz = sol.tcp_quat[:, 3] - rs_nn_quat[:, 3]
 
     fig, axes = plt.subplots(4, 2, figsize=(16, 14))
 

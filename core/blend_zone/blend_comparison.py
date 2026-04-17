@@ -61,9 +61,9 @@ class WaypointBlendComparison:
     # Deviation metrics
     frechet_distance_mm: float          # discrete Fréchet distance
     hausdorff_distance_mm: float        # max of directed Hausdorff
-    mean_deviation_mm: float            # mean arc-length-interpolated deviation
-    max_deviation_mm: float             # max arc-length-interpolated deviation
-    p95_deviation_mm: float             # P95 arc-length-interpolated deviation
+    mean_deviation_mm: float            # mean nearest-point deviation
+    max_deviation_mm: float             # max nearest-point deviation
+    p95_deviation_mm: float             # P95 nearest-point deviation
 
     # Entry/exit alignment
     entry_error_mm: float               # ||solver_entry - rs_entry||
@@ -493,28 +493,35 @@ def _extract_rs_blend_indices(
 ) -> Tuple[int, int]:
     """Return (start_idx, end_idx) slice of rs_tcp for the blend region.
 
-    Same algorithm as _extract_rs_blend_region but returns indices instead of
-    the sliced array, so we can also extract orientation data.
+    Uses solver-predicted entry/exit points when available for precise bounds.
+    Falls back to segment-distance-based detection otherwise.
     """
     n = len(rs_tcp)
-    d_to_corner = np.linalg.norm(rs_tcp - wp_curr, axis=1)
+    if n < 3:
+        return 0, max(0, n - 1)
 
+    idx_corner = int(np.argmin(np.linalg.norm(rs_tcp - wp_curr, axis=1)))
+
+    # When solver geometry is available, use it directly for precise bounds
+    if solver_entry is not None and solver_exit is not None:
+        d_entry = np.linalg.norm(rs_tcp[:idx_corner + 1] - solver_entry, axis=1)
+        d_exit = np.linalg.norm(rs_tcp[idx_corner:] - solver_exit, axis=1)
+        blend_start = int(np.argmin(d_entry))
+        blend_end = idx_corner + int(np.argmin(d_exit))
+        # Extend by 1 sample on each side for coverage
+        return max(0, blend_start - 1), min(n - 1, blend_end + 1)
+
+    # Fallback: segment-distance-based detection
+    d_to_corner = np.linalg.norm(rs_tcp - wp_curr, axis=1)
     max_radius = 300.0
-    if solver_entry is not None:
-        max_radius = max(max_radius,
-                         np.linalg.norm(solver_entry - wp_curr) * 2.0)
     near_mask = d_to_corner < max_radius
     if not np.any(near_mask):
-        idx_c = int(np.argmin(d_to_corner))
-        return max(0, idx_c - 2), min(n - 1, idx_c + 2)
+        return max(0, idx_corner - 2), min(n - 1, idx_corner + 2)
 
     near_indices = np.where(near_mask)[0]
     first_near, last_near = near_indices[0], near_indices[-1]
 
-    idx_corner = int(np.argmin(d_to_corner))
-
     d_seg1 = _point_to_segment_distance(rs_tcp, wp_prev, wp_curr)
-
     far_seg1 = (d_to_corner > max_radius * 0.7) & (np.arange(n) < idx_corner)
     noise_seg1 = float(np.median(d_seg1[far_seg1])) if np.any(far_seg1) else 0.5
     noise_threshold = max(2.0 * noise_seg1, 0.3)
@@ -526,7 +533,6 @@ def _extract_rs_blend_indices(
             break
 
     d_seg2 = _point_to_segment_distance(rs_tcp, wp_curr, wp_next)
-
     far_seg2 = (d_to_corner > max_radius * 0.7) & (np.arange(n) > idx_corner)
     noise_seg2 = float(np.median(d_seg2[far_seg2])) if np.any(far_seg2) else 0.5
     noise_threshold2 = max(2.0 * noise_seg2, 0.3)
@@ -537,9 +543,7 @@ def _extract_rs_blend_indices(
             blend_end = i
             break
 
-    first = max(0, blend_start - 1)
-    last = min(n - 1, blend_end + 1)
-    return first, last
+    return max(0, blend_start - 1), min(n - 1, blend_end + 1)
 
 
 # ── Main comparison function ──────────────────────────────────────────────────
@@ -635,11 +639,13 @@ def compare_blend_arcs(
         # Hausdorff distance
         hausdorff = _hausdorff(solver_arc, rs_blend)
 
-        # Arc-length interpolated deviation
-        dev = _arc_length_deviation(solver_arc, rs_blend)
-        mean_dev = float(np.mean(dev))
-        max_dev = float(np.max(dev))
-        p95_dev = float(np.percentile(dev, 95))
+        # Nearest-point deviation: for each solver point, distance to closest RS point
+        from scipy.spatial import cKDTree as _cKDTree
+        _tree_nn = _cKDTree(rs_blend)
+        nn_dev, _ = _tree_nn.query(solver_arc)
+        mean_dev = float(np.mean(nn_dev))
+        max_dev = float(np.max(nn_dev))
+        p95_dev = float(np.percentile(nn_dev, 95))
 
         # Entry/exit errors
         entry_err = float(np.linalg.norm(geom.entry_point_mm - rs_blend[0]))
@@ -726,8 +732,10 @@ def compare_blend_arcs(
         rs_aligned = rs.tcp_mm[rs_origin:]
 
         fp_hausdorff = _hausdorff(solver_full, rs_aligned)
-        fp_dev = _arc_length_deviation(solver_full, rs_aligned)
-        fp_mean_dev = float(np.mean(fp_dev))
+        from scipy.spatial import cKDTree as _cKDTree
+        _fp_tree = _cKDTree(rs_aligned)
+        fp_nn_dev, _ = _fp_tree.query(solver_full)
+        fp_mean_dev = float(np.mean(fp_nn_dev))
         step = max(1, len(solver_full) // 500)
         rs_step = max(1, len(rs_aligned) // 500)
         fp_frechet = _discrete_frechet(solver_full[::step], rs_aligned[::rs_step])
@@ -829,18 +837,20 @@ def generate_blend_comparison_plots(
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
 
-        # ── Top-right: Arc-length deviation profile ──
+        # ── Top-right: Nearest-point deviation profile ──
         ax = axes[0][1]
-        dev = _arc_length_deviation(sol_pts, rs_pts)
-        s = np.linspace(0, comp.solver_arc_length_mm, len(dev))
-        ax.plot(s, dev, "steelblue", lw=1.0)
+        from scipy.spatial import cKDTree as _cKDTree
+        _nn_tree = _cKDTree(rs_pts)
+        nn_dev_plot, _ = _nn_tree.query(sol_pts)
+        s = np.linspace(0, comp.solver_arc_length_mm, len(nn_dev_plot))
+        ax.plot(s, nn_dev_plot, "steelblue", lw=1.0)
         ax.axhline(comp.mean_deviation_mm, color="orange", ls="--", lw=0.8,
                     label=f"Mean = {comp.mean_deviation_mm:.3f} mm")
         ax.axhline(comp.p95_deviation_mm, color="red", ls=":", lw=0.8,
                     label=f"P95 = {comp.p95_deviation_mm:.3f} mm")
         ax.set_xlabel("Arc Length (mm)", fontsize=9)
         ax.set_ylabel("Deviation (mm)", fontsize=9)
-        ax.set_title(f"Arc-Length Deviation — Fréchet={comp.frechet_distance_mm:.3f}mm  "
+        ax.set_title(f"Nearest-Point Deviation — Fréchet={comp.frechet_distance_mm:.3f}mm  "
                      f"Hausdorff={comp.hausdorff_distance_mm:.3f}mm", fontsize=9)
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)

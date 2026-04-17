@@ -202,6 +202,85 @@ def _build_v2_tasks(run_dir: Path) -> List[dict]:
     return tasks
 
 
+def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]:
+    """Build tasks for a single toolpath CSV or all CSVs in a folder.
+
+    The toolpath_arg can be:
+      - Relative to Toolpaths_And_Waypoints/: e.g. "v2/corner/corner_90_deg_v500_z50.csv"
+      - An absolute path
+      - A directory (all CSVs in it)
+    """
+    tasks: List[dict] = []
+
+    tp = Path(toolpath_arg)
+    if not tp.is_absolute():
+        tp = _TOOLPATHS / tp
+    if not tp.exists():
+        raise FileNotFoundError(f"Toolpath not found: {tp}")
+
+    csv_files = sorted(tp.glob("*.csv")) if tp.is_dir() else [tp]
+    if not csv_files:
+        raise FileNotFoundError(f"No CSV files in: {tp}")
+
+    for csv_f in csv_files:
+        # Determine category and speed/zone from path or filename
+        rel = csv_f.relative_to(_TOOLPATHS) if csv_f.is_relative_to(_TOOLPATHS) else csv_f
+        parts_str = str(rel)
+
+        is_v2 = parts_str.startswith("v2")
+        stem = csv_f.stem
+
+        # Detect category
+        if "straight_line" in stem:
+            category = "straight_line"
+            speed_tag = stem.replace("straight_line_waypoint_", "").replace("_fine", "")
+            zone_tag = "fine"
+            base_frame = True
+            knife_pose = None
+            label_parts = [p for p in rel.parts[:-1]] + [speed_tag]
+        elif "corner" in stem:
+            category = "corner"
+            base_frame = True
+            knife_pose = None
+            stripped = stem.replace("corner_", "")
+            # Try to extract speed and zone from filename
+            speed_tag = "v500"
+            zone_tag = "unknown"
+            for sp in ("v20", "v500"):
+                marker = f"_{sp}_"
+                idx = stripped.find(marker)
+                if idx >= 0:
+                    speed_tag = sp
+                    zone_tag = stripped[idx + len(marker):]
+                    break
+            label_parts = [p for p in rel.parts[:-1]] + [stem]
+        else:
+            category = "siping_toolpaths"
+            base_frame = False
+            knife_pose = "Zund"
+            speed_tag = "v300"
+            zone_tag = "mixed"
+            label_parts = [p for p in rel.parts[:-1]] + [stem]
+
+        out_label = "/".join(label_parts)
+        out_dir = run_dir / "/".join(str(p) for p in rel.parts[:-1]) / stem
+
+        tasks.append(dict(
+            csv=str(csv_f),
+            out=str(out_dir),
+            base_frame=base_frame,
+            knife_pose=knife_pose,
+            category=category,
+            speed_tag=speed_tag,
+            zone_tag=zone_tag,
+            csv_stem=stem,
+            label=out_label,
+            v2=is_v2,
+        ))
+
+    return tasks
+
+
 def _build_tasks(run_dir: Path) -> List[dict]:
     """Build the full task list — one entry per toolpath CSV."""
     tasks: List[dict] = []
@@ -317,10 +396,10 @@ def _run_single_task(
     skip_existing: bool,
     verbose: bool = False,
     show_3d: bool = False,
-) -> Tuple[bool, Optional[object]]:
+) -> Tuple[bool, Optional[object], Optional[object]]:
     """Run solver on one toolpath, then generate RS comparison if available.
 
-    Returns (success, verification_result_or_None).
+    Returns (success, verification_result_or_None, blend_arc_result_or_None).
     """
     from core.blend_zone import run_feature3_d1
     from core.blend_zone.verification import (
@@ -371,13 +450,14 @@ def _run_single_task(
         result_csvs = sorted(out_dir.rglob("*_result.csv"))
 
     if not result_csvs:
-        return True, None
+        return True, None, None
 
     rs_csv, v_cmd = _resolve_rs_csv(task)
 
     # Generate RS comparison for straight_line and corner (single trajectory)
     category = task["category"]
     verification = None
+    blend_arc_result = None
 
     input_csv = Path(task["csv"])
 
@@ -391,23 +471,23 @@ def _run_single_task(
         verification = v
 
         # Blend arc geometry comparison (for trajectories with fly-by waypoints)
-        if category == "corner":
-            try:
-                blend_result = compare_blend_arcs(input_csv, rs_csv)
-                if blend_result.n_flyby > 0:
-                    blend_out = out_dir / result_csvs[0].stem
-                    generate_blend_comparison_plots(
-                        blend_result, input_csv, blend_out,
+        try:
+            blend_result = compare_blend_arcs(input_csv, rs_csv)
+            if blend_result.n_flyby > 0:
+                blend_out = out_dir / result_csvs[0].stem
+                generate_blend_comparison_plots(
+                    blend_result, input_csv, blend_out,
+                    label=task["label"],
+                )
+                blend_arc_result = blend_result
+                if show_3d:
+                    show_3d_blend_arc_comparison(
+                        blend_result, input_csv, rs_csv,
                         label=task["label"],
                     )
-                    if show_3d:
-                        show_3d_blend_arc_comparison(
-                            blend_result, input_csv, rs_csv,
-                            label=task["label"],
-                        )
-            except Exception as e:
-                logger.warning("Blend arc comparison failed for %s: %s",
-                               task["label"], e)
+        except Exception as e:
+            logger.warning("Blend arc comparison failed for %s: %s",
+                           task["label"], e)
 
         if show_3d and category == "straight_line":
             show_3d_blend_comparison(
@@ -432,7 +512,6 @@ def _run_single_task(
                 if verification is None:
                     verification = v
 
-                # Blend arc comparison for siping trajectories
                 try:
                     blend_result = compare_blend_arcs(input_csv, rs_map[traj_num])
                     if blend_result.n_flyby > 0:
@@ -440,6 +519,8 @@ def _run_single_task(
                             blend_result, input_csv, traj_out,
                             label=traj_label,
                         )
+                        if blend_arc_result is None:
+                            blend_arc_result = blend_result
                         if show_3d:
                             show_3d_blend_arc_comparison(
                                 blend_result, input_csv, rs_map[traj_num],
@@ -449,7 +530,132 @@ def _run_single_task(
                     logger.warning("Blend arc comparison failed for %s: %s",
                                    traj_label, e)
 
-    return True, verification
+    return True, verification, blend_arc_result
+
+
+# ─── Flagged Toolpath Report ──────────────────────────────────────────────────
+
+def _write_flagged_report(
+    run_dir: Path,
+    blend_results: List[Tuple[str, object]],
+    threshold_mm: float,
+) -> Optional[Path]:
+    """Write a report of toolpaths whose blend arc deviation exceeds the threshold.
+
+    Returns the report path if any flagged, else None.
+    """
+    if not blend_results:
+        return None
+
+    flagged = []
+    passed = []
+    for label, br in blend_results:
+        max_dev = br.max_deviation_mm
+        mean_dev = br.mean_deviation_mm
+        frechet = br.mean_frechet_mm
+        fp_frechet = br.full_path_frechet_mm
+
+        # Per-waypoint details
+        wp_details = []
+        for wp in br.per_waypoint:
+            wp_details.append({
+                "waypoint_idx": wp.waypoint_idx,
+                "frechet_mm": wp.frechet_distance_mm,
+                "hausdorff_mm": wp.hausdorff_distance_mm,
+                "mean_deviation_mm": wp.mean_deviation_mm,
+                "max_deviation_mm": wp.max_deviation_mm,
+                "arc_length_solver_mm": wp.solver_arc_length_mm,
+                "arc_length_rs_mm": wp.rs_blend_arc_length_mm,
+                "entry_error_mm": wp.entry_error_mm,
+                "exit_error_mm": wp.exit_error_mm,
+            })
+
+        entry = {
+            "label": label,
+            "max_deviation_mm": round(max_dev, 4),
+            "mean_deviation_mm": round(mean_dev, 4),
+            "mean_frechet_mm": round(frechet, 4),
+            "full_path_frechet_mm": round(fp_frechet, 4),
+            "n_flyby": br.n_flyby,
+            "per_waypoint": wp_details,
+        }
+        if max_dev > threshold_mm:
+            flagged.append(entry)
+        else:
+            passed.append(entry)
+
+    report = {
+        "threshold_mm": threshold_mm,
+        "total_evaluated": len(blend_results),
+        "n_flagged": len(flagged),
+        "n_passed": len(passed),
+        "flagged": sorted(flagged, key=lambda x: -x["max_deviation_mm"]),
+        "passed": sorted(passed, key=lambda x: -x["max_deviation_mm"]),
+    }
+
+    report_dir = run_dir / "blend_deviation_report"
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    import json
+    report_path = report_dir / "flagged_toolpaths.json"
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2, default=str)
+
+    # Human-readable text report
+    txt_path = report_dir / "flagged_toolpaths.txt"
+    with open(txt_path, "w") as f:
+        f.write(f"Blend Arc Deviation Report\n")
+        f.write(f"{'='*70}\n")
+        f.write(f"Threshold: {threshold_mm:.1f} mm\n")
+        f.write(f"Evaluated: {len(blend_results)} toolpaths\n")
+        f.write(f"Flagged:   {len(flagged)}  (max deviation > {threshold_mm:.1f} mm)\n")
+        f.write(f"Passed:    {len(passed)}\n")
+        f.write(f"\n{'='*70}\n")
+
+        if flagged:
+            f.write(f"\nFLAGGED TOOLPATHS (deviation > {threshold_mm:.1f} mm):\n")
+            f.write(f"{'-'*70}\n")
+            for entry in report["flagged"]:
+                f.write(f"\n  {entry['label']}\n")
+                f.write(f"    Max deviation:      {entry['max_deviation_mm']:.3f} mm\n")
+                f.write(f"    Mean deviation:     {entry['mean_deviation_mm']:.3f} mm\n")
+                f.write(f"    Mean Fréchet:       {entry['mean_frechet_mm']:.3f} mm\n")
+                f.write(f"    Full-path Fréchet:  {entry['full_path_frechet_mm']:.3f} mm\n")
+                f.write(f"    Fly-by waypoints:   {entry['n_flyby']}\n")
+                for wp in entry["per_waypoint"]:
+                    f.write(f"      WP{wp['waypoint_idx']}: "
+                            f"Fréchet={wp['frechet_mm']:.3f} "
+                            f"Hausdorff={wp['hausdorff_mm']:.3f} "
+                            f"MaxDev={wp['max_deviation_mm']:.3f} "
+                            f"ArcLen solver={wp['arc_length_solver_mm']:.1f} "
+                            f"RS={wp['arc_length_rs_mm']:.1f}\n")
+        else:
+            f.write(f"\nNo toolpaths flagged — all within {threshold_mm:.1f} mm threshold.\n")
+
+        if passed:
+            f.write(f"\n\nPASSED TOOLPATHS:\n")
+            f.write(f"{'-'*70}\n")
+            for entry in report["passed"]:
+                f.write(f"  {entry['label']:<50} "
+                        f"maxDev={entry['max_deviation_mm']:.3f}mm  "
+                        f"Fréchet={entry['full_path_frechet_mm']:.3f}mm\n")
+
+    # Print summary to console
+    print(f"\n  {'='*60}")
+    print(f"  BLEND ARC DEVIATION REPORT (threshold={threshold_mm:.1f} mm)")
+    print(f"  {'='*60}")
+    print(f"  Evaluated: {len(blend_results)}  Flagged: {len(flagged)}  Passed: {len(passed)}")
+    if flagged:
+        print(f"\n  ⚠ FLAGGED ({len(flagged)}):")
+        for entry in report["flagged"][:20]:
+            f_str = f"    {entry['label']:<45} maxDev={entry['max_deviation_mm']:.3f}mm"
+            print(f_str)
+        if len(flagged) > 20:
+            print(f"    ... and {len(flagged)-20} more (see report)")
+    print(f"\n  Report:  {report_path}")
+    print(f"  Text:    {txt_path}")
+
+    return report_path
 
 
 # ─── Phase 1: Run solver + comparisons on all toolpaths ──────────────────────
@@ -461,6 +667,8 @@ def phase_run(
     verbose: bool = False,
     show_3d: bool = False,
     v2_only: bool = False,
+    toolpath: Optional[str] = None,
+    blend_threshold_mm: float = 1.0,
 ):
     """Run solver on all toolpaths, generating RS comparison alongside."""
     cfg = load_batch_config(_CONFIG_PATH)
@@ -472,7 +680,9 @@ def phase_run(
         if robot_config.acceleration_limits_rad_s2 else None
     )
 
-    if v2_only:
+    if toolpath:
+        tasks = _build_single_toolpath_tasks(run_dir, toolpath)
+    elif v2_only:
         tasks = _build_v2_tasks(run_dir)
     else:
         tasks = _build_tasks(run_dir)
@@ -487,6 +697,9 @@ def phase_run(
     ok, fail = 0, 0
     all_verifications = []
     cat_verifications: Dict[str, list] = {"straight_line": [], "corner": [], "siping_toolpaths": []}
+
+    # Collect blend arc results for flagging
+    blend_results: List[Tuple[str, object]] = []  # (label, BlendArcComparisonResult)
 
     for i, task in enumerate(tasks, 1):
         label = task["label"]
@@ -508,7 +721,7 @@ def phase_run(
 
         t_task = time.perf_counter()
         try:
-            success, v = _run_single_task(
+            success, v, blend_r = _run_single_task(
                 task, cfg, robot_config, knives, vel_limits, accel_limits, skip_existing,
                 verbose=verbose, show_3d=show_3d,
             )
@@ -518,6 +731,10 @@ def phase_run(
                 all_verifications.append(v)
                 cat_verifications[task["category"]].append(v)
                 rs_info = f" (RMS={v.speed.rms_error_mm_s:.1f} mm/s)"
+            if blend_r is not None:
+                blend_results.append((label, blend_r))
+                if blend_r.max_deviation_mm > blend_threshold_mm:
+                    rs_info += f" ⚠ blend {blend_r.max_deviation_mm:.2f}mm"
             dt = time.perf_counter() - t_task
             time_info = f"  [{dt:.2f}s]" if verbose else ""
             print(f"OK{rs_info}{time_info}")
@@ -550,6 +767,9 @@ def phase_run(
         generate_verification_plots(all_verifications, combined_dir)
         n_pass = sum(1 for r in all_verifications if r.passes_speed_criteria)
         print(f"\n  TOTAL: {n_pass}/{len(all_verifications)} pass speed criteria")
+
+    # Generate flagged toolpaths report
+    _write_flagged_report(run_dir, blend_results, blend_threshold_mm)
 
     return ok, fail
 
@@ -643,8 +863,12 @@ Examples:
   python tests/run_experiment_23_full.py --dry-run
   python tests/run_experiment_23_full.py --phase calibrate
   python tests/run_experiment_23_full.py --force
-  python tests/run_experiment_23_full.py --run-dir 21_01_58_04_15_26
+  python tests/run_experiment_23_full.py --run-dir 04_10_26_14_30_00
   python tests/run_experiment_23_full.py --verbose
+  python tests/run_experiment_23_full.py --v2_only --force
+  python tests/run_experiment_23_full.py --toolpath v2/corner/corner_30_deg_v500_z50.csv --force
+  python tests/run_experiment_23_full.py --toolpath v2/corner --force
+  python tests/run_experiment_23_full.py --blend-threshold 0.5
 """,
     )
     parser.add_argument("--phase", choices=["all", "run", "calibrate"],
@@ -661,6 +885,12 @@ Examples:
                         help="Show interactive matplotlib 3D viewer for each trajectory")
     parser.add_argument("--v2_only", action="store_true",
                         help="Run only V2 toolpaths (corner v20/v500 + straight_line multi-speed)")
+    parser.add_argument("--toolpath",
+                        help="Run a single toolpath CSV or all CSVs in a folder "
+                             "(path relative to Toolpaths_And_Waypoints/)")
+    parser.add_argument("--blend-threshold", type=float, default=1.0,
+                        help="Blend arc deviation threshold in mm (default: 1.0). "
+                             "Toolpaths exceeding this are flagged.")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -684,6 +914,8 @@ Examples:
             verbose=args.verbose,
             show_3d=args.show_3d,
             v2_only=args.v2_only,
+            toolpath=args.toolpath,
+            blend_threshold_mm=args.blend_threshold,
         )
 
     if args.phase in ("all", "calibrate"):
