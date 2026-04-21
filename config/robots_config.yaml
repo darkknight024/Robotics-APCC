@@ -21,15 +21,26 @@ robots:
     payload_kg: 7
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
     acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0] # just for testing not an actual limit (FIX ME)
-    # Calibration — from Experiment 23 RobotStudio data (2026-04-15)
+    # Calibration — from Experiment 23 RobotStudio data (2026-04-15, tuned 2026-04-20)
     calibration:
-      a_tcp_mm_s2: 6128.0              # Effective TCP acceleration (distance-based from V1 straight-line)
-      a_tcp_decel_mm_s2: 14244.0       # Effective TCP deceleration (asymmetric — ABB brakes harder)
+      a_tcp_mm_s2: 6128.0              # Peak TCP acceleration (distance-based from V1 straight-line)
+                                       # used as the centripetal capability for the blend ceiling
+      a_tcp_decel_mm_s2: 14244.0       # Peak TCP deceleration (asymmetric — ABB brakes harder)
+      # Effective trapezoidal accelerations — model ABB's S-curve as a trapezoid
+      # with matching total ramp distance.  Lower than the peak because the
+      # S-curve is jerk-limited near v=0 and v=v_peak.
+      a_accel_eff_mm_s2: 2800.0        # Tuned on V2 corner v500: mean RMS drops 63→57 mm/s
+      a_decel_eff_mm_s2: 10000.0       # ABB's peak decel from stop is ~14 k mm/s²; 10 k
+                                       # matches the ramp into fine points best on V2
+      # ρ_min correction factor.  ABB's blend curve has a larger effective
+      # minimum radius of curvature than a pure quadratic Bézier at the
+      # same r_tcp (observed ratio ≈ 2.6× from V2 v20 corner recordings).
+      rho_min_scale: 2.6
       T_settle_s: 0.2                  # Fine-point settling time (NOT calibrated — proposal default)
       is_calibrated: true
       blend_model_rmse_mm_s: 56.9      # v_blend model RMSE against 30 corner observations
       calibration_source: "Experiment_23"
-      calibrated_date: "2026-04-15"
+      calibrated_date: "2026-04-20"
 
   # -------------------------------------------------------------------------
   # IRB 1300-10/1.15 - Higher payload, shorter reach variant

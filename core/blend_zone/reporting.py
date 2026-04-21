@@ -67,6 +67,9 @@ def generate_f3_report(
         "n_blend_arcs": result.blend_geom_count,
         "calibration": {
             "a_tcp_mm_s2": speed_result.calibration.a_tcp_mm_s2,
+            "a_accel_mm_s2": speed_result.calibration.a_accel,
+            "a_decel_mm_s2": speed_result.calibration.a_decel,
+            "rho_min_scale": speed_result.calibration.rho_min_scale,
             "T_settle_s": speed_result.calibration.T_settle_s,
             "is_calibrated": speed_result.calibration.is_calibrated,
         },

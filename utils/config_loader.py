@@ -177,6 +177,9 @@ class RobotConfig:
     # Calibration (populated from robots_config.yaml calibration section)
     a_tcp_mm_s2: float = 2500.0
     a_tcp_decel_mm_s2: float = 2500.0
+    a_accel_eff_mm_s2: float = 0.0     # effective trapezoidal accel (0 ⇒ use a_tcp)
+    a_decel_eff_mm_s2: float = 0.0     # effective trapezoidal decel (0 ⇒ use a_tcp_decel)
+    rho_min_scale: float = 1.0          # ABB blend-curve correction for ρ(t)
     T_settle_s: float = 0.2
     is_calibrated: bool = False
     blend_model_rmse_mm_s: float = 0.0
@@ -205,6 +208,9 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
             joint_jump_limit_rad=joint_jump_limit_rad,
             a_tcp_mm_s2=float(cal.get('a_tcp_mm_s2', 2500.0)),
             a_tcp_decel_mm_s2=float(cal.get('a_tcp_decel_mm_s2', 2500.0)),
+            a_accel_eff_mm_s2=float(cal.get('a_accel_eff_mm_s2', 0.0)),
+            a_decel_eff_mm_s2=float(cal.get('a_decel_eff_mm_s2', 0.0)),
+            rho_min_scale=float(cal.get('rho_min_scale', 1.0)),
             T_settle_s=float(cal.get('T_settle_s', 0.2)),
             is_calibrated=bool(cal.get('is_calibrated', False)),
             blend_model_rmse_mm_s=float(cal.get('blend_model_rmse_mm_s', 0.0)),

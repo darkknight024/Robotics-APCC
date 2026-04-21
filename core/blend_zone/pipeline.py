@@ -235,6 +235,13 @@ def run_feature3_d1(
     if robot_config and robot_config.is_calibrated:
         calibration = SpeedCalibration(
             a_tcp_mm_s2=robot_config.a_tcp_mm_s2,
+            a_accel_mm_s2=robot_config.a_accel_eff_mm_s2,
+            a_decel_mm_s2=(
+                robot_config.a_decel_eff_mm_s2
+                if robot_config.a_decel_eff_mm_s2 > 0.0
+                else robot_config.a_tcp_decel_mm_s2
+            ),
+            rho_min_scale=robot_config.rho_min_scale,
             T_settle_s=robot_config.T_settle_s,
             is_calibrated=True,
         )

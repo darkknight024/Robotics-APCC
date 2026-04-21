@@ -45,11 +45,16 @@ class DensePath:
     Arc-lengths are in **millimetres** for direct comparison with zone radii.
 
     Attributes:
-        poses:        (M, 7) [x_m, y_m, z_m, qw, qx, qy, qz].
-        arc_lengths:  (M,)   cumulative arc-length from path start, in mm.
-        is_blend_arc: (M,)   True where the sample lies on a blend arc.
-        segment_ids:  (M,)   Programmed-segment index for each sample.
-        v_cmd_at_s:   (M,)   Commanded TCP speed (mm/s) at each sample.
+        poses:         (M, 7) [x_m, y_m, z_m, qw, qx, qy, qz].
+        arc_lengths:   (M,)   cumulative arc-length from path start, in mm.
+        is_blend_arc:  (M,)   True where the sample lies on a blend arc.
+        segment_ids:   (M,)   Programmed-segment index for each sample.
+        v_cmd_at_s:    (M,)   Commanded TCP speed (mm/s) at each sample.
+        blend_t:       (M,)   Bézier parameter t∈[0,1] for blend samples,
+                              NaN elsewhere.  Used by speed profile for local
+                              curvature along each arc.
+        blend_wp_idx:  (M,)   Waypoint index of the blend arc each sample
+                              belongs to; ``-1`` for non-blend samples.
     """
 
     poses: np.ndarray
@@ -57,6 +62,8 @@ class DensePath:
     is_blend_arc: np.ndarray
     segment_ids: np.ndarray
     v_cmd_at_s: np.ndarray
+    blend_t: np.ndarray = None
+    blend_wp_idx: np.ndarray = None
 
     @property
     def n_samples(self) -> int:
@@ -129,6 +136,13 @@ def _sample_straight_segment(
     return positions, quats, dists
 
 
+#: Minimum number of sub-intervals per blend arc.  Must be **even** so that
+#: the apex ``t = 0.5`` (where ρ is minimal) is always captured — otherwise
+#: the centripetal speed ceiling misses the true bottleneck and v_actual
+#: systematically overshoots through tight corners.
+_MIN_BLEND_SUBDIV = 40
+
+
 def _sample_bezier_arc(
     geom: BlendArcGeometry,
     q_in: np.ndarray,
@@ -140,15 +154,23 @@ def _sample_bezier_arc(
     Orientation is interpolated linearly across the arc (from incoming to
     outgoing orientation at the waypoint boundary).
 
+    The sample count is the larger of the user-requested arc-length
+    density ``ds_mm`` and ``_MIN_BLEND_SUBDIV``, and is always forced to an
+    even integer so the apex ``t = 0.5`` is a sample point.  Global
+    ``ds_mm`` for long straight segments can therefore remain coarse
+    without masking the curvature bottleneck inside blends.
+
     Returns:
-        (positions_mm (K,3), quats (K,4), arc_dists (K,))
+        (positions_mm (K,3), quats (K,4), arc_dists (K,), t_vals (K,))
     """
     P0 = geom.entry_point_mm
     P1 = geom.control_point_mm
     P2 = geom.exit_point_mm
 
     arc_len = geom.arc_length_mm
-    n_sub = max(2, int(np.ceil(arc_len / ds_mm)))
+    n_sub = max(_MIN_BLEND_SUBDIV, int(np.ceil(arc_len / ds_mm)))
+    if n_sub % 2 == 1:                 # ensure t = 0.5 is sampled
+        n_sub += 1
     t_vals = np.linspace(0.0, 1.0, n_sub + 1)
 
     positions = np.array([_quadratic_bezier(P0, P1, P2, t) for t in t_vals])
@@ -159,7 +181,7 @@ def _sample_bezier_arc(
     cum_arc = np.zeros(len(t_vals))
     cum_arc[1:] = np.cumsum(seg_lens)
 
-    return positions, quats, cum_arc
+    return positions, quats, cum_arc, t_vals
 
 
 def sample_blended_path(
@@ -199,6 +221,8 @@ def sample_blended_path(
     all_is_blend: List[bool] = []
     all_seg_id: List[int] = []
     all_vcmd: List[float] = []
+    all_blend_t: List[float] = []
+    all_blend_wp: List[int] = []
 
     cum_arc = 0.0
     arc_values: List[float] = []
@@ -235,7 +259,7 @@ def sample_blended_path(
         # ── Blend arc at START of this segment (current waypoint) ──
         if seg_idx == 0 and geom_start is not None:
             q_prev = quats[max(0, seg_idx - 1)]
-            pos_b, quat_b, arc_b = _sample_bezier_arc(
+            pos_b, quat_b, arc_b, t_b = _sample_bezier_arc(
                 geom_start, q_prev, quats[seg_idx], ds_mm,
             )
             for k in range(len(pos_b)):
@@ -244,6 +268,8 @@ def sample_blended_path(
                 all_is_blend.append(True)
                 all_seg_id.append(seg_idx)
                 all_vcmd.append(v_cmd_seg)
+                all_blend_t.append(float(t_b[k]))
+                all_blend_wp.append(int(geom_start.waypoint_idx))
                 arc_values.append(cum_arc + arc_b[k])
             if len(arc_b) > 0:
                 cum_arc += arc_b[-1]
@@ -262,13 +288,15 @@ def sample_blended_path(
             all_is_blend.append(False)
             all_seg_id.append(seg_idx)
             all_vcmd.append(v_cmd_seg)
+            all_blend_t.append(float("nan"))
+            all_blend_wp.append(-1)
             arc_values.append(cum_arc + arc_s[k])
         if len(arc_s) > 0:
             cum_arc += arc_s[-1]
 
         # ── Blend arc at END of this segment (next waypoint) ──
         if geom_end is not None:
-            pos_b, quat_b, arc_b = _sample_bezier_arc(
+            pos_b, quat_b, arc_b, t_b = _sample_bezier_arc(
                 geom_end, quats[seg_idx], quats[seg_idx + 1], ds_mm,
             )
             for k in range(len(pos_b)):
@@ -277,6 +305,8 @@ def sample_blended_path(
                 all_is_blend.append(True)
                 all_seg_id.append(seg_idx)
                 all_vcmd.append(v_cmd_seg)
+                all_blend_t.append(float(t_b[k]))
+                all_blend_wp.append(int(geom_end.waypoint_idx))
                 arc_values.append(cum_arc + arc_b[k])
             if len(arc_b) > 0:
                 cum_arc += arc_b[-1]
@@ -287,6 +317,8 @@ def sample_blended_path(
     all_is_blend.append(False)
     all_seg_id.append(n - 2)
     all_vcmd.append(float(v_cmd_per_wp[-1]))
+    all_blend_t.append(float("nan"))
+    all_blend_wp.append(-1)
     arc_values.append(cum_arc)
 
     pos_array = np.array(all_pos)
@@ -312,4 +344,6 @@ def sample_blended_path(
         is_blend_arc=np.array(all_is_blend, dtype=bool),
         segment_ids=np.array(all_seg_id, dtype=int),
         v_cmd_at_s=np.array(all_vcmd),
+        blend_t=np.array(all_blend_t, dtype=float),
+        blend_wp_idx=np.array(all_blend_wp, dtype=int),
     )
