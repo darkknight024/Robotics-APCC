@@ -5,20 +5,20 @@ Blend Arc Geometry Comparison — Solver vs RobotStudio
 Compares the **geometric shape** of blend arcs produced by our solver against
 the actual TCP path recorded in RobotStudio Signal Analyser data.
 
-The key insight: RobotStudio samples at a fixed 24 ms interval, so faster
-trajectories have fewer samples on each blend arc. The comparison must be
-**geometry-to-geometry** (comparing spatial curves), not sample-to-sample.
-
-For each fly-by waypoint the module:
-    1. Extracts the RS blend-region points by detecting deviation from the
-       adjacent programmed straight-line segments.
-    2. Densely samples our quadratic Bézier blend arc.
-    3. Computes sophisticated comparison metrics:
-       - Discrete Fréchet distance
-       - Arc-length–aligned Hausdorff distance
-       - Per-point deviation via arc-length interpolation
-       - Entry/exit point error
-       - Arc length ratio
+Key design points:
+    * RobotStudio samples at a fixed 24 ms interval, so faster trajectories
+      have fewer samples on each blend arc.  Comparison must be
+      **geometry-to-geometry** (spatial curves), not sample-to-sample.
+    * Our solver uses a symmetric **cubic Bézier** with ``shape_k = 0.78``
+      (empirically fitted against the v20 corner set — see
+      ``FEATURE3_CONTEXT.md`` §3 and the calibrated value in
+      ``config/robots_config.yaml``).
+    * For each fly-by waypoint we
+        1. Extract the RS blend region by detecting departure from the
+           adjacent programmed straights.
+        2. Densely sample our cubic Bézier arc.
+        3. Compute Fréchet distance, arc-length-aligned Hausdorff, per-point
+           nearest-polyline deviation, entry/exit error, arc-length ratio.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .blend_geometry import BlendArcGeometry, _quadratic_bezier
+from .blend_geometry import BlendArcGeometry, _cubic_bezier
 from .calibration import RSTrajectoryData, load_rs_csv
 from .zone_resolver import ZoneParams, resolve_zone_spec
 
@@ -257,10 +257,13 @@ def _extract_rs_blend_region(
 # ── Dense Bézier sampling ─────────────────────────────────────────────────────
 
 def _sample_bezier_dense(geom: BlendArcGeometry, n_points: int = 100) -> np.ndarray:
-    """Sample the quadratic Bézier blend arc at n_points evenly in parameter t."""
+    """Sample the cubic Bézier blend arc at ``n_points`` evenly in parameter t."""
     t_vals = np.linspace(0.0, 1.0, n_points)
-    return np.array([_quadratic_bezier(geom.entry_point_mm, geom.control_point_mm,
-                                        geom.exit_point_mm, t) for t in t_vals])
+    return np.array([
+        _cubic_bezier(geom.entry_point_mm, geom.inner_p1_mm,
+                      geom.inner_p2_mm, geom.exit_point_mm, t)
+        for t in t_vals
+    ])
 
 
 def _build_solver_full_path(
@@ -855,27 +858,46 @@ def generate_blend_comparison_plots(
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-        # ── Bottom-left: Per-component deviation (X, Y, Z) ──
+        # ── Bottom-left: Solver–RS point-to-polyline signed displacement ──
+        # For every solver-curve sample project onto the RS polyline and
+        # decompose the displacement in the **corner plane** basis
+        #   ê_along = tangent of RS polyline at the foot
+        #   ê_normal = unit normal in the X-Y plane (pointing outward of corner)
+        #   Δz       = raw Z component (out-of-plane drift)
+        # This matches what the top-right "Nearest-Point Deviation" trace
+        # reports and removes the "arc-length-mismatch" artefact the old
+        # normalised per-component view suffered from.
         ax = axes[1][0]
-        def _cumulative_arc(pts):
-            d = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-            return np.concatenate([[0.0], np.cumsum(d)])
-
-        s_sol = _cumulative_arc(sol_pts)
-        s_rs = _cumulative_arc(rs_pts)
-        s_sol_n = s_sol / max(s_sol[-1], 1e-9)
-        s_rs_n = s_rs / max(s_rs[-1], 1e-9)
-
-        for c, (name, color) in enumerate([("ΔX", "tab:red"), ("ΔY", "tab:blue"),
-                                            ("ΔZ", "tab:green")]):
-            rs_c_interp = np.interp(s_sol_n, s_rs_n, rs_pts[:, c])
-            dc = sol_pts[:, c] - rs_c_interp
-            ax.plot(s, dc, color=color, lw=0.8, alpha=0.8, label=name)
+        from scipy.spatial import cKDTree as _KD
+        _kd = _KD(rs_pts[:, :3])
+        _, foot_idx = _kd.query(sol_pts[:, :3])
+        dn_along, dn_normal, dn_z = [], [], []
+        for k, foot_i in enumerate(foot_idx):
+            # RS local tangent at the foot (central-difference).
+            i0 = max(0, foot_i - 1)
+            i1 = min(len(rs_pts) - 1, foot_i + 1)
+            tang = rs_pts[i1, :3] - rs_pts[i0, :3]
+            tn = np.linalg.norm(tang)
+            if tn < 1e-9:
+                dn_along.append(0.0); dn_normal.append(0.0); dn_z.append(0.0)
+                continue
+            t_hat = tang / tn
+            # In-plane normal ê_n = (−t_y, t_x, 0) / |...|
+            n_xy = np.array([-t_hat[1], t_hat[0], 0.0])
+            nn = np.linalg.norm(n_xy)
+            n_hat = n_xy / nn if nn > 1e-9 else np.array([0.0, 1.0, 0.0])
+            d_vec = sol_pts[k, :3] - rs_pts[foot_i, :3]
+            dn_along.append(float(d_vec @ t_hat))
+            dn_normal.append(float(d_vec @ n_hat))
+            dn_z.append(float(d_vec[2]))
+        ax.plot(s, dn_normal, color="tab:red", lw=0.8, label="Δ normal (in-plane)")
+        ax.plot(s, dn_along, color="tab:blue", lw=0.8, label="Δ along RS")
+        ax.plot(s, dn_z, color="tab:green", lw=0.8, label="Δ Z (out-of-plane)")
         ax.axhline(0, color="k", lw=0.5, alpha=0.3)
         ax.set_xlabel("Arc Length (mm)", fontsize=9)
-        ax.set_ylabel("Deviation (mm)", fontsize=9)
-        ax.set_title("Per-Component Deviation", fontsize=10)
-        ax.legend(fontsize=8)
+        ax.set_ylabel("Signed displacement (mm)", fontsize=9)
+        ax.set_title("Solver − RS  (projected onto RS polyline)", fontsize=10)
+        ax.legend(fontsize=8, loc="best")
         ax.grid(True, alpha=0.3)
 
         # ── Bottom-right: Metrics summary table ──

@@ -12,6 +12,7 @@ Output structure (under Results/<MM_DD_YY_HH_MM_SS>/):
     corner/                — solver results + RS comparison per angle×zone
     siping_toolpaths/      — solver results + RS comparison per toolpath
     v2/                    — V2 straight_line + corner (v20/v500) results
+    v3/                    — V3 corner (v50/v100/v200, 5 angles × 5 zones) results
 
 Usage::
 
@@ -22,6 +23,7 @@ Usage::
     python tests/run_experiment_23_full.py --force              # re-run all
     python tests/run_experiment_23_full.py --3d_view            # interactive 3D viewer per trajectory
     python tests/run_experiment_23_full.py --v2_only --force    # V2 toolpaths only
+    python tests/run_experiment_23_full.py --v3_only --force    # V3 toolpaths only
 """
 from __future__ import annotations
 
@@ -53,6 +55,10 @@ _RESULTS_BASE = _EXP23 / "Results"
 # V2 paths
 _TOOLPATHS_V2 = _TOOLPATHS / "v2"
 _RS_ROOT_V2 = _RS_ROOT / "v2"
+
+# V3 paths (extended corner set: 5 angles × 5 zones × {v50, v100, v200})
+_TOOLPATHS_V3 = _TOOLPATHS / "v3"
+_RS_ROOT_V3 = _RS_ROOT / "v3"
 
 _CONFIG_PATH = str(_REPO / "config" / "batch_feasibility_config.yaml")
 _KNIFE_CONFIG = str(_REPO / "config" / "knife_config.yaml")
@@ -148,6 +154,29 @@ def _find_rs_csv_v2_corner(angle_tag: str, zone_tag: str, speed_tag: str) -> Opt
     return None
 
 
+# ─── V3 RS CSV matching helpers ──────────────────────────────────────────────
+
+def _find_rs_csv_v3_corner(angle_tag: str, zone_tag: str, speed_tag: str) -> Optional[Path]:
+    """V3: (90_deg, z5, v100) → v3/corner_trajectories/v100/z5/90_deg_corner_z5.csv
+
+    The V3 dataset groups RS recordings under ``v<speed>/z<zone>/`` sub-folders
+    (one extra level vs. V2).  Name falls back to the ``_<speed>`` suffix if
+    needed.
+    """
+    rs_dir = _RS_ROOT_V3 / "corner_trajectories" / speed_tag / zone_tag
+    if not rs_dir.exists():
+        return None
+    base = f"{angle_tag}_corner_{zone_tag}.csv"
+    p = rs_dir / base
+    if p.exists():
+        return p
+    base_with_speed = f"{angle_tag}_corner_{zone_tag}_{speed_tag}.csv"
+    p2 = rs_dir / base_with_speed
+    if p2.exists():
+        return p2
+    return None
+
+
 # ─── Task builder ─────────────────────────────────────────────────────────────
 
 def _build_v2_tasks(run_dir: Path) -> List[dict]:
@@ -202,25 +231,81 @@ def _build_v2_tasks(run_dir: Path) -> List[dict]:
     return tasks
 
 
+def _build_v3_tasks(run_dir: Path) -> List[dict]:
+    """Build tasks for V3 toolpaths (corner at v50 / v100 / v200, 5 angles × 5 zones).
+
+    Unlike V2, V3 contains ONLY corner toolpaths (no straight_line).  Every
+    toolpath file is named ``corner_<angle>_deg_v<speed>_z<zone>.csv`` and the
+    RS recording lives at ``v3/corner_trajectories/v<speed>/z<zone>/<angle>_corner_z<zone>.csv``.
+    Bare ``corner_<angle>_deg.csv`` files (no speed/zone suffix) are the source
+    waypoint definitions and are *not* runnable as tasks — they are skipped.
+    """
+    tasks: List[dict] = []
+
+    corner_dir = _TOOLPATHS_V3 / "corner"
+    if not corner_dir.exists():
+        return tasks
+
+    for speed in ("v50", "v100", "v200"):
+        for csv_f in sorted(corner_dir.glob(f"corner_*_{speed}_z*.csv")):
+            stem = csv_f.stem
+            stripped = stem.replace("corner_", "")
+            speed_marker = f"_{speed}_"
+            idx = stripped.find(speed_marker)
+            if idx < 0:
+                continue
+            angle_tag = stripped[:idx]
+            zone_tag = stripped[idx + len(speed_marker):]
+            tasks.append(dict(
+                csv=str(csv_f),
+                out=str(run_dir / "v3" / "corner" / speed / f"{angle_tag}_{zone_tag}"),
+                base_frame=True,
+                knife_pose=None,
+                category="corner",
+                speed_tag=speed,
+                zone_tag=zone_tag,
+                csv_stem=csv_f.stem,
+                label=f"v3/corner/{speed}/{angle_tag}/{zone_tag}",
+                v3=True,
+            ))
+    return tasks
+
+
 def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]:
-    """Build tasks for a single toolpath CSV or all CSVs in a folder.
+    """Build tasks for a single toolpath CSV, a folder of CSVs, or a glob.
 
     The toolpath_arg can be:
       - Relative to Toolpaths_And_Waypoints/: e.g. "v2/corner/corner_90_deg_v500_z50.csv"
       - An absolute path
       - A directory (all CSVs in it)
+      - A glob pattern (must contain '*' or '?'), resolved against
+        Toolpaths_And_Waypoints/ when relative, e.g. "v2/corner/corner_30_deg_*.csv"
     """
     tasks: List[dict] = []
 
-    tp = Path(toolpath_arg)
-    if not tp.is_absolute():
-        tp = _TOOLPATHS / tp
-    if not tp.exists():
-        raise FileNotFoundError(f"Toolpath not found: {tp}")
+    # Glob support — useful for targeting a specific angle across all zones,
+    # e.g. ``--toolpath v2/corner/corner_30_deg_*.csv``.
+    if any(ch in toolpath_arg for ch in "*?[]"):
+        base = _TOOLPATHS if not Path(toolpath_arg).is_absolute() else Path("/")
+        # Split into anchor + pattern so Path.glob sees only the relative part
+        if Path(toolpath_arg).is_absolute():
+            anchor = Path(toolpath_arg).anchor
+            rel_pattern = str(Path(toolpath_arg).relative_to(anchor))
+            csv_files = sorted(Path(anchor).glob(rel_pattern))
+        else:
+            csv_files = sorted(base.glob(toolpath_arg))
+        if not csv_files:
+            raise FileNotFoundError(f"No CSV files match glob: {toolpath_arg}")
+    else:
+        tp = Path(toolpath_arg)
+        if not tp.is_absolute():
+            tp = _TOOLPATHS / tp
+        if not tp.exists():
+            raise FileNotFoundError(f"Toolpath not found: {tp}")
 
-    csv_files = sorted(tp.glob("*.csv")) if tp.is_dir() else [tp]
-    if not csv_files:
-        raise FileNotFoundError(f"No CSV files in: {tp}")
+        csv_files = sorted(tp.glob("*.csv")) if tp.is_dir() else [tp]
+        if not csv_files:
+            raise FileNotFoundError(f"No CSV files in: {tp}")
 
     for csv_f in csv_files:
         # Determine category and speed/zone from path or filename
@@ -228,6 +313,7 @@ def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]
         parts_str = str(rel)
 
         is_v2 = parts_str.startswith("v2")
+        is_v3 = parts_str.startswith("v3")
         stem = csv_f.stem
 
         # Detect category
@@ -243,10 +329,12 @@ def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]
             base_frame = True
             knife_pose = None
             stripped = stem.replace("corner_", "")
-            # Try to extract speed and zone from filename
+            # Try to extract speed and zone from filename.  V3 introduces
+            # three new speeds (v50, v100, v200); keep V2's v20/v500 for
+            # backward compatibility.
             speed_tag = "v500"
             zone_tag = "unknown"
-            for sp in ("v20", "v500"):
+            for sp in ("v20", "v50", "v100", "v200", "v500"):
                 marker = f"_{sp}_"
                 idx = stripped.find(marker)
                 if idx >= 0:
@@ -276,6 +364,7 @@ def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]
             csv_stem=stem,
             label=out_label,
             v2=is_v2,
+            v3=is_v3,
         ))
 
     return tasks
@@ -363,6 +452,19 @@ def _resolve_rs_csv(task: dict) -> Tuple[Optional[Path], float]:
 
     category = task["category"]
     is_v2 = task.get("v2", False)
+    is_v3 = task.get("v3", False)
+
+    if is_v3:
+        if category == "corner":
+            stem = task["csv_stem"]
+            stripped = stem.replace("corner_", "")
+            speed_marker = f"_{st}_"
+            idx = stripped.find(speed_marker)
+            if idx >= 0:
+                angle_tag = stripped[:idx]
+                zone_tag = stripped[idx + len(speed_marker):]
+                return _find_rs_csv_v3_corner(angle_tag, zone_tag, st), v_cmd
+        return None, v_cmd
 
     if is_v2:
         if category == "straight_line":
@@ -667,10 +769,24 @@ def phase_run(
     verbose: bool = False,
     show_3d: bool = False,
     v2_only: bool = False,
+    v3_only: bool = False,
     toolpath: Optional[str] = None,
     blend_threshold_mm: float = 1.0,
+    speed_filter: Optional[str] = None,
+    zone_filter: Optional[str] = None,
+    speed_warn_mm_s: float = 5.0,
+    speed_fail_mm_s: float = 15.0,
 ):
-    """Run solver on all toolpaths, generating RS comparison alongside."""
+    """Run solver on all toolpaths, generating RS comparison alongside.
+
+    ``speed_filter`` and ``zone_filter`` are case-insensitive substring
+    matches on the task's ``speed_tag`` / ``zone_tag`` fields.  They can be
+    combined with ``--toolpath`` / ``--v2_only`` / ``--v3_only`` to narrow a
+    large input folder down to a single (speed × zone) bucket, e.g.::
+
+        --toolpath v2/corner --speed v20 --zone z10
+        --v3_only --speed v100 --zone z5
+    """
     cfg = load_batch_config(_CONFIG_PATH)
     knives = load_knife_config(_KNIFE_CONFIG)
     robot_config = get_robot_by_name(_ROBOT_NAME)
@@ -682,10 +798,27 @@ def phase_run(
 
     if toolpath:
         tasks = _build_single_toolpath_tasks(run_dir, toolpath)
+    elif v3_only:
+        tasks = _build_v3_tasks(run_dir)
     elif v2_only:
         tasks = _build_v2_tasks(run_dir)
     else:
         tasks = _build_tasks(run_dir)
+
+    # Apply optional speed/zone filters.  Both compare lower-case for
+    # convenience; an empty/None filter matches everything.
+    if speed_filter:
+        sf = speed_filter.lower()
+        tasks = [t for t in tasks if sf in str(t["speed_tag"]).lower()]
+    if zone_filter:
+        zf = zone_filter.lower()
+        tasks = [t for t in tasks if zf in str(t["zone_tag"]).lower()]
+
+    if speed_filter or zone_filter:
+        print(f"  Filters applied — speed={speed_filter!r}, zone={zone_filter!r}")
+        if not tasks:
+            print("  (no toolpaths match the filter; nothing to do)")
+            return
     print(f"\n{'='*70}")
     print(f"PHASE 1: RUN + COMPARE — {len(tasks)} toolpaths")
     print(f"{'='*70}")
@@ -747,31 +880,235 @@ def phase_run(
     elapsed = time.time() - t0
     print(f"\n  Phase 1 done in {elapsed:.1f}s — {ok} OK, {fail} FAIL")
 
-    # Write per-category and combined summary
+    # ── Summary generation ──
+    # Single combined summary (``verification_summary/``) is authoritative.
+    # Per-category sub-summaries are only emitted when more than one category
+    # has data — otherwise they would be identical duplicates of the combined
+    # summary and just clutter the output tree.
     if all_verifications:
         from core.blend_zone.verification import (
             generate_verification_report,
             generate_verification_plots,
         )
-        for cat_name, cat_v in cat_verifications.items():
-            if cat_v:
+        populated_cats = [c for c, v in cat_verifications.items() if v]
+        if len(populated_cats) > 1:
+            for cat_name in populated_cats:
+                cat_v = cat_verifications[cat_name]
                 cat_dir = run_dir / cat_name / "_summary"
                 generate_verification_report(cat_v, cat_dir)
-                generate_verification_plots(cat_v, cat_dir)
+                generate_verification_plots(
+                    cat_v, cat_dir,
+                    speed_warn_mm_s=speed_warn_mm_s,
+                    speed_fail_mm_s=speed_fail_mm_s,
+                )
                 n_pass = sum(1 for r in cat_v if r.passes_speed_criteria)
                 print(f"  {cat_name:<20} {n_pass}/{len(cat_v)} pass  "
                       f"(mean RMS={np.mean([r.speed.rms_error_mm_s for r in cat_v]):.1f} mm/s)")
 
         combined_dir = run_dir / "verification_summary"
         generate_verification_report(all_verifications, combined_dir)
-        generate_verification_plots(all_verifications, combined_dir)
+        generate_verification_plots(
+            all_verifications, combined_dir,
+            speed_warn_mm_s=speed_warn_mm_s,
+            speed_fail_mm_s=speed_fail_mm_s,
+        )
         n_pass = sum(1 for r in all_verifications if r.passes_speed_criteria)
         print(f"\n  TOTAL: {n_pass}/{len(all_verifications)} pass speed criteria")
+
+        # Human-readable summary table (grouped by toolpath × target speed).
+        _write_summary_table(run_dir, all_verifications, cat_verifications)
 
     # Generate flagged toolpaths report
     _write_flagged_report(run_dir, blend_results, blend_threshold_mm)
 
     return ok, fail
+
+
+def _write_summary_table(
+    run_dir: Path,
+    all_verifications,
+    cat_verifications: Dict[str, list],
+) -> None:
+    """Write a crisp per-toolpath / per-speed summary table.
+
+    Columns:  Zone · RMS · MaxErr · DurΔ · MeanDev · MaxDev · P95 · apex_SpdErr · apex_PosDev
+
+    ``apex_SpdErr`` / ``apex_PosDev`` are the solver-vs-RS deltas evaluated at
+    the programmed-waypoint "apex" of each blend arc (all rows in the RS
+    recording with ``is_at_waypoint == 1`` except the first and last, which are
+    the path start/end fine points).  They quantify how well the solver tracks
+    RS **exactly where blending matters most**.
+
+    Output: ``<run_dir>/verification_summary/summary_table.txt``.
+    """
+    from core.blend_zone.verification import load_rs_csv
+    import re as _re
+
+    def _key(label: str):
+        """Return (toolpath_group, speed_tag) — groups ``corner_30_deg_v20_*``
+        into one block and sorts zones naturally inside it."""
+        m = _re.match(r"^(?P<grp>.+?)_(?P<spd>v\d+)_?(?P<zone>z\S*)?$",
+                      Path(label).name)
+        if not m:
+            return (label, "", "")
+        return (m.group("grp"), m.group("spd") or "", m.group("zone") or "")
+
+    rows: List[Dict[str, object]] = []
+    for v in all_verifications:
+        try:
+            sol_csv = _REPO / str(v.solver_csv)
+            rs_csv = _REPO / str(v.rs_csv)
+            sol = load_rs_csv(sol_csv)
+            rs = load_rs_csv(rs_csv)
+        except Exception:
+            sol = rs = None
+
+        # Apex = fly-by waypoint visits only (exclude the start / end waypoints,
+        # which are motion start and final stop).  We group contiguous
+        # is_at_waypoint==1 samples into "visits", then keep everything except
+        # the first and last visit.
+        apex_spd_err = float("nan")
+        apex_pos_dev = float("nan")
+        if rs is not None and sol is not None and rs.is_at_waypoint is not None:
+            flag = np.asarray(rs.is_at_waypoint, dtype=bool)
+            visits: List[Tuple[int, int]] = []
+            i = 0
+            while i < len(flag):
+                if flag[i]:
+                    j = i
+                    while j + 1 < len(flag) and flag[j + 1]:
+                        j += 1
+                    visits.append((i, j))
+                    i = j + 1
+                else:
+                    i += 1
+            # Keep only middle (fly-by) visits.
+            mid_visits = visits[1:-1] if len(visits) >= 3 else []
+            if mid_visits:
+                # RS flags is_at_waypoint==1 as the robot ENTERS the blend,
+                # not at the apex of the dip, which can be up to ~200 ms later.
+                # The solver's TIME integration often drifts by 100-500 ms from
+                # RS over a 40 s trajectory, so comparing at absolute RS time
+                # would mis-align the dips.  Instead we align *spatially*: for
+                # each fly-by waypoint we find the nearest sample in EACH
+                # recording (independently) and compare a ±300 ms window
+                # around those centres.
+                from core.blend_zone.verification import (
+                    _project_points_to_polyline,
+                )
+                WINDOW_MS = 300.0
+                spd_errs_all: List[float] = []
+                pos_devs_all: List[float] = []
+                for (a, b) in mid_visits:
+                    # Spatial waypoint location = RS position at the flag
+                    wp_xyz = rs.tcp_mm[(a + b) // 2]
+
+                    # ── RS window (centred on the flag time) ──
+                    t_flag = float(rs.time_ms[(a + b) // 2])
+                    lo_r = np.searchsorted(rs.time_ms, t_flag - WINDOW_MS)
+                    hi_r = np.searchsorted(rs.time_ms, t_flag + WINDOW_MS)
+                    if hi_r <= lo_r:
+                        continue
+
+                    # ── Solver window (centred on the SPATIALLY nearest sample) ──
+                    d_sol = np.linalg.norm(sol.tcp_mm - wp_xyz, axis=1)
+                    k_sol = int(np.argmin(d_sol))
+                    t_sol_apex = float(sol.time_ms[k_sol])
+                    lo_s = np.searchsorted(sol.time_ms, t_sol_apex - WINDOW_MS)
+                    hi_s = np.searchsorted(sol.time_ms, t_sol_apex + WINDOW_MS)
+                    if hi_s <= lo_s:
+                        continue
+
+                    # Speed error = min-to-min difference of the two dips
+                    # within their respective windows.  This captures the
+                    # depth of the dip regardless of timing drift.
+                    v_rs_min = float(np.min(rs.speed_mm_s[lo_r:hi_r]))
+                    v_sol_min = float(np.min(sol.speed_mm_s[lo_s:hi_s]))
+                    spd_errs_all.append(abs(v_sol_min - v_rs_min))
+
+                    # Position: project RS window points onto the solver path
+                    # (full polyline, not just the window) to get the actual
+                    # geometric deviation at the corner.
+                    _, d_pos = _project_points_to_polyline(
+                        rs.tcp_mm[lo_r:hi_r], sol.tcp_mm,
+                    )
+                    pos_devs_all.append(float(np.max(d_pos)))
+                if spd_errs_all:
+                    apex_spd_err = float(np.max(spd_errs_all))
+                if pos_devs_all:
+                    apex_pos_dev = float(np.max(pos_devs_all))
+
+        rows.append({
+            "label": v.label,
+            "key": _key(v.label),
+            "rms": v.speed.rms_error_mm_s,
+            "maxerr": v.speed.max_error_mm_s,
+            "maxerr_cr": v.speed.max_error_cruise_mm_s,
+            "durd": v.speed.duration_offset_ms,
+            "meanD": v.position.mean_deviation_mm,
+            "maxD": v.position.max_deviation_mm,
+            "p95": v.position.p95_deviation_mm,
+            "apex_spd": apex_spd_err,
+            "apex_pos": apex_pos_dev,
+        })
+
+    if not rows:
+        return
+
+    out = run_dir / "verification_summary" / "summary_table.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    header = (f"{'Zone':<6} {'RMS':>7} {'MaxErr':>8} {'MaxCr':>7} {'DurΔ':>7} "
+              f"{'MeanD':>7} {'MaxD':>7} {'P95':>7} "
+              f"{'ApexSpd':>8} {'ApexPos':>8}")
+    units = (f"{'':6} {'mm/s':>7} {'mm/s':>8} {'mm/s':>7} {'ms':>7} "
+             f"{'mm':>7} {'mm':>7} {'mm':>7} "
+             f"{'mm/s':>8} {'mm':>8}")
+
+    # Group rows by (toolpath_group, speed_tag).
+    from collections import defaultdict
+    groups: Dict[Tuple[str, str], List[Dict]] = defaultdict(list)
+    for r in rows:
+        g, s, _z = r["key"]
+        groups[(g, s)].append(r)
+
+    lines: List[str] = [
+        "Experiment 23 — Feature 3 D1 · Per-Toolpath Summary",
+        "=" * 100,
+        "Solver vs RobotStudio accuracy on every trajectory in this run.",
+        "",
+        "Column reference:",
+        "  RMS       time-averaged |v_sol − v_rs| over the active motion window",
+        "  MaxErr    worst |v_sol − v_rs| anywhere (incl. start/end ramp)",
+        "  MaxCr     worst |v_sol − v_rs| in the CRUISE window only",
+        "            (both signals ≥ 90 % of commanded speed — excludes the",
+        "             S-curve vs trapezoid ramp-shape mismatch)",
+        "  DurΔ      solver_duration − rs_duration (positive ⇒ solver runs longer)",
+        "  MeanD/MaxD/P95   point-to-polyline Euclidean TCP deviation (mm)",
+        "  ApexSpd   worst |v_sol − v_rs| in a ±300 ms window around each fly-by",
+        "            corner (is_at_waypoint==1 visits excluding start / end).  The",
+        "            window catches the RS speed dip that lags the flag by ~200 ms.",
+        "  ApexPos   worst TCP Euclidean deviation in the same ±300 ms window",
+        "",
+    ]
+    # Sort groups by (name, speed).
+    for (grp, spd) in sorted(groups.keys()):
+        lines.append(f"── {grp}   [{spd}] ──")
+        lines.append(header)
+        lines.append(units)
+        gr_rows = sorted(groups[(grp, spd)], key=lambda r: (r["key"][2], r["label"]))
+        for r in gr_rows:
+            z = r["key"][2] or "—"
+            lines.append(
+                f"{z:<6} {r['rms']:>7.2f} {r['maxerr']:>8.2f} "
+                f"{r['maxerr_cr']:>7.2f} {r['durd']:>7.0f} "
+                f"{r['meanD']:>7.3f} {r['maxD']:>7.3f} {r['p95']:>7.3f} "
+                f"{r['apex_spd']:>8.2f} {r['apex_pos']:>8.3f}"
+            )
+        lines.append("")
+
+    out.write_text("\n".join(lines))
+    # Echo to stdout for quick console scanning.
+    print("\n" + "\n".join(lines))
 
 
 # ─── Phase 2: Calibration ────────────────────────────────────────────────────
@@ -866,8 +1203,13 @@ Examples:
   python tests/run_experiment_23_full.py --run-dir 04_10_26_14_30_00
   python tests/run_experiment_23_full.py --verbose
   python tests/run_experiment_23_full.py --v2_only --force
+  python tests/run_experiment_23_full.py --v3_only --force
+  python tests/run_experiment_23_full.py --v3_only --speed v100 --zone z5 --force
+  python tests/run_experiment_23_full.py --toolpath v3/corner/corner_90_deg_v100_z10.csv --force
   python tests/run_experiment_23_full.py --toolpath v2/corner/corner_30_deg_v500_z50.csv --force
   python tests/run_experiment_23_full.py --toolpath v2/corner --force
+  python tests/run_experiment_23_full.py --toolpath v2/corner --speed v20 --force
+  python tests/run_experiment_23_full.py --toolpath v2/corner --speed v20 --zone z10 --force
   python tests/run_experiment_23_full.py --blend-threshold 0.5
 """,
     )
@@ -885,12 +1227,27 @@ Examples:
                         help="Show interactive matplotlib 3D viewer for each trajectory")
     parser.add_argument("--v2_only", action="store_true",
                         help="Run only V2 toolpaths (corner v20/v500 + straight_line multi-speed)")
+    parser.add_argument("--v3_only", action="store_true",
+                        help="Run only V3 toolpaths (corner 30/60/90/120/150 deg, zones z0-z50, "
+                             "at v50/v100/v200).  Mutually exclusive with --v2_only.")
     parser.add_argument("--toolpath",
                         help="Run a single toolpath CSV or all CSVs in a folder "
                              "(path relative to Toolpaths_And_Waypoints/)")
     parser.add_argument("--blend-threshold", type=float, default=1.0,
                         help="Blend arc deviation threshold in mm (default: 1.0). "
                              "Toolpaths exceeding this are flagged.")
+    parser.add_argument("--speed", dest="speed_filter",
+                        help="Only run toolpaths whose speed_tag contains this "
+                             "substring (e.g. v20, v500).  Case-insensitive.")
+    parser.add_argument("--zone", dest="zone_filter",
+                        help="Only run toolpaths whose zone_tag contains this "
+                             "substring (e.g. z10, z50).  Case-insensitive.")
+    parser.add_argument("--speed-warn", dest="speed_warn_mm_s", type=float, default=5.0,
+                        help="RMS-speed-error WARN threshold (orange line) on the "
+                             "summary plot.  Default: 5 mm/s.")
+    parser.add_argument("--speed-fail", dest="speed_fail_mm_s", type=float, default=15.0,
+                        help="RMS-speed-error FAIL threshold (red line).  Bars above "
+                             "this count as regressions.  Default: 15 mm/s.")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -906,6 +1263,9 @@ Examples:
 
     t_total = time.time()
 
+    if args.v2_only and args.v3_only:
+        parser.error("--v2_only and --v3_only are mutually exclusive")
+
     if args.phase in ("all", "run"):
         phase_run(
             run_dir,
@@ -914,8 +1274,13 @@ Examples:
             verbose=args.verbose,
             show_3d=args.show_3d,
             v2_only=args.v2_only,
+            v3_only=args.v3_only,
             toolpath=args.toolpath,
             blend_threshold_mm=args.blend_threshold,
+            speed_filter=args.speed_filter,
+            zone_filter=args.zone_filter,
+            speed_warn_mm_s=args.speed_warn_mm_s,
+            speed_fail_mm_s=args.speed_fail_mm_s,
         )
 
     if args.phase in ("all", "calibrate"):

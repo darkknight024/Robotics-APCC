@@ -49,23 +49,37 @@ _TP_ROOT = _EXP23 / "Toolpaths_And_Waypoints"
 _OUTPUT = _EXP23 / "Validation" / "tcp_segments"
 
 
+def _pick_xyz(row: dict) -> list[float]:
+    """Read ``x_mm/y_mm/z_mm`` columns, falling back to the ``rs_`` prefix."""
+    def g(base: str) -> float:
+        if base in row:
+            return float(row[base])
+        return float(row["rs_" + base])
+    return [g("x_mm"), g("y_mm"), g("z_mm")]
+
+
 def _load_rs_tcp(path: Path) -> np.ndarray:
-    """Load (N,3) TCP XYZ from RobotStudio CSV."""
+    """Load (N,3) TCP XYZ from a RobotStudio Signal-Analyser CSV."""
     rows = []
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            rows.append([float(row["rs_x_mm"]), float(row["rs_y_mm"]), float(row["rs_z_mm"])])
+            rows.append(_pick_xyz(row))
     return np.array(rows)
 
 
 def _load_solver_tcp(path: Path) -> np.ndarray:
-    """Load (N,3) TCP XYZ from solver result CSV (uses rs_x_mm etc.)."""
+    """Load (N,3) TCP XYZ from the solver's result CSV.
+
+    Accepts both the current unprefixed column set (``x_mm``, …) and the
+    older ``rs_``-prefixed layout for backward compatibility with archived
+    results.
+    """
     rows = []
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            rows.append([float(row["rs_x_mm"]), float(row["rs_y_mm"]), float(row["rs_z_mm"])])
+            rows.append(_pick_xyz(row))
     return np.array(rows)
 
 

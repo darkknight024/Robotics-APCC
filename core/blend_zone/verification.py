@@ -34,16 +34,57 @@ from .calibration import RSTrajectoryData, load_rs_csv
 logger = logging.getLogger(__name__)
 
 
+# ─── Path utilities ──────────────────────────────────────────────────────────
+
+def _rel_to_project_root(p) -> str:
+    """Strip the absolute prefix so JSON reports carry only paths relative to
+    the ``Robot_APCC/`` root that a client will receive.
+
+    Examples::
+
+        /home/koushik/.../Robot_APCC/Experiments/...  →  Robot_APCC/Experiments/...
+        Robot_APCC/Experiments/...                   →  Robot_APCC/Experiments/...
+
+    The function is permissive: it accepts ``Path`` or ``str`` input, handles
+    both results / results-robotstudio trees, and returns a forward-slash
+    relative path string suitable for cross-platform client delivery.
+    """
+    s = str(p).replace("\\", "/")
+    marker = "Robot_APCC/"
+    idx = s.find(marker)
+    if idx >= 0:
+        return s[idx:]
+    return s
+
+
 # ─── Data containers ─────────────────────────────────────────────────────────
 
 @dataclass
 class SpeedComparisonMetrics:
-    """Speed profile comparison between solver and RS."""
+    """Speed profile comparison between solver and RS.
+
+    Two flavours of max error are reported:
+
+    * ``max_error_mm_s`` — worst |v_sol − v_rs| across the **entire** active
+      motion window, including the initial acceleration ramp and final
+      deceleration ramp.  Here the mismatch is dominated by the solver's
+      trapezoidal ramp vs RobotStudio's jerk-limited S-curve ramp; it tells
+      you how big the raw pointwise gap is but is not a good blend-quality
+      metric.
+
+    * ``max_error_cruise_mm_s`` — same quantity restricted to samples where
+      both signals are ≥ 90 % of the commanded speed (i.e. we have exited the
+      start ramp and haven't yet entered the end ramp).  This is the number
+      you should watch for blend-apex accuracy — it captures the centripetal
+      ceiling dip at ``z0/z1`` without being contaminated by the ramp-shape
+      mismatch.
+    """
     rms_error_mm_s: float = 0.0
     mean_gap_pct: float = 0.0
     rms_gap_pct: float = 0.0
     pct_at_speed_5pct: float = 0.0
     max_error_mm_s: float = 0.0
+    max_error_cruise_mm_s: float = 0.0
     solver_v_mean: float = 0.0
     rs_v_mean: float = 0.0
     solver_duration_ms: float = 0.0
@@ -116,7 +157,11 @@ def _resample_to_common_time(
     if t_end <= t_start:
         return np.array([]), np.array([]), np.array([])
 
-    dt = max(np.median(np.diff(t1)), np.median(np.diff(t2)))
+    # Resample on the FINER of the two native grids. Taking the coarser grid
+    # (as we did before) would smear out the RS apex dip — which often lasts
+    # only a few dozen milliseconds — across the ~250 ms solver stride.
+    dt = min(np.median(np.diff(t1)), np.median(np.diff(t2)))
+    dt = max(float(dt), 1e-3)    # 1 ms floor
     t_common = np.arange(t_start, t_end, dt)
     v1_r = np.interp(t_common, t1, v1)
     v2_r = np.interp(t_common, t2, v2)
@@ -128,11 +173,22 @@ def compare_speed_profiles(
     rs_data: RSTrajectoryData,
     v_cmd_mm_s: float = 0.0,
 ) -> SpeedComparisonMetrics:
-    """Compare speed profiles from solver and RS on a common time base.
+    """Compare TCP-speed time-series from solver and RS on a common time base.
 
-    Speed criteria from the proposal:
-        RMS error < 20 mm/s at 300 mm/s commanded
-        RMS error < 50 mm/s at 800 mm/s commanded
+    Both signals are first resampled onto the **finer** of the two native
+    grids (solver ``ds_mm/v_cmd`` vs RS Signal-Analyser 24 ms).  The
+    function then returns:
+
+    - **rms_error_mm_s** — time-averaged |v_sol − v_rs| over the active window.
+    - **max_error_mm_s** — worst pointwise error anywhere (dominated by the
+      S-curve vs trapezoid ramp mismatch).
+    - **max_error_cruise_mm_s** — worst pointwise error in the **cruise**
+      window where both signals are ≥ 90 % of ``v_cmd_mm_s``.  This is the
+      fair metric for blend-apex accuracy.
+    - **duration_offset_ms** — solver duration minus RS duration.
+
+    ``v_cmd_mm_s`` is used to define the cruise window; if ``0`` it is
+    inferred from the observed maximum of either signal.
     """
     t_sol = solver_data.time_ms - solver_data.time_ms[0]
     t_rs = rs_data.time_ms - rs_data.time_ms[0]
@@ -152,12 +208,26 @@ def compare_speed_profiles(
     safe_v = np.maximum(v_rs[active], 1.0)
     gap_pct = np.abs(error) / safe_v * 100.0
 
+    # Cruise-only mask: exclude the initial accel ramp and final decel ramp.
+    # Both solver and RS are required to be ≥ 90 % of the commanded speed.
+    # If no ``v_cmd_mm_s`` was supplied we infer it from the observed peaks.
+    v_ref = v_cmd_mm_s if v_cmd_mm_s > 0 else float(max(v_rs.max(), v_sol.max()))
+    threshold = 0.9 * v_ref
+    cruise_mask = (v_rs >= threshold) & (v_sol >= threshold)
+    if np.any(cruise_mask):
+        err_cruise = v_sol[cruise_mask] - v_rs[cruise_mask]
+        max_err_cruise = float(np.max(np.abs(err_cruise)))
+    else:
+        # Defensive fallback: use all active samples (e.g. fine-point only path).
+        max_err_cruise = float(np.max(np.abs(error)))
+
     return SpeedComparisonMetrics(
         rms_error_mm_s=float(np.sqrt(np.mean(error ** 2))),
         mean_gap_pct=float(np.mean(gap_pct)),
         rms_gap_pct=float(np.sqrt(np.mean(gap_pct ** 2))),
         pct_at_speed_5pct=float(np.mean(gap_pct < 5.0) * 100.0),
         max_error_mm_s=float(np.max(np.abs(error))),
+        max_error_cruise_mm_s=max_err_cruise,
         solver_v_mean=float(np.mean(v_sol[active])),
         rs_v_mean=float(np.mean(v_rs[active])),
         solver_duration_ms=float(t_sol[-1]),
@@ -233,6 +303,16 @@ def compare_joint_trajectories(
     )
 
 
+#: Default RMS-speed-error thresholds used on summary plots.  These are
+#: feature-level quality gates; individual solvers that exceed the WARN line
+#: (orange) are worth inspecting, and anything past FAIL (red) is considered
+#: a regression.  Tune via the corresponding kwargs of
+#: :func:`generate_verification_plots` — e.g. from ``run_experiment_23_full.py``
+#: the values are forwarded from CLI flags ``--speed-warn`` / ``--speed-fail``.
+DEFAULT_SPEED_WARN_MMS: float = 5.0
+DEFAULT_SPEED_FAIL_MMS: float = 15.0
+
+
 # ─── Single trajectory verification ──────────────────────────────────────────
 
 def verify_trajectory(
@@ -250,13 +330,14 @@ def verify_trajectory(
     pos_m = compare_tcp_positions(sol, rs)
     joint_m = compare_joint_trajectories(sol, rs, velocity_limits_rad_s)
 
-    rms_threshold = 50.0 if v_cmd_mm_s >= 600 else 20.0
-    passes = speed_m.rms_error_mm_s <= rms_threshold
+    # Single, configurable fail threshold keyed to ``DEFAULT_SPEED_FAIL_MMS``.
+    # Callers can tighten this per batch via ``rms_fail_mm_s``.
+    passes = speed_m.rms_error_mm_s <= DEFAULT_SPEED_FAIL_MMS
 
     return TrajectoryVerification(
         label=label or solver_csv.stem,
-        solver_csv=str(solver_csv),
-        rs_csv=str(rs_csv),
+        solver_csv=_rel_to_project_root(solver_csv),
+        rs_csv=_rel_to_project_root(rs_csv),
         speed=speed_m,
         position=pos_m,
         joints=joint_m,
@@ -317,8 +398,19 @@ def generate_verification_report(
 def generate_verification_plots(
     results: List[TrajectoryVerification],
     output_dir: Path,
+    speed_warn_mm_s: float = DEFAULT_SPEED_WARN_MMS,
+    speed_fail_mm_s: float = DEFAULT_SPEED_FAIL_MMS,
 ) -> List[Path]:
-    """Generate summary comparison plots from verification results."""
+    """Generate summary comparison plots from verification results.
+
+    Args:
+        results:           Per-trajectory :class:`TrajectoryVerification`.
+        output_dir:        Output directory for the three summary PNGs.
+        speed_warn_mm_s:   RMS speed-error threshold drawn in orange
+                           (``DEFAULT_SPEED_WARN_MMS``).
+        speed_fail_mm_s:   RMS speed-error threshold drawn in red
+                           (``DEFAULT_SPEED_FAIL_MMS``).
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -340,8 +432,14 @@ def generate_verification_plots(
     ax.set_xticklabels(labels, rotation=90, fontsize=6)
     ax.set_ylabel("RMS Speed Error (mm/s)")
     ax.set_title("Speed Profile Accuracy — Solver vs RobotStudio")
-    ax.axhline(20, color="orange", ls="--", lw=1, label="Threshold @300 mm/s")
-    ax.axhline(50, color="red", ls="--", lw=1, label="Threshold @800 mm/s")
+    ax.axhline(speed_warn_mm_s, color="orange", ls="--", lw=1,
+               label=f"Warn ≥ {speed_warn_mm_s:g} mm/s")
+    ax.axhline(speed_fail_mm_s, color="red", ls="--", lw=1,
+               label=f"Fail ≥ {speed_fail_mm_s:g} mm/s")
+    # Y-axis reaches at least 1.5× the fail line so the thresholds are visible
+    # even when every bar is comfortably below both.
+    ymax = max(max(rms_errors) * 1.2, speed_fail_mm_s * 1.5)
+    ax.set_ylim(0, ymax)
     ax.legend()
     ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
@@ -416,13 +514,14 @@ def generate_trajectory_comparison_plots(
     pos_m = compare_tcp_positions(sol, rs)
     joint_m = compare_joint_trajectories(sol, rs, velocity_limits_rad_s)
 
-    rms_threshold = 50.0 if v_cmd_mm_s >= 600 else 20.0
-    passes = speed_m.rms_error_mm_s <= rms_threshold
+    # Use the same configurable threshold as ``verify_trajectory`` so both
+    # paths agree on pass/fail and the summary plot's red line.
+    passes = speed_m.rms_error_mm_s <= DEFAULT_SPEED_FAIL_MMS
 
     result = TrajectoryVerification(
         label=label or solver_csv.stem,
-        solver_csv=str(solver_csv),
-        rs_csv=str(rs_csv),
+        solver_csv=_rel_to_project_root(solver_csv),
+        rs_csv=_rel_to_project_root(rs_csv),
         speed=speed_m,
         position=pos_m,
         joints=joint_m,
@@ -445,11 +544,21 @@ def generate_trajectory_comparison_plots(
         ax_v.axhline(v_cmd_mm_s, color="gray", ls=":", lw=0.8,
                       label=f"v_cmd = {v_cmd_mm_s:.0f} mm/s")
     ax_v.set_ylabel("TCP Speed (mm/s)", fontsize=10)
-    ax_v.set_title(f"Speed Profile Comparison — {short_label}\n"
-                   f"RMS Error = {speed_m.rms_error_mm_s:.1f} mm/s  |  "
-                   f"Duration Δ = {speed_m.duration_offset_ms:.0f} ms  |  "
-                   f"{'PASS' if passes else 'FAIL'}",
-                   fontsize=11)
+    # Title explicitly distinguishes the two error metrics:
+    #   • RMS  (≈ mean-magnitude across the whole trajectory, time-weighted)
+    #   • Max  (worst-case pointwise |v_sol − v_rs|, captures the apex dip)
+    # and reports Duration Δ = t_sol − t_rs (positive → solver is SLOWER
+    # overall than RS, typically by the blend-arc length mismatch and the
+    # difference between ABB's S-curve ramps and our trapezoidal ramps).
+    ax_v.set_title(
+        f"Speed Profile Comparison — {short_label}\n"
+        f"RMS (mean) = {speed_m.rms_error_mm_s:.2f} mm/s   |   "
+        f"Max (all) = {speed_m.max_error_mm_s:.2f} mm/s   |   "
+        f"Max (cruise-only) = {speed_m.max_error_cruise_mm_s:.2f} mm/s   |   "
+        f"Duration Δ = {speed_m.duration_offset_ms:+.0f} ms   |   "
+        f"{'PASS' if passes else 'FAIL'}",
+        fontsize=9,
+    )
     ax_v.legend(loc="upper right", fontsize=9)
     ax_v.grid(True, alpha=0.3)
 
@@ -467,6 +576,12 @@ def generate_trajectory_comparison_plots(
     saved.append(p)
 
     # ── 2) TCP 3D path comparison ──
+    # Use an **isometric-equal** aspect ratio so Δ1 mm looks like 1 mm on every
+    # axis.  The prior auto-scaled view stretched Z by 10⁴× whenever the tool
+    # tip stayed on a single plane (as in Experiment 23), producing the
+    # alarming-looking "blown-up" Z ripples that are in reality a fraction of a
+    # micrometre.  We also orient the camera at elev=22°, azim=-60° so the X
+    # and Y axes face the reader and the small blend arc is obviously visible.
     fig = plt.figure(figsize=(10, 8))
     ax3 = fig.add_subplot(111, projection="3d")
     ax3.plot(rs.tcp_mm[:, 0], rs.tcp_mm[:, 1], rs.tcp_mm[:, 2],
@@ -481,6 +596,18 @@ def generate_trajectory_comparison_plots(
                   f"Max = {pos_m.max_deviation_mm:.2f} mm",
                   fontsize=11)
     ax3.legend(fontsize=9)
+    # Equal-aspect cube spanning the max extent on any axis (min 10 mm).
+    all_pts = np.vstack([rs.tcp_mm, sol.tcp_mm])
+    lo = all_pts.min(axis=0)
+    hi = all_pts.max(axis=0)
+    span = float(max(np.max(hi - lo), 10.0))
+    mid = 0.5 * (hi + lo)
+    ax3.set_xlim(mid[0] - span / 2, mid[0] + span / 2)
+    ax3.set_ylim(mid[1] - span / 2, mid[1] + span / 2)
+    ax3.set_zlim(mid[2] - span / 2, mid[2] + span / 2)
+    ax3.set_box_aspect([1.0, 1.0, 1.0])
+    # Slightly tilted top-down-ish view: X→right, Y→up, Z→out of page.
+    ax3.view_init(elev=22, azim=-60)
     fig.tight_layout()
     p = output_dir / "rs_comparison_path_3d.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")
@@ -875,19 +1002,28 @@ def _plot_tcp_pose_deviation(
 
     fig, axes = plt.subplots(4, 2, figsize=(16, 14))
 
-    # Left column: X, Y, Z position deviation + Euclidean
-    pos_data = [("ΔX", dx, "mm"), ("ΔY", dy, "mm"), ("ΔZ", dz, "mm")]
-    eucl = np.sqrt(dx**2 + dy**2 + dz**2)
-    pos_data.append(("Euclidean", eucl, "mm"))
+    # Left column: X, Y, Z per-axis SIGNED delta (keeps sign for direction),
+    # plus the Euclidean deviation which is strictly non-negative.  Statistics
+    # are reported as absolute magnitudes (|Δ|) so "max deviation" means the
+    # largest geometric error, not the most negative value.
+    pos_data = [("ΔX", dx, "mm", True), ("ΔY", dy, "mm", True),
+                ("ΔZ", dz, "mm", True), ("Euclidean", np.sqrt(dx**2 + dy**2 + dz**2), "mm", False)]
 
-    for row, (name, data, unit) in enumerate(pos_data):
+    for row, (name, data, unit, signed) in enumerate(pos_data):
         ax = axes[row][0]
         ax.plot(s_sol, data, "steelblue", lw=0.8)
         ax.axhline(0, color="k", lw=0.5, alpha=0.3)
 
-        mn, mx, avg = float(np.min(data)), float(np.max(data)), float(np.mean(data))
-        p95 = float(np.percentile(np.abs(data), 95))
-        stats_text = f"Mean={avg:.3f}  Min={mn:.3f}  Max={mx:.3f}  P95={p95:.3f}"
+        abs_data = np.abs(data)
+        mean_abs = float(np.mean(abs_data))
+        max_abs = float(np.max(abs_data))
+        p95_abs = float(np.percentile(abs_data, 95))
+        if signed:
+            lo, hi = float(np.min(data)), float(np.max(data))
+            stats_text = (f"Mean|Δ|={mean_abs:.3f}  Max|Δ|={max_abs:.3f}  "
+                          f"P95|Δ|={p95_abs:.3f}   (signed range: [{lo:+.3f}, {hi:+.3f}])")
+        else:
+            stats_text = f"Mean={mean_abs:.3f}  Max={max_abs:.3f}  P95={p95_abs:.3f}"
         ax.set_title(f"{name} ({unit})    {stats_text}", fontsize=9)
         ax.set_ylabel(f"{name} ({unit})", fontsize=9)
         ax.grid(True, alpha=0.3)
@@ -895,16 +1031,19 @@ def _plot_tcp_pose_deviation(
         if row == 3:
             ax.set_xlabel("Arc Length (mm)", fontsize=9)
 
-    # Right column: qw, qx, qy, qz quaternion deviation
+    # Right column: qw, qx, qy, qz quaternion deviation — reported as |Δ| too.
     quat_data = [("Δqw", dqw), ("Δqx", dqx), ("Δqy", dqy), ("Δqz", dqz)]
     for row, (name, data) in enumerate(quat_data):
         ax = axes[row][1]
         ax.plot(s_sol, data, "coral", lw=0.8)
         ax.axhline(0, color="k", lw=0.5, alpha=0.3)
 
-        mn, mx, avg = float(np.min(data)), float(np.max(data)), float(np.mean(data))
-        p95 = float(np.percentile(np.abs(data), 95))
-        stats_text = f"Mean={avg:.5f}  Min={mn:.5f}  Max={mx:.5f}  P95={p95:.5f}"
+        abs_data = np.abs(data)
+        mean_abs = float(np.mean(abs_data))
+        max_abs = float(np.max(abs_data))
+        p95_abs = float(np.percentile(abs_data, 95))
+        stats_text = (f"Mean|Δ|={mean_abs:.5f}  Max|Δ|={max_abs:.5f}  "
+                      f"P95|Δ|={p95_abs:.5f}")
         ax.set_title(f"{name}    {stats_text}", fontsize=9)
         ax.set_ylabel(name, fontsize=9)
         ax.grid(True, alpha=0.3)

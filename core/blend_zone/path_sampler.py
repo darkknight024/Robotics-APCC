@@ -32,7 +32,7 @@ from typing import List, Optional
 import numpy as np
 
 from .zone_resolver import ZoneParams
-from .blend_geometry import BlendArcGeometry, _quadratic_bezier
+from .blend_geometry import BlendArcGeometry, _cubic_bezier
 
 logger = logging.getLogger(__name__)
 
@@ -149,23 +149,24 @@ def _sample_bezier_arc(
     q_out: np.ndarray,
     ds_mm: float,
 ) -> tuple:
-    """Sample a quadratic Bézier blend arc.
+    """Sample the cubic Bézier blend arc described by ``geom``.
 
-    Orientation is interpolated linearly across the arc (from incoming to
-    outgoing orientation at the waypoint boundary).
+    Orientation is interpolated via SLERP from the incoming to outgoing
+    orientation at the waypoint boundary.
 
-    The sample count is the larger of the user-requested arc-length
-    density ``ds_mm`` and ``_MIN_BLEND_SUBDIV``, and is always forced to an
-    even integer so the apex ``t = 0.5`` is a sample point.  Global
-    ``ds_mm`` for long straight segments can therefore remain coarse
-    without masking the curvature bottleneck inside blends.
+    The sample count is the larger of the user-requested arc-length density
+    ``ds_mm`` and ``_MIN_BLEND_SUBDIV``, and is always forced to an even
+    integer so the apex ``t = 0.5`` is a sample point.  Global ``ds_mm`` for
+    long straight segments can therefore remain coarse without masking the
+    curvature bottleneck inside blends.
 
     Returns:
         (positions_mm (K,3), quats (K,4), arc_dists (K,), t_vals (K,))
     """
     P0 = geom.entry_point_mm
-    P1 = geom.control_point_mm
-    P2 = geom.exit_point_mm
+    P1 = geom.inner_p1_mm
+    P2 = geom.inner_p2_mm
+    P3 = geom.exit_point_mm
 
     arc_len = geom.arc_length_mm
     n_sub = max(_MIN_BLEND_SUBDIV, int(np.ceil(arc_len / ds_mm)))
@@ -173,7 +174,7 @@ def _sample_bezier_arc(
         n_sub += 1
     t_vals = np.linspace(0.0, 1.0, n_sub + 1)
 
-    positions = np.array([_quadratic_bezier(P0, P1, P2, t) for t in t_vals])
+    positions = np.array([_cubic_bezier(P0, P1, P2, P3, t) for t in t_vals])
     quats = np.array([_slerp(q_in, q_out, t) for t in t_vals])
 
     diffs = np.diff(positions, axis=0)

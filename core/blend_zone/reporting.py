@@ -103,14 +103,18 @@ def generate_f3_report(
 
 # ─── RobotStudio-format CSV Export ───────────────────────────────────────────
 
+# Solver result CSV — we deliberately drop the ``rs_`` prefix that the
+# RobotStudio Signal-Analyser recordings use: these columns are OUR
+# predictions, not RobotStudio measurements.  The column *order* is kept
+# identical to RS so downstream tooling can zip the two files together.
 _RESULT_HEADER = [
     "time_ms",
-    "rs_j1_deg", "rs_j2_deg", "rs_j3_deg",
-    "rs_j4_deg", "rs_j5_deg", "rs_j6_deg",
+    "j1_deg", "j2_deg", "j3_deg",
+    "j4_deg", "j5_deg", "j6_deg",
     "speed_mm_per_s",
     "cf1", "cf4", "cf6", "cfx",
-    "rs_x_mm", "rs_y_mm", "rs_z_mm",
-    "rs_qw", "rs_qx", "rs_qy", "rs_qz",
+    "x_mm", "y_mm", "z_mm",
+    "qw", "qx", "qy", "qz",
     "linear_acceleration_mm_s_2",
     "is_at_waypoint",
 ]
@@ -148,6 +152,106 @@ def _find_waypoint_indices(
     wp_set.add(0)
     wp_set.add(len(dense_poses_m) - 1)
     return wp_set
+
+
+def _insert_ramp_transition_samples(
+    arc_lengths_mm: np.ndarray,
+    v_actual: np.ndarray,
+    poses: np.ndarray,
+    joint_angles_rad: np.ndarray,
+    a_accel_mm_s2: float,
+    a_decel_mm_s2: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Insert virtual samples at every ramp-end transition.
+
+    The dense-path sampler spaces samples uniformly along **arc length**
+    (``ds_mm``). At typical ``ds_mm = 5 mm`` and commanded ``v = 20 mm/s``,
+    each sample spans 250 ms in the time domain — far too coarse to capture
+    the acceleration from ``v = 0`` to ``v = v_cmd`` that occurs within the
+    first few tenths of a millimetre. Under uniform-``v_avg`` time
+    integration the whole ramp is stretched across the full 5 mm stride,
+    producing a spurious linear "half-speed" point at the midpoint.
+
+    This function fixes the integration without re-running the solver:
+
+      • Detects each ``(v₀, v₁)`` transition where ``Δv`` is non-trivial.
+      • Using the calibrated ramp acceleration (``a_accel`` for speed-up,
+        ``a_decel`` for slow-down) computes the true ramp distance
+        ``d_ramp = |v₁² − v₀²| / (2 a)`` and inserts a single virtual
+        sample at the end-of-ramp (accel) or start-of-ramp (decel) point
+        along the stride.
+      • The inserted sample reuses the end-state speed and linearly
+        interpolates pose and joint angles along the stride.
+
+    After the insertion every consecutive pair has either
+    ``v₀ ≈ v₁`` (cruise, ``dt = ds / v``) or
+    ``d_ramp ≥ ds`` (short stride, ``dt = ds / v_avg`` is already exact).
+
+    The net effect on the CSV: the first row after ``v = 0`` lands at the
+    real ramp-complete time (a few ms) instead of ``ds / (v/2)``, which
+    removes the ~10 mm/s phantom error at ``t ≈ 250 ms`` when comparing
+    against a RS recording.
+    """
+    n = len(arc_lengths_mm)
+    if n < 2 or a_accel_mm_s2 <= 1e-6 or a_decel_mm_s2 <= 1e-6:
+        return arc_lengths_mm, v_actual, poses, joint_angles_rad, np.zeros(n, dtype=bool)
+
+    out_s = [arc_lengths_mm[0]]
+    out_v = [v_actual[0]]
+    out_pose = [poses[0]]
+    out_joint = [joint_angles_rad[0]]
+    is_inserted = [False]
+    # Require a meaningful Δv (10% of max commanded speed, or 2 mm/s).
+    dv_thresh = max(2.0, 0.1 * float(np.max(v_actual)))
+
+    for k in range(1, n):
+        ds = arc_lengths_mm[k] - arc_lengths_mm[k - 1]
+        v0 = float(v_actual[k - 1])
+        v1 = float(v_actual[k])
+        dv = v1 - v0
+        if ds > 1e-9 and abs(dv) > dv_thresh:
+            a = a_accel_mm_s2 if dv > 0 else a_decel_mm_s2
+            d_ramp = (v1 * v1 - v0 * v0) / (2.0 * a)
+            d_ramp = abs(d_ramp)
+            if 1e-6 < d_ramp < ds - 1e-6:
+                # Insert virtual sample at the ramp boundary.
+                #   accel: v ramps v0→v1 over d_ramp, then cruises at v1 for (ds−d_ramp)
+                #   decel: v cruises at v0 for (ds−d_ramp), then ramps v0→v1 over d_ramp
+                if dv > 0:
+                    s_virt = arc_lengths_mm[k - 1] + d_ramp
+                    v_virt = v1
+                else:
+                    s_virt = arc_lengths_mm[k] - d_ramp
+                    v_virt = v0
+                alpha = (s_virt - arc_lengths_mm[k - 1]) / ds
+                pose_virt = poses[k - 1] + alpha * (poses[k] - poses[k - 1])
+                # Quaternion slice — renormalise to keep unit norm.
+                q = pose_virt[3:7]
+                q_norm = np.linalg.norm(q)
+                if q_norm > 1e-9:
+                    pose_virt[3:7] = q / q_norm
+                joint_virt = joint_angles_rad[k - 1] + alpha * (
+                    joint_angles_rad[k] - joint_angles_rad[k - 1]
+                )
+                out_s.append(s_virt)
+                out_v.append(v_virt)
+                out_pose.append(pose_virt)
+                out_joint.append(joint_virt)
+                is_inserted.append(True)
+
+        out_s.append(arc_lengths_mm[k])
+        out_v.append(v_actual[k])
+        out_pose.append(poses[k])
+        out_joint.append(joint_angles_rad[k])
+        is_inserted.append(False)
+
+    return (
+        np.asarray(out_s),
+        np.asarray(out_v),
+        np.asarray(out_pose),
+        np.asarray(out_joint),
+        np.asarray(is_inserted, dtype=bool),
+    )
 
 
 def _reconstruct_time(
@@ -252,17 +356,28 @@ def export_robotstudio_csv(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    n = dense_path.n_samples
     v_actual = speed_result.v_actual
     poses = dense_path.poses
     arcs = dense_path.arc_lengths
+    joints_in = np.asarray(joint_angles_rad, dtype=float)
+
+    # Kinematically accurate time integration requires a sample at every ramp
+    # boundary.  Synthesize those samples using the calibrated ramp accels.
+    cal = getattr(speed_result, "calibration", None)
+    a_accel = float(getattr(cal, "a_accel", 0.0) or 0.0) if cal else 0.0
+    a_decel = float(getattr(cal, "a_decel", 0.0) or 0.0) if cal else 0.0
+    if a_accel > 0.0 and a_decel > 0.0:
+        arcs, v_actual, poses, joints_in, _inserted = _insert_ramp_transition_samples(
+            arcs, v_actual, poses, joints_in, a_accel, a_decel,
+        )
+    n = len(arcs)
 
     # TCP positions (back to mm) and quaternions
     tcp_mm = poses[:, :3] * 1000.0
     tcp_quat = poses[:, 3:7]
 
     # Joint angles in degrees
-    joints_deg = np.degrees(joint_angles_rad)
+    joints_deg = np.degrees(joints_in)
 
     # Time axis and acceleration (arc-length domain, robust at v≈0)
     time_s = _reconstruct_time(arcs, v_actual)
@@ -280,7 +395,7 @@ def export_robotstudio_csv(
         for i in range(n):
             j = joints_deg[i]
             cf1, cf4, cf6, cfx = _compute_confdata(
-                joint_angles_rad[i], tcp_mm[i]
+                joints_in[i], tcp_mm[i]
             )
 
             row = [

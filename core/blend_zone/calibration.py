@@ -139,20 +139,39 @@ class CalibrationResult:
         return d
 
 
-# ─── RS CSV loader ────────────────────────────────────────────────────────────
+# ─── Trajectory CSV loader ───────────────────────────────────────────────────
 
-_RS_JOINT_COLS = [f"rs_j{i}_deg" for i in range(1, 7)]
-_RS_TCP_COLS = ["rs_x_mm", "rs_y_mm", "rs_z_mm"]
-_RS_QUAT_COLS = ["rs_qw", "rs_qx", "rs_qy", "rs_qz"]
+# RobotStudio Signal-Analyser recordings prefix every physical column with
+# ``rs_`` (``rs_x_mm``, ``rs_j1_deg``, …).  The solver's own result CSV
+# uses the **same column set without the prefix** — the ``rs_`` marker
+# is reserved for measurements.  The loader accepts either naming so
+# a single implementation can ingest both formats.
+_JOINT_COL_BASES = [f"j{i}_deg" for i in range(1, 7)]
+_TCP_COL_BASES = ["x_mm", "y_mm", "z_mm"]
+_QUAT_COL_BASES = ["qw", "qx", "qy", "qz"]
+
+
+def _pick(row: Dict[str, str], base: str) -> str:
+    """Return ``row[base]`` if present, else ``row["rs_" + base]``."""
+    if base in row:
+        return row[base]
+    rs_key = "rs_" + base
+    if rs_key in row:
+        return row[rs_key]
+    raise KeyError(f"Column '{base}' (or 'rs_{base}') not found in CSV")
 
 
 def load_rs_csv(path: Path) -> RSTrajectoryData:
-    """Load a RobotStudio Signal Analyser CSV into structured arrays.
+    """Load a trajectory CSV (RobotStudio **or** solver-generated) into arrays.
 
-    Expects the standard column set recorded in Experiment 23:
-    ``time_ms, rs_j1_deg..rs_j6_deg, speed_mm_per_s, cf1..cfx,
-    rs_x_mm..rs_z_mm, rs_qw..rs_qz, linear_acceleration_mm_s_2,
-    is_at_waypoint``.
+    Column conventions accepted (both variants work):
+      - RobotStudio:  ``time_ms, rs_j1_deg..rs_j6_deg, speed_mm_per_s,
+                        cf1..cfx, rs_x_mm..rs_z_mm, rs_qw..rs_qz,
+                        linear_acceleration_mm_s_2, is_at_waypoint``
+      - Solver:       same column set **without** the ``rs_`` prefix.
+
+    The returned :class:`RSTrajectoryData` looks identical regardless of
+    which flavour was on disk.
     """
     rows: List[Dict[str, str]] = []
     with open(path, "r", encoding="utf-8") as f:
@@ -166,16 +185,16 @@ def load_rs_csv(path: Path) -> RSTrajectoryData:
     accel = np.array([float(r["linear_acceleration_mm_s_2"]) for r in rows])
 
     joints = np.zeros((n, 6))
-    for j, col in enumerate(_RS_JOINT_COLS):
-        joints[:, j] = [float(r[col]) for r in rows]
+    for j, base in enumerate(_JOINT_COL_BASES):
+        joints[:, j] = [float(_pick(r, base)) for r in rows]
 
     tcp = np.zeros((n, 3))
-    for j, col in enumerate(_RS_TCP_COLS):
-        tcp[:, j] = [float(r[col]) for r in rows]
+    for j, base in enumerate(_TCP_COL_BASES):
+        tcp[:, j] = [float(_pick(r, base)) for r in rows]
 
     quat = np.zeros((n, 4))
-    for j, col in enumerate(_RS_QUAT_COLS):
-        quat[:, j] = [float(r[col]) for r in rows]
+    for j, base in enumerate(_QUAT_COL_BASES):
+        quat[:, j] = [float(_pick(r, base)) for r in rows]
 
     wp_flag = np.array([int(float(r["is_at_waypoint"])) for r in rows], dtype=bool)
 
@@ -189,6 +208,11 @@ def load_rs_csv(path: Path) -> RSTrajectoryData:
         tcp_quat=quat,
         is_at_waypoint=wp_flag,
     )
+
+
+# Backward-compatible alias — the loader also reads solver CSVs, so
+# expose it under the more accurate name as well.
+load_trajectory_csv = load_rs_csv
 
 
 # ─── a_tcp estimation (Experiment V1 — straight lines) ───────────────────────

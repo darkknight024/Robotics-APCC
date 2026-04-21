@@ -31,7 +31,9 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .zone_resolver import ZoneParams, resolve_zone_list, apply_overlap_reduction
-from .blend_geometry import BlendArcGeometry, compute_blend_geometries
+from .blend_geometry import (
+    BlendArcGeometry, DEFAULT_BLEND_SHAPE_K, compute_blend_geometries,
+)
 from .orientation_zone import populate_orientation_zones
 from .path_sampler import DensePath, sample_blended_path
 from .speed_profile import SpeedCalibration, SpeedProfileResult, predict_speed_profile
@@ -242,6 +244,8 @@ def run_feature3_d1(
                 else robot_config.a_tcp_decel_mm_s2
             ),
             rho_min_scale=robot_config.rho_min_scale,
+            a_n_blend_mm_s2=getattr(robot_config, "a_n_blend_mm_s2", 0.0),
+            k_corner_dip=getattr(robot_config, "k_corner_dip", 0.0),
             T_settle_s=robot_config.T_settle_s,
             is_calibrated=True,
         )
@@ -277,8 +281,14 @@ def run_feature3_d1(
         if verbose:
             print(f"    Zones: {n_flyby} fly-by, {n_wp - n_flyby} fine/endpoint")
 
-        # ── Step 3: Blend geometry ──
-        blend_geoms = compute_blend_geometries(waypoints, zone_params)
+        # ── Step 3: Blend geometry (cubic Bézier, shape_k from robot config) ──
+        shape_k = (
+            robot_config.blend_shape_k
+            if robot_config and robot_config.blend_shape_k > 0.0
+            else DEFAULT_BLEND_SHAPE_K
+        )
+        blend_geoms = compute_blend_geometries(waypoints, zone_params,
+                                               shape_k=shape_k)
         n_arcs = sum(1 for g in blend_geoms if g is not None)
         if verbose:
             print(f"    Blend arcs: {n_arcs}")

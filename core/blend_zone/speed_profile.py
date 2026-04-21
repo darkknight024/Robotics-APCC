@@ -70,6 +70,27 @@ class SpeedCalibration:
                              centripetal speed ceiling.  ABB's actual blend
                              has a fatter profile than a pure Bézier so
                              ρ_min is systematically larger.
+        a_n_blend_mm_s2:     **Normal-acceleration** inner limit inside blend
+                             arcs.  ABB's IRC5 planner jerk-limits the TCP
+                             and clamps the centripetal (normal) acceleration
+                             to a smaller value than ``a_tcp`` near tight
+                             corners — that is what produces the sharp speed
+                             dip at ``z0/z1`` apexes observed in RobotStudio
+                             recordings.  If > 0, the blend speed ceiling is
+                             ``min(sqrt(a_tcp·ρ), sqrt(a_n_blend·ρ))`` ≡
+                             ``sqrt(a_n_blend·ρ)`` (smaller of the two).  Use
+                             ``0`` to disable and fall back to ``a_tcp``.
+        k_corner_dip:        **Universal corner-speed-reduction** coefficient
+                             applied inside every blend arc, independent of
+                             zone size.  Models the IRC5 ``CornerPathReduction``
+                             / S-curve jerk-limit behaviour which imposes
+                             ``v_dip ≈ v_cmd · (1 − k_corner · sin(δ/2))``
+                             even when the centripetal limit does not bind
+                             (that is what produces the ~10–15 % dips observed
+                             at z5 / z10 / z50).  ``δ`` is the *deflection
+                             angle* (``π − corner_angle_rad``).  Empirically
+                             calibrated to ``≈ 0.50`` against v20 corner set.
+                             Set to ``0`` to disable.
         T_settle_s:          Fine-point settling time (seconds).
         is_calibrated:       True only after constants have been measured from
                              site data.
@@ -79,6 +100,8 @@ class SpeedCalibration:
     a_accel_mm_s2: float = 0.0          # 0 ⇒ fall back to a_tcp_mm_s2
     a_decel_mm_s2: float = 0.0          # 0 ⇒ fall back to a_tcp_mm_s2
     rho_min_scale: float = 1.0
+    a_n_blend_mm_s2: float = 0.0        # 0 ⇒ disabled (use a_tcp)
+    k_corner_dip: float = 0.0           # 0 ⇒ disabled (no universal dip)
     T_settle_s: float = _PLACEHOLDER_T_SETTLE
     is_calibrated: bool = False
 
@@ -89,6 +112,11 @@ class SpeedCalibration:
     @property
     def a_decel(self) -> float:
         return self.a_decel_mm_s2 if self.a_decel_mm_s2 > 0 else self.a_tcp_mm_s2
+
+    @property
+    def a_n_blend(self) -> float:
+        """Effective normal-accel limit inside blends (0 ⇒ disabled)."""
+        return self.a_n_blend_mm_s2
 
 
 @dataclass(frozen=True)
@@ -120,29 +148,66 @@ def _bezier_local_rho_mm(
     r_tcp_mm: float,
     corner_angle_rad: float,
     t: float,
+    shape_k: float = 2.0 / 3.0,
 ) -> float:
-    """Analytical radius of curvature of a quadratic Bézier blend arc at
-    parameter ``t`` ∈ [0, 1].
+    """Analytical radius of curvature of the symmetric *cubic* Bézier blend
+    arc at parameter ``t`` ∈ [0, 1].
 
-    Derived directly from the Bézier derivatives with equal-length handles
-    ``d = r_tcp_mm`` at deflection angle ``θ = corner_angle_rad``::
+    Control-point layout (``d = r_tcp_mm``, ``θ = corner_angle_rad``)::
 
-        ρ(t) = 2 · d · f(t)^{3/2} / sin(θ)
-        f(t) = (1 − t)² + t² + 2 t (1 − t) cos(θ)
+        P0 = entry,    P1 = entry + k·d·u_in,
+        P3 = exit,     P2 = exit  − k·d·u_out
 
-    At the apex ``t = 0.5`` this reduces to ``d · cos²(θ/2) / sin(θ/2)``
-    (matches :func:`_compute_rho_min`).
+    Curvature at parameter ``t`` is ``|B′ × B″| / |B′|³``; by symmetry at
+    ``t = 0.5`` this reduces to ``(3/8) · d · cos²(θ/2) · (2−k)² / [k · sin(θ/2)]``
+    (cross-checked against :func:`_compute_rho_min_cubic`).  For ``k = 2/3``
+    the cubic coincides with the classic quadratic Bézier and the formula
+    reduces to the previous quadratic expression.
 
-    For straight paths (θ → 0), ρ(t) → ∞ and the centripetal limit
-    vanishes.
+    For straight paths (θ → 0) this returns ``inf``.
     """
     sin_theta = np.sin(corner_angle_rad)
-    if sin_theta < 1e-12:
+    if sin_theta < 1e-12 or shape_k < 1e-6:
         return np.inf
+
     one_m_t = 1.0 - t
-    f_t = one_m_t * one_m_t + t * t + 2.0 * t * one_m_t * np.cos(corner_angle_rad)
-    f_t = max(f_t, 0.0)
-    return 2.0 * r_tcp_mm * (f_t ** 1.5) / sin_theta
+    cos_t = np.cos(corner_angle_rad)
+    d = r_tcp_mm
+    k = shape_k
+
+    # B'(t) = 3(1-t)²(P1-P0) + 6t(1-t)(P2-P1) + 3t²(P3-P2)
+    # Decompose along unit vectors u_in and u_out:
+    #   P1 - P0 = k·d·u_in
+    #   P3 - P2 = k·d·u_out
+    #   P2 - P1 = (P3-P0) - k·d·(u_in + u_out)
+    # Let coefficients of u_in and u_out be (a_in, a_out):
+    a_in  = 3 * one_m_t * one_m_t * (k * d) \
+          + 6 * t * one_m_t * d * (1 - k) \
+          + 3 * t * t * 0.0
+    a_out = 3 * one_m_t * one_m_t * 0.0 \
+          + 6 * t * one_m_t * d * (1 - k) \
+          + 3 * t * t * (k * d)
+    # Wait — P3-P0 in the symmetric case is d*(u_in + u_out) along path,
+    # so (P2-P1) = d*(u_in+u_out) - k*d*(u_in+u_out) = d*(1-k)*(u_in+u_out).
+    # So the 6t(1-t)(P2-P1) term contributes equally to u_in and u_out.
+    # (Lines above already encode this: a_in gets 6 t(1-t) d (1-k) and same for a_out.)
+
+    b_prime_sq = a_in * a_in + a_out * a_out + 2 * a_in * a_out * cos_t
+    b_prime = np.sqrt(max(b_prime_sq, 0.0))
+
+    # B''(t) = 6(1-t)(P2 − 2P1 + P0) + 6t(P3 − 2P2 + P1)
+    #        = 6 d [(1-t)·((1-2k)u_in + (1-k)u_out)
+    #              +   t ·((k-1) u_in + (2k-1) u_out)]
+    # Coefficients along u_in and u_out:
+    c_in  = 6 * d * (one_m_t * (1 - 2 * k) + t * (k - 1))
+    c_out = 6 * d * (one_m_t * (1 - k)     + t * (2 * k - 1))
+    # 2-D cross product |B' × B''| = |a_in*c_out − a_out*c_in| · |u_in × u_out|
+    cross_scalar = abs(a_in * c_out - a_out * c_in) * sin_theta
+
+    if b_prime < 1e-12 or cross_scalar < 1e-12:
+        return np.inf
+    kappa = cross_scalar / (b_prime ** 3)
+    return 1.0 / kappa
 
 
 def _blend_speed_ceiling(
@@ -156,6 +221,47 @@ def _blend_speed_ceiling(
     if not np.isfinite(rho_mm) or rho_mm <= 0:
         return np.inf
     return np.sqrt(a_tcp * rho_mm)
+
+
+def _corner_dip_ceiling(
+    v_cmd_mm_s: float,
+    corner_angle_rad: float,
+    blend_t: float,
+    k_corner_dip: float,
+) -> float:
+    """Universal corner-speed-reduction ceiling inside a blend arc.
+
+    RobotStudio recordings at large zones (z5 … z50) show a systematic
+    ~10–15 % dip of TCP speed at the blend apex even when the centripetal
+    limit ``sqrt(a_n · ρ)`` is nowhere close to binding.  The mechanism is
+    the IRC5 jerk-limited S-curve planner changing the velocity-vector
+    direction across the blend (``CornerPathReduction`` in ABB system
+    parameters).  We model it as::
+
+        v_corner(t) = v_cmd · (1 − k_corner · sin(δ/2) · 4·t·(1−t))
+
+    where
+
+    * ``δ = π − corner_angle_rad`` is the **deflection** angle (how much
+      the TCP direction actually rotates across the corner; 30° for a
+      30° deflection, 180° for a U-turn).
+    * ``4·t·(1−t)`` is a smooth parabolic window that peaks at
+      ``t = 0.5`` (blend apex) and vanishes at the arc endpoints, so the
+      reduction fades continuously into the surrounding straights.
+
+    ``k_corner_dip = 0.5`` recreates the observed z5/z10/z50 apex dip
+    (≈ 0.87 · v_cmd at 30° deflection) with no tuning per zone.
+    """
+    if k_corner_dip <= 1e-6 or v_cmd_mm_s <= 0:
+        return np.inf
+    deflection = np.pi - corner_angle_rad
+    if deflection <= 1e-6:
+        return np.inf
+    # Smooth parabolic window; 0 at t=0,1 and 1 at t=0.5.
+    t_safe = float(np.clip(blend_t, 0.0, 1.0))
+    window = 4.0 * t_safe * (1.0 - t_safe)
+    reduction = k_corner_dip * np.sin(0.5 * deflection) * window
+    return v_cmd_mm_s * max(1.0 - reduction, 0.0)
 
 
 def predict_speed_profile(
@@ -202,6 +308,12 @@ def predict_speed_profile(
     a_accel = calibration.a_accel
     a_decel = calibration.a_decel
     rho_scale = max(calibration.rho_min_scale, 1e-6)
+    # Jerk-limited normal-acceleration inner limit (``a_n_blend``).  When set,
+    # the blend-arc centripetal ceiling v = sqrt(min(a_tcp, a_n_blend) · ρ)
+    # which is a strictly lower bound near the apex (where ρ is smallest).
+    # This reproduces the characteristic ``z0/z1`` speed dip that the IRC5
+    # jerk-limited S-curve planner imposes on tight corners.
+    a_n_blend_eff = calibration.a_n_blend if calibration.a_n_blend > 0 else a_blend
     arc_s = dense_path.arc_lengths
     v_cmd = dense_path.v_cmd_at_s.copy()
     is_blend = dense_path.is_blend_arc
@@ -219,6 +331,43 @@ def predict_speed_profile(
         and len(blend_t) == M and len(blend_wp) == M
     )
 
+    k_corner = max(0.0, float(calibration.k_corner_dip))
+
+    def _v_cmd_at_wp(wp_idx: int) -> float:
+        """Representative commanded speed for a blend arc (first sample in it)."""
+        mask = is_blend & (blend_wp == wp_idx)
+        if not np.any(mask):
+            return float(np.max(v_cmd)) if len(v_cmd) else 0.0
+        return float(np.max(v_cmd[mask]))
+
+    # Pre-classify each fly-by waypoint into one of two mutually-exclusive
+    # regimes.  The two ceilings describe different physics and should NOT be
+    # composed with ``min`` at the same sample:
+    #
+    #   • Centripetal regime  (tight zones, e.g. z0 / z1):
+    #     The hard kinematic limit ``v ≤ √(a_n · ρ)`` binds at the apex and
+    #     produces a SHARP, NARROW dip to ``√(a_n · ρ_min)`` — exactly matching
+    #     what IRC5 records.  No servo-level "corner-path-reduction" is added
+    #     on top, because the controller already slows below v_cmd here.
+    #
+    #   • Corner-dip regime   (loose zones, e.g. z5 / z10 / z50):
+    #     The centripetal ceiling is far above ``v_cmd`` so the ideal
+    #     trajectory would cruise through at v_cmd.  In that case the
+    #     IRC5 jerk-limited planner applies a smooth ~10–15 % dip across
+    #     the blend arc (parabolic-window ``CornerPathReduction``).
+    #
+    # A blend switches to the centripetal regime iff the apex centripetal
+    # speed ``√(a_n · ρ_min) < v_cmd_local``, i.e. the pure kinematic limit
+    # actually binds.
+    centripetal_wp: set = set()
+    for wp_idx, geom in geom_by_idx.items():
+        v_centri_apex = _blend_speed_ceiling(
+            geom.rho_min_mm * rho_scale, a_n_blend_eff,
+        )
+        v_cmd_local = _v_cmd_at_wp(wp_idx)
+        if v_cmd_local > 0 and v_centri_apex < v_cmd_local:
+            centripetal_wp.add(wp_idx)
+
     if use_local:
         for k in range(M):
             if not is_blend[k]:
@@ -228,29 +377,48 @@ def predict_speed_profile(
             if geom is None:
                 continue
             t_k = float(blend_t[k])
-            if not np.isfinite(t_k):
-                # Fallback: use ρ_min of the arc
-                v_blend_ceil[k] = _blend_speed_ceiling(
-                    geom.rho_min_mm * rho_scale, a_blend,
+
+            if wp_idx in centripetal_wp:
+                # Centripetal regime: sharp narrow dip from curvature alone.
+                if not np.isfinite(t_k):
+                    v_blend_ceil[k] = _blend_speed_ceiling(
+                        geom.rho_min_mm * rho_scale, a_n_blend_eff,
+                    )
+                    continue
+                rho_k = _bezier_local_rho_mm(
+                    geom.r_tcp_eff_mm, geom.corner_angle_rad, t_k,
+                    shape_k=getattr(geom, "shape_k", 2.0 / 3.0),
                 )
-                continue
-            rho_k = _bezier_local_rho_mm(
-                geom.r_tcp_eff_mm, geom.corner_angle_rad, t_k,
-            )
-            v_blend_ceil[k] = _blend_speed_ceiling(rho_k * rho_scale, a_blend)
+                v_blend_ceil[k] = _blend_speed_ceiling(
+                    rho_k * rho_scale, a_n_blend_eff,
+                )
+            else:
+                # Corner-dip regime: shallow wide dip across the arc.
+                t_eff = t_k if np.isfinite(t_k) else 0.5
+                v_blend_ceil[k] = _corner_dip_ceiling(
+                    float(v_cmd[k]), geom.corner_angle_rad, t_eff, k_corner,
+                )
     else:
         # Legacy path: constant ρ_min across the arc region (fallback only)
         for g in blend_geoms:
             if g is None:
                 continue
-            v_ceiling = _blend_speed_ceiling(g.rho_min_mm * rho_scale, a_blend)
+            wp_idx_legacy = getattr(g, "waypoint_idx", -1)
+            is_centri = wp_idx_legacy in centripetal_wp
+            v_centri = _blend_speed_ceiling(g.rho_min_mm * rho_scale, a_n_blend_eff)
             for k in range(M):
                 if not is_blend[k]:
                     continue
                 pos_mm = dense_path.poses[k, :3] * 1000.0
                 d_to_control = np.linalg.norm(pos_mm - g.control_point_mm)
                 if d_to_control < g.r_tcp_eff_mm * 2.5:
-                    v_blend_ceil[k] = min(v_blend_ceil[k], v_ceiling)
+                    if is_centri:
+                        v_blend_ceil[k] = min(v_blend_ceil[k], v_centri)
+                    else:
+                        v_corner = _corner_dip_ceiling(
+                            float(v_cmd[k]), g.corner_angle_rad, 0.5, k_corner,
+                        )
+                        v_blend_ceil[k] = min(v_blend_ceil[k], v_corner)
 
     # ── Base profile: min(v_cmd, v_blend_ceil) ──
     v_profile = np.minimum(v_cmd, v_blend_ceil)
@@ -305,12 +473,15 @@ def predict_speed_profile(
     logger.info(
         "Speed profile: v_actual range [%.1f, %.1f] mm/s, "
         "total duration %.2f s, %d fine-point stops "
-        "(a_blend=%.0f, a_accel=%.0f, a_decel=%.0f, ρ_scale=%.2f)",
+        "(a_blend=%.0f, a_accel=%.0f, a_decel=%.0f, ρ_scale=%.2f, "
+        "a_n_blend=%.0f, k_corner_dip=%.2f)",
         float(np.min(v_actual)),
         float(np.max(v_actual)),
         total_time,
         len(fine_indices),
         a_blend, a_accel, a_decel, rho_scale,
+        a_n_blend_eff if calibration.a_n_blend > 0 else 0.0,
+        k_corner,
     )
 
     return SpeedProfileResult(

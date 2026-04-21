@@ -2,16 +2,21 @@
 Feature 3 Deliverable 1 — Blend Zone Analysis Package
 ======================================================
 
-Implements the zone-blending pipeline for predicting actual TCP speed profiles
-on ABB IRB-1300 toolpaths with per-waypoint zonedata specifications.
+Predicts the actual TCP speed profile and SE(3) path an ABB IRB-1300 will
+execute for a toolpath with per-waypoint ``zonedata``.  Validated against
+RobotStudio Signal-Analyser recordings in ``tests/run_experiment_23_full.py``.
 
-Modules
--------
-- :mod:`zone_resolver`      M1 — Zone lookup table and overlap reduction
-- :mod:`blend_geometry`     M2 — Parabolic blend arc geometry (quadratic Bézier)
-- :mod:`orientation_zone`   M3 — Effective orientation zone onset (ABB p.1796)
-- :mod:`path_sampler`       M4 — Dense SE(3) path sampler with blend arcs
-- :mod:`speed_profile`      M5 — TCP speed profile prediction
+Pipeline (left→right; see :func:`pipeline.run_feature3_d1`)
+-----------------------------------------------------------
+M1 :mod:`zone_resolver`      Parse zone spec (``z0``..``z100``, ``fine``)
+M2 :mod:`blend_geometry`     Cubic-Bézier blend arcs (``shape_k = 0.78``)
+M3 :mod:`orientation_zone`   Effective orientation-zone onset (TRM-RAPID p.1796)
+M4 :mod:`path_sampler`       Dense SE(3) path: straights + blend arcs
+M5 :mod:`speed_profile`      TCP speed: centripetal ceiling + ramp limits
+ · :mod:`calibration`        Identifies ``a_tcp``, ``T_settle`` etc. from RS data
+ · :mod:`reporting`          Writes ``trajectory_N_result.csv`` + JSON report
+ · :mod:`verification`       Solver-vs-RS speed / pose / joint comparison
+ · :mod:`blend_comparison`   Per-blend-arc Fréchet / Hausdorff / deviation
 """
 
 from .zone_resolver import (
@@ -54,6 +59,7 @@ from .calibration import (
     save_calibration_report,
     generate_calibration_plots,
     load_rs_csv,
+    load_trajectory_csv,
 )
 from .verification import (
     TrajectoryVerification,
@@ -92,7 +98,7 @@ __all__ = [
     "CalibrationResult", "CalibrationOffset",
     "run_calibration", "compute_calibration_offsets",
     "save_calibration_report", "generate_calibration_plots",
-    "load_rs_csv",
+    "load_rs_csv", "load_trajectory_csv",
     # Verification
     "TrajectoryVerification",
     "verify_trajectory", "verify_batch",

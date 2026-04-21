@@ -21,7 +21,7 @@ robots:
     payload_kg: 7
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
     acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0] # just for testing not an actual limit (FIX ME)
-    # Calibration — from Experiment 23 RobotStudio data (2026-04-15, tuned 2026-04-20)
+    # Calibration — from Experiment 23 RobotStudio data (tuned 2026-04-20)
     calibration:
       a_tcp_mm_s2: 6128.0              # Peak TCP acceleration (distance-based from V1 straight-line)
                                        # used as the centripetal capability for the blend ceiling
@@ -32,13 +32,46 @@ robots:
       a_accel_eff_mm_s2: 2800.0        # Tuned on V2 corner v500: mean RMS drops 63→57 mm/s
       a_decel_eff_mm_s2: 10000.0       # ABB's peak decel from stop is ~14 k mm/s²; 10 k
                                        # matches the ramp into fine points best on V2
-      # ρ_min correction factor.  ABB's blend curve has a larger effective
-      # minimum radius of curvature than a pure quadratic Bézier at the
-      # same r_tcp (observed ratio ≈ 2.6× from V2 v20 corner recordings).
-      rho_min_scale: 2.6
+      # Blend-arc geometry: symmetric cubic Bézier with shape parameter k
+      # controlling how far the inner control points sit from the programmed
+      # corner:  P1 = entry + k·r·dir_in,  P2 = exit − k·r·dir_out.
+      #
+      #   k = 0       → degenerate straight line (ignores the corner)
+      #   k = 2/3     → quadratic Bézier equivalent (classic "parabolic" blend)
+      #   k = 0.78    → best least-squares fit to RS Signal-Analyser recordings
+      #                 across ALL corner angles (30°, 60°, 90°, 120°, 150°
+      #                 interior) and ALL zones (z0/z1/z5/z10/z50) at both v20
+      #                 and v500 speeds; residual <0.12 mm RMS on all matched
+      #                 geometries (see test `fit_cubic_bezier_to_rs`).
+      blend_shape_k: 0.78
+      # ρ_min safety/correction factor for the centripetal speed ceiling.
+      # Now that the cubic-Bézier geometry matches the ABB blend directly,
+      # no empirical radius scaling is needed — keep at 1.0 unless a future
+      # controller variant demands otherwise.
+      rho_min_scale: 1.0
+      # Normal-acceleration inner limit used INSIDE blend arcs.  ABB's IRC5
+      # motion planner is jerk-limited, so the centripetal (normal) accel it
+      # commits to at tight-corner apexes is smaller than the peak tangential
+      # capability ``a_tcp``.  That is what produces the characteristic speed
+      # dip at ``z0/z1`` apexes (e.g. RS dips to ~12 mm/s at a 150°-deflection
+      # z1 corner from v_cmd = 20 mm/s, while a naive ``sqrt(a_tcp·ρ)`` ceiling
+      # would only dip to ~17.5 mm/s).  Fit:  v_dip² / ρ_min → 3100 mm/s²
+      # (from `30_deg_corner_z1` apex in V2 corner recordings).  Set to 0 to
+      # disable and fall back to ``a_tcp``.
+      a_n_blend_mm_s2: 3100.0
+      # Universal corner-speed-reduction coefficient k_corner.  RobotStudio
+      # shows a systematic ~10–15 % speed dip at EVERY blend apex, even for
+      # large zones (z5 … z50) where the centripetal ceiling does not bind.
+      # The mechanism is the IRC5 S-curve/jerk-limit planner rotating the
+      # velocity-vector direction across the blend ("CornerPathReduction" in
+      # ABB's system parameters).  We model it as
+      #   v_dip ≈ v_cmd · (1 − k_corner · sin(δ/2) · 4·t·(1−t))
+      # where δ = deflection angle (how much the TCP direction rotates across
+      # the corner).  Empirically k_corner = 0.50 matches the z5/z10/z50 dips
+      # on the v20 and v500 corner sets within ~1 mm/s.  Set to 0 to disable.
+      k_corner_dip: 0.50
       T_settle_s: 0.2                  # Fine-point settling time (NOT calibrated — proposal default)
       is_calibrated: true
-      blend_model_rmse_mm_s: 56.9      # v_blend model RMSE against 30 corner observations
       calibration_source: "Experiment_23"
       calibrated_date: "2026-04-20"
 
