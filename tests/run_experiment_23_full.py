@@ -13,6 +13,7 @@ Output structure (under Results/<MM_DD_YY_HH_MM_SS>/):
     siping_toolpaths/      — solver results + RS comparison per toolpath
     v2/                    — V2 straight_line + corner (v20/v500) results
     v3/                    — V3 corner (v50/v100/v200, 5 angles × 5 zones) results
+    v4/                    — V4 straight_line (v100..v3000) + corner (v200/v500) results
 
 Usage::
 
@@ -24,6 +25,7 @@ Usage::
     python tests/run_experiment_23_full.py --3d_view            # interactive 3D viewer per trajectory
     python tests/run_experiment_23_full.py --v2_only --force    # V2 toolpaths only
     python tests/run_experiment_23_full.py --v3_only --force    # V3 toolpaths only
+    python tests/run_experiment_23_full.py --v4_only --force    # V4 toolpaths only
 """
 from __future__ import annotations
 
@@ -59,6 +61,10 @@ _RS_ROOT_V2 = _RS_ROOT / "v2"
 # V3 paths (extended corner set: 5 angles × 5 zones × {v50, v100, v200})
 _TOOLPATHS_V3 = _TOOLPATHS / "v3"
 _RS_ROOT_V3 = _RS_ROOT / "v3"
+
+# V4 paths (straight_line + corner with 250 Hz logger RS data)
+_TOOLPATHS_V4 = _TOOLPATHS / "v4"
+_RS_ROOT_V4 = _RS_ROOT / "v4"
 
 _CONFIG_PATH = str(_REPO / "config" / "batch_feasibility_config.yaml")
 _KNIFE_CONFIG = str(_REPO / "config" / "knife_config.yaml")
@@ -177,6 +183,30 @@ def _find_rs_csv_v3_corner(angle_tag: str, zone_tag: str, speed_tag: str) -> Opt
     return None
 
 
+# ─── V4 RS CSV matching helpers ──────────────────────────────────────────────
+
+def _find_rs_csv_v4_straight(speed_tag: str) -> Optional[Path]:
+    """V4: v300 -> v4/straight_line_trajectories/straight_v300.csv"""
+    p = _RS_ROOT_V4 / "straight_line_trajectories" / f"straight_{speed_tag}.csv"
+    return p if p.exists() else None
+
+
+def _find_rs_csv_v4_corner(angle_tag: str, zone_tag: str, speed_tag: str) -> Optional[Path]:
+    """V4: (90_deg, z5, v200) -> v4/corner_trajectories/v200/z5/90_deg_corner_z5.csv"""
+    rs_dir = _RS_ROOT_V4 / "corner_trajectories" / speed_tag / zone_tag
+    if not rs_dir.exists():
+        return None
+    base = f"{angle_tag}_corner_{zone_tag}.csv"
+    p = rs_dir / base
+    if p.exists():
+        return p
+    base_with_speed = f"{angle_tag}_corner_{zone_tag}_{speed_tag}.csv"
+    p2 = rs_dir / base_with_speed
+    if p2.exists():
+        return p2
+    return None
+
+
 # ─── Task builder ─────────────────────────────────────────────────────────────
 
 def _build_v2_tasks(run_dir: Path) -> List[dict]:
@@ -271,6 +301,60 @@ def _build_v3_tasks(run_dir: Path) -> List[dict]:
     return tasks
 
 
+def _build_v4_tasks(run_dir: Path) -> List[dict]:
+    """Build tasks for V4 toolpaths (straight_line + corner at v200 / v500).
+
+    V4 repeats the straight-line set at v100 / v300 / v500 / v1000 / v3000 and
+    corner set at v200 / v500 across zones z0 / z1 / z5 / z10 / z50.
+    """
+    tasks: List[dict] = []
+
+    # V4 Straight line: multiple speeds
+    sl_dir = _TOOLPATHS_V4 / "straight_line"
+    if sl_dir.exists():
+        for csv_f in sorted(sl_dir.glob("straight_line_waypoint_v*_fine.csv")):
+            speed_tag = csv_f.stem.replace("straight_line_waypoint_", "").replace("_fine", "")
+            tasks.append(dict(
+                csv=str(csv_f),
+                out=str(run_dir / "v4" / "straight_line" / speed_tag / csv_f.stem),
+                base_frame=True,
+                knife_pose=None,
+                category="straight_line",
+                speed_tag=speed_tag,
+                zone_tag="fine",
+                csv_stem=csv_f.stem,
+                label=f"v4/straight_line/{speed_tag}",
+                v4=True,
+            ))
+
+    # V4 Corner: 5 angles × 5 zones × 2 speeds (v200, v500)
+    corner_dir = _TOOLPATHS_V4 / "corner"
+    if corner_dir.exists():
+        for speed in ("v200", "v500"):
+            for csv_f in sorted(corner_dir.glob(f"corner_*_{speed}_z*.csv")):
+                stem = csv_f.stem
+                stripped = stem.replace("corner_", "")
+                speed_marker = f"_{speed}_"
+                idx = stripped.find(speed_marker)
+                if idx < 0:
+                    continue
+                angle_tag = stripped[:idx]
+                zone_tag = stripped[idx + len(speed_marker):]
+                tasks.append(dict(
+                    csv=str(csv_f),
+                    out=str(run_dir / "v4" / "corner" / speed / f"{angle_tag}_{zone_tag}"),
+                    base_frame=True,
+                    knife_pose=None,
+                    category="corner",
+                    speed_tag=speed,
+                    zone_tag=zone_tag,
+                    csv_stem=csv_f.stem,
+                    label=f"v4/corner/{speed}/{angle_tag}/{zone_tag}",
+                    v4=True,
+                ))
+    return tasks
+
+
 def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]:
     """Build tasks for a single toolpath CSV, a folder of CSVs, or a glob.
 
@@ -314,6 +398,7 @@ def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]
 
         is_v2 = parts_str.startswith("v2")
         is_v3 = parts_str.startswith("v3")
+        is_v4 = parts_str.startswith("v4")
         stem = csv_f.stem
 
         # Detect category
@@ -365,6 +450,7 @@ def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]
             label=out_label,
             v2=is_v2,
             v3=is_v3,
+            v4=is_v4,
         ))
 
     return tasks
@@ -453,6 +539,7 @@ def _resolve_rs_csv(task: dict) -> Tuple[Optional[Path], float]:
     category = task["category"]
     is_v2 = task.get("v2", False)
     is_v3 = task.get("v3", False)
+    is_v4 = task.get("v4", False)
 
     if is_v3:
         if category == "corner":
@@ -479,6 +566,20 @@ def _resolve_rs_csv(task: dict) -> Tuple[Optional[Path], float]:
                 angle_tag = stripped[:idx]
                 zone_tag = stripped[idx + len(speed_marker):]
                 return _find_rs_csv_v2_corner(angle_tag, zone_tag, st), v_cmd
+        return None, v_cmd
+
+    if is_v4:
+        if category == "straight_line":
+            return _find_rs_csv_v4_straight(st), v_cmd
+        elif category == "corner":
+            stem = task["csv_stem"]
+            stripped = stem.replace("corner_", "")
+            speed_marker = f"_{st}_"
+            idx = stripped.find(speed_marker)
+            if idx >= 0:
+                angle_tag = stripped[:idx]
+                zone_tag = stripped[idx + len(speed_marker):]
+                return _find_rs_csv_v4_corner(angle_tag, zone_tag, st), v_cmd
         return None, v_cmd
 
     if category == "straight_line":
@@ -770,6 +871,7 @@ def phase_run(
     show_3d: bool = False,
     v2_only: bool = False,
     v3_only: bool = False,
+    v4_only: bool = False,
     toolpath: Optional[str] = None,
     blend_threshold_mm: float = 1.0,
     speed_filter: Optional[str] = None,
@@ -800,6 +902,8 @@ def phase_run(
         tasks = _build_single_toolpath_tasks(run_dir, toolpath)
     elif v3_only:
         tasks = _build_v3_tasks(run_dir)
+    elif v4_only:
+        tasks = _build_v4_tasks(run_dir)
     elif v2_only:
         tasks = _build_v2_tasks(run_dir)
     else:
@@ -1204,8 +1308,12 @@ Examples:
   python tests/run_experiment_23_full.py --verbose
   python tests/run_experiment_23_full.py --v2_only --force
   python tests/run_experiment_23_full.py --v3_only --force
+  python tests/run_experiment_23_full.py --v4_only --force
   python tests/run_experiment_23_full.py --v3_only --speed v100 --zone z5 --force
+  python tests/run_experiment_23_full.py --v4_only --speed v200 --zone z10 --force
   python tests/run_experiment_23_full.py --toolpath v3/corner/corner_90_deg_v100_z10.csv --force
+  python tests/run_experiment_23_full.py --toolpath v4/corner/corner_90_deg_v200_z10.csv --force
+  python tests/run_experiment_23_full.py --toolpath v4/straight_line --force
   python tests/run_experiment_23_full.py --toolpath v2/corner/corner_30_deg_v500_z50.csv --force
   python tests/run_experiment_23_full.py --toolpath v2/corner --force
   python tests/run_experiment_23_full.py --toolpath v2/corner --speed v20 --force
@@ -1230,6 +1338,9 @@ Examples:
     parser.add_argument("--v3_only", action="store_true",
                         help="Run only V3 toolpaths (corner 30/60/90/120/150 deg, zones z0-z50, "
                              "at v50/v100/v200).  Mutually exclusive with --v2_only.")
+    parser.add_argument("--v4_only", action="store_true",
+                        help="Run only V4 toolpaths (straight_line v100/v300/v500/v1000/v3000 + "
+                             "corner 30/60/90/120/150 deg, zones z0-z50, at v200/v500).")
     parser.add_argument("--toolpath",
                         help="Run a single toolpath CSV or all CSVs in a folder "
                              "(path relative to Toolpaths_And_Waypoints/)")
@@ -1263,8 +1374,9 @@ Examples:
 
     t_total = time.time()
 
-    if args.v2_only and args.v3_only:
-        parser.error("--v2_only and --v3_only are mutually exclusive")
+    selected_versions = sum(bool(x) for x in (args.v2_only, args.v3_only, args.v4_only))
+    if selected_versions > 1:
+        parser.error("--v2_only, --v3_only, and --v4_only are mutually exclusive")
 
     if args.phase in ("all", "run"):
         phase_run(
@@ -1275,6 +1387,7 @@ Examples:
             show_3d=args.show_3d,
             v2_only=args.v2_only,
             v3_only=args.v3_only,
+            v4_only=args.v4_only,
             toolpath=args.toolpath,
             blend_threshold_mm=args.blend_threshold,
             speed_filter=args.speed_filter,
