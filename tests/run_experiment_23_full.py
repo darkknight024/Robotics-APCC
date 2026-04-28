@@ -26,6 +26,15 @@ Usage::
     python tests/run_experiment_23_full.py --v2_only --force    # V2 toolpaths only
     python tests/run_experiment_23_full.py --v3_only --force    # V3 toolpaths only
     python tests/run_experiment_23_full.py --v4_only --force    # V4 toolpaths only
+    python tests/run_experiment_23_full.py --with_speed_fit     # enable speed comparison
+
+Speed-fit policy:
+    Solver-vs-RobotStudio TCP speed comparison is **disabled by default**
+    (no ``rs_comparison_speed.png``, no RMS/MaxErr/MaxCr/DurΔ/ApexSpd
+    columns in ``summary_table.txt``, no aggregate speed plots).  Pass
+    ``--with_speed_fit`` to re-enable it.  Geometry, joint, position
+    and per-blend-arc comparisons are always emitted.  See
+    ``Feature3d1_Readme.md`` Part F for the rationale.
 """
 from __future__ import annotations
 
@@ -599,6 +608,7 @@ def _run_single_task(
     skip_existing: bool,
     verbose: bool = False,
     show_3d: bool = False,
+    with_speed_fit: bool = False,
 ) -> Tuple[bool, Optional[object], Optional[object]]:
     """Run solver on one toolpath, then generate RS comparison if available.
 
@@ -670,6 +680,7 @@ def _run_single_task(
             label=task["label"], v_cmd_mm_s=v_cmd,
             velocity_limits_rad_s=vel_limits,
             input_waypoint_csv=input_csv,
+            with_speed_fit=with_speed_fit,
         )
         verification = v
 
@@ -711,6 +722,7 @@ def _run_single_task(
                     v_cmd_mm_s=v_cmd,
                     velocity_limits_rad_s=vel_limits,
                     input_waypoint_csv=input_csv,
+                    with_speed_fit=with_speed_fit,
                 )
                 if verification is None:
                     verification = v
@@ -878,6 +890,7 @@ def phase_run(
     zone_filter: Optional[str] = None,
     speed_warn_mm_s: float = 5.0,
     speed_fail_mm_s: float = 15.0,
+    with_speed_fit: bool = False,
 ):
     """Run solver on all toolpaths, generating RS comparison alongside.
 
@@ -888,6 +901,15 @@ def phase_run(
 
         --toolpath v2/corner --speed v20 --zone z10
         --v3_only --speed v100 --zone z5
+
+    ``with_speed_fit`` (default ``False``) gates every solver-vs-RS speed
+    comparison artefact: the per-trajectory ``rs_comparison_speed.png``,
+    the aggregate ``speed_rms_error_summary.png`` /
+    ``duration_comparison.png``, and the speed columns of
+    ``summary_table.txt``.  Geometry, position, joint and blend-arc
+    comparisons remain enabled.  Disabled by default while the RS V4
+    speed logger has known artefacts; pass ``--with_speed_fit`` to
+    re-enable.
     """
     cfg = load_batch_config(_CONFIG_PATH)
     knives = load_knife_config(_KNIFE_CONFIG)
@@ -961,13 +983,15 @@ def phase_run(
             success, v, blend_r = _run_single_task(
                 task, cfg, robot_config, knives, vel_limits, accel_limits, skip_existing,
                 verbose=verbose, show_3d=show_3d,
+                with_speed_fit=with_speed_fit,
             )
             ok += 1
             rs_info = ""
             if v is not None:
                 all_verifications.append(v)
                 cat_verifications[task["category"]].append(v)
-                rs_info = f" (RMS={v.speed.rms_error_mm_s:.1f} mm/s)"
+                if with_speed_fit:
+                    rs_info = f" (RMS={v.speed.rms_error_mm_s:.1f} mm/s)"
             if blend_r is not None:
                 blend_results.append((label, blend_r))
                 if blend_r.max_deviation_mm > blend_threshold_mm:
@@ -1004,10 +1028,15 @@ def phase_run(
                     cat_v, cat_dir,
                     speed_warn_mm_s=speed_warn_mm_s,
                     speed_fail_mm_s=speed_fail_mm_s,
+                    with_speed_fit=with_speed_fit,
                 )
-                n_pass = sum(1 for r in cat_v if r.passes_speed_criteria)
-                print(f"  {cat_name:<20} {n_pass}/{len(cat_v)} pass  "
-                      f"(mean RMS={np.mean([r.speed.rms_error_mm_s for r in cat_v]):.1f} mm/s)")
+                if with_speed_fit:
+                    n_pass = sum(1 for r in cat_v if r.passes_speed_criteria)
+                    print(f"  {cat_name:<20} {n_pass}/{len(cat_v)} pass  "
+                          f"(mean RMS={np.mean([r.speed.rms_error_mm_s for r in cat_v]):.1f} mm/s)")
+                else:
+                    print(f"  {cat_name:<20} {len(cat_v)} trajectories  "
+                          f"(speed-fit disabled)")
 
         combined_dir = run_dir / "verification_summary"
         generate_verification_report(all_verifications, combined_dir)
@@ -1015,12 +1044,18 @@ def phase_run(
             all_verifications, combined_dir,
             speed_warn_mm_s=speed_warn_mm_s,
             speed_fail_mm_s=speed_fail_mm_s,
+            with_speed_fit=with_speed_fit,
         )
-        n_pass = sum(1 for r in all_verifications if r.passes_speed_criteria)
-        print(f"\n  TOTAL: {n_pass}/{len(all_verifications)} pass speed criteria")
+        if with_speed_fit:
+            n_pass = sum(1 for r in all_verifications if r.passes_speed_criteria)
+            print(f"\n  TOTAL: {n_pass}/{len(all_verifications)} pass speed criteria")
+        else:
+            print(f"\n  TOTAL: {len(all_verifications)} trajectories compared "
+                  f"(speed-fit disabled — see Feature3d1_Readme.md Part F)")
 
         # Human-readable summary table (grouped by toolpath × target speed).
-        _write_summary_table(run_dir, all_verifications, cat_verifications)
+        _write_summary_table(run_dir, all_verifications, cat_verifications,
+                             with_speed_fit=with_speed_fit)
 
     # Generate flagged toolpaths report
     _write_flagged_report(run_dir, blend_results, blend_threshold_mm)
@@ -1032,6 +1067,7 @@ def _write_summary_table(
     run_dir: Path,
     all_verifications,
     cat_verifications: Dict[str, list],
+    with_speed_fit: bool = False,
 ) -> None:
     """Write a crisp per-toolpath / per-speed summary table.
 
@@ -1042,6 +1078,11 @@ def _write_summary_table(
     recording with ``is_at_waypoint == 1`` except the first and last, which are
     the path start/end fine points).  They quantify how well the solver tracks
     RS **exactly where blending matters most**.
+
+    When ``with_speed_fit`` is ``False`` every speed-derived column
+    (``RMS``, ``MaxErr``, ``MaxCr``, ``DurΔ``, ``ApexSpd``) is replaced
+    with ``—`` so the layout still aligns; geometry / position columns
+    are unchanged.  See Feature3d1_Readme.md Part F.
 
     Output: ``<run_dir>/verification_summary/summary_table.txt``.
     """
@@ -1168,6 +1209,12 @@ def _write_summary_table(
              f"{'mm':>7} {'mm':>7} {'mm':>7} "
              f"{'mm/s':>8} {'mm':>8}")
 
+    def _fmt_speed(val: float, width: int, prec: int = 2) -> str:
+        """Render a speed-derived cell — ``—`` when speed-fit is disabled."""
+        if not with_speed_fit:
+            return f"{'—':>{width}}"
+        return f"{val:>{width}.{prec}f}"
+
     # Group rows by (toolpath_group, speed_tag).
     from collections import defaultdict
     groups: Dict[Tuple[str, str], List[Dict]] = defaultdict(list)
@@ -1194,6 +1241,14 @@ def _write_summary_table(
         "  ApexPos   worst TCP Euclidean deviation in the same ±300 ms window",
         "",
     ]
+    if not with_speed_fit:
+        lines.insert(3,
+            "Speed-fit disabled — RMS / MaxErr / MaxCr / DurΔ / ApexSpd "
+            "columns are placeholders.")
+        lines.insert(4,
+            "Pass --with_speed_fit to re-enable them.  Geometry "
+            "and joint columns are unchanged.")
+        lines.insert(5, "")
     # Sort groups by (name, speed).
     for (grp, spd) in sorted(groups.keys()):
         lines.append(f"── {grp}   [{spd}] ──")
@@ -1202,11 +1257,21 @@ def _write_summary_table(
         gr_rows = sorted(groups[(grp, spd)], key=lambda r: (r["key"][2], r["label"]))
         for r in gr_rows:
             z = r["key"][2] or "—"
+            durd_cell = f"{r['durd']:>7.0f}" if with_speed_fit else f"{'—':>7}"
+            apex_spd_cell = (
+                f"{r['apex_spd']:>8.2f}" if (with_speed_fit and not np.isnan(r['apex_spd']))
+                else f"{'—':>8}"
+            )
+            apex_pos_cell = (
+                f"{r['apex_pos']:>8.3f}" if not np.isnan(r['apex_pos']) else f"{'—':>8}"
+            )
             lines.append(
-                f"{z:<6} {r['rms']:>7.2f} {r['maxerr']:>8.2f} "
-                f"{r['maxerr_cr']:>7.2f} {r['durd']:>7.0f} "
+                f"{z:<6} {_fmt_speed(r['rms'], 7)} "
+                f"{_fmt_speed(r['maxerr'], 8)} "
+                f"{_fmt_speed(r['maxerr_cr'], 7)} "
+                f"{durd_cell} "
                 f"{r['meanD']:>7.3f} {r['maxD']:>7.3f} {r['p95']:>7.3f} "
-                f"{r['apex_spd']:>8.2f} {r['apex_pos']:>8.3f}"
+                f"{apex_spd_cell} {apex_pos_cell}"
             )
         lines.append("")
 
@@ -1233,11 +1298,31 @@ def phase_calibrate(run_dir: Path) -> Optional[Path]:
     rs_straight = _RS_ROOT / "straight_line_trajectories"
     rs_corner = _RS_ROOT / "corner_trajectories"
 
+    # Pool every RS CSV across the V1 top-level layout and the V2 / V3 / V4
+    # sub-trees so T_settle and joint-limit detectors get the largest
+    # possible sample.  V4 is the only set whose straight-line recordings
+    # carry a clean fine-endpoint settle tail today (250 Hz logger), so
+    # excluding it would re-introduce the "NOT CALIBRATABLE" message.
     all_rs_csvs: List[Path] = []
-    for subdir in ["straight_line_trajectories", "corner_trajectories", "siping_toolpaths"]:
-        d = _RS_ROOT / subdir
+    _scan_dirs = [
+        _RS_ROOT / "straight_line_trajectories",
+        _RS_ROOT / "corner_trajectories",
+        _RS_ROOT / "siping_toolpaths",
+    ]
+    for sub in ("v2", "v3", "v4"):
+        sub_root = _RS_ROOT / sub
+        if not sub_root.exists():
+            continue
+        _scan_dirs.append(sub_root / "straight_line_trajectories")
+        # corner sub-trees nest one extra level under the speed tag
+        # (v100/, v200/, v500/, …) and possibly a zone tag (z0/, z5/, …).
+        corner_root = sub_root / "corner_trajectories"
+        if corner_root.exists():
+            _scan_dirs.append(corner_root)
+
+    for d in _scan_dirs:
         if d.exists():
-            all_rs_csvs.extend(sorted(d.glob("*.csv")))
+            all_rs_csvs.extend(sorted(d.rglob("*.csv")))
 
     cal = run_calibration(rs_straight, rs_corner, all_rs_csvs, "Experiment_23")
 
@@ -1275,9 +1360,23 @@ def phase_calibrate(run_dir: Path) -> Optional[Path]:
     print(f"  a_tcp (accel)  = {cal.a_tcp_mm_s2:>8.0f} mm/s²")
     print(f"  a_tcp (decel)  = {cal.a_tcp_decel_mm_s2:>8.0f} mm/s²")
     if cal.T_settle_s is not None:
-        print(f"  T_settle       = {cal.T_settle_s:>8.3f} s")
+        obs = np.asarray(cal.T_settle_observations_s) * 1000.0  # → ms for display
+        if len(obs) > 0:
+            print(
+                f"  T_settle       = {cal.T_settle_s:>8.3f} s "
+                f"(median of {len(obs)} obs: {cal.T_settle_n_mid_dwell} mid-dwell "
+                f"+ {cal.T_settle_n_end_tail} end-tail; "
+                f"min={obs.min():.1f} ms p50={np.median(obs):.1f} ms "
+                f"p95={np.percentile(obs, 95):.1f} ms max={obs.max():.1f} ms)"
+            )
+        else:
+            print(f"  T_settle       = {cal.T_settle_s:>8.3f} s")
     else:
-        print(f"  T_settle       = NOT CALIBRATABLE")
+        print(
+            f"  T_settle       = NOT CALIBRATABLE "
+            f"(no dwell or settle-tail detected — recordings either lack a fine "
+            f"endpoint with is_at_waypoint flag or are truncated mid-motion)"
+        )
     print(f"  Blend RMSE     = {cal.blend_model_rmse_mm_s:>8.1f} mm/s ({len(cal.blend_observations)} obs)")
     n_pass = sum(1 for o in offsets if o.within_tolerance)
     print(f"  Offsets        : {n_pass}/{len(offsets)} within tolerance")
@@ -1319,6 +1418,7 @@ Examples:
   python tests/run_experiment_23_full.py --toolpath v2/corner --speed v20 --force
   python tests/run_experiment_23_full.py --toolpath v2/corner --speed v20 --zone z10 --force
   python tests/run_experiment_23_full.py --blend-threshold 0.5
+  python tests/run_experiment_23_full.py --v4_only --with_speed_fit --force   # speed comparison ON
 """,
     )
     parser.add_argument("--phase", choices=["all", "run", "calibrate"],
@@ -1359,6 +1459,13 @@ Examples:
     parser.add_argument("--speed-fail", dest="speed_fail_mm_s", type=float, default=15.0,
                         help="RMS-speed-error FAIL threshold (red line).  Bars above "
                              "this count as regressions.  Default: 15 mm/s.")
+    parser.add_argument("--with_speed_fit", action="store_true",
+                        help="Enable solver-vs-RobotStudio TCP speed comparison "
+                             "(rs_comparison_speed.png + RMS/MaxErr/MaxCr/DurΔ/"
+                             "ApexSpd columns of summary_table.txt + speed_rms / "
+                             "duration aggregate plots).  DISABLED BY DEFAULT — "
+                             "the RS V4 speed logger has known artefacts; see "
+                             "Feature3d1_Readme.md Part F for context.")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -1394,6 +1501,7 @@ Examples:
             zone_filter=args.zone_filter,
             speed_warn_mm_s=args.speed_warn_mm_s,
             speed_fail_mm_s=args.speed_fail_mm_s,
+            with_speed_fit=args.with_speed_fit,
         )
 
     if args.phase in ("all", "calibrate"):

@@ -435,7 +435,16 @@ def run_feature3_d1(
                 blend_geoms, waypoints, final_vel_lims, traj_name,
             )
             # Reuse existing Feature-2 EAIK branch visualization style for F3.
-            if config.solver == "eaik":
+            #
+            # Large siping paths can have tens of thousands of dense samples.
+            # Plotting every EAIK candidate for each sample produces hundreds
+            # of thousands of matplotlib scatter calls and can look like a
+            # solver hang after the real computation has already finished.
+            configured_branch_plot_limit = int(
+                getattr(config.eaik_multi_solution, "max_waypoints_in_graph", 10000)
+            )
+            max_branch_plot_samples = min(configured_branch_plot_limit, 2000)
+            if config.solver == "eaik" and len(per_wp) <= max_branch_plot_samples:
                 from utils.feasibility_plot import plot_eaik_branches_all_joints_subplots
                 all_sols_per_wp: List[List[np.ndarray]] = []
                 all_ecfx_per_wp: List[List[tuple]] = []
@@ -471,6 +480,12 @@ def run_feature3_d1(
                         config.eaik_multi_solution, "max_waypoints_in_graph", 10000
                     ),
                     traj_name=traj_name,
+                )
+            elif config.solver == "eaik" and verbose:
+                print(
+                    "    Skipping EAIK branch plot: "
+                    f"{len(per_wp)} dense samples exceeds "
+                    f"{max_branch_plot_samples} sample graph limit"
                 )
             if verbose:
                 print(f"    Plots saved to: {traj_out}")

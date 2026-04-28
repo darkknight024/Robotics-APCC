@@ -400,6 +400,7 @@ def generate_verification_plots(
     output_dir: Path,
     speed_warn_mm_s: float = DEFAULT_SPEED_WARN_MMS,
     speed_fail_mm_s: float = DEFAULT_SPEED_FAIL_MMS,
+    with_speed_fit: bool = True,
 ) -> List[Path]:
     """Generate summary comparison plots from verification results.
 
@@ -410,6 +411,11 @@ def generate_verification_plots(
                            (``DEFAULT_SPEED_WARN_MMS``).
         speed_fail_mm_s:   RMS speed-error threshold drawn in red
                            (``DEFAULT_SPEED_FAIL_MMS``).
+        with_speed_fit:    When ``False`` the speed-related summary plots
+                           (RMS bar chart and duration comparison) are
+                           skipped — used while the RS speed-logger has
+                           known artefacts that would mislead reviewers.
+                           Position deviation summary is always emitted.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -421,51 +427,53 @@ def generate_verification_plots(
     if not results:
         return saved
 
-    # ── Plot 1: RMS speed error by trajectory ──
-    fig, ax = plt.subplots(figsize=(max(10, 0.3 * len(results)), 6))
-    labels = [r.label[:30] for r in results]
-    rms_errors = [r.speed.rms_error_mm_s for r in results]
-    colors = ["green" if r.passes_speed_criteria else "red" for r in results]
     x = np.arange(len(results))
-    ax.bar(x, rms_errors, color=colors, alpha=0.7)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=90, fontsize=6)
-    ax.set_ylabel("RMS Speed Error (mm/s)")
-    ax.set_title("Speed Profile Accuracy — Solver vs RobotStudio")
-    ax.axhline(speed_warn_mm_s, color="orange", ls="--", lw=1,
-               label=f"Warn ≥ {speed_warn_mm_s:g} mm/s")
-    ax.axhline(speed_fail_mm_s, color="red", ls="--", lw=1,
-               label=f"Fail ≥ {speed_fail_mm_s:g} mm/s")
-    # Y-axis reaches at least 1.5× the fail line so the thresholds are visible
-    # even when every bar is comfortably below both.
-    ymax = max(max(rms_errors) * 1.2, speed_fail_mm_s * 1.5)
-    ax.set_ylim(0, ymax)
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    p = output_dir / "speed_rms_error_summary.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    saved.append(p)
+    labels = [r.label[:30] for r in results]
 
-    # ── Plot 2: Duration comparison ──
-    fig, ax = plt.subplots(figsize=(max(10, 0.3 * len(results)), 6))
-    sol_dur = [r.speed.solver_duration_ms for r in results]
-    rs_dur = [r.speed.rs_duration_ms for r in results]
-    width = 0.35
-    ax.bar(x - width / 2, sol_dur, width, label="Solver", color="steelblue")
-    ax.bar(x + width / 2, rs_dur, width, label="RobotStudio", color="coral")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=90, fontsize=6)
-    ax.set_ylabel("Duration (ms)")
-    ax.set_title("Total Duration — Solver vs RobotStudio")
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    p = output_dir / "duration_comparison.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    saved.append(p)
+    if with_speed_fit:
+        # ── Plot 1: RMS speed error by trajectory ──
+        fig, ax = plt.subplots(figsize=(max(10, 0.3 * len(results)), 6))
+        rms_errors = [r.speed.rms_error_mm_s for r in results]
+        colors = ["green" if r.passes_speed_criteria else "red" for r in results]
+        ax.bar(x, rms_errors, color=colors, alpha=0.7)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=90, fontsize=6)
+        ax.set_ylabel("RMS Speed Error (mm/s)")
+        ax.set_title("Speed Profile Accuracy — Solver vs RobotStudio")
+        ax.axhline(speed_warn_mm_s, color="orange", ls="--", lw=1,
+                   label=f"Warn ≥ {speed_warn_mm_s:g} mm/s")
+        ax.axhline(speed_fail_mm_s, color="red", ls="--", lw=1,
+                   label=f"Fail ≥ {speed_fail_mm_s:g} mm/s")
+        # Y-axis reaches at least 1.5× the fail line so the thresholds are visible
+        # even when every bar is comfortably below both.
+        ymax = max(max(rms_errors) * 1.2, speed_fail_mm_s * 1.5)
+        ax.set_ylim(0, ymax)
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis="y")
+        fig.tight_layout()
+        p = output_dir / "speed_rms_error_summary.png"
+        fig.savefig(p, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(p)
+
+        # ── Plot 2: Duration comparison ──
+        fig, ax = plt.subplots(figsize=(max(10, 0.3 * len(results)), 6))
+        sol_dur = [r.speed.solver_duration_ms for r in results]
+        rs_dur = [r.speed.rs_duration_ms for r in results]
+        width = 0.35
+        ax.bar(x - width / 2, sol_dur, width, label="Solver", color="steelblue")
+        ax.bar(x + width / 2, rs_dur, width, label="RobotStudio", color="coral")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=90, fontsize=6)
+        ax.set_ylabel("Duration (ms)")
+        ax.set_title("Total Duration — Solver vs RobotStudio")
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis="y")
+        fig.tight_layout()
+        p = output_dir / "duration_comparison.png"
+        fig.savefig(p, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(p)
 
     # ── Plot 3: TCP position deviation ──
     devs = [r.position.p95_deviation_mm for r in results]
@@ -497,11 +505,20 @@ def generate_trajectory_comparison_plots(
     v_cmd_mm_s: float = 0.0,
     velocity_limits_rad_s: Optional[np.ndarray] = None,
     input_waypoint_csv: Optional[Path] = None,
+    with_speed_fit: bool = True,
 ) -> Tuple[TrajectoryVerification, List[Path]]:
     """Generate detailed comparison plots for one solver↔RS pair.
 
     Writes plots directly into *output_dir* alongside the solver results.
     Returns the verification metrics and list of saved plot paths.
+
+    Args:
+        with_speed_fit:  When ``False`` the speed-profile overlay
+            (``rs_comparison_speed.png``) is skipped.  Speed metrics are
+            still computed (cheap) and returned so the caller can decide
+            whether to surface them.  Used while the RS V4 speed logger
+            has artefacts that would mislead reviewers — see
+            ``Feature3d1_Readme.md`` Part F.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -533,47 +550,48 @@ def generate_trajectory_comparison_plots(
     short_label = label[:40] if label else Path(solver_csv).stem
 
     # ── 1) Speed profile overlay ──
-    t_sol = sol.time_ms - sol.time_ms[0]
-    t_rs = rs.time_ms - rs.time_ms[0]
+    if with_speed_fit:
+        t_sol = sol.time_ms - sol.time_ms[0]
+        t_rs = rs.time_ms - rs.time_ms[0]
 
-    fig, (ax_v, ax_a) = plt.subplots(2, 1, figsize=(12, 8), sharex=True,
-                                      gridspec_kw={"height_ratios": [3, 2]})
-    ax_v.plot(t_rs, rs.speed_mm_s, "b-", lw=1.2, alpha=0.8, label="RobotStudio")
-    ax_v.plot(t_sol, sol.speed_mm_s, "r--", lw=1.0, alpha=0.8, label="Solver")
-    if v_cmd_mm_s > 0:
-        ax_v.axhline(v_cmd_mm_s, color="gray", ls=":", lw=0.8,
-                      label=f"v_cmd = {v_cmd_mm_s:.0f} mm/s")
-    ax_v.set_ylabel("TCP Speed (mm/s)", fontsize=10)
-    # Title explicitly distinguishes the two error metrics:
-    #   • RMS  (≈ mean-magnitude across the whole trajectory, time-weighted)
-    #   • Max  (worst-case pointwise |v_sol − v_rs|, captures the apex dip)
-    # and reports Duration Δ = t_sol − t_rs (positive → solver is SLOWER
-    # overall than RS, typically by the blend-arc length mismatch and the
-    # difference between ABB's S-curve ramps and our trapezoidal ramps).
-    ax_v.set_title(
-        f"Speed Profile Comparison — {short_label}\n"
-        f"RMS (mean) = {speed_m.rms_error_mm_s:.2f} mm/s   |   "
-        f"Max (all) = {speed_m.max_error_mm_s:.2f} mm/s   |   "
-        f"Max (cruise-only) = {speed_m.max_error_cruise_mm_s:.2f} mm/s   |   "
-        f"Duration Δ = {speed_m.duration_offset_ms:+.0f} ms   |   "
-        f"{'PASS' if passes else 'FAIL'}",
-        fontsize=9,
-    )
-    ax_v.legend(loc="upper right", fontsize=9)
-    ax_v.grid(True, alpha=0.3)
+        fig, (ax_v, ax_a) = plt.subplots(2, 1, figsize=(12, 8), sharex=True,
+                                          gridspec_kw={"height_ratios": [3, 2]})
+        ax_v.plot(t_rs, rs.speed_mm_s, "b-", lw=1.2, alpha=0.8, label="RobotStudio")
+        ax_v.plot(t_sol, sol.speed_mm_s, "r--", lw=1.0, alpha=0.8, label="Solver")
+        if v_cmd_mm_s > 0:
+            ax_v.axhline(v_cmd_mm_s, color="gray", ls=":", lw=0.8,
+                          label=f"v_cmd = {v_cmd_mm_s:.0f} mm/s")
+        ax_v.set_ylabel("TCP Speed (mm/s)", fontsize=10)
+        # Title explicitly distinguishes the two error metrics:
+        #   • RMS  (≈ mean-magnitude across the whole trajectory, time-weighted)
+        #   • Max  (worst-case pointwise |v_sol − v_rs|, captures the apex dip)
+        # and reports Duration Δ = t_sol − t_rs (positive → solver is SLOWER
+        # overall than RS, typically by the blend-arc length mismatch and the
+        # difference between ABB's S-curve ramps and our trapezoidal ramps).
+        ax_v.set_title(
+            f"Speed Profile Comparison — {short_label}\n"
+            f"RMS (mean) = {speed_m.rms_error_mm_s:.2f} mm/s   |   "
+            f"Max (all) = {speed_m.max_error_mm_s:.2f} mm/s   |   "
+            f"Max (cruise-only) = {speed_m.max_error_cruise_mm_s:.2f} mm/s   |   "
+            f"Duration Δ = {speed_m.duration_offset_ms:+.0f} ms   |   "
+            f"{'PASS' if passes else 'FAIL'}",
+            fontsize=9,
+        )
+        ax_v.legend(loc="upper right", fontsize=9)
+        ax_v.grid(True, alpha=0.3)
 
-    ax_a.plot(t_rs, rs.accel_mm_s2, "b-", lw=0.7, alpha=0.6, label="RS Acceleration")
-    ax_a.plot(t_sol, sol.accel_mm_s2, "r--", lw=0.7, alpha=0.6, label="Solver Acceleration")
-    ax_a.set_ylabel("TCP Acceleration (mm/s²)", fontsize=10)
-    ax_a.set_xlabel("Time (ms)", fontsize=10)
-    ax_a.legend(loc="upper right", fontsize=9)
-    ax_a.grid(True, alpha=0.3)
+        ax_a.plot(t_rs, rs.accel_mm_s2, "b-", lw=0.7, alpha=0.6, label="RS Acceleration")
+        ax_a.plot(t_sol, sol.accel_mm_s2, "r--", lw=0.7, alpha=0.6, label="Solver Acceleration")
+        ax_a.set_ylabel("TCP Acceleration (mm/s²)", fontsize=10)
+        ax_a.set_xlabel("Time (ms)", fontsize=10)
+        ax_a.legend(loc="upper right", fontsize=9)
+        ax_a.grid(True, alpha=0.3)
 
-    fig.tight_layout()
-    p = output_dir / "rs_comparison_speed.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    saved.append(p)
+        fig.tight_layout()
+        p = output_dir / "rs_comparison_speed.png"
+        fig.savefig(p, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(p)
 
     # ── 2) TCP 3D path comparison ──
     # Use an **isometric-equal** aspect ratio so Δ1 mm looks like 1 mm on every

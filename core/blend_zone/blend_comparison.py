@@ -607,9 +607,6 @@ def compare_blend_arcs(
                 continue
 
             zone = resolve_zone_spec(f"z{int(zone_val)}")
-            if skip_per_wp:
-                blend_geoms.append(None)
-                continue
             geom = compute_blend_geometry(wp_xyz, i, zone)
             blend_geoms.append(geom)
 
@@ -618,6 +615,8 @@ def compare_blend_arcs(
     for i in range(n_wp):
         geom = blend_geoms[i] if i < len(blend_geoms) else None
         if geom is None:
+            continue
+        if skip_per_wp:
             continue
 
         # Extract RS blend region with indices so we can also get quaternions
@@ -747,7 +746,7 @@ def compare_blend_arcs(
         input_csv=str(input_waypoint_csv),
         rs_csv=str(rs_csv),
         n_waypoints=n_wp,
-        n_flyby=len(per_waypoint),
+        n_flyby=n_flyby_expected if skip_per_wp else len(per_waypoint),
         per_waypoint=per_waypoint,
         mean_frechet_mm=agg_frechet,
         mean_hausdorff_mm=agg_hausdorff,

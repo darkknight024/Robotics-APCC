@@ -101,6 +101,9 @@ class CalibrationResult:
     # Settling
     T_settle_s: Optional[float] = None
     T_settle_calibratable: bool = False
+    T_settle_observations_s: List[float] = field(default_factory=list)
+    T_settle_n_mid_dwell: int = 0
+    T_settle_n_end_tail: int = 0
 
     # Blend model
     blend_observations: List[BlendSpeedObservation] = field(default_factory=list)
@@ -123,6 +126,9 @@ class CalibrationResult:
             },
             "T_settle_s": self.T_settle_s,
             "T_settle_calibratable": self.T_settle_calibratable,
+            "T_settle_observations_s": list(self.T_settle_observations_s),
+            "T_settle_n_mid_dwell": self.T_settle_n_mid_dwell,
+            "T_settle_n_end_tail": self.T_settle_n_end_tail,
             "blend_observations": [asdict(b) for b in self.blend_observations],
             "blend_model_rmse_mm_s": self.blend_model_rmse_mm_s,
             "experiment_id": self.experiment_id,
@@ -292,20 +298,67 @@ def estimate_a_tcp_from_straight_line(
     )
 
 
+#: Naming patterns we try for each commanded straight-line speed.  The
+#: project has accumulated three conventions across V1 / V2 / V4
+#: experiments — every pattern below is attempted in order until one
+#: file is found for the given speed.  Add new conventions here rather
+#: than scattering filename heuristics across the codebase.
+_STRAIGHT_LINE_PATTERNS: Tuple[str, ...] = (
+    "straight_line_v{speed}_mm_s.csv",   # V1 — Experiments/Experiment_23/Results - RobotStudio/
+    "straight_v{speed}.csv",             # V4 — .../v4/straight_line_trajectories/
+    "v{speed}.csv",                      # V2 — .../v2/straight_line_trajectories/
+)
+
+
+def _resolve_straight_line_csv(rs_root: Path, speed: int) -> Optional[Path]:
+    """Return the first existing RS straight-line CSV for ``speed``.
+
+    Searches in this order:
+
+    1. The supplied directory itself (matches the V1 layout where every
+       file lives directly under ``Results - RobotStudio/straight_line_trajectories/``).
+    2. The V2 / V3 / V4 sub-trees beneath the *parent* of ``rs_root``
+       (matches the layout where V4 files live under
+       ``Results - RobotStudio/v4/straight_line_trajectories/``).
+
+    Returns ``None`` if no recording for that speed is found.  The
+    project's three filename conventions are tried for each candidate
+    directory — see :data:`_STRAIGHT_LINE_PATTERNS`.
+    """
+    candidate_dirs: List[Path] = [rs_root]
+    parent = rs_root.parent
+    for sub in ("v2", "v3", "v4"):
+        d = parent / sub / "straight_line_trajectories"
+        if d.exists():
+            candidate_dirs.append(d)
+
+    for d in candidate_dirs:
+        for pat in _STRAIGHT_LINE_PATTERNS:
+            p = d / pat.format(speed=speed)
+            if p.exists():
+                return p
+    return None
+
+
 def calibrate_a_tcp(
     rs_straight_dir: Path,
-    speeds: List[int] = (100, 300, 500, 1000),
+    speeds: List[int] = (100, 300, 500, 1000, 3000),
 ) -> Tuple[float, float, Dict[float, ATcpEstimate]]:
     """Calibrate a_tcp and a_tcp_decel from all available straight-line RS CSVs.
+
+    The straight-line directory may follow any of the three naming
+    conventions tracked in :data:`_STRAIGHT_LINE_PATTERNS`.  V4 added a
+    ``v3000`` recording that is now part of the default speed sweep.
 
     Returns:
         (a_tcp_median, a_tcp_decel_median, per_speed_estimates)
     """
     estimates: Dict[float, ATcpEstimate] = {}
     for speed in speeds:
-        csv_path = rs_straight_dir / f"straight_line_v{speed}_mm_s.csv"
-        if not csv_path.exists():
-            logger.warning("Missing straight-line RS CSV: %s", csv_path)
+        csv_path = _resolve_straight_line_csv(rs_straight_dir, speed)
+        if csv_path is None:
+            logger.warning("Missing straight-line RS CSV for v=%d mm/s under %s",
+                           speed, rs_straight_dir)
             continue
         rs_data = load_rs_csv(csv_path)
         est = estimate_a_tcp_from_straight_line(rs_data, float(speed))
@@ -325,34 +378,135 @@ def calibrate_a_tcp(
 
 # ─── T_settle estimation ─────────────────────────────────────────────────────
 
+def _mid_trajectory_dwells(
+    v: np.ndarray,
+    t: np.ndarray,
+    v_threshold_mm_s: float,
+) -> List[float]:
+    """Detector 1 — speed enters and re-exits a near-zero plateau.
+
+    Textbook fine-point settling.  Requires a toolpath whose recording
+    contains at least one *intermediate* fine waypoint (e.g. siping
+    multi-trajectory recordings).  Returns every detected dwell duration
+    in seconds, filtered to the physically plausible 50 ms – 2 s band.
+    """
+    out: List[float] = []
+    in_dwell = False
+    dwell_start = 0.0
+    for i in range(1, len(v) - 1):
+        if v[i] < v_threshold_mm_s and not in_dwell and v[max(i - 3, 0)] > v_threshold_mm_s:
+            in_dwell = True
+            dwell_start = t[i]
+        elif v[i] > v_threshold_mm_s and in_dwell:
+            dt = (t[i] - dwell_start) / 1000.0
+            if 0.05 < dt < 2.0:
+                out.append(dt)
+            in_dwell = False
+    return out
+
+
+def _end_trajectory_settle_tail(
+    rs: RSTrajectoryData,
+    v_threshold_mm_s: float,
+) -> Optional[float]:
+    """Detector 2 — controller-imposed approach time at a fine endpoint.
+
+    For any single-trajectory recording that ends at a ``fine`` waypoint
+    we measure the dwell as the interval from the last "still moving"
+    sample (``v > v_threshold_mm_s``) to the first sample where the
+    controller acknowledges arrival via ``is_at_waypoint == 1`` (with
+    ``v ≈ 0`` for sanity).  This captures the IRC5's discrete
+    deceleration-to-stop staircase plus any post-arrival flag latency
+    and works on every V4 straight-line recording.
+
+    The two failure modes we tolerate:
+
+    * ``is_at_waypoint`` never fires  →  return ``None`` (recording
+      truncated mid-motion).
+    * The flag fires *before* the speed reaches zero (an IRC5 simulator
+      pipeline race seen on V4 ``straight_v1000``)  →  clamp the dwell
+      to ``0`` rather than discarding the recording.
+
+    Returns the dwell in seconds, capped to a sane 0–500 ms window.
+    """
+    v = rs.speed_mm_s
+    t = rs.time_ms
+    flag = rs.is_at_waypoint
+    if len(v) < 5 or flag is None or len(flag) != len(v):
+        return None
+
+    moving = np.where(v > v_threshold_mm_s)[0]
+    if len(moving) < 2:
+        return None
+    i_last_motion = int(moving[-1])
+
+    flag_idx = np.where(flag.astype(bool))[0]
+    if len(flag_idx) == 0:
+        return None
+    i_flag = int(flag_idx[0])
+
+    dt_s = max(0.0, (t[i_flag] - t[i_last_motion]) / 1000.0)
+    # Reject pathological values (e.g. the trajectory never decelerated,
+    # or the recording's time axis is corrupt).
+    if dt_s > 0.5:
+        return None
+    return dt_s
+
+
 def estimate_T_settle(
     rs_data_list: List[RSTrajectoryData],
     v_threshold_mm_s: float = 5.0,
-) -> Optional[float]:
-    """Estimate fine-point settling time from RS trajectories with v≈0 dwells.
+) -> Tuple[Optional[float], List[float], int, int]:
+    """Estimate the fine-point settling time from RS recordings.
 
-    Requires trajectories with intermediate fine-point stops (not just
-    endpoints).  Returns None if no usable dwell is found.
+    Two complementary detectors are combined; their results are pooled
+    and the median across every detected interval is returned.
+
+    1. **Mid-trajectory dwell** (:func:`_mid_trajectory_dwells`) —
+       speed enters and exits a near-zero plateau within the same
+       recording.  Most direct measurement but requires intermediate
+       fine waypoints.
+
+    2. **End-of-trajectory settle tail**
+       (:func:`_end_trajectory_settle_tail`) — interval from the last
+       "moving" sample to the first ``is_at_waypoint == 1`` sample at
+       a fine endpoint.  Works on every single-trajectory recording
+       that terminates at a fine point (the V4 ``straight_v*.csv``
+       set is exactly this).
+
+    Returns the tuple ``(T_settle_s, observations, n_mid, n_end)``:
+
+      * ``T_settle_s`` — median of every detected interval, or
+        ``None`` only when *both* detectors come up empty across
+        every recording (the historical "NOT CALIBRATABLE" branch).
+      * ``observations`` — every individual dwell duration in seconds,
+        in detection order.  Useful for plotting the spread.
+      * ``n_mid`` / ``n_end`` — count from each detector for diagnostics.
+
+    Note for the V4 straight-line dataset: every recording terminates
+    in a fine endpoint with no subsequent motion.  The simulator drops
+    the ``is_at_waypoint`` flag within ~0–15 ms of the final servo
+    stop, so the calibrated value reflects RobotStudio's idealised
+    "instant settle" rather than physical hardware (which would show
+    100–300 ms).  Use this for matching RS-simulated durations only;
+    keep a hardware-realistic default in ``robots_config.yaml`` for
+    on-robot toolpath planning.
     """
     dwell_times: List[float] = []
+    n_mid = 0
+    n_end = 0
     for rs in rs_data_list:
-        v = rs.speed_mm_s
-        t = rs.time_ms
-        in_dwell = False
-        dwell_start = 0.0
-        for i in range(1, len(v) - 1):
-            if v[i] < v_threshold_mm_s and not in_dwell and v[max(i - 3, 0)] > v_threshold_mm_s:
-                in_dwell = True
-                dwell_start = t[i]
-            elif v[i] > v_threshold_mm_s and in_dwell:
-                dt = (t[i] - dwell_start) / 1000.0
-                if 0.05 < dt < 2.0:
-                    dwell_times.append(dt)
-                in_dwell = False
+        mids = _mid_trajectory_dwells(rs.speed_mm_s, rs.time_ms, v_threshold_mm_s)
+        n_mid += len(mids)
+        dwell_times.extend(mids)
+        end_tail = _end_trajectory_settle_tail(rs, v_threshold_mm_s)
+        if end_tail is not None:
+            n_end += 1
+            dwell_times.append(end_tail)
 
     if not dwell_times:
-        return None
-    return float(np.median(dwell_times))
+        return None, [], n_mid, n_end
+    return float(np.median(dwell_times)), dwell_times, n_mid, n_end
 
 
 # ─── Blend speed model (Experiment V2 — corners) ─────────────────────────────
@@ -586,14 +740,24 @@ def run_calibration(
     a_tcp, a_tcp_decel, per_speed = calibrate_a_tcp(rs_straight_dir)
     logger.info("Calibrated a_tcp = %.0f mm/s² (accel), %.0f mm/s² (decel)", a_tcp, a_tcp_decel)
 
-    # Step 2: T_settle
+    # Step 2: T_settle (mid-trajectory dwells + end-of-trajectory tails)
     all_rs_data = []
     for p in all_rs_csvs:
         try:
             all_rs_data.append(load_rs_csv(p))
         except Exception as e:
             logger.warning("Failed to load %s: %s", p, e)
-    T_settle = estimate_T_settle(all_rs_data)
+    T_settle, T_settle_obs, n_mid, n_end = estimate_T_settle(all_rs_data)
+    if T_settle is None:
+        logger.warning(
+            "T_settle: no usable dwell or settle-tail found across %d recordings",
+            len(all_rs_data),
+        )
+    else:
+        logger.info(
+            "T_settle = %.3f s (median of %d obs: %d mid-dwell + %d end-tail)",
+            T_settle, len(T_settle_obs), n_mid, n_end,
+        )
 
     # Step 3: blend model
     blend_obs, blend_rmse = calibrate_blend_model(rs_corner_dir, a_tcp)
@@ -608,6 +772,9 @@ def run_calibration(
         a_tcp_per_speed=per_speed,
         T_settle_s=T_settle,
         T_settle_calibratable=T_settle is not None,
+        T_settle_observations_s=T_settle_obs,
+        T_settle_n_mid_dwell=n_mid,
+        T_settle_n_end_tail=n_end,
         blend_observations=blend_obs,
         blend_model_rmse_mm_s=blend_rmse,
         joint_limits=joint_limits,
