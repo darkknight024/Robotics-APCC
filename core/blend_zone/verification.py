@@ -506,6 +506,7 @@ def generate_trajectory_comparison_plots(
     velocity_limits_rad_s: Optional[np.ndarray] = None,
     input_waypoint_csv: Optional[Path] = None,
     with_speed_fit: bool = True,
+    lite: bool = False,
 ) -> Tuple[TrajectoryVerification, List[Path]]:
     """Generate detailed comparison plots for one solver↔RS pair.
 
@@ -519,6 +520,9 @@ def generate_trajectory_comparison_plots(
             whether to surface them.  Used while the RS V4 speed logger
             has artefacts that would mislead reviewers — see
             ``Feature3d1_Readme.md`` Part F.
+        lite:            Skip heavier comparison plots not needed for quick
+                         siping review.  Keeps JSON, 3D path, absolute TCP
+                         poses, and TCP pose deltas.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -529,7 +533,10 @@ def generate_trajectory_comparison_plots(
 
     speed_m = compare_speed_profiles(sol, rs, v_cmd_mm_s)
     pos_m = compare_tcp_positions(sol, rs)
-    joint_m = compare_joint_trajectories(sol, rs, velocity_limits_rad_s)
+    joint_m = (
+        JointComparisonMetrics()
+        if lite else compare_joint_trajectories(sol, rs, velocity_limits_rad_s)
+    )
 
     # Use the same configurable threshold as ``verify_trajectory`` so both
     # paths agree on pass/fail and the summary plot's red line.
@@ -633,54 +640,55 @@ def generate_trajectory_comparison_plots(
     saved.append(p)
 
     # ── 3) Joint velocity comparison (median-filtered to reject noise) ──
-    from .calibration import _median_filter
+    if not lite:
+        from .calibration import _median_filter
 
-    vel_lim_deg = (np.degrees(velocity_limits_rad_s)
-                   if velocity_limits_rad_s is not None else np.full(6, 360.0))
+        vel_lim_deg = (np.degrees(velocity_limits_rad_s)
+                       if velocity_limits_rad_s is not None else np.full(6, 360.0))
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 8))
-    _MIN_DT_MS = 4.0
-    for j in range(6):
-        ax = axes[j // 3][j % 3]
+        fig, axes = plt.subplots(2, 3, figsize=(16, 8))
+        _MIN_DT_MS = 4.0
+        for j in range(6):
+            ax = axes[j // 3][j % 3]
 
-        # RS: filter short dt intervals, then median-filter velocity
-        dt_rs_raw = np.diff(rs.time_ms)
-        valid_rs = dt_rs_raw >= _MIN_DT_MS
-        dt_rs = np.maximum(dt_rs_raw[valid_rs], 1e-3) / 1000.0
-        jv_rs = np.diff(rs.joints_deg[:, j])[valid_rs] / dt_rs
-        jv_rs = _median_filter(jv_rs, window=7)
-        t_jv_rs = (0.5 * (rs.time_ms[:-1] + rs.time_ms[1:]) - rs.time_ms[0])[valid_rs]
+            # RS: filter short dt intervals, then median-filter velocity
+            dt_rs_raw = np.diff(rs.time_ms)
+            valid_rs = dt_rs_raw >= _MIN_DT_MS
+            dt_rs = np.maximum(dt_rs_raw[valid_rs], 1e-3) / 1000.0
+            jv_rs = np.diff(rs.joints_deg[:, j])[valid_rs] / dt_rs
+            jv_rs = _median_filter(jv_rs, window=7)
+            t_jv_rs = (0.5 * (rs.time_ms[:-1] + rs.time_ms[1:]) - rs.time_ms[0])[valid_rs]
 
-        # Solver: same treatment
-        dt_sol_raw = np.diff(sol.time_ms)
-        valid_sol = dt_sol_raw >= _MIN_DT_MS
-        dt_sol = np.maximum(dt_sol_raw[valid_sol], 1e-3) / 1000.0
-        jv_sol = np.diff(sol.joints_deg[:, j])[valid_sol] / dt_sol
-        jv_sol = _median_filter(jv_sol, window=7)
-        t_jv_sol = (0.5 * (sol.time_ms[:-1] + sol.time_ms[1:]) - sol.time_ms[0])[valid_sol]
+            # Solver: same treatment
+            dt_sol_raw = np.diff(sol.time_ms)
+            valid_sol = dt_sol_raw >= _MIN_DT_MS
+            dt_sol = np.maximum(dt_sol_raw[valid_sol], 1e-3) / 1000.0
+            jv_sol = np.diff(sol.joints_deg[:, j])[valid_sol] / dt_sol
+            jv_sol = _median_filter(jv_sol, window=7)
+            t_jv_sol = (0.5 * (sol.time_ms[:-1] + sol.time_ms[1:]) - sol.time_ms[0])[valid_sol]
 
-        ax.plot(t_jv_rs, jv_rs, "b-", lw=0.8, alpha=0.7, label="RS")
-        ax.plot(t_jv_sol, jv_sol, "r--", lw=0.8, alpha=0.7, label="Solver")
-        ax.axhline(vel_lim_deg[j], color="k", ls=":", lw=0.8, alpha=0.5)
-        ax.axhline(-vel_lim_deg[j], color="k", ls=":", lw=0.8, alpha=0.5)
-        y_bound = vel_lim_deg[j] * 1.2
-        ax.set_ylim(-y_bound, y_bound)
-        ax.set_title(f"J{j+1}  (lim ±{vel_lim_deg[j]:.0f} °/s)", fontsize=9)
-        ax.set_ylabel("Velocity (°/s)", fontsize=8)
-        if j >= 3:
-            ax.set_xlabel("Time (ms)", fontsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.tick_params(labelsize=7)
-        if j == 0:
-            ax.legend(fontsize=7)
+            ax.plot(t_jv_rs, jv_rs, "b-", lw=0.8, alpha=0.7, label="RS")
+            ax.plot(t_jv_sol, jv_sol, "r--", lw=0.8, alpha=0.7, label="Solver")
+            ax.axhline(vel_lim_deg[j], color="k", ls=":", lw=0.8, alpha=0.5)
+            ax.axhline(-vel_lim_deg[j], color="k", ls=":", lw=0.8, alpha=0.5)
+            y_bound = vel_lim_deg[j] * 1.2
+            ax.set_ylim(-y_bound, y_bound)
+            ax.set_title(f"J{j+1}  (lim ±{vel_lim_deg[j]:.0f} °/s)", fontsize=9)
+            ax.set_ylabel("Velocity (°/s)", fontsize=8)
+            if j >= 3:
+                ax.set_xlabel("Time (ms)", fontsize=8)
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=7)
+            if j == 0:
+                ax.legend(fontsize=7)
 
-    fig.suptitle(f"Joint Velocities (median-filtered) — {short_label}",
-                 fontsize=11, y=1.02)
-    fig.tight_layout()
-    p = output_dir / "rs_comparison_joints.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    saved.append(p)
+        fig.suptitle(f"Joint Velocities (median-filtered) — {short_label}",
+                     fontsize=11, y=1.02)
+        fig.tight_layout()
+        p = output_dir / "rs_comparison_joints.png"
+        fig.savefig(p, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        saved.append(p)
 
     # ── 4) Absolute TCP poses (waypoints + RS + solver) ──
     saved.extend(_plot_tcp_absolute_poses(sol, rs, output_dir, short_label,
@@ -814,8 +822,6 @@ def _project_points_to_polyline(
             projection_points: (M, 3) closest point on the polyline.
             distances:         (M,) Euclidean distance to the polyline.
     """
-    from scipy.spatial import cKDTree as _cKDTree
-
     if len(polyline) < 2:
         d = np.linalg.norm(points - polyline[0], axis=1) if len(polyline) == 1 \
             else np.full(len(points), np.inf)
@@ -823,8 +829,7 @@ def _project_points_to_polyline(
             else points.copy()
         return proj, d
 
-    tree = _cKDTree(polyline)
-    _, nn_idx = tree.query(points)
+    nn_idx = _nearest_vertex_indices(points, polyline)
 
     n_seg = len(polyline) - 1
     best_d = np.full(len(points), np.inf)
@@ -849,6 +854,22 @@ def _project_points_to_polyline(
         best_proj = np.where(update[:, None], proj, best_proj)
 
     return best_proj, best_d
+
+
+def _nearest_vertex_indices(points: np.ndarray, vertices: np.ndarray) -> np.ndarray:
+    """Return nearest vertex indices without requiring scipy."""
+    try:
+        from scipy.spatial import cKDTree as _cKDTree
+        _dist, idx = _cKDTree(vertices).query(points)
+        return np.asarray(idx, dtype=int)
+    except ImportError:
+        idx_chunks = []
+        chunk_size = max(1, 200000 // max(1, len(vertices)))
+        for start in range(0, len(points), chunk_size):
+            chunk = points[start:start + chunk_size]
+            d2 = np.sum((chunk[:, None, :] - vertices[None, :, :]) ** 2, axis=2)
+            idx_chunks.append(np.argmin(d2, axis=1))
+        return np.concatenate(idx_chunks).astype(int) if idx_chunks else np.array([], dtype=int)
 
 
 def _plot_tcp_absolute_poses(
@@ -978,7 +999,6 @@ def _plot_tcp_pose_deviation(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from scipy.spatial import cKDTree as _cKDTree
 
     s_sol = _arc_length_from_tcp(sol.tcp_mm)
 
@@ -993,13 +1013,8 @@ def _plot_tcp_pose_deviation(
     # For each projected point, find its arc-length on the RS curve directly.
     # This is the cumulative distance from RS[0] to the projection point.
     s_proj_on_rs = np.empty(len(sol.tcp_mm))
-    tree = _cKDTree(rs.tcp_mm)
-    _, nn = tree.query(rs_proj_xyz)
+    nn = _nearest_vertex_indices(rs_proj_xyz, rs.tcp_mm)
     for i, (pt, j) in enumerate(zip(rs_proj_xyz, nn)):
-        j_lo = max(0, j - 1)
-        j_hi = min(len(rs.tcp_mm) - 1, j + 1)
-        cand = [(s_rs[k] + float(np.linalg.norm(pt - rs.tcp_mm[k])) *
-                 (1 if k == j_lo else -1), k) for k in (j_lo, j, j_hi)]
         # simpler: use the closest RS vertex arc-length; error is sub-sample.
         s_proj_on_rs[i] = s_rs[j]
 

@@ -27,6 +27,7 @@ Usage::
     python tests/run_experiment_23_full.py --v3_only --force    # V3 toolpaths only
     python tests/run_experiment_23_full.py --v4_only --force    # V4 toolpaths only
     python tests/run_experiment_23_full.py --with_speed_fit     # enable speed comparison
+    python tests/run_experiment_23_full.py --lite               # minimal plots, skip calibration
 
 Speed-fit policy:
     Solver-vs-RobotStudio TCP speed comparison is **disabled by default**
@@ -440,8 +441,14 @@ def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]
             category = "siping_toolpaths"
             base_frame = False
             knife_pose = "Zund"
-            speed_tag = "v300"
-            zone_tag = "mixed"
+            rel_parts = list(rel.parts)
+            try:
+                siping_idx = rel_parts.index("siping_toolpath")
+                speed_tag = rel_parts[siping_idx + 1]
+                zone_tag = rel_parts[siping_idx + 2]
+            except (ValueError, IndexError):
+                speed_tag = "v300"
+                zone_tag = "mixed"
             label_parts = [p for p in rel.parts[:-1]] + [stem]
 
         out_label = "/".join(label_parts)
@@ -609,10 +616,11 @@ def _run_single_task(
     verbose: bool = False,
     show_3d: bool = False,
     with_speed_fit: bool = False,
-) -> Tuple[bool, Optional[object], Optional[object]]:
+    lite: bool = False,
+) -> Tuple[bool, List[object], Optional[object]]:
     """Run solver on one toolpath, then generate RS comparison if available.
 
-    Returns (success, verification_result_or_None, blend_arc_result_or_None).
+    Returns (success, verification_results, blend_arc_result_or_None).
     """
     from core.blend_zone import run_feature3_d1
     from core.blend_zone.verification import (
@@ -659,17 +667,20 @@ def _run_single_task(
             custom_zone=False,
             plots=True,
             reports=True,
+            plot_kinds=(
+                ["speed_profile", "tcp_pose_deviation"] if lite else None
+            ),
         )
         result_csvs = sorted(out_dir.rglob("*_result.csv"))
 
     if not result_csvs:
-        return True, None, None
+        return True, [], None
 
     rs_csv, v_cmd = _resolve_rs_csv(task)
 
     # Generate RS comparison for straight_line and corner (single trajectory)
     category = task["category"]
-    verification = None
+    verifications: List[object] = []
     blend_arc_result = None
 
     input_csv = Path(task["csv"])
@@ -681,8 +692,9 @@ def _run_single_task(
             velocity_limits_rad_s=vel_limits,
             input_waypoint_csv=input_csv,
             with_speed_fit=with_speed_fit,
+            lite=lite,
         )
-        verification = v
+        verifications.append(v)
 
         # Blend arc geometry comparison (for trajectories with fly-by waypoints)
         try:
@@ -692,6 +704,7 @@ def _run_single_task(
                 generate_blend_comparison_plots(
                     blend_result, input_csv, blend_out,
                     label=task["label"],
+                    plots=not lite,
                 )
                 blend_arc_result = blend_result
                 if show_3d:
@@ -723,9 +736,9 @@ def _run_single_task(
                     velocity_limits_rad_s=vel_limits,
                     input_waypoint_csv=input_csv,
                     with_speed_fit=with_speed_fit,
+                    lite=lite,
                 )
-                if verification is None:
-                    verification = v
+                verifications.append(v)
 
                 try:
                     blend_result = compare_blend_arcs(input_csv, rs_map[traj_num])
@@ -733,6 +746,7 @@ def _run_single_task(
                         generate_blend_comparison_plots(
                             blend_result, input_csv, traj_out,
                             label=traj_label,
+                            plots=not lite,
                         )
                         if blend_arc_result is None:
                             blend_arc_result = blend_result
@@ -745,7 +759,153 @@ def _run_single_task(
                     logger.warning("Blend arc comparison failed for %s: %s",
                                    traj_label, e)
 
-    return True, verification, blend_arc_result
+        if verifications:
+            _write_siping_toolpath_consolidated_results(out_dir, task, verifications)
+
+    return True, verifications, blend_arc_result
+
+
+def _write_siping_toolpath_consolidated_results(
+    toolpath_dir: Path,
+    task: dict,
+    verifications: List[object],
+) -> Optional[Path]:
+    """Write per-siping-toolpath aggregate stats and a full-path error plot."""
+    if not verifications:
+        return None
+
+    from core.blend_zone.verification import (
+        _arc_length_from_tcp,
+        _project_points_to_polyline,
+        load_rs_csv,
+    )
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def _abs_report_path(path_value: str) -> Path:
+        p = Path(path_value)
+        return p if p.is_absolute() else _REPO / p
+
+    all_errors: List[np.ndarray] = []
+    trajectory_rows = []
+    plot_series = []
+    arc_offset = 0.0
+
+    for idx, verification in enumerate(verifications, 1):
+        sol_path = _abs_report_path(verification.solver_csv)
+        rs_path = _abs_report_path(verification.rs_csv)
+        sol = load_rs_csv(sol_path)
+        rs = load_rs_csv(rs_path)
+
+        _proj, error_mm = _project_points_to_polyline(sol.tcp_mm, rs.tcp_mm)
+        s_sol = _arc_length_from_tcp(sol.tcp_mm)
+        all_errors.append(error_mm)
+
+        length_solver_mm = float(s_sol[-1]) if len(s_sol) else 0.0
+        s_plot = s_sol + arc_offset
+        plot_series.append((s_plot, error_mm, verification.label))
+        gap_mm = max(5.0, 0.02 * length_solver_mm)
+        arc_offset = float(s_plot[-1] + gap_mm) if len(s_plot) else arc_offset
+
+        trajectory_rows.append({
+            "trajectory_index": idx,
+            "label": verification.label,
+            "solver_csv": verification.solver_csv,
+            "rs_csv": verification.rs_csv,
+            "n_solver_samples": int(len(sol.tcp_mm)),
+            "n_rs_samples": int(len(rs.tcp_mm)),
+            "solver_duration_ms": float(sol.time_ms[-1] - sol.time_ms[0]) if len(sol.time_ms) else 0.0,
+            "rs_duration_ms": float(rs.time_ms[-1] - rs.time_ms[0]) if len(rs.time_ms) else 0.0,
+            "solver_arc_length_mm": length_solver_mm,
+            "rs_arc_length_mm": float(_arc_length_from_tcp(rs.tcp_mm)[-1]) if len(rs.tcp_mm) else 0.0,
+            "mean_error_mm": float(np.mean(error_mm)) if len(error_mm) else 0.0,
+            "max_error_mm": float(np.max(error_mm)) if len(error_mm) else 0.0,
+            "p95_error_mm": float(np.percentile(error_mm, 95)) if len(error_mm) else 0.0,
+            "p99_error_mm": float(np.percentile(error_mm, 99)) if len(error_mm) else 0.0,
+        })
+
+    combined_errors = np.concatenate(all_errors) if all_errors else np.array([])
+    summary = {
+        "toolpath": task["label"],
+        "category": task["category"],
+        "speed_tag": task["speed_tag"],
+        "zone_tag": task["zone_tag"],
+        "source_csv": task["csv"],
+        "n_trajectories": len(trajectory_rows),
+        "combined": {
+            "n_solver_samples": int(sum(r["n_solver_samples"] for r in trajectory_rows)),
+            "n_rs_samples": int(sum(r["n_rs_samples"] for r in trajectory_rows)),
+            "total_solver_duration_ms": float(sum(r["solver_duration_ms"] for r in trajectory_rows)),
+            "total_rs_duration_ms": float(sum(r["rs_duration_ms"] for r in trajectory_rows)),
+            "total_solver_arc_length_mm": float(sum(r["solver_arc_length_mm"] for r in trajectory_rows)),
+            "total_rs_arc_length_mm": float(sum(r["rs_arc_length_mm"] for r in trajectory_rows)),
+            "mean_error_mm": float(np.mean(combined_errors)) if len(combined_errors) else 0.0,
+            "max_error_mm": float(np.max(combined_errors)) if len(combined_errors) else 0.0,
+            "p95_error_mm": float(np.percentile(combined_errors, 95)) if len(combined_errors) else 0.0,
+            "p99_error_mm": float(np.percentile(combined_errors, 99)) if len(combined_errors) else 0.0,
+        },
+        "trajectories": trajectory_rows,
+    }
+
+    json_path = toolpath_dir / "toolpath_summary.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, default=str)
+
+    txt_path = toolpath_dir / "toolpath_summary.txt"
+    combined = summary["combined"]
+    lines = [
+        "Experiment 23 - Siping Toolpath Summary",
+        "=" * 70,
+        f"Toolpath: {task['label']}",
+        f"Trajectories: {summary['n_trajectories']}",
+        "",
+        "Combined TCP Euclidean Error:",
+        f"  Mean: {combined['mean_error_mm']:.3f} mm",
+        f"  P95:  {combined['p95_error_mm']:.3f} mm",
+        f"  P99:  {combined['p99_error_mm']:.3f} mm",
+        f"  Max:  {combined['max_error_mm']:.3f} mm",
+        f"  Solver arc length total: {combined['total_solver_arc_length_mm']:.1f} mm",
+        f"  RS arc length total:     {combined['total_rs_arc_length_mm']:.1f} mm",
+        "",
+        "Per Trajectory:",
+    ]
+    for row in trajectory_rows:
+        lines.append(
+            f"  {row['trajectory_index']:>2d}: mean={row['mean_error_mm']:.3f}mm "
+            f"p95={row['p95_error_mm']:.3f}mm max={row['max_error_mm']:.3f}mm "
+            f"len={row['solver_arc_length_mm']:.1f}mm"
+        )
+    txt_path.write_text("\n".join(lines), encoding="utf-8")
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(plot_series))))
+    for color, (s_plot, error_mm, label) in zip(colors, plot_series):
+        if len(s_plot) > 3000:
+            sample_idx = np.linspace(0, len(s_plot) - 1, 3000).astype(int)
+            s_plot = s_plot[sample_idx]
+            error_mm = error_mm[sample_idx]
+        ax.plot(s_plot, error_mm, lw=0.8, alpha=0.85, color=color, label=Path(label).name)
+        if len(s_plot):
+            ax.axvline(float(s_plot[-1]), color="0.8", lw=0.5, alpha=0.7)
+
+    ax.set_title(
+        f"Siping Toolpath TCP Euclidean Error - {task['csv_stem']}\n"
+        f"Mean={combined['mean_error_mm']:.3f} mm  "
+        f"P95={combined['p95_error_mm']:.3f} mm  "
+        f"Max={combined['max_error_mm']:.3f} mm"
+    )
+    ax.set_xlabel("Concatenated solver arc length (mm)")
+    ax.set_ylabel("Euclidean error to RobotStudio path (mm)")
+    if len(plot_series) <= 10:
+        ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    plot_path = toolpath_dir / "toolpath_euclidean_error.png"
+    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return json_path
 
 
 # ─── Flagged Toolpath Report ──────────────────────────────────────────────────
@@ -891,6 +1051,7 @@ def phase_run(
     speed_warn_mm_s: float = 5.0,
     speed_fail_mm_s: float = 15.0,
     with_speed_fit: bool = False,
+    lite: bool = False,
 ):
     """Run solver on all toolpaths, generating RS comparison alongside.
 
@@ -964,9 +1125,13 @@ def phase_run(
         label = task["label"]
         out_dir = Path(task["out"])
         has_result = any(out_dir.rglob("*_result.csv")) if out_dir.exists() else False
-        has_comparison = any(out_dir.rglob("rs_comparison_speed.png")) if out_dir.exists() else False
+        has_comparison = any(out_dir.rglob("rs_comparison_metrics.json")) if out_dir.exists() else False
+        has_toolpath_summary = (
+            task["category"] != "siping_toolpaths"
+            or (out_dir / "toolpath_summary.json").exists()
+        )
 
-        if skip_existing and has_result and has_comparison:
+        if skip_existing and has_result and has_comparison and has_toolpath_summary:
             print(f"  [{i:3d}/{len(tasks)}] SKIP  {label}")
             ok += 1
             continue
@@ -980,18 +1145,20 @@ def phase_run(
 
         t_task = time.perf_counter()
         try:
-            success, v, blend_r = _run_single_task(
+            success, verifications, blend_r = _run_single_task(
                 task, cfg, robot_config, knives, vel_limits, accel_limits, skip_existing,
                 verbose=verbose, show_3d=show_3d,
                 with_speed_fit=with_speed_fit,
+                lite=lite,
             )
             ok += 1
             rs_info = ""
-            if v is not None:
-                all_verifications.append(v)
-                cat_verifications[task["category"]].append(v)
+            if verifications:
+                all_verifications.extend(verifications)
+                cat_verifications[task["category"]].extend(verifications)
                 if with_speed_fit:
-                    rs_info = f" (RMS={v.speed.rms_error_mm_s:.1f} mm/s)"
+                    mean_rms = np.mean([v.speed.rms_error_mm_s for v in verifications])
+                    rs_info = f" (mean RMS={mean_rms:.1f} mm/s)"
             if blend_r is not None:
                 blend_results.append((label, blend_r))
                 if blend_r.max_deviation_mm > blend_threshold_mm:
@@ -1419,6 +1586,7 @@ Examples:
   python tests/run_experiment_23_full.py --toolpath v2/corner --speed v20 --zone z10 --force
   python tests/run_experiment_23_full.py --blend-threshold 0.5
   python tests/run_experiment_23_full.py --v4_only --with_speed_fit --force   # speed comparison ON
+  python tests/run_experiment_23_full.py --lite --toolpath siping_toolpath/v300/z1/20250805_mc_Plaque_Yann_1a.csv
 """,
     )
     parser.add_argument("--phase", choices=["all", "run", "calibrate"],
@@ -1466,6 +1634,13 @@ Examples:
                              "duration aggregate plots).  DISABLED BY DEFAULT — "
                              "the RS V4 speed logger has known artefacts; see "
                              "Feature3d1_Readme.md Part F for context.")
+    parser.add_argument("--lite", action="store_true",
+                        help="Run a faster artifact-light mode: keep trajectory "
+                             "JSON/CSV, speed_profile.png, tcp_pose_deviation.png, "
+                             "rs_comparison_path_3d.png, "
+                             "rs_comparison_tcp_deviation.png, "
+                             "rs_comparison_tcp_deviation_delta.png, and JSON "
+                             "metrics; skip heavier plots and calibration.")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -1502,10 +1677,14 @@ Examples:
             speed_warn_mm_s=args.speed_warn_mm_s,
             speed_fail_mm_s=args.speed_fail_mm_s,
             with_speed_fit=args.with_speed_fit,
+            lite=args.lite,
         )
 
     if args.phase in ("all", "calibrate"):
-        phase_calibrate(run_dir)
+        if args.lite:
+            print("\nSkipping calibration (--lite).")
+        else:
+            phase_calibrate(run_dir)
 
     elapsed = time.time() - t_total
     print(f"\n{'='*70}")

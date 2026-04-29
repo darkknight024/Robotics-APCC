@@ -149,12 +149,30 @@ def _hausdorff(P: np.ndarray, Q: np.ndarray) -> float:
     """Symmetric Hausdorff distance between two point sets."""
     if len(P) == 0 or len(Q) == 0:
         return 0.0
-    from scipy.spatial import cKDTree
-    tree_q = cKDTree(Q)
-    tree_p = cKDTree(P)
-    d_pq, _ = tree_q.query(P)
-    d_qp, _ = tree_p.query(Q)
+    d_pq, _ = _nearest_distances(P, Q)
+    d_qp, _ = _nearest_distances(Q, P)
     return float(max(d_pq.max(), d_qp.max()))
+
+
+def _nearest_distances(points: np.ndarray, vertices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Nearest-neighbor distances with a numpy fallback when scipy is unavailable."""
+    try:
+        from scipy.spatial import cKDTree
+        distances, indices = cKDTree(vertices).query(points)
+        return np.asarray(distances), np.asarray(indices, dtype=int)
+    except ImportError:
+        distance_chunks = []
+        index_chunks = []
+        chunk_size = max(1, 200000 // max(1, len(vertices)))
+        for start in range(0, len(points), chunk_size):
+            chunk = points[start:start + chunk_size]
+            d2 = np.sum((chunk[:, None, :] - vertices[None, :, :]) ** 2, axis=2)
+            idx = np.argmin(d2, axis=1)
+            index_chunks.append(idx)
+            distance_chunks.append(np.sqrt(d2[np.arange(len(chunk)), idx]))
+        if not distance_chunks:
+            return np.array([]), np.array([], dtype=int)
+        return np.concatenate(distance_chunks), np.concatenate(index_chunks).astype(int)
 
 
 # ── Blend region extraction from RS data ──────────────────────────────────────
@@ -642,9 +660,7 @@ def compare_blend_arcs(
         hausdorff = _hausdorff(solver_arc, rs_blend)
 
         # Nearest-point deviation: for each solver point, distance to closest RS point
-        from scipy.spatial import cKDTree as _cKDTree
-        _tree_nn = _cKDTree(rs_blend)
-        nn_dev, _ = _tree_nn.query(solver_arc)
+        nn_dev, _ = _nearest_distances(solver_arc, rs_blend)
         mean_dev = float(np.mean(nn_dev))
         max_dev = float(np.max(nn_dev))
         p95_dev = float(np.percentile(nn_dev, 95))
@@ -734,9 +750,7 @@ def compare_blend_arcs(
         rs_aligned = rs.tcp_mm[rs_origin:]
 
         fp_hausdorff = _hausdorff(solver_full, rs_aligned)
-        from scipy.spatial import cKDTree as _cKDTree
-        _fp_tree = _cKDTree(rs_aligned)
-        fp_nn_dev, _ = _fp_tree.query(solver_full)
+        fp_nn_dev, _ = _nearest_distances(solver_full, rs_aligned)
         fp_mean_dev = float(np.mean(fp_nn_dev))
         step = max(1, len(solver_full) // 500)
         rs_step = max(1, len(rs_aligned) // 500)
@@ -770,11 +784,72 @@ def compare_blend_arcs(
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
+def _blend_metrics_payload(result: BlendArcComparisonResult, label: str) -> dict:
+    """Build the JSON-serializable blend metrics payload without plotting."""
+    metrics = {
+        "label": label,
+        "n_waypoints": result.n_waypoints,
+        "n_flyby": result.n_flyby,
+        "aggregate": {
+            "mean_frechet_mm": result.mean_frechet_mm,
+            "mean_hausdorff_mm": result.mean_hausdorff_mm,
+            "mean_deviation_mm": result.mean_deviation_mm,
+            "max_deviation_mm": result.max_deviation_mm,
+            "mean_entry_error_mm": result.mean_entry_error_mm,
+            "mean_exit_error_mm": result.mean_exit_error_mm,
+            "mean_arc_length_ratio": result.mean_arc_length_ratio,
+            "mean_rs_rho_min_mm": result.mean_rs_rho_min_mm,
+            "mean_orientation_change_deg": result.mean_orientation_change_deg,
+        },
+        "full_path": {
+            "frechet_mm": result.full_path_frechet_mm,
+            "hausdorff_mm": result.full_path_hausdorff_mm,
+            "mean_deviation_mm": result.full_path_mean_deviation_mm,
+            "total_arc_length_solver_mm": result.total_trajectory_arc_length_solver_mm,
+            "total_arc_length_rs_mm": result.total_trajectory_arc_length_rs_mm,
+        },
+        "per_waypoint": [
+            {
+                "waypoint_idx": c.waypoint_idx,
+                "corner_angle_deg": c.corner_angle_deg,
+                "solver_arc_length_mm": c.solver_arc_length_mm,
+                "rs_arc_length_mm": c.rs_blend_arc_length_mm,
+                "frechet_mm": c.frechet_distance_mm,
+                "hausdorff_mm": c.hausdorff_distance_mm,
+                "mean_dev_mm": c.mean_deviation_mm,
+                "max_dev_mm": c.max_deviation_mm,
+                "p95_dev_mm": c.p95_deviation_mm,
+                "entry_error_mm": c.entry_error_mm,
+                "exit_error_mm": c.exit_error_mm,
+                "arc_length_ratio": c.arc_length_ratio,
+                "solver_rho_min_mm": c.solver_rho_min_mm,
+                "rs_rho_min_mm": float(c.rs_rho_min_mm) if np.isfinite(c.rs_rho_min_mm) else None,
+                "solver_curvature_at_apex": c.solver_curvature_at_apex,
+                "orientation_change_deg": c.orientation_change_deg,
+                "solver_r_tcp_mm": c.solver_r_tcp_mm,
+            }
+            for c in result.per_waypoint
+        ],
+    }
+
+    def _sanitize_for_json(obj):
+        if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+            return None
+        if isinstance(obj, dict):
+            return {k: _sanitize_for_json(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize_for_json(v) for v in obj]
+        return obj
+
+    return _sanitize_for_json(metrics)
+
+
 def generate_blend_comparison_plots(
     result: BlendArcComparisonResult,
     input_waypoint_csv: Path,
     output_dir: Path,
     label: str = "",
+    plots: bool = True,
 ) -> List[Path]:
     """Generate comprehensive blend arc comparison plots.
 
@@ -782,13 +857,20 @@ def generate_blend_comparison_plots(
         - blend_arc_comparison.png: Per-waypoint 2D overlay + deviation profile
         - blend_arc_metrics.json: All numeric metrics
     """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     output_dir.mkdir(parents=True, exist_ok=True)
     saved: List[Path] = []
     short_label = label[:40] if label else "trajectory"
+
+    if not plots:
+        import json
+        p = output_dir / "blend_arc_metrics.json"
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(_blend_metrics_payload(result, short_label), f, indent=2)
+        return [p]
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
     # Load waypoints for reference
     wp_xyz, _, _ = _load_waypoints_robust(input_waypoint_csv)

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 import numpy as np
 
@@ -34,6 +34,7 @@ def generate_all_f3_plots(
     waypoints_m: np.ndarray,
     velocity_limits_rad_s: np.ndarray,
     traj_name: str,
+    plot_kinds: Optional[Iterable[str]] = None,
 ) -> None:
     """Generate all Feature 3 D1 diagnostic plots.
 
@@ -58,17 +59,32 @@ def generate_all_f3_plots(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _plot_speed_profile(output_dir, speed_result, traj_name, plt)
-    _plot_joint_utilisation(output_dir, speed_result, joint_vel_result, traj_name, plt)
-    _plot_joint_velocity_vs_limits(
-        output_dir, speed_result, joint_vel_result,
-        velocity_limits_rad_s, traj_name, plt,
-    )
-    _plot_tcp_pose_deviation(
-        output_dir, dense_path, waypoints_m, traj_name, plt,
-    )
-    _plot_blend_geometry_3d(output_dir, dense_path, blend_geoms, traj_name, plt)
-    _plot_zone_summary(output_dir, blend_geoms, waypoints_m, traj_name, plt)
+    selected = set(plot_kinds) if plot_kinds is not None else {
+        "speed_profile",
+        "joint_utilisation",
+        "joint_velocity",
+        "tcp_pose_deviation",
+        "blend_geometry_3d",
+        "zone_summary",
+    }
+
+    if "speed_profile" in selected:
+        _plot_speed_profile(output_dir, speed_result, traj_name, plt)
+    if "joint_utilisation" in selected:
+        _plot_joint_utilisation(output_dir, speed_result, joint_vel_result, traj_name, plt)
+    if "joint_velocity" in selected:
+        _plot_joint_velocity_vs_limits(
+            output_dir, speed_result, joint_vel_result,
+            velocity_limits_rad_s, traj_name, plt,
+        )
+    if "tcp_pose_deviation" in selected:
+        _plot_tcp_pose_deviation(
+            output_dir, dense_path, waypoints_m, traj_name, plt,
+        )
+    if "blend_geometry_3d" in selected:
+        _plot_blend_geometry_3d(output_dir, dense_path, blend_geoms, traj_name, plt)
+    if "zone_summary" in selected:
+        _plot_zone_summary(output_dir, blend_geoms, waypoints_m, traj_name, plt)
 
 
 def _plot_speed_profile(out: Path, sr, name: str, plt) -> None:

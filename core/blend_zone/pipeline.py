@@ -110,6 +110,7 @@ def run_feature3_d1(
     custom_zone: bool = False,
     plots: bool = True,
     reports: bool = True,
+    plot_kinds: Optional[List[str]] = None,
 ) -> Feature3D1Result:
     """Execute the full Feature 3 D1 pipeline: zone blending → speed profile.
 
@@ -128,6 +129,7 @@ def run_feature3_d1(
         verbose:               Print progress to stdout.
         traj_id:               Process only this 1-based trajectory index.
         plots:                 Generate PNG plots.
+        plot_kinds:            Optional subset of F3 plot names to generate.
         reports:               Generate JSON report.
 
     Returns:
@@ -433,6 +435,7 @@ def run_feature3_d1(
             generate_all_f3_plots(
                 traj_out, dense_path, speed_result, joint_vel_result,
                 blend_geoms, waypoints, final_vel_lims, traj_name,
+                plot_kinds=plot_kinds,
             )
             # Reuse existing Feature-2 EAIK branch visualization style for F3.
             #
@@ -444,7 +447,11 @@ def run_feature3_d1(
                 getattr(config.eaik_multi_solution, "max_waypoints_in_graph", 10000)
             )
             max_branch_plot_samples = min(configured_branch_plot_limit, 2000)
-            if config.solver == "eaik" and len(per_wp) <= max_branch_plot_samples:
+            generate_branch_plot = (
+                plot_kinds is None or "eaik_branches" in set(plot_kinds)
+            )
+            if (generate_branch_plot and config.solver == "eaik"
+                    and len(per_wp) <= max_branch_plot_samples):
                 from utils.feasibility_plot import plot_eaik_branches_all_joints_subplots
                 all_sols_per_wp: List[List[np.ndarray]] = []
                 all_ecfx_per_wp: List[List[tuple]] = []
@@ -481,7 +488,7 @@ def run_feature3_d1(
                     ),
                     traj_name=traj_name,
                 )
-            elif config.solver == "eaik" and verbose:
+            elif generate_branch_plot and config.solver == "eaik" and verbose:
                 print(
                     "    Skipping EAIK branch plot: "
                     f"{len(per_wp)} dense samples exceeds "
