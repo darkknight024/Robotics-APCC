@@ -76,6 +76,9 @@ _RS_ROOT_V3 = _RS_ROOT / "v3"
 _TOOLPATHS_V4 = _TOOLPATHS / "v4"
 _RS_ROOT_V4 = _RS_ROOT / "v4"
 
+# V5 paths (siping re-recordings and matching RobotStudio logs)
+_RS_ROOT_V5 = _RS_ROOT / "v5"
+
 _CONFIG_PATH = str(_REPO / "config" / "batch_feasibility_config.yaml")
 _KNIFE_CONFIG = str(_REPO / "config" / "knife_config.yaml")
 _ROBOT_NAME = "IRB 1300-7/1.4"
@@ -124,9 +127,15 @@ def _find_rs_csv_corner(csv_stem: str) -> Optional[Path]:
     return None
 
 
-def _find_rs_csvs_siping(basename: str, speed_tag: str, zone_tag: str) -> Dict[str, Path]:
+def _find_rs_csvs_siping(
+    basename: str,
+    speed_tag: str,
+    zone_tag: str,
+    rs_version: Optional[str] = None,
+) -> Dict[str, Path]:
     """Return {traj_num: rs_csv} for a siping toolpath."""
-    rs_dir = _RS_ROOT / "siping_toolpaths"
+    rs_root = _RS_ROOT / rs_version if rs_version else _RS_ROOT
+    rs_dir = rs_root / "siping_toolpaths"
     if not rs_dir.exists():
         return {}
     matches = {}
@@ -397,7 +406,8 @@ def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]
         if not tp.exists():
             raise FileNotFoundError(f"Toolpath not found: {tp}")
 
-        csv_files = sorted(tp.glob("*.csv")) if tp.is_dir() else [tp]
+        # Nested layouts (e.g. siping_toolpath/v300/z1/*.csv) require recursion.
+        csv_files = sorted(tp.rglob("*.csv")) if tp.is_dir() else [tp]
         if not csv_files:
             raise FileNotFoundError(f"No CSV files in: {tp}")
 
@@ -636,30 +646,40 @@ def _run_single_task(
     out_dir = Path(task["out"])
     result_csvs = sorted(out_dir.rglob("*_result.csv"))
 
+    cfg = load_batch_config(_CONFIG_PATH)
+    cfg.feature3_d1.enabled = True
+    cfg.feature3_d1.generate_plots = True
+    cfg.feature3_d1.generate_report = True
+    cfg.use_base_frame = task["base_frame"]
+
+    knife_t, knife_q = None, None
+    if task["knife_pose"]:
+        kp = knives[task["knife_pose"]]
+        knife_t = kp.translation_m
+        knife_q = kp.quaternion
+
+    lr_preloaded = None
+    if not task["base_frame"]:
+        from utils.csv_loader_toolpath import prepare_toolpath_load_result_for_feature3
+
+        lr_preloaded = prepare_toolpath_load_result_for_feature3(
+            task["csv"],
+            custom_zone=False,
+            default_zone=cfg.feature3_d1.default_zone,
+            default_v_cmd=cfg.feature3_d1.default_v_cmd_mm_s,
+            use_base_frame=False,
+            knife_translation_m=knife_t,
+            knife_quaternion=knife_q,
+        )
+
     # Run solver if needed
     if not result_csvs or not skip_existing:
-        cfg = load_batch_config(_CONFIG_PATH)
-        cfg.feature3_d1.enabled = True
-        cfg.feature3_d1.generate_plots = True
-        cfg.feature3_d1.generate_report = True
-        cfg.use_base_frame = task["base_frame"]
-
-        knife_t, knife_q, knife_name = None, None, ""
-        if task["knife_pose"]:
-            kp = knives[task["knife_pose"]]
-            knife_t = kp.translation_m
-            knife_q = kp.quaternion
-            knife_name = task["knife_pose"]
-
         run_feature3_d1(
             toolpath_csv=task["csv"],
             urdf_path=str(_REPO / robot_config.urdf_path),
             config=cfg,
             output_dir=task["out"],
-            knife_translation_m=knife_t,
-            knife_quaternion=knife_q,
             robot_model_name=_ROBOT_NAME,
-            knife_pose_name=knife_name,
             robot_reach_m=robot_config.reach_m,
             velocity_limits_rad_s=vel_limits,
             accel_limits_rad_s2=accel_limits,
@@ -670,6 +690,7 @@ def _run_single_task(
             plot_kinds=(
                 ["speed_profile", "tcp_pose_deviation"] if lite else None
             ),
+            preloaded_load_result=lr_preloaded,
         )
         result_csvs = sorted(out_dir.rglob("*_result.csv"))
 
@@ -723,12 +744,29 @@ def _run_single_task(
             )
 
     elif category == "siping_toolpaths":
-        rs_map = _find_rs_csvs_siping(task["csv_stem"], task["speed_tag"], task["zone_tag"])
+        rs_map = _find_rs_csvs_siping(
+            task["csv_stem"],
+            task["speed_tag"],
+            task["zone_tag"],
+            task.get("rs_version"),
+        )
         for sol_csv in result_csvs:
             traj_num = sol_csv.stem.replace("_result", "").replace("trajectory_", "")
             if traj_num in rs_map:
                 traj_label = f"{task['label']}/traj_{traj_num}"
                 traj_out = out_dir / sol_csv.stem
+                waypoint_pose_mm = None
+                if lr_preloaded is not None:
+                    try:
+                        tidx = int(traj_num) - 1
+                    except ValueError:
+                        tidx = -1
+                    if 0 <= tidx < len(lr_preloaded.waypoints):
+                        wpm = lr_preloaded.waypoints[tidx]
+                        waypoint_pose_mm = {
+                            "xyz": wpm[:, :3] * 1000.0,
+                            "quat": np.asarray(wpm[:, 3:7], dtype=float),
+                        }
                 v, _ = generate_trajectory_comparison_plots(
                     sol_csv, rs_map[traj_num], traj_out,
                     label=traj_label,
@@ -737,30 +775,47 @@ def _run_single_task(
                     input_waypoint_csv=input_csv,
                     with_speed_fit=with_speed_fit,
                     lite=lite,
+                    waypoint_pose_mm=waypoint_pose_mm,
                 )
                 verifications.append(v)
 
                 try:
-                    blend_result = compare_blend_arcs(input_csv, rs_map[traj_num])
-                    if blend_result.n_flyby > 0:
-                        generate_blend_comparison_plots(
-                            blend_result, input_csv, traj_out,
-                            label=traj_label,
-                            plots=not lite,
-                        )
-                        if blend_arc_result is None:
-                            blend_arc_result = blend_result
-                        if show_3d:
-                            show_3d_blend_arc_comparison(
-                                blend_result, input_csv, rs_map[traj_num],
-                                label=traj_label,
+                    if lr_preloaded is not None:
+                        try:
+                            ti = int(traj_num) - 1
+                        except ValueError:
+                            ti = -1
+                        if 0 <= ti < len(lr_preloaded.waypoints):
+                            blend_result = compare_blend_arcs(
+                                input_csv, rs_map[traj_num],
+                                waypoints_m=lr_preloaded.waypoints[ti],
+                                zone_specs=lr_preloaded.zone_specs[ti],
                             )
+                        else:
+                            blend_result = compare_blend_arcs(input_csv, rs_map[traj_num])
+                    else:
+                        blend_result = compare_blend_arcs(input_csv, rs_map[traj_num])
+                    has_wp_blend_metrics = len(blend_result.per_waypoint) > 0
+                    generate_blend_comparison_plots(
+                        blend_result, input_csv, traj_out,
+                        label=traj_label,
+                        plots=(not lite) and has_wp_blend_metrics,
+                    )
+                    if blend_arc_result is None:
+                        blend_arc_result = blend_result
+                    if show_3d and has_wp_blend_metrics:
+                        show_3d_blend_arc_comparison(
+                            blend_result, input_csv, rs_map[traj_num],
+                            label=traj_label,
+                        )
                 except Exception as e:
                     logger.warning("Blend arc comparison failed for %s: %s",
                                    traj_label, e)
 
         if verifications:
-            _write_siping_toolpath_consolidated_results(out_dir, task, verifications)
+            _write_siping_toolpath_consolidated_results(
+                out_dir, task, verifications, prepared_toolpath=lr_preloaded,
+            )
 
     return True, verifications, blend_arc_result
 
@@ -769,6 +824,7 @@ def _write_siping_toolpath_consolidated_results(
     toolpath_dir: Path,
     task: dict,
     verifications: List[object],
+    prepared_toolpath=None,
 ) -> Optional[Path]:
     """Write per-siping-toolpath aggregate stats and a full-path error plot."""
     if not verifications:
@@ -808,6 +864,15 @@ def _write_siping_toolpath_consolidated_results(
         gap_mm = max(5.0, 0.02 * length_solver_mm)
         arc_offset = float(s_plot[-1] + gap_mm) if len(s_plot) else arc_offset
 
+        waypoint_chord_mm = 0.0
+        if prepared_toolpath is not None and idx - 1 < len(prepared_toolpath.waypoints):
+            wpm = prepared_toolpath.waypoints[idx - 1]
+            if len(wpm) >= 2:
+                xyz_mm = wpm[:, :3] * 1000.0
+                waypoint_chord_mm = float(
+                    np.sum(np.linalg.norm(np.diff(xyz_mm, axis=0), axis=1))
+                )
+
         trajectory_rows.append({
             "trajectory_index": idx,
             "label": verification.label,
@@ -817,6 +882,7 @@ def _write_siping_toolpath_consolidated_results(
             "n_rs_samples": int(len(rs.tcp_mm)),
             "solver_duration_ms": float(sol.time_ms[-1] - sol.time_ms[0]) if len(sol.time_ms) else 0.0,
             "rs_duration_ms": float(rs.time_ms[-1] - rs.time_ms[0]) if len(rs.time_ms) else 0.0,
+            "waypoint_chord_length_mm": waypoint_chord_mm,
             "solver_arc_length_mm": length_solver_mm,
             "rs_arc_length_mm": float(_arc_length_from_tcp(rs.tcp_mm)[-1]) if len(rs.tcp_mm) else 0.0,
             "mean_error_mm": float(np.mean(error_mm)) if len(error_mm) else 0.0,
@@ -838,6 +904,9 @@ def _write_siping_toolpath_consolidated_results(
             "n_rs_samples": int(sum(r["n_rs_samples"] for r in trajectory_rows)),
             "total_solver_duration_ms": float(sum(r["solver_duration_ms"] for r in trajectory_rows)),
             "total_rs_duration_ms": float(sum(r["rs_duration_ms"] for r in trajectory_rows)),
+            "total_waypoint_chord_length_mm": float(
+                sum(r["waypoint_chord_length_mm"] for r in trajectory_rows)
+            ),
             "total_solver_arc_length_mm": float(sum(r["solver_arc_length_mm"] for r in trajectory_rows)),
             "total_rs_arc_length_mm": float(sum(r["rs_arc_length_mm"] for r in trajectory_rows)),
             "mean_error_mm": float(np.mean(combined_errors)) if len(combined_errors) else 0.0,
@@ -865,16 +934,18 @@ def _write_siping_toolpath_consolidated_results(
         f"  P95:  {combined['p95_error_mm']:.3f} mm",
         f"  P99:  {combined['p99_error_mm']:.3f} mm",
         f"  Max:  {combined['max_error_mm']:.3f} mm",
+        f"  Waypoint chord total:    {combined['total_waypoint_chord_length_mm']:.1f} mm",
         f"  Solver arc length total: {combined['total_solver_arc_length_mm']:.1f} mm",
         f"  RS arc length total:     {combined['total_rs_arc_length_mm']:.1f} mm",
         "",
-        "Per Trajectory:",
+        "Per Trajectory (wp_chord = programmed corner polyline, solver/RS = TCP recording):",
     ]
     for row in trajectory_rows:
         lines.append(
             f"  {row['trajectory_index']:>2d}: mean={row['mean_error_mm']:.3f}mm "
             f"p95={row['p95_error_mm']:.3f}mm max={row['max_error_mm']:.3f}mm "
-            f"len={row['solver_arc_length_mm']:.1f}mm"
+            f"wp_chord={row['waypoint_chord_length_mm']:.1f}mm "
+            f"solver={row['solver_arc_length_mm']:.1f}mm rs={row['rs_arc_length_mm']:.1f}mm"
         )
     txt_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -1052,6 +1123,7 @@ def phase_run(
     speed_fail_mm_s: float = 15.0,
     with_speed_fit: bool = False,
     lite: bool = False,
+    rs_version: Optional[str] = None,
 ):
     """Run solver on all toolpaths, generating RS comparison alongside.
 
@@ -1106,6 +1178,15 @@ def phase_run(
         if not tasks:
             print("  (no toolpaths match the filter; nothing to do)")
             return
+
+    if rs_version:
+        rs_root = _RS_ROOT / rs_version
+        if not rs_root.exists():
+            raise FileNotFoundError(f"RobotStudio results version not found: {rs_root}")
+        for task in tasks:
+            if task["category"] == "siping_toolpaths":
+                task["rs_version"] = rs_version
+
     print(f"\n{'='*70}")
     print(f"PHASE 1: RUN + COMPARE — {len(tasks)} toolpaths")
     print(f"{'='*70}")
@@ -1641,6 +1722,10 @@ Examples:
                              "rs_comparison_tcp_deviation.png, "
                              "rs_comparison_tcp_deviation_delta.png, and JSON "
                              "metrics; skip heavier plots and calibration.")
+    parser.add_argument("--rs-version", choices=["v2", "v3", "v4", "v5"],
+                        help="Use RobotStudio results from Results - RobotStudio/<version> "
+                             "for single-toolpath comparisons.  This is mainly for "
+                             "re-recorded siping runs such as v5.")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -1678,6 +1763,7 @@ Examples:
             speed_fail_mm_s=args.speed_fail_mm_s,
             with_speed_fit=args.with_speed_fit,
             lite=args.lite,
+            rs_version=args.rs_version,
         )
 
     if args.phase in ("all", "calibrate"):

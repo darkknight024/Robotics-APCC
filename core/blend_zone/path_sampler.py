@@ -324,7 +324,15 @@ def sample_blended_path(
 
     pos_array = np.array(all_pos)
     quat_array = np.array(all_quat)
-    arc_array = np.array(arc_values)
+
+    # Recompute cumulative arc length from the assembled samples.  The local
+    # arc offsets above exclude segment endpoints to avoid duplicate poses; for
+    # dense back-to-back blends that can otherwise miss the final stride before
+    # the next blend entry and under-report the physical TCP path length.
+    arc_array = np.zeros(len(pos_array), dtype=float)
+    if len(pos_array) > 1:
+        step_lengths = np.linalg.norm(np.diff(pos_array, axis=0), axis=1)
+        arc_array[1:] = np.cumsum(step_lengths)
 
     # Convert positions from mm back to metres for SE(3) consistency
     poses = np.column_stack([pos_array / 1000.0, quat_array])

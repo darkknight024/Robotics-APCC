@@ -719,6 +719,49 @@ def load_toolpath_f3(
     )
 
 
+def prepare_toolpath_load_result_for_feature3(
+    csv_path: str,
+    *,
+    custom_zone: bool = False,
+    default_zone: str = "fine",
+    default_v_cmd: float = 300.0,
+    use_base_frame: bool = True,
+    knife_translation_m: Optional[np.ndarray] = None,
+    knife_quaternion: Optional[np.ndarray] = None,
+    max_trajectories: Optional[int] = None,
+) -> ToolpathLoadResultF3:
+    """Load a Feature 3 toolpath and express poses in the robot base frame.
+
+    When ``use_base_frame`` is False and knife offsets are supplied, each
+    trajectory is mapped from plate/knife coordinates (``T_P_K``) to base
+    (``T_B_P``) via :func:`utils.transform_handler.transform_trajectory_to_base_frame`.
+
+    Callers that need solver inputs and RS comparison overlays in one frame
+    should use this helper once and pass the result to
+    :func:`core.blend_zone.pipeline.run_feature3_d1` as ``preloaded_load_result``.
+    """
+    lr = load_toolpath_f3(
+        csv_path,
+        custom_zone=custom_zone,
+        default_zone=default_zone,
+        default_v_cmd=default_v_cmd,
+        max_trajectories=max_trajectories,
+    )
+    if (
+        not use_base_frame
+        and knife_translation_m is not None
+        and knife_quaternion is not None
+        and lr.waypoints
+    ):
+        from utils.transform_handler import transform_trajectory_to_base_frame
+
+        lr.waypoints = [
+            transform_trajectory_to_base_frame(wp, knife_translation_m, knife_quaternion)
+            for wp in lr.waypoints
+        ]
+    return lr
+
+
 _RS_JOINT_COLS = ("rs_j1_deg", "rs_j2_deg", "rs_j3_deg", "rs_j4_deg", "rs_j5_deg", "rs_j6_deg")
 _RS_TCP_COLS = ("rs_x_mm", "rs_y_mm", "rs_z_mm", "rs_qw", "rs_qx", "rs_qy", "rs_qz")
 

@@ -507,6 +507,7 @@ def generate_trajectory_comparison_plots(
     input_waypoint_csv: Optional[Path] = None,
     with_speed_fit: bool = True,
     lite: bool = False,
+    waypoint_pose_mm: Optional[Dict[str, np.ndarray]] = None,
 ) -> Tuple[TrajectoryVerification, List[Path]]:
     """Generate detailed comparison plots for one solver↔RS pair.
 
@@ -523,6 +524,12 @@ def generate_trajectory_comparison_plots(
         lite:            Skip heavier comparison plots not needed for quick
                          siping review.  Keeps JSON, 3D path, absolute TCP
                          poses, and TCP pose deltas.
+        waypoint_pose_mm: Optional overlay for programmed TCP poses: keys
+                         ``xyz`` *(N,3)* mm and ``quat`` *(N,4)* in the
+                         **same frame as the solver/RS export** (robot base).
+                         When set, absolute TCP pose plots use this instead of
+                         reading *input_waypoint_csv* (e.g. siping plate-frame
+                         CSV plus per-trajectory slice).
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -692,7 +699,8 @@ def generate_trajectory_comparison_plots(
 
     # ── 4) Absolute TCP poses (waypoints + RS + solver) ──
     saved.extend(_plot_tcp_absolute_poses(sol, rs, output_dir, short_label,
-                                          input_waypoint_csv))
+                                          input_waypoint_csv,
+                                          waypoint_pose_mm=waypoint_pose_mm))
 
     # ── 5) TCP pose deviation delta (X,Y,Z + qw,qx,qy,qz) ──
     saved.extend(_plot_tcp_pose_deviation(sol, rs, output_dir, short_label))
@@ -878,12 +886,20 @@ def _plot_tcp_absolute_poses(
     output_dir: Path,
     label: str,
     input_waypoint_csv: Optional[Path] = None,
+    waypoint_pose_mm: Optional[Dict[str, np.ndarray]] = None,
 ) -> List[Path]:
     """Plot absolute TCP poses: X,Y,Z (left) and qw,qx,qy,qz (right).
 
     Three traces per subplot: input waypoints, RobotStudio, and solver.
     Shows ALL RS data (including approach samples) — no trimming.
     The Euclidean deviation subplot aligns origins via closest-start matching.
+
+    **Horizontal axis:** cumulative **arc length** along each polyline (mm),
+    not wall-clock time. Waypoints have no timestamps; chord-length along the
+    programmed corner sequence is the natural abscissa. For T0-separated
+    multi-trajectory CSVs, plotting the raw file without selecting one segment
+    concatenates all trajectories and inflates arc length — pass
+    *waypoint_pose_mm* for one trajectory in base frame when comparing to solver.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -898,7 +914,15 @@ def _plot_tcp_absolute_poses(
     rs_tcp_aligned = rs.tcp_mm[rs_origin_idx:]
     s_rs_aligned = _arc_length_from_tcp(rs_tcp_aligned)
 
-    wp = _load_waypoint_csv(input_waypoint_csv) if input_waypoint_csv else None
+    if waypoint_pose_mm is not None:
+        wp = {
+            "xyz": np.asarray(waypoint_pose_mm["xyz"], dtype=float),
+            "quat": np.asarray(waypoint_pose_mm["quat"], dtype=float),
+        }
+    elif input_waypoint_csv:
+        wp = _load_waypoint_csv(input_waypoint_csv)
+    else:
+        wp = None
     s_wp = _arc_length_from_tcp(wp["xyz"]) if wp is not None else None
 
     fig, axes = plt.subplots(4, 2, figsize=(16, 14))
@@ -961,7 +985,12 @@ def _plot_tcp_absolute_poses(
         if row == 3:
             ax.set_xlabel("Arc Length (mm)", fontsize=9)
 
-    fig.suptitle(f"TCP Absolute Poses — {label}", fontsize=12, y=1.01)
+    fig.suptitle(
+        f"TCP Absolute Poses — {label}\n"
+        f"(abscissa: arc length along each trace, mm — not time)",
+        fontsize=11,
+        y=1.01,
+    )
     fig.tight_layout()
     p = output_dir / "rs_comparison_tcp_deviation.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")

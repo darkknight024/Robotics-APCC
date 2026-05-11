@@ -34,6 +34,7 @@ from .csv_loader_toolpath import (
     # Feature 3 — M7
     ToolpathLoadResultF3,
     load_toolpath_f3,
+    prepare_toolpath_load_result_for_feature3,
 )
 
 from .csv_loader_robostudio import (

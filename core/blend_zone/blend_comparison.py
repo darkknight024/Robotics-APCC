@@ -27,13 +27,23 @@ import csv as _csv
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from .blend_geometry import BlendArcGeometry, _cubic_bezier
+from .blend_geometry import (
+    BlendArcGeometry,
+    DEFAULT_BLEND_SHAPE_K,
+    _cubic_bezier,
+    compute_blend_geometries,
+)
 from .calibration import RSTrajectoryData, load_rs_csv
-from .zone_resolver import ZoneParams, resolve_zone_spec
+from .zone_resolver import (
+    ZoneParams,
+    apply_overlap_reduction,
+    resolve_zone_list,
+    resolve_zone_spec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +128,12 @@ class BlendArcComparisonResult:
     mean_orientation_change_deg: float = 0.0
     total_trajectory_arc_length_solver_mm: float = 0.0
     total_trajectory_arc_length_rs_mm: float = 0.0
+
+    # Waypoints used for geometry (mm); set when caller passes ``waypoints_m`` slice
+    reference_wp_xyz_mm: Optional[np.ndarray] = field(default=None, repr=False)
+    skip_per_waypoint_analysis: bool = False
+    skip_per_waypoint_reason: str = ""
+    n_programmed_flyby_corners: int = 0
 
 
 # ── Fréchet and Hausdorff distance ────────────────────────────────────────────
@@ -573,23 +589,59 @@ def compare_blend_arcs(
     input_waypoint_csv: Path,
     rs_csv: Path,
     blend_geoms: Optional[List[Optional[BlendArcGeometry]]] = None,
+    *,
+    waypoints_m: Optional[np.ndarray] = None,
+    zone_specs: Optional[List[Union[str, Tuple[float, float, float]]]] = None,
 ) -> BlendArcComparisonResult:
     """Compare solver blend arcs against RobotStudio for all fly-by waypoints.
 
     Args:
-        input_waypoint_csv:  Path to the input toolpath CSV with waypoints.
+        input_waypoint_csv:  Path to the input toolpath CSV (provenance / plots).
         rs_csv:              Path to the RS Signal Analyser CSV.
         blend_geoms:         Pre-computed blend geometries. If None, computed
-                             from the waypoint CSV zone data.
-
-    Returns:
-        :class:`BlendArcComparisonResult` with per-waypoint and aggregate metrics.
+                             from the CSV or from ``waypoints_m`` / ``zone_specs``.
+        waypoints_m:         Optional single-trajectory ``(N,7)`` poses in **metres**
+                             (same frame as RS TCP). Use with ``zone_specs`` for one
+                             ``T0`` segment of multi-trajectory siping files.
+        zone_specs:          One zone entry per waypoint (strings or custom tuples),
+                             same convention as :func:`resolve_zone_list`.
     """
     from .blend_geometry import compute_blend_geometry
 
-    # Load input waypoints — handles both header-based and headerless (siping) CSVs
-    wp_xyz, zone_per_wp, fine_per_wp = _load_waypoints_robust(input_waypoint_csv)
-    n_wp = len(wp_xyz)
+    skip_reason = ""
+    reference_wp_xyz_mm: Optional[np.ndarray] = None
+
+    if waypoints_m is not None:
+        if zone_specs is None or len(zone_specs) != len(waypoints_m):
+            raise ValueError(
+                "compare_blend_arcs: waypoints_m requires zone_specs of equal length"
+            )
+        wp_m = np.asarray(waypoints_m, dtype=float)
+        wp_xyz = wp_m[:, :3] * 1000.0
+        reference_wp_xyz_mm = wp_xyz.copy()
+        n_wp = len(wp_xyz)
+        if blend_geoms is None:
+            zones_resolved = resolve_zone_list(list(zone_specs))
+            zones_eff = apply_overlap_reduction(zones_resolved, wp_m)
+            blend_geoms = compute_blend_geometries(
+                wp_m, zones_eff, shape_k=DEFAULT_BLEND_SHAPE_K,
+            )
+    else:
+        wp_xyz, zone_per_wp, fine_per_wp = _load_waypoints_robust(input_waypoint_csv)
+        n_wp = len(wp_xyz)
+        if blend_geoms is None:
+            blend_geoms = []
+            for i in range(n_wp):
+                zone_val = zone_per_wp[i]
+                is_fine = fine_per_wp[i]
+
+                if is_fine or i == 0 or i == n_wp - 1 or zone_val <= 0:
+                    blend_geoms.append(None)
+                    continue
+
+                zone = resolve_zone_spec(f"z{int(zone_val)}")
+                geom = compute_blend_geometry(wp_xyz, i, zone)
+                blend_geoms.append(geom)
 
     if n_wp < 2:
         return BlendArcComparisonResult(
@@ -599,34 +651,22 @@ def compare_blend_arcs(
             max_deviation_mm=0, mean_entry_error_mm=0, mean_exit_error_mm=0,
             mean_arc_length_ratio=0, total_solver_arc_length_mm=0,
             total_rs_arc_length_mm=0,
+            skip_per_waypoint_analysis=True,
+            skip_per_waypoint_reason="Fewer than two waypoints.",
         )
 
-    # Load RS data
     rs = load_rs_csv(rs_csv)
 
-    # For large toolpaths with very small zones, the RS 24ms sampling
-    # cannot resolve individual blend arcs. Skip per-waypoint comparison
-    # and only produce aggregate metrics in that case.
     n_flyby_expected = max(0, n_wp - 2)
     skip_per_wp = (n_flyby_expected > 50 and len(rs.tcp_mm) < n_flyby_expected * 2)
     if skip_per_wp:
-        logger.info("Skipping per-waypoint blend comparison: %d fly-by WPs "
-                     "but only %d RS samples", n_flyby_expected, len(rs.tcp_mm))
-
-    # Compute blend geometries if not provided
-    if blend_geoms is None:
-        blend_geoms = []
-        for i in range(n_wp):
-            zone_val = zone_per_wp[i]
-            is_fine = fine_per_wp[i]
-
-            if is_fine or i == 0 or i == n_wp - 1 or zone_val <= 0:
-                blend_geoms.append(None)
-                continue
-
-            zone = resolve_zone_spec(f"z{int(zone_val)}")
-            geom = compute_blend_geometry(wp_xyz, i, zone)
-            blend_geoms.append(geom)
+        skip_reason = (
+            f"Programmed fly-by corners={n_flyby_expected} but RS has only "
+            f"{len(rs.tcp_mm)} samples; per-corner blend metrics are skipped."
+        )
+        logger.info(
+            "Skipping per-waypoint blend comparison: %d fly-by WPs "
+            "but only %d RS samples", n_flyby_expected, len(rs.tcp_mm))
 
     per_waypoint: List[WaypointBlendComparison] = []
 
@@ -760,7 +800,7 @@ def compare_blend_arcs(
         input_csv=str(input_waypoint_csv),
         rs_csv=str(rs_csv),
         n_waypoints=n_wp,
-        n_flyby=n_flyby_expected if skip_per_wp else len(per_waypoint),
+        n_flyby=len(per_waypoint),
         per_waypoint=per_waypoint,
         mean_frechet_mm=agg_frechet,
         mean_hausdorff_mm=agg_hausdorff,
@@ -779,18 +819,72 @@ def compare_blend_arcs(
         mean_orientation_change_deg=agg_ori,
         total_trajectory_arc_length_solver_mm=total_traj_solver,
         total_trajectory_arc_length_rs_mm=total_traj_rs,
+        reference_wp_xyz_mm=reference_wp_xyz_mm,
+        skip_per_waypoint_analysis=bool(skip_per_wp),
+        skip_per_waypoint_reason=skip_reason,
+        n_programmed_flyby_corners=n_flyby_expected,
     )
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
+def _blend_json_field_descriptions() -> Dict[str, str]:
+    """One-line human meaning for every JSON field (for ``blend_arc_metrics.json``)."""
+    return {
+        "_metric_descriptions": "Maps dotted JSON paths to one-line explanations of each numeric field.",
+        "label": "Short run label (often truncated stem).",
+        "n_waypoints": "Count of programmed TCP poses for this trajectory segment.",
+        "n_programmed_flyby_corners": "Interior waypoints (N−2); potential blend corners.",
+        "n_corners_with_blend_metrics": "Fly-by corners where per-corner RS-vs-solver metrics were computed (0 if skipped).",
+        "per_waypoint_skipped": "True when RS sampling is too sparse vs corner count to run per-corner blend extraction.",
+        "per_waypoint_skip_reason": "Empty when per-corner analysis ran; otherwise explains why per_waypoint is empty.",
+        "uses_explicit_trajectory_slice": "True when waypoints came from a single T0 segment (siping), not a whole multi-trajectory CSV.",
+        "aggregate_over_corners": "Means/max over per-corner rows; null when per_waypoint is empty (values would be meaningless).",
+        "aggregate_over_corners.mean_frechet_mm": "Mean discrete Fréchet distance (mm) between dense solver Bézier and RS blend polyline per corner.",
+        "aggregate_over_corners.mean_hausdorff_mm": "Mean symmetric Hausdorff distance (mm) between those two polylines per corner.",
+        "aggregate_over_corners.mean_deviation_mm": "Mean over corners of mean nearest-point distance (mm) from solver arc samples to RS blend.",
+        "aggregate_over_corners.max_deviation_mm": "Worst-case max deviation (mm) among all corners (largest per-corner max).",
+        "aggregate_over_corners.mean_entry_error_mm": "Mean |solver blend entry − first RS blend point| (mm) per corner.",
+        "aggregate_over_corners.mean_exit_error_mm": "Mean |solver blend exit − last RS blend point| (mm) per corner.",
+        "aggregate_over_corners.mean_arc_length_ratio": "Mean (RS blend chord length ÷ solver Bézier arc length) per corner; near 1 means similar arc length.",
+        "aggregate_over_corners.mean_rs_rho_min_mm": "Mean estimated minimum curvature radius (mm) from RS blend point triples (rough geometry probe).",
+        "aggregate_over_corners.mean_orientation_change_deg": "Mean sum of quaternion angular steps (deg) along each RS blend capture.",
+        "sum_blend_arc_lengths": "Present only when per-corner metrics exist; sums arc lengths over all corners with geometry.",
+        "sum_blend_arc_lengths.sum_solver_bezier_arc_lengths_mm": "Sum of our cubic Bézier blend arc lengths (mm) over analyzed corners.",
+        "sum_blend_arc_lengths.sum_rs_extracted_blend_lengths_mm": "Sum of chord lengths (mm) along RS samples inside each corner's blend window.",
+        "full_path": "Metrics comparing the entire solver predicted polyline vs full RS recording (after start alignment).",
+        "full_path.frechet_mm": "Discrete Fréchet distance (mm) on downsampled solver vs RS polylines (cheap upper-bound style estimate).",
+        "full_path.hausdorff_mm": "Symmetric Hausdorff distance (mm) between dense solver full path and RS path from aligned start.",
+        "full_path.mean_deviation_mm": "Mean Euclidean distance (mm) from each solver full-path sample to closest point on RS polyline.",
+        "full_path.total_arc_length_solver_mm": "Total chord length (mm) along dense solver predicted TCP path (straights + blends).",
+        "full_path.total_arc_length_rs_mm": "Total chord length (mm) along raw RS TCP polyline (includes approach motion before alignment).",
+        "per_waypoint": "List of per-fly-by-corner blend comparisons (empty when skipped or no blend geometry).",
+        "per_waypoint[].waypoint_idx": "Index of the fly-by waypoint in the segment waypoint array.",
+        "per_waypoint[].corner_angle_deg": "Turn angle (deg) between incoming and outgoing straight segments at that waypoint.",
+        "per_waypoint[].solver_arc_length_mm": "Length (mm) of our model's cubic Bézier blend arc for this corner.",
+        "per_waypoint[].rs_arc_length_mm": "Chord length (mm) of RS TCP samples assigned to this corner's blend window.",
+        "per_waypoint[].frechet_mm": "Discrete Fréchet distance (mm) between dense solver Bézier samples and RS blend polyline.",
+        "per_waypoint[].hausdorff_mm": "Symmetric Hausdorff distance (mm) between those two polylines.",
+        "per_waypoint[].mean_dev_mm": "Mean nearest-point distance (mm) from solver Bézier samples to RS blend vertices.",
+        "per_waypoint[].max_dev_mm": "Max nearest-point distance (mm) for this corner.",
+        "per_waypoint[].p95_dev_mm": "95th percentile of nearest-point distances (mm) for this corner.",
+        "per_waypoint[].entry_error_mm": "Euclidean gap (mm) between solver blend entry and first RS blend sample.",
+        "per_waypoint[].exit_error_mm": "Euclidean gap (mm) between solver blend exit and last RS blend sample.",
+        "per_waypoint[].arc_length_ratio": "RS blend chord length divided by solver Bézier arc length for this corner.",
+        "per_waypoint[].solver_rho_min_mm": "Minimum curvature radius (mm) predicted along our cubic Bézier for this corner.",
+        "per_waypoint[].rs_rho_min_mm": "Minimum radius (mm) from a three-point circle fit on RS blend samples (None if ill-conditioned).",
+        "per_waypoint[].solver_curvature_at_apex": "Scalar κ at t=0.5 on our Bézier (1/mm) using effective TCP zone radius and corner angle.",
+        "per_waypoint[].orientation_change_deg": "Integrated quaternion angular change (deg) along RS samples in the blend window.",
+        "per_waypoint[].solver_r_tcp_mm": "Effective TCP zone radius (mm) used by the solver for this corner after overlap reduction.",
+    }
+
+
 def _blend_metrics_payload(result: BlendArcComparisonResult, label: str) -> dict:
     """Build the JSON-serializable blend metrics payload without plotting."""
-    metrics = {
-        "label": label,
-        "n_waypoints": result.n_waypoints,
-        "n_flyby": result.n_flyby,
-        "aggregate": {
+    corner_agg_valid = bool(result.per_waypoint) and not result.skip_per_waypoint_analysis
+    aggregate_block = None
+    if corner_agg_valid:
+        aggregate_block = {
             "mean_frechet_mm": result.mean_frechet_mm,
             "mean_hausdorff_mm": result.mean_hausdorff_mm,
             "mean_deviation_mm": result.mean_deviation_mm,
@@ -800,7 +894,25 @@ def _blend_metrics_payload(result: BlendArcComparisonResult, label: str) -> dict
             "mean_arc_length_ratio": result.mean_arc_length_ratio,
             "mean_rs_rho_min_mm": result.mean_rs_rho_min_mm,
             "mean_orientation_change_deg": result.mean_orientation_change_deg,
-        },
+        }
+
+    totals_block = None
+    if corner_agg_valid:
+        totals_block = {
+            "sum_solver_bezier_arc_lengths_mm": result.total_solver_arc_length_mm,
+            "sum_rs_extracted_blend_lengths_mm": result.total_rs_arc_length_mm,
+        }
+
+    metrics: Dict[str, Any] = {
+        "label": label,
+        "n_waypoints": result.n_waypoints,
+        "n_programmed_flyby_corners": result.n_programmed_flyby_corners,
+        "n_corners_with_blend_metrics": result.n_flyby,
+        "per_waypoint_skipped": result.skip_per_waypoint_analysis,
+        "per_waypoint_skip_reason": result.skip_per_waypoint_reason,
+        "uses_explicit_trajectory_slice": result.reference_wp_xyz_mm is not None,
+        "aggregate_over_corners": aggregate_block,
+        "sum_blend_arc_lengths": totals_block,
         "full_path": {
             "frechet_mm": result.full_path_frechet_mm,
             "hausdorff_mm": result.full_path_hausdorff_mm,
@@ -830,6 +942,7 @@ def _blend_metrics_payload(result: BlendArcComparisonResult, label: str) -> dict
             }
             for c in result.per_waypoint
         ],
+        "_metric_descriptions": _blend_json_field_descriptions(),
     }
 
     def _sanitize_for_json(obj):
@@ -872,8 +985,11 @@ def generate_blend_comparison_plots(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    # Load waypoints for reference
-    wp_xyz, _, _ = _load_waypoints_robust(input_waypoint_csv)
+    # Waypoints for overlays: same frame as RS (explicit slice) or CSV load
+    if result.reference_wp_xyz_mm is not None:
+        wp_xyz = result.reference_wp_xyz_mm
+    else:
+        wp_xyz, _, _ = _load_waypoints_robust(input_waypoint_csv)
 
     # Limit per-waypoint plots for large toolpaths (skip individual plots
     # when there are too many fly-by waypoints; summary + JSON are always generated)
@@ -1168,63 +1284,10 @@ def generate_blend_comparison_plots(
 
     # ── Metrics JSON ──
     import json
-    metrics = {
-        "label": short_label,
-        "n_waypoints": result.n_waypoints,
-        "n_flyby": result.n_flyby,
-        "aggregate": {
-            "mean_frechet_mm": result.mean_frechet_mm,
-            "mean_hausdorff_mm": result.mean_hausdorff_mm,
-            "mean_deviation_mm": result.mean_deviation_mm,
-            "max_deviation_mm": result.max_deviation_mm,
-            "mean_entry_error_mm": result.mean_entry_error_mm,
-            "mean_exit_error_mm": result.mean_exit_error_mm,
-            "mean_arc_length_ratio": result.mean_arc_length_ratio,
-            "mean_rs_rho_min_mm": result.mean_rs_rho_min_mm,
-            "mean_orientation_change_deg": result.mean_orientation_change_deg,
-        },
-        "full_path": {
-            "frechet_mm": result.full_path_frechet_mm,
-            "hausdorff_mm": result.full_path_hausdorff_mm,
-            "mean_deviation_mm": result.full_path_mean_deviation_mm,
-            "total_arc_length_solver_mm": result.total_trajectory_arc_length_solver_mm,
-            "total_arc_length_rs_mm": result.total_trajectory_arc_length_rs_mm,
-        },
-        "per_waypoint": [
-            {
-                "waypoint_idx": c.waypoint_idx,
-                "corner_angle_deg": c.corner_angle_deg,
-                "solver_arc_length_mm": c.solver_arc_length_mm,
-                "rs_arc_length_mm": c.rs_blend_arc_length_mm,
-                "frechet_mm": c.frechet_distance_mm,
-                "hausdorff_mm": c.hausdorff_distance_mm,
-                "mean_dev_mm": c.mean_deviation_mm,
-                "max_dev_mm": c.max_deviation_mm,
-                "p95_dev_mm": c.p95_deviation_mm,
-                "entry_error_mm": c.entry_error_mm,
-                "exit_error_mm": c.exit_error_mm,
-                "arc_length_ratio": c.arc_length_ratio,
-                "solver_rho_min_mm": c.solver_rho_min_mm,
-                "rs_rho_min_mm": float(c.rs_rho_min_mm) if np.isfinite(c.rs_rho_min_mm) else None,
-                "solver_curvature_at_apex": c.solver_curvature_at_apex,
-                "orientation_change_deg": c.orientation_change_deg,
-                "solver_r_tcp_mm": c.solver_r_tcp_mm,
-            }
-            for c in result.per_waypoint
-        ],
-    }
-    def _sanitize_for_json(obj):
-        if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
-            return None
-        if isinstance(obj, dict):
-            return {k: _sanitize_for_json(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_sanitize_for_json(v) for v in obj]
-        return obj
 
     p = output_dir / "blend_arc_metrics.json"
     with open(p, "w", encoding="utf-8") as f:
-        json.dump(_sanitize_for_json(metrics), f, indent=2)
+        json.dump(_blend_metrics_payload(result, short_label), f, indent=2)
     saved.append(p)
 
     return saved
@@ -1247,8 +1310,10 @@ def show_3d_blend_arc_comparison(
     matplotlib.use("TkAgg")
     import matplotlib.pyplot as plt
 
-    # Load full data
-    wp_xyz, _, _ = _load_waypoints_robust(input_waypoint_csv)
+    if result.reference_wp_xyz_mm is not None:
+        wp_xyz = result.reference_wp_xyz_mm
+    else:
+        wp_xyz, _, _ = _load_waypoints_robust(input_waypoint_csv)
 
     rs = load_rs_csv(rs_csv)
 

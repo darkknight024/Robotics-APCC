@@ -81,20 +81,30 @@ def _run_single(
     try:
         # ── Feature 3 D1 branch ──
         if config.feature3_d1.enabled:
+            from utils.csv_loader_toolpath import prepare_toolpath_load_result_for_feature3
+
+            f3 = config.feature3_d1
+            lr_f3 = prepare_toolpath_load_result_for_feature3(
+                toolpath_path,
+                custom_zone=getattr(f3, "custom_zone", False),
+                default_zone=getattr(f3, "default_zone", "fine"),
+                default_v_cmd=getattr(f3, "default_v_cmd_mm_s", 300.0),
+                use_base_frame=config.use_base_frame,
+                knife_translation_m=knife_translation_m,
+                knife_quaternion=knife_quaternion,
+            )
             f3_result = run_feature3_d1(
                 toolpath_csv=toolpath_path,
                 urdf_path=urdf_path,
                 config=config,
                 output_dir=output_dir,
-                knife_translation_m=knife_translation_m,
-                knife_quaternion=knife_quaternion,
                 robot_model_name=robot_model_name,
-                knife_pose_name=knife_pose_name,
                 robot_reach_m=robot_reach_m,
                 velocity_limits_rad_s=velocity_limits_rad_s,
                 accel_limits_rad_s2=accel_limits_rad_s2,
                 verbose=False,
                 custom_zone=getattr(config.feature3_d1, 'custom_zone', False),
+                preloaded_load_result=lr_f3,
             )
             return {
                 "robot": robot_model_name,

@@ -98,10 +98,7 @@ def run_feature3_d1(
     urdf_path: str,
     config,
     output_dir: str = "output/feature3_d1",
-    knife_translation_m: Optional[np.ndarray] = None,
-    knife_quaternion: Optional[np.ndarray] = None,
     robot_model_name: str = "",
-    knife_pose_name: str = "",
     robot_reach_m: float = 1.4,
     velocity_limits_rad_s: Optional[np.ndarray] = None,
     accel_limits_rad_s2: Optional[np.ndarray] = None,
@@ -111,18 +108,17 @@ def run_feature3_d1(
     plots: bool = True,
     reports: bool = True,
     plot_kinds: Optional[List[str]] = None,
+    preloaded_load_result=None,
 ) -> Feature3D1Result:
     """Execute the full Feature 3 D1 pipeline: zone blending → speed profile.
 
     Args:
-        toolpath_csv:          Path to toolpath CSV with zone columns.
+        toolpath_csv:          Path to toolpath CSV with zone columns (ignored when
+                               ``preloaded_load_result`` is set).
         urdf_path:             Path to robot URDF (with fixture).
         config:                FeasibilityConfig with ``feature3_d1`` section.
         output_dir:            Base output directory for plots and reports.
-        knife_translation_m:   Knife offset (m), None for base frame.
-        knife_quaternion:      Knife orientation [qw,qx,qy,qz].
         robot_model_name:      Robot name for solver lookup.
-        knife_pose_name:       Knife pose label.
         robot_reach_m:         Robot workspace reach (m).
         velocity_limits_rad_s: Per-joint velocity limits (rad/s).
         accel_limits_rad_s2:   Per-joint acceleration limits (rad/s²).
@@ -131,6 +127,9 @@ def run_feature3_d1(
         plots:                 Generate PNG plots.
         plot_kinds:            Optional subset of F3 plot names to generate.
         reports:               Generate JSON report.
+        preloaded_load_result: ``ToolpathLoadResultF3`` already in base frame (optional).
+                               When set, ``toolpath_csv`` is only used for logging.
+                               Build with ``prepare_toolpath_load_result_for_feature3``.
 
     Returns:
         :class:`Feature3D1Result` with the complete D1 answer.
@@ -139,7 +138,7 @@ def run_feature3_d1(
         compute_omega_e_from_dense_path,
         compute_joint_velocities_from_twist,
     )
-    from utils.csv_loader_toolpath import load_toolpath_f3
+    from utils.csv_loader_toolpath import ToolpathLoadResultF3, load_toolpath_f3
     from core import create_solvers, FeasibilityAnalyzer
     from utils.config_loader import load_ik_config_as_object, get_robot_by_name
 
@@ -155,12 +154,17 @@ def run_feature3_d1(
         print(f"{'='*60}")
         print(f"Toolpath: {toolpath_csv}")
 
-    load_result = load_toolpath_f3(
-        toolpath_csv,
-        custom_zone=custom_zone,
-        default_zone=f3_cfg.default_zone,
-        default_v_cmd=f3_cfg.default_v_cmd_mm_s,
-    )
+    if preloaded_load_result is not None:
+        load_result: ToolpathLoadResultF3 = preloaded_load_result
+        if verbose:
+            print("  Using caller-supplied toolpath load (base-frame poses)")
+    else:
+        load_result = load_toolpath_f3(
+            toolpath_csv,
+            custom_zone=custom_zone,
+            default_zone=f3_cfg.default_zone,
+            default_v_cmd=f3_cfg.default_v_cmd_mm_s,
+        )
 
     if not load_result.waypoints:
         return Feature3D1Result(
@@ -168,18 +172,7 @@ def run_feature3_d1(
             infeasible_reason="No trajectories found in CSV",
         )
 
-    # ── Apply knife transform (T_P_K → T_B_P) when not in base frame ──
     use_base_frame = getattr(config, "use_base_frame", False)
-    if not use_base_frame and knife_translation_m is not None and knife_quaternion is not None:
-        from utils.transform_handler import transform_trajectory_to_base_frame
-        load_result.waypoints = [
-            transform_trajectory_to_base_frame(wp, knife_translation_m, knife_quaternion)
-            for wp in load_result.waypoints
-        ]
-        if verbose:
-            print("  Applied knife transform (T_P_K → T_B_P)")
-    elif use_base_frame and verbose:
-        print("  Base frame mode — no knife transform applied")
 
     traj_indices = range(len(load_result.waypoints))
     if traj_id is not None:

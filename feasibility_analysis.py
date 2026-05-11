@@ -157,20 +157,30 @@ def main():
 
     if cfg.feature3_d1.enabled:
         from core.blend_zone import run_feature3_d1
+        from utils.csv_loader_toolpath import prepare_toolpath_load_result_for_feature3
+
+        f3_cfg = cfg.feature3_d1
+        lr_f3 = prepare_toolpath_load_result_for_feature3(
+            args.toolpath,
+            custom_zone=args.custom_zone,
+            default_zone=getattr(f3_cfg, "default_zone", "fine"),
+            default_v_cmd=getattr(f3_cfg, "default_v_cmd_mm_s", 300.0),
+            use_base_frame=cfg.use_base_frame,
+            knife_translation_m=knife_translation_m,
+            knife_quaternion=knife_quaternion,
+        )
         run_feature3_d1(
             toolpath_csv=args.toolpath,
             urdf_path=args.urdf,
             config=cfg,
             output_dir=args.output,
-            knife_translation_m=knife_translation_m,
-            knife_quaternion=knife_quaternion,
             robot_model_name=robot_model_name,
-            knife_pose_name=knife_pose_name,
             robot_reach_m=args.reach,
             velocity_limits_rad_s=velocity_limits,
             custom_zone=args.custom_zone,
             plots=not args.no_f3_plots,
             reports=not args.no_f3_report,
+            preloaded_load_result=lr_f3,
         )
     else:
         process_toolpath(
