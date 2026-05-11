@@ -520,6 +520,47 @@ def _total_orientation_change(quats: np.ndarray) -> float:
     return total
 
 
+def _rs_cumulative_arc_mm(rs_tcp: np.ndarray) -> np.ndarray:
+    """Cumulative chord length (mm) along the RS polyline, shape (N,)."""
+    if len(rs_tcp) < 2:
+        return np.zeros(len(rs_tcp), dtype=float)
+    d = np.linalg.norm(np.diff(rs_tcp, axis=0), axis=1)
+    return np.concatenate([[0.0], np.cumsum(d)])
+
+
+def _expand_rs_index_window_arc(
+    s_cum: np.ndarray,
+    lo: int,
+    hi: int,
+    target_span_mm: float,
+) -> Tuple[int, int]:
+    """Expand ``[lo, hi]`` along the RS polyline until arc-length span ≥ *target_span_mm*."""
+    n = len(s_cum)
+    lo_i, hi_i = int(lo), int(hi)
+    if hi_i < lo_i:
+        lo_i, hi_i = hi_i, lo_i
+    lo_i = max(0, min(lo_i, n - 1))
+    hi_i = max(0, min(hi_i, n - 1))
+
+    def span() -> float:
+        return float(s_cum[hi_i] - s_cum[lo_i])
+
+    while span() < target_span_mm:
+        can_lo = lo_i > 0
+        can_hi = hi_i < n - 1
+        if not can_lo and not can_hi:
+            break
+        gain_lo = (s_cum[hi_i] - s_cum[lo_i - 1]) - span() if can_lo else -1.0
+        gain_hi = (s_cum[hi_i + 1] - s_cum[lo_i]) - span() if can_hi else -1.0
+        if can_hi and gain_hi >= gain_lo:
+            hi_i += 1
+        elif can_lo:
+            lo_i -= 1
+        else:
+            break
+    return lo_i, hi_i
+
+
 def _extract_rs_blend_indices(
     rs_tcp: np.ndarray,
     wp_prev: np.ndarray,
@@ -527,11 +568,15 @@ def _extract_rs_blend_indices(
     wp_next: np.ndarray,
     solver_entry: Optional[np.ndarray] = None,
     solver_exit: Optional[np.ndarray] = None,
+    solver_arc_length_hint_mm: float = 0.0,
 ) -> Tuple[int, int]:
     """Return (start_idx, end_idx) slice of rs_tcp for the blend region.
 
-    Uses solver-predicted entry/exit points when available for precise bounds.
-    Falls back to segment-distance-based detection otherwise.
+    When *solver_entry* / *solver_exit* are provided, the window is chosen by
+    **nearest 3-D match on the full RS trace** (not a prefix/suffix cut at an
+    ``idx_corner`` that can collapse to a few wrong samples).  The index span is
+    then **expanded along RS cumulative arc length** so the polyline covers at
+    least the geometric extent of the blend (independent of RS sample count).
     """
     n = len(rs_tcp)
     if n < 3:
@@ -539,14 +584,42 @@ def _extract_rs_blend_indices(
 
     idx_corner = int(np.argmin(np.linalg.norm(rs_tcp - wp_curr, axis=1)))
 
-    # When solver geometry is available, use it directly for precise bounds
+    # When solver geometry is available: global nearest entry/exit + arc expansion
     if solver_entry is not None and solver_exit is not None:
-        d_entry = np.linalg.norm(rs_tcp[:idx_corner + 1] - solver_entry, axis=1)
-        d_exit = np.linalg.norm(rs_tcp[idx_corner:] - solver_exit, axis=1)
-        blend_start = int(np.argmin(d_entry))
-        blend_end = idx_corner + int(np.argmin(d_exit))
-        # Extend by 1 sample on each side for coverage
-        return max(0, blend_start - 1), min(n - 1, blend_end + 1)
+        s_cum = _rs_cumulative_arc_mm(rs_tcp)
+        d_ent = np.linalg.norm(rs_tcp - solver_entry, axis=1)
+        d_ex = np.linalg.norm(rs_tcp - solver_exit, axis=1)
+        ie = int(np.argmin(d_ent))
+        ix = int(np.argmin(d_ex))
+
+        if ie <= ix:
+            lo, hi = ie, ix
+        else:
+            # Time order reversed vs Euclidean nearest (rare); bracket with corner
+            ic = idx_corner
+            lo = int(min(ie, ix, ic))
+            hi = int(max(ie, ix, ic))
+
+        # Entry/exit can map to the same RS sample on dense logs with tiny blends;
+        # seed a non-degenerate span around the TCP closest to the programmed corner.
+        if lo == hi:
+            ic = idx_corner
+            lo = max(0, min(lo, ic) - 1)
+            hi = min(n - 1, max(hi, ic) + 1)
+
+        chord_mm = float(np.linalg.norm(solver_exit - solver_entry))
+        hint = float(solver_arc_length_hint_mm) if solver_arc_length_hint_mm > 0 else 0.0
+        target_span = max(
+            chord_mm * 1.35,
+            hint * 1.6 if hint > 0 else 0.0,
+            8.0,
+            float(s_cum[hi] - s_cum[lo]) + 1e-6,
+        )
+        lo_e, hi_e = _expand_rs_index_window_arc(s_cum, lo, hi, target_span)
+        # Small margin in arc-length (~1 mm) by stepping one extra sample each side
+        lo_e = max(0, lo_e - 1)
+        hi_e = min(n - 1, hi_e + 1)
+        return lo_e, hi_e
 
     # Fallback: segment-distance-based detection
     d_to_corner = np.linalg.norm(rs_tcp - wp_curr, axis=1)
@@ -682,6 +755,7 @@ def compare_blend_arcs(
             rs.tcp_mm, wp_xyz[i - 1], wp_xyz[i], wp_xyz[i + 1],
             solver_entry=geom.entry_point_mm,
             solver_exit=geom.exit_point_mm,
+            solver_arc_length_hint_mm=geom.arc_length_mm,
         )
         rs_blend = rs.tcp_mm[bi_start:bi_end + 1]
         rs_blend_quats = rs.tcp_quat[bi_start:bi_end + 1] if rs.tcp_quat is not None else None
@@ -1015,8 +1089,12 @@ def generate_blend_comparison_plots(
 
         # RS blend arc
         rs_pts = comp.rs_blend_points
-        ax.plot(rs_pts[:, 0], rs_pts[:, 1], "b-o", lw=2.0, ms=4, alpha=0.8,
-                label=f"RS blend ({len(rs_pts)} pts)")
+        rs_span_mm = (
+            float(np.sum(np.linalg.norm(np.diff(rs_pts, axis=0), axis=1)))
+            if len(rs_pts) > 1 else 0.0
+        )
+        ax.plot(rs_pts[:, 0], rs_pts[:, 1], "b-o", lw=2.0, ms=3, alpha=0.85,
+                label=f"RS path window ({rs_span_mm:.2f} mm arc)")
 
         # Solver blend arc
         sol_pts = comp.solver_arc_points
