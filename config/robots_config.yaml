@@ -23,13 +23,13 @@ robots:
     acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0] # just for testing not an actual limit (FIX ME)
     # Calibration — from Experiment 23 RobotStudio data (tuned 2026-04-20)
     calibration:
-      a_tcp_mm_s2: 6128.0              # Peak TCP acceleration (distance-based from V1 straight-line)
+      a_tcp_mm_s2: 10000.0 #12747.0              # Peak TCP acceleration (distance-based from V1 straight-line)
                                        # used as the centripetal capability for the blend ceiling
-      a_tcp_decel_mm_s2: 14244.0       # Peak TCP deceleration (asymmetric — ABB brakes harder)
+      a_tcp_decel_mm_s2: 10000.0 #10672.0       # Peak TCP deceleration (asymmetric — ABB brakes harder)
       # Effective trapezoidal accelerations — model ABB's S-curve as a trapezoid
       # with matching total ramp distance.  Lower than the peak because the
       # S-curve is jerk-limited near v=0 and v=v_peak.
-      a_accel_eff_mm_s2: 2800.0        # Tuned on V2 corner v500: mean RMS drops 63→57 mm/s
+      a_accel_eff_mm_s2: 10000.0        # Tuned on V2 corner v500: mean RMS drops 63→57 mm/s
       a_decel_eff_mm_s2: 10000.0       # ABB's peak decel from stop is ~14 k mm/s²; 10 k
                                        # matches the ramp into fine points best on V2
       # Blend-arc geometry: symmetric cubic Bézier with shape parameter k
@@ -58,7 +58,7 @@ robots:
       # would only dip to ~17.5 mm/s).  Fit:  v_dip² / ρ_min → 3100 mm/s²
       # (from `30_deg_corner_z1` apex in V2 corner recordings).  Set to 0 to
       # disable and fall back to ``a_tcp``.
-      a_n_blend_mm_s2: 3100.0
+      a_n_blend_mm_s2: 0
       # Universal corner-speed-reduction coefficient k_corner.  RobotStudio
       # shows a systematic ~10–15 % speed dip at EVERY blend apex, even for
       # large zones (z5 … z50) where the centripetal ceiling does not bind.
@@ -73,7 +73,7 @@ robots:
       T_settle_s: 0.2                  # Fine-point settling time (NOT calibrated — proposal default)
       is_calibrated: true
       calibration_source: "Experiment_23"
-      calibrated_date: "2026-04-20"
+      calibrated_date: '2026-05-05'
 
   # -------------------------------------------------------------------------
   # IRB 1300-10/1.15 - Higher payload, shorter reach variant
