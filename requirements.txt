@@ -22,6 +22,9 @@ toppra
 # Progress bars and utilities
 tqdm
 
+# Feature 4 — optional runtime STL decimation (precomputed simplified meshes preferred)
+# trimesh
+
 # Note: Isaac Sim and Isaac Lab dependencies are intentionally excluded
 
 # macOS Compatibility Notes:

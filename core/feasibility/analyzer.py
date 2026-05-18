@@ -2,7 +2,7 @@
 """FeasibilityAnalyzer: Phase 1 IK trajectory + C0 and optional mixed cfx selection."""
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
 
@@ -33,6 +33,12 @@ from .eaik_scoring import IkSolutionScoreBreakdown
 from .result import FeasibilityResult
 
 logger = logging.getLogger(__name__)
+
+
+class _CollisionGate(Protocol):
+    """Optional collision checker (``has_collision(q)`` → True means infeasible)."""
+
+    def has_collision(self, q: np.ndarray) -> bool: ...
 
 
 def check_reachability(
@@ -75,6 +81,7 @@ class FeasibilityAnalyzer:
         max_ik_failures_per_trajectory: Optional[int] = None,
         multi_solution_weights: Optional[dict] = None,
         j5_threshold_deg: Optional[float] = None,
+        collision_checker: Optional[_CollisionGate] = None,
     ):
         if isinstance(robot_model_or_limits, tuple):
             pin_model = robot_model_or_limits[0]
@@ -111,6 +118,7 @@ class FeasibilityAnalyzer:
             if j5_threshold_deg is not None
             else SingularityGroupConfig().j5_threshold_deg
         )
+        self.collision_checker = collision_checker
 
     def analyze_waypoint(
         self,
@@ -124,6 +132,23 @@ class FeasibilityAnalyzer:
         )
 
         if not is_reachable:
+            return FeasibilityResult(
+                is_reachable=False,
+                manipulability=0.0,
+                min_singular_value=0.0,
+                max_singular_value=0.0,
+                condition_number=np.inf,
+                near_singularity=False,
+                joint_positions_rad=None,
+                ik_debug_info=ik_info,
+                target_position=target_position,
+                target_quaternion=target_quaternion,
+            )
+
+        if self.multi_solution_weights is None and self._collision_invalidates_single_solution(q):
+            ik_info = dict(ik_info)
+            ik_info["solve_method"] = "collision"
+            ik_info["reason"] = "collision"
             return FeasibilityResult(
                 is_reachable=False,
                 manipulability=0.0,
@@ -166,6 +191,11 @@ class FeasibilityAnalyzer:
             rotational_manipulability=w_omega,
             normalized_manipulability=w_norm,
         )
+
+    def _collision_invalidates_single_solution(self, q: np.ndarray) -> bool:
+        if self.collision_checker is None:
+            return False
+        return bool(self.collision_checker.has_collision(q))
 
     def _clear_result_for_missing_global_branch(self, result: FeasibilityResult) -> None:
         """No configuration on the chosen global cfx branch — drop joints (single-branch truth)."""
@@ -241,6 +271,7 @@ class FeasibilityAnalyzer:
                 self.lower_position_limit,
                 self.upper_position_limit,
                 j5_threshold_deg=self.j5_threshold_deg,
+                collision_checker=self.collision_checker,
             )
         )
 
@@ -257,6 +288,7 @@ class FeasibilityAnalyzer:
                 q = _q_for_cfx_if_valid(
                     sols, is_ls_list, cfx_i,
                     self.lower_position_limit, self.upper_position_limit, tol,
+                    collision_checker=self.collision_checker,
                 )
                 if q is not None:
                     self._update_result_metrics(result, q)
@@ -416,6 +448,14 @@ class FeasibilityAnalyzer:
         reachability_ok = reachable_count == n_waypoints
         c0_ok = c0_result.passed if c0_result is not None else True
 
+        collision_reject_count = sum(
+            1
+            for r in results
+            if (r.ik_debug_info or {}).get("solve_method") == "collision"
+        )
+        collision_check_enabled = self.collision_checker is not None
+        collision_ok = (collision_reject_count == 0) if collision_check_enabled else True
+
         # Joint-limit violations
         joint_limit_stats: Dict[str, Any] = {}
         if len(q_c0) > 0:
@@ -437,7 +477,10 @@ class FeasibilityAnalyzer:
             "feasibility_flags": {
                 "reachability_ok": reachability_ok,
                 "c0_ok": c0_ok,
+                "collision_check_enabled": collision_check_enabled,
+                "collision_ok": collision_ok,
             },
+            "collision_reject_count": collision_reject_count,
             "mixed_branch_result": mixed_result,
             "selected_cfx_branch": next((c for c in mixed_result.selected_cfx_per_waypoint if c is not None), None) if mixed_result else None,
             "cfx_branch_costs": cfx_branch_costs.tolist() if cfx_branch_costs is not None else None,

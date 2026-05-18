@@ -1,0 +1,26 @@
+# Run: python tests/test_collision.py --config tests/configs/internal_collision_validation.yaml
+# Or:  python tests/test_collision.py --internal-collision
+
+robot:
+  name: "IRB 1300-7/1.4"
+
+scene_yaml: "config/collision_objects.yaml"
+# RS non-collision CSVs were recorded without these test obstacles; use empty env.
+scene_yaml_no_env: "config/collision_objects_empty.yaml"
+
+experiments:
+  internal_collision_rs_trajectories:
+    type: internal_collision_rs_trajectories
+    data_dir: "Robot_APCC/Experiments/Internal_Collision"
+    non_collision_glob: "csv/non_collision_traj_*.csv"
+    collision_glob: "csv/collision_traj_*.csv"
+    extra_collision_glob: "csv/traj*_obstacle*.csv"
+    joint_deg_columns:
+      - rs_j1_deg
+      - rs_j2_deg
+      - rs_j3_deg
+      - rs_j4_deg
+      - rs_j5_deg
+      - rs_j6_deg
+    # RS exports duplicate rows per sample (motion vs dwell); use waypoint rows for counts.
+    waypoint_rows_only: true

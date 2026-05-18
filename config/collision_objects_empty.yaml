@@ -1,0 +1,7 @@
+# Empty environment (robot self-collision pairs only).
+# Same pose rules as ``collision_objects.yaml`` when you add objects: ``xyz`` in mm,
+# ``quaternion`` [qw,qx,qy,qz] only.
+
+version: 2
+
+objects: []

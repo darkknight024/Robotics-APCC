@@ -83,12 +83,23 @@ except ImportError:
     parameterize_trajectory = None  # type: ignore[assignment,misc]
     ToppraResult = None  # type: ignore[assignment,misc]
 
-# --- Self-collision (optional: requires pinocchio) ---
+# --- Self-collision + Feature 4 scene collision (optional: requires pinocchio) ---
 try:
-    from .collision_checker import SelfCollisionChecker, CollisionResult
+    from .collision import (
+        CollisionObjectsFile,
+        CollisionResult,
+        SceneCollisionChecker,
+        SelfCollisionChecker,
+        TrajectoryCollisionChecker,
+        TrajectoryCollisionReport,
+    )
 except ImportError:
     SelfCollisionChecker = None  # type: ignore[assignment,misc]
     CollisionResult = None  # type: ignore[assignment,misc]
+    SceneCollisionChecker = None  # type: ignore[assignment,misc]
+    CollisionObjectsFile = None  # type: ignore[assignment,misc]
+    TrajectoryCollisionChecker = None  # type: ignore[assignment,misc]
+    TrajectoryCollisionReport = None  # type: ignore[assignment,misc]
 
 
 def create_solvers(urdf_path: str, solver: str = "eaik",
@@ -164,8 +175,10 @@ __all__ = [
     'compute_task_space_velocity', 'check_speed_limits', 'TaskSpaceVelocityResult',
     # TOPP-RA
     'parameterize_trajectory', 'ToppraResult',
-    # Self-collision
+    # Self-collision + Feature 4
     'SelfCollisionChecker', 'CollisionResult',
+    'SceneCollisionChecker', 'CollisionObjectsFile',
+    'TrajectoryCollisionChecker', 'TrajectoryCollisionReport',
     # Feature 3 — M6
     'JointVelocityResult',
     'compute_omega_e_from_dense_path',

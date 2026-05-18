@@ -3,7 +3,7 @@
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
@@ -37,6 +37,7 @@ def select_best_cfx_branch(
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
     j5_threshold_deg: Optional[float] = None,
+    collision_checker: Optional[Any] = None,
 ) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
     """Score all 8 cfx branches across the full trajectory and pick the best.
 
@@ -98,6 +99,8 @@ def select_best_cfx_branch(
             q = sols[cfx]
             if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
                 continue
+            if collision_checker is not None and collision_checker.has_collision(q):
+                continue
 
             bd = score_ik_solution_breakdown(
                 q, prev_q_per_cfx[cfx], fk_solver, characteristic_length_m, weights,
@@ -142,6 +145,7 @@ def _q_for_cfx_if_valid(
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
     tol: float,
+    collision_checker: Optional[Any] = None,
 ) -> Optional[np.ndarray]:
     """Return ``all_solutions[cfx]`` if usable (finite, not LS, in joint limits), else None."""
     if cfx >= len(sols) or np.any(np.isnan(sols[cfx])):
@@ -150,6 +154,8 @@ def _q_for_cfx_if_valid(
         return None
     q = sols[cfx]
     if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
+        return None
+    if collision_checker is not None and collision_checker.has_collision(q):
         return None
     return q
 
@@ -162,6 +168,7 @@ def select_mixed_cfx_branches(
     lower_limits: np.ndarray,
     upper_limits: np.ndarray,
     j5_threshold_deg: Optional[float] = None,
+    collision_checker: Optional[Any] = None,
 ) -> Tuple[MixedBranchResult, np.ndarray, np.ndarray, List[List[Optional[IkSolutionScoreBreakdown]]]]:
     """Greedy forward mixed-branch selection with branch-discontinuity penalty.
 
@@ -188,6 +195,7 @@ def select_mixed_cfx_branches(
             per_wp_results, fk_solver, characteristic_length_m,
             weights, lower_limits, upper_limits,
             j5_threshold_deg=j5_threshold_deg,
+            collision_checker=collision_checker,
         )
     )
 
@@ -196,6 +204,7 @@ def select_mixed_cfx_branches(
     _dbg_reject_nan = np.zeros(_N_CFX, dtype=int)
     _dbg_reject_ls = np.zeros(_N_CFX, dtype=int)
     _dbg_reject_jl = np.zeros(_N_CFX, dtype=int)
+    _dbg_reject_collision = np.zeros(_N_CFX, dtype=int)
     _dbg_reject_unreach = 0
     for wi, result in enumerate(per_wp_results):
         if not result.is_reachable:
@@ -215,12 +224,16 @@ def select_mixed_cfx_branches(
             if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
                 _dbg_reject_jl[cfx] += 1
                 continue
+            if collision_checker is not None and collision_checker.has_collision(q):
+                _dbg_reject_collision[cfx] += 1
+                continue
             valid[wi][cfx] = True
     logger.info(
         "Mixed-branch validity: %d wp, %d unreachable | "
-        "rejected NaN=%s  LS=%s  JointLimits=%s",
+        "rejected NaN=%s  LS=%s  JointLimits=%s  Collision=%s",
         n_wp, _dbg_reject_unreach,
         _dbg_reject_nan.tolist(), _dbg_reject_ls.tolist(), _dbg_reject_jl.tolist(),
+        _dbg_reject_collision.tolist(),
     )
 
     # -- helper: consecutive valid run length from wp onward for a given cfx --
@@ -271,7 +284,10 @@ def select_mixed_cfx_branches(
         dbg = result.ik_debug_info or {}
         sols = dbg.get('all_solutions', [])
         is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
-        q = _q_for_cfx_if_valid(sols, is_ls_list, cfx_i, lower_limits, upper_limits, tol)
+        q = _q_for_cfx_if_valid(
+            sols, is_ls_list, cfx_i, lower_limits, upper_limits, tol,
+            collision_checker=collision_checker,
+        )
         if q is None:
             continue
         bd = score_ik_solution_breakdown(

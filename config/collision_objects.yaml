@@ -1,0 +1,43 @@
+# Feature 4 — static collision objects (robot base frame).
+#
+# Pose contract (all objects):
+#   - ``xyz``: translation in **millimetres** (robot base frame).
+#   - ``quaternion``: ``[qw, qx, qy, qz]`` only (no rpy fields).
+#
+# STL meshes here use **millimetre** vertices; ``mesh_scale`` converts to metres for Pinocchio.
+#
+# Obstacle placement matches ``Robot_APCC/Experiments/Internal_Collision/objects/obstacle_poses.csv``
+# (minimum-corner / local origin placement in world mm).
+
+version: 2
+
+objects:
+  - name: obstacle_1
+    group: environment
+    enabled: true
+    mesh_path: "Robot_APCC/Experiments/Internal_Collision/objects/Obstacle_1.stl"
+    mesh_scale: [0.001, 0.001, 0.001]
+    pose:
+      xyz: [500, 0, 0]
+      quaternion: [1, 0, 0, 0]
+    collision_tolerance_m: 0.0
+
+  - name: obstacle_2
+    group: environment
+    enabled: true
+    mesh_path: "Robot_APCC/Experiments/Internal_Collision/objects/Obstacle_2.stl"
+    mesh_scale: [0.001, 0.001, 0.001]
+    pose:
+      xyz: [0, 500, 0]
+      quaternion: [1, 0, 0, 0]
+    collision_tolerance_m: 0.0
+
+  - name: obstacle_3
+    group: environment
+    enabled: true
+    mesh_path: "Robot_APCC/Experiments/Internal_Collision/objects/Obstacle_3.stl"
+    mesh_scale: [0.001, 0.001, 0.001]
+    pose:
+      xyz: [250, -400, 0]
+      quaternion: [1, 0, 0, 0]
+    collision_tolerance_m: 0.0
