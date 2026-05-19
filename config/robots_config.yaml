@@ -20,6 +20,14 @@ robots:
     fixture_name: "ee_link"
     reach_m: 1.4
     payload_kg: 7
+    # URDF joint limits (degrees, j1..j6) — used for C-space test zones and validation
+    joint_limits_deg:
+      - {min: -180.0004, max: 180.0004}   # j1
+      - {min: -95.0021, max: 155.0023}    # j2
+      - {min: -210.0005, max: 69.0013}    # j3
+      - {min: -230.0024, max: 230.0024}   # j4
+      - {min: -129.9984, max: 129.9984}   # j5
+      - {min: -399.9990, max: 399.9990}   # j6
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
     # Per-joint acceleration limits — p99 of observed |q̈| from the Experiment 24
     # v9 snake-orientation RobotStudio recordings (min of accel/decel p99).

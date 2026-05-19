@@ -1,0 +1,63 @@
+# Example validation layout for `tests/test_collision.py`.
+# Copy to e.g. `tests/configs/collision_validation.yaml` and fill in paths to
+# RobotStudio-exported CSV/JSON (ground truth). This repo does not ship RS data.
+
+robot:
+  name: "IRB 1300-7/1.4"
+  # Optional explicit URDF (else resolved from robots_config.yaml via name)
+  # urdf_path: "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf"
+
+scene_yaml: "config/collision_objects.yaml"
+# In ``collision_objects.yaml``, static object poses use ``xyz`` in mm and
+# ``quaternion`` [qw, qx, qy, qz] only.
+
+# Optional: joint columns for q tables (degrees or radians via joint_unit)
+joint_columns: ["j1", "j2", "j3", "j4", "j5", "j6"]
+joint_unit: "rad"   # or "deg"
+
+experiments:
+  # Experiment 1 — self-collision baseline (RS labels vs our SelfCollisionChecker)
+  exp1_self_baseline:
+    type: joint_table_binary
+    description: "Random / near-limit poses with RS collision boolean"
+    checker: self   # self | scene
+    calibrate: true
+    calibrate_n_samples: 10
+    rs_csv: ""      # required: CSV with joint columns + rs_collision (0/1)
+
+  # Experiment 2 — environment trajectories
+  exp2_env_trajectory:
+    type: waypoint_table_binary
+    description: "Per-waypoint RS collision on intentional collide / clear paths"
+    checker: scene
+    calibrate: false
+    rs_csv: ""      # columns: waypoint, rs_collision (0/1), j1..j6
+
+  # Experiment 3 — midsole / knife whitelist (RS expects contact at cut points)
+  exp3_whitelist_path:
+    type: waypoint_table_binary
+    checker: scene
+    rs_csv: ""
+
+  # Experiment 4 — tolerance sensitivity (one RS CSV, several scene YAMLs)
+  exp4_tolerance_series:
+    type: tolerance_series
+    description: "Monotone flagged waypoints vs inflation / tolerance"
+    checker: scene
+    rs_csv: ""
+    scene_yamls:
+      - path: "config/collision_objects_tol0.yaml"
+        label: "0mm"
+      - path: "config/collision_objects_tol2.yaml"
+        label: "2mm"
+
+  # Experiment 5 — decimation impact (several scene YAMLs or mesh variants)
+  exp5_decimation_series:
+    type: decimation_series
+    checker: scene
+    rs_csv: ""
+    scene_yamls:
+      - path: "config/collision_objects_decim100.yaml"
+        label: "100pct"
+      - path: "config/collision_objects_decim50.yaml"
+        label: "50pct"

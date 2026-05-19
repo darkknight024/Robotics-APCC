@@ -102,8 +102,13 @@ except ImportError:
     TrajectoryCollisionReport = None  # type: ignore[assignment,misc]
 
 
-def create_solvers(urdf_path: str, solver: str = "eaik",
-                   ik_config=None, ee_frame_name: str = "ee_link"):
+def create_solvers(
+    urdf_path: str,
+    solver: str = "eaik",
+    ik_config=None,
+    ee_frame_name: str = "ee_link",
+    collision_checker=None,
+):
     """Factory: create an (fk_solver, ik_solver) pair for the requested backend.
 
     ee_frame_name controls which frame is tracked. If the frame is not present
@@ -116,7 +121,9 @@ def create_solvers(urdf_path: str, solver: str = "eaik",
         fk = EAIKFKSolver(robot_model)
         if ik_config is None:
             ik_config = EAIKConfig(ee_frame_name=ee_frame_name)
-        ik = EAIKIKSolver(robot_model, config=ik_config)
+        ik = EAIKIKSolver(
+            robot_model, config=ik_config, collision_checker=collision_checker,
+        )
         return fk, ik, robot_model
 
     elif solver in ("pin", "pinocchio"):

@@ -1,0 +1,133 @@
+# Collision validation summary
+
+Generated: 2026-05-18T19:35:46
+
+| Experiment | Type | Checker | Passed |
+|------------|------|---------|--------|
+| internal_collision_rs_trajectories | internal_collision_rs_trajectories | scene | True |
+
+## internal_collision_rs_trajectories
+
+- passed: **True**
+
+```json
+{
+  "urdf": "/home/koushik/Nike/Robotics-APCC/Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf",
+  "scene_yaml_env": "/home/koushik/Nike/Robotics-APCC/config/collision_objects.yaml",
+  "scene_yaml_free": "/home/koushik/Nike/Robotics-APCC/config/collision_objects_empty.yaml",
+  "data_dir": "Robot_APCC/Experiments/Internal_Collision",
+  "n_scene_pairs_env": 36,
+  "n_scene_pairs_free": 15,
+  "per_file": [
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/non_collision_traj_1.csv",
+      "role": "non_collision",
+      "n_rows": 14,
+      "n_hits": 0,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/non_collision_traj_2.csv",
+      "role": "non_collision",
+      "n_rows": 12,
+      "n_hits": 0,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/non_collision_traj_3.csv",
+      "role": "non_collision",
+      "n_rows": 18,
+      "n_hits": 0,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/non_collision_traj_4.csv",
+      "role": "non_collision",
+      "n_rows": 14,
+      "n_hits": 0,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/non_collision_traj_5.csv",
+      "role": "non_collision",
+      "n_rows": 14,
+      "n_hits": 0,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/collision_traj_1.csv",
+      "role": "collision_expected",
+      "n_rows": 14,
+      "n_hits": 14,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/collision_traj_2.csv",
+      "role": "collision_expected",
+      "n_rows": 14,
+      "n_hits": 14,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/collision_traj_3.csv",
+      "role": "collision_expected",
+      "n_rows": 14,
+      "n_hits": 14,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/collision_traj_4.csv",
+      "role": "collision_expected",
+      "n_rows": 14,
+      "n_hits": 14,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/collision_traj_5.csv",
+      "role": "collision_expected",
+      "n_rows": 14,
+      "n_hits": 14,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/traj1_obstacle1.csv",
+      "role": "collision_expected",
+      "n_rows": 10,
+      "n_hits": 10,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/traj2_obstacle2.csv",
+      "role": "collision_expected",
+      "n_rows": 10,
+      "n_hits": 10,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/traj3_obstacle3.csv",
+      "role": "collision_expected",
+      "n_rows": 10,
+      "n_hits": 10,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/traj4_obstacle2.csv",
+      "role": "collision_expected",
+      "n_rows": 10,
+      "n_hits": 10,
+      "passed": true
+    },
+    {
+      "path": "Robot_APCC/Experiments/Internal_Collision/csv/traj5_obstacle3.csv",
+      "role": "collision_expected",
+      "n_rows": 10,
+      "n_hits": 10,
+      "passed": true
+    }
+  ]
+}
+```
+
+- non_collision files: 5  collision_expected files: 10
+- non_collision: checked with scene_yaml_no_env (RS recorded without test obstacles).
+- collision_expected: checked with full scene_yaml (must hit >=1 env collision).

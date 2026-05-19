@@ -294,10 +294,16 @@ class EAIKIKSolver(BaseIKSolver):
         success, q, info = solver.solve(target_pos, target_quat)
     """
 
-    def __init__(self, robot_model: RobotModel, config: Optional[EAIKConfig] = None):
+    def __init__(
+        self,
+        robot_model: RobotModel,
+        config: Optional[EAIKConfig] = None,
+        collision_checker: Optional[Any] = None,
+    ):
         self.robot_model = robot_model
         self.config = config or EAIKConfig()
         self.n_joints = robot_model.n_joints
+        self.collision_checker = collision_checker
 
         # Trajectory-chaining state for ECFX-based selection.
         # Reset when q_init=None is passed (first waypoint signal).
@@ -428,8 +434,9 @@ class EAIKIKSolver(BaseIKSolver):
                 exact_sols.append(sol)
                 exact_ecfx.append(all_ecfx[i])
 
-        # --- Phase 3: filter by joint limits, then FK-verify ---
+        # --- Phase 3: filter by joint limits, FK-verify, then C-space gate ---
         valid_exact = self._filter_valid(exact_sols, target_position, rotation, info)
+        valid_exact = self._filter_collision_free(valid_exact)
         info['n_valid'] = len(valid_exact)
 
         # Build parallel ECFX list for valid exact solutions
@@ -466,6 +473,7 @@ class EAIKIKSolver(BaseIKSolver):
 
         # Case 3: only LS solutions — check if any satisfy limits + FK
         valid_ls = self._filter_valid(ls_sols, target_position, rotation, info)
+        valid_ls = self._filter_collision_free(valid_ls)
         if len(valid_ls) > 0:
             selected_q = self._pick_best(valid_ls, q_init)
             info['is_ls'] = True
@@ -564,6 +572,11 @@ class EAIKIKSolver(BaseIKSolver):
         passes = (pos_err <= self.config.fk_pos_tolerance_m and
                   rot_err_deg <= self.config.fk_rot_tolerance_deg)
         return passes, pos_err, rot_err_deg
+
+    def _filter_collision_free(self, solutions: List[np.ndarray]) -> List[np.ndarray]:
+        if self.collision_checker is None:
+            return solutions
+        return [q for q in solutions if not self.collision_checker.has_collision(q)]
 
     def _filter_valid(
         self,

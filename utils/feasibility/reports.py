@@ -76,6 +76,16 @@ def generate_analysis_report(results: Dict[str, Any], output_path: Path) -> None
 
         flags = traj.get("feasibility_flags", {})
         lines.append(f"  C0: {'PASS' if flags.get('c0_ok', True) else 'FAIL'}")
+        if flags.get("collision_check_enabled", False):
+            lines.append(
+                f"  Collision: {'PASS' if flags.get('collision_ok', True) else 'FAIL'}"
+            )
+            n_rej = int(traj.get("collision_reject_count", 0) or 0)
+            n_leak = int(traj.get("collision_output_leak_count", 0) or 0)
+            if n_rej or n_leak:
+                lines.append(
+                    f"    (rejected_waypoints={n_rej}, output_leaks={n_leak})"
+                )
 
         c1 = traj.get("c1_result")
         if c1 is not None:

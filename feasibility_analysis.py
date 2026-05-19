@@ -13,16 +13,24 @@ dispatches to the appropriate pipeline:
 All processing logic lives in ``utils.feasibility.pipeline_runner`` (F2)
 and ``core.blend_zone.pipeline`` (F3).
 
+Collision (Feature 4) is **on by default** (URDF self + ``collision_objects.yaml``).
+Use ``--no-collision`` to disable. For offline RS replay tests without meshes::
+
+    --cspace-forbidden-yaml config/cspace_forbidden_zones_irb1300_714.yaml --cspace-only
+
 Usage::
 
     python feasibility_analysis.py -t <csv> -u <urdf>
-    python feasibility_analysis.py -t <csv> -u <urdf> --feature3
+    python feasibility_analysis_batch.py   # calls :func:`run_batch_single_job` per task
 """
+
+from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -31,6 +39,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from utils.config_loader import FeasibilityConfig, load_batch_config, load_knife_config
 from utils.feasibility.pipeline_types import FeasibilityPipelineInputs
 from utils.feasibility.pipeline_runner import run_feasibility_pipeline
+from utils.feasibility.reports import count_trajectory_feasibility
+
+
+@dataclass
+class CollisionRunOverrides:
+    """CLI/runtime collision overrides (do not edit shared batch config in workers)."""
+
+    no_collision: bool = False
+    cspace_forbidden_yaml: Optional[str] = None
+    cspace_only: bool = False
 
 
 def process_toolpath(
@@ -51,12 +69,10 @@ def process_toolpath(
     use_flat_output_structure: bool = False,
     robotstudio_csv_path: Optional[str] = None,
     force_failure_graphs: bool = False,
+    collision_overrides: Optional[CollisionRunOverrides] = None,
 ) -> dict:
-    """Process a single toolpath through the Feature 2 feasibility pipeline.
-
-    Returns:
-        Dictionary with complete analysis results.
-    """
+    """Process a single toolpath through the Feature 2 feasibility pipeline."""
+    ov = collision_overrides or CollisionRunOverrides()
     inputs = FeasibilityPipelineInputs(
         toolpath_path=toolpath_path,
         urdf_path=urdf_path,
@@ -75,8 +91,130 @@ def process_toolpath(
         use_flat_output_structure=use_flat_output_structure,
         robotstudio_csv_path=robotstudio_csv_path,
         force_failure_graphs=force_failure_graphs,
+        collision_disabled=ov.no_collision,
+        cspace_forbidden_yaml=ov.cspace_forbidden_yaml,
+        collision_cspace_only=ov.cspace_only,
     )
     return run_feasibility_pipeline(inputs)
+
+
+def run_batch_single_job(
+    toolpath_path: str,
+    urdf_path: str,
+    config: FeasibilityConfig,
+    knife_translation_m: Optional[np.ndarray],
+    knife_quaternion: Optional[np.ndarray],
+    output_dir: str,
+    robot_model_name: str,
+    knife_pose_name: str,
+    robot_reach_m: float,
+    velocity_limits_rad_s: Optional[np.ndarray],
+    accel_limits_rad_s2: Optional[np.ndarray],
+    speed_mm_s: float,
+    collision_overrides: Optional[CollisionRunOverrides] = None,
+) -> Dict[str, Any]:
+    """Run one robot/knife/toolpath job (Feature 2 or 3). Used by ``feasibility_analysis_batch``."""
+    toolpath_name = Path(toolpath_path).stem
+    try:
+        if config.feature3_d1.enabled:
+            from core.blend_zone import run_feature3_d1
+            from utils.csv_loader_toolpath import prepare_toolpath_load_result_for_feature3
+
+            f3 = config.feature3_d1
+            lr_f3 = prepare_toolpath_load_result_for_feature3(
+                toolpath_path,
+                custom_zone=getattr(f3, "custom_zone", False),
+                default_zone=getattr(f3, "default_zone", "fine"),
+                default_v_cmd=getattr(f3, "default_v_cmd_mm_s", 300.0),
+                use_base_frame=config.use_base_frame,
+                knife_translation_m=knife_translation_m,
+                knife_quaternion=knife_quaternion,
+            )
+            f3_result = run_feature3_d1(
+                toolpath_csv=toolpath_path,
+                urdf_path=urdf_path,
+                config=config,
+                output_dir=output_dir,
+                robot_model_name=robot_model_name,
+                robot_reach_m=robot_reach_m,
+                velocity_limits_rad_s=velocity_limits_rad_s,
+                accel_limits_rad_s2=accel_limits_rad_s2,
+                verbose=False,
+                custom_zone=getattr(config.feature3_d1, "custom_zone", False),
+                preloaded_load_result=lr_f3,
+            )
+            return {
+                "robot": robot_model_name,
+                "knife_pose": knife_pose_name,
+                "toolpath": toolpath_name,
+                "success": f3_result.feasible,
+                "error": f3_result.infeasible_reason if not f3_result.feasible else None,
+                "feature3_d1": True,
+                "blend_arcs": f3_result.blend_geom_count,
+                "dense_samples": f3_result.dense_path_samples,
+                "arc_length_mm": f3_result.total_arc_length_mm,
+                "is_calibrated": f3_result.is_calibrated,
+            }
+
+        result = process_toolpath(
+            toolpath_path=toolpath_path,
+            urdf_path=urdf_path,
+            config=config,
+            knife_translation_m=knife_translation_m,
+            knife_quaternion=knife_quaternion,
+            output_dir=output_dir,
+            robot_model_name=robot_model_name,
+            knife_pose_name=knife_pose_name,
+            robot_reach_m=robot_reach_m,
+            velocity_limits_rad_s=velocity_limits_rad_s,
+            accel_limits_rad_s2=accel_limits_rad_s2,
+            speed_mm_s=speed_mm_s,
+            verbose=False,
+            use_flat_output_structure=True,
+            collision_overrides=collision_overrides,
+        )
+        summary = result["trajectory_results"]
+        n_pass, n_total = count_trajectory_feasibility(summary)
+        if n_total <= 0:
+            return {
+                "robot": robot_model_name,
+                "knife_pose": knife_pose_name,
+                "toolpath": toolpath_name,
+                "success": False,
+                "error": "No trajectories processed",
+                "num_trajectories": result.get("num_trajectories"),
+                "summary": summary,
+            }
+        n_fail = n_total - n_pass
+        if n_fail > 0:
+            return {
+                "robot": robot_model_name,
+                "knife_pose": knife_pose_name,
+                "toolpath": toolpath_name,
+                "success": False,
+                "error": (
+                    f"Feasibility: {n_fail} of {n_total} trajectories failed "
+                    f"({n_pass} passed)"
+                ),
+                "num_trajectories": result["num_trajectories"],
+                "summary": summary,
+            }
+        return {
+            "robot": robot_model_name,
+            "knife_pose": knife_pose_name,
+            "toolpath": toolpath_name,
+            "success": True,
+            "num_trajectories": result["num_trajectories"],
+            "summary": summary,
+        }
+    except Exception as e:
+        return {
+            "robot": robot_model_name,
+            "knife_pose": knife_pose_name,
+            "toolpath": toolpath_name,
+            "success": False,
+            "error": str(e),
+        }
 
 
 def _extract_robot_model_name(urdf_path: str) -> str:
@@ -91,6 +229,35 @@ def _extract_robot_model_name(urdf_path: str) -> str:
             return "IRB-1300-1.1"
         return "IRB-1300-1.4"
     return urdf_file.replace("_ee", "").replace("-URDF", "")
+
+
+def _collision_overrides_from_args(args: argparse.Namespace) -> CollisionRunOverrides:
+    return CollisionRunOverrides(
+        no_collision=bool(getattr(args, "no_collision", False)),
+        cspace_forbidden_yaml=getattr(args, "cspace_forbidden_yaml", None),
+        cspace_only=bool(getattr(args, "cspace_only", False)),
+    )
+
+
+def _add_collision_cli_arguments(parser: argparse.ArgumentParser) -> None:
+    g = parser.add_argument_group("collision (Feature 4)")
+    g.add_argument(
+        "--no-collision",
+        action="store_true",
+        help="Disable collision gating (self + environment)",
+    )
+    g.add_argument(
+        "--cspace-forbidden-yaml",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Optional C-space forbidden zones YAML (offline / pre-recorded tests)",
+    )
+    g.add_argument(
+        "--cspace-only",
+        action="store_true",
+        help="With --cspace-forbidden-yaml: use joint-space zones only (no URDF meshes)",
+    )
 
 
 def main():
@@ -130,9 +297,11 @@ def main():
              "waypoints by TCP). If a directory is given, the same filename as "
              "the toolpath is resolved inside it.",
     )
+    _add_collision_cli_arguments(parser)
     args = parser.parse_args()
 
     cfg = load_batch_config(args.config)
+    collision_ov = _collision_overrides_from_args(args)
     if args.no_c1:
         cfg.continuity.enable_c1 = False
     if args.solver:
@@ -165,6 +334,14 @@ def main():
 
     robot_model_name = _extract_robot_model_name(args.urdf)
     velocity_limits = np.array([4.443, 3.142, 4.312, 8.727, 7.245, 12.566])
+
+    coll_on = cfg.collision.enabled and not collision_ov.no_collision
+    if collision_ov.cspace_only and collision_ov.cspace_forbidden_yaml:
+        print(f"Collision: C-space only ({collision_ov.cspace_forbidden_yaml})")
+    elif coll_on:
+        print(f"Collision: ON (scene={cfg.collision.scene_yaml})")
+    else:
+        print("Collision: OFF")
 
     if cfg.feature3_d1.enabled:
         from core.blend_zone import run_feature3_d1
@@ -216,6 +393,7 @@ def main():
             velocity_limits_rad_s=velocity_limits,
             speed_mm_s=args.speed,
             robotstudio_csv_path=rs_csv,
+            collision_overrides=collision_ov,
         )
 
     print("\nAnalysis complete!")

@@ -1,0 +1,35 @@
+# Pseudo C-space forbidden zones for deterministic feasibility / EAIK tests.
+# Bands are inclusive [min_deg, max_deg] per joint; a zone fires when ALL its
+# joints lie inside their bands.  Robot limits come from config/robots_config.yaml.
+#
+# Run validation:
+#   python Robot_APCC/Experiments/Internal_Collision/run_cspace_gating_validation.py
+
+robot_name: "IRB 1300-7/1.4"
+
+forbidden_zones:
+  - name: zone_j1_near_zero
+    description: "Base near 0° — artificial shoulder pocket for unit tests"
+    joints_deg:
+      j1: {min_deg: -12.0, max_deg: 12.0}
+
+  - name: zone_j3_low_elbow
+    description: "Deep negative j3 band (elbow-down pocket)"
+    joints_deg:
+      j3: {min_deg: -200.0, max_deg: -175.0}
+
+  - name: zone_j2_j3_combo
+    description: "2-D forbidden rectangle in (j2, j3)"
+    joints_deg:
+      j2: {min_deg: 100.0, max_deg: 120.0}
+      j3: {min_deg: -55.0, max_deg: -30.0}
+
+  - name: zone_j5_negative_flip
+    description: "Wrist flip pocket (negative j5)"
+    joints_deg:
+      j5: {min_deg: -125.0, max_deg: -95.0}
+
+  - name: zone_j6_high_wrap
+    description: "j6 near +360° wrap (within ±400° URDF limit)"
+    joints_deg:
+      j6: {min_deg: 355.0, max_deg: 385.0}

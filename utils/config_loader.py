@@ -14,7 +14,7 @@ Provides YAML configuration loading for the project:
 import yaml
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
 
 
@@ -184,6 +184,7 @@ class RobotConfig:
     fixture_name: str = "ee_link"
     velocity_limits_rad_s: Optional[List[float]] = None
     acceleration_limits_rad_s2: Optional[List[float]] = None
+    joint_limits_deg: Optional[List[Tuple[float, float]]] = None  # (min, max) per joint j1..j6
     joint_jump_limit_rad: Optional[float] = None
     # Calibration (populated from robots_config.yaml calibration section)
     a_tcp_mm_s2: float = 2500.0
@@ -261,6 +262,12 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
     for robot_data in config.get('robots', []):
         name = robot_data.get('name', 'Unknown')
         cal = robot_data.get('calibration', {}) or {}
+        jl_raw = robot_data.get('joint_limits_deg')
+        joint_limits_deg: Optional[List[Tuple[float, float]]] = None
+        if jl_raw:
+            joint_limits_deg = [
+                (float(lim['min']), float(lim['max'])) for lim in jl_raw
+            ]
         result[name] = RobotConfig(
             name=name,
             urdf_path=robot_data.get('urdf_path', ''),
@@ -268,6 +275,7 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
             fixture_name=robot_data.get('fixture_name', 'ee_link'),
             velocity_limits_rad_s=robot_data.get('velocity_limits_rad_s'),
             acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2'),
+            joint_limits_deg=joint_limits_deg,
             joint_jump_limit_rad=joint_jump_limit_rad,
             a_tcp_mm_s2=float(cal.get('a_tcp_mm_s2', 2500.0)),
             a_tcp_decel_mm_s2=float(cal.get('a_tcp_decel_mm_s2', 2500.0)),
@@ -306,6 +314,30 @@ def get_default_velocity_limits_rad_s(config_path: str = None) -> list:
         if robot.velocity_limits_rad_s is not None:
             return list(robot.velocity_limits_rad_s)
     return [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
+
+
+def get_robot_joint_limits_deg(
+    robot_name: str,
+    robots_config_path: str = None,
+) -> List[Tuple[float, float]]:
+    """Return inclusive (min_deg, max_deg) per joint from ``robots_config.yaml``."""
+    robot = get_robot_by_name(robot_name, robots_config_path)
+    if not robot.joint_limits_deg:
+        raise ValueError(
+            f"Robot {robot_name!r} has no joint_limits_deg in robots_config.yaml"
+        )
+    return list(robot.joint_limits_deg)
+
+
+def get_robot_joint_limits_rad(
+    robot_name: str,
+    robots_config_path: str = None,
+) -> np.ndarray:
+    """Shape (2, n_joints): row 0 = lower rad, row 1 = upper rad."""
+    limits_deg = get_robot_joint_limits_deg(robot_name, robots_config_path)
+    lo = np.deg2rad([lim[0] for lim in limits_deg])
+    hi = np.deg2rad([lim[1] for lim in limits_deg])
+    return np.vstack([lo, hi])
 
 
 def get_default_joint_jump_limit_rad(config_path: str = None) -> float:
@@ -411,6 +443,21 @@ class RankingConfig:
     safety_bin_size: float = 10.0
     smoothness_weight: float = 1.0
     dexterity_weight: float = 1.0
+
+
+@dataclass
+class CollisionConfig:
+    """Feature 4 collision gating for feasibility / EAIK branch selection."""
+
+    enabled: bool = True
+    scene_yaml: str = "config/collision_objects.yaml"
+    scene_calibrate: bool = True
+    scene_calibrate_n_samples: int = 10
+    scene_calibrate_seed: int = 42
+    # Offline / pre-recorded tests only (no meshes); disabled unless set via CLI or YAML
+    cspace_forbidden_yaml: Optional[str] = None
+    # When true with cspace_forbidden_yaml: C-space zones only (skip scene meshes)
+    cspace_only: bool = False
 
 
 @dataclass
@@ -564,6 +611,9 @@ class FeasibilityConfig:
     # Feature 3 Deliverable 1 — Speed Profile
     feature3_d1: Feature3D1Config = field(default_factory=Feature3D1Config)
 
+    # Feature 4 — collision (self + environment via SceneCollisionChecker)
+    collision: CollisionConfig = field(default_factory=CollisionConfig)
+
 
 # =============================================================================
 # Batch Config Loader
@@ -629,6 +679,7 @@ def load_batch_config(config_path: str) -> FeasibilityConfig:
         topp_ra=_load_group(raw, 'topp_ra', ToppRaGroupConfig),
         ranking=ranking_cfg,
         feature3_d1=_load_group(raw, 'feature3_d1', Feature3D1Config),
+        collision=_load_group(raw, 'collision', CollisionConfig),
     )
 
 

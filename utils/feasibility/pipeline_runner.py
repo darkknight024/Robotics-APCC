@@ -113,12 +113,38 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
     except (ValueError, Exception):
         pass
 
+    from core.collision.factory import build_collision_checker_for_feasibility
+
+    repo_root = Path(__file__).resolve().parents[2]
+    coll_cfg = inputs.config.collision
+    cspace_yaml = inputs.cspace_forbidden_yaml or coll_cfg.cspace_forbidden_yaml
+    cspace_only = bool(
+        inputs.collision_cspace_only
+        or (coll_cfg.cspace_only and cspace_yaml)
+    )
+    collision_checker = None
+    if not inputs.collision_disabled:
+        use_scene = coll_cfg.enabled and not cspace_only
+        scene_yaml = coll_cfg.scene_yaml if use_scene else None
+        cspace_for_build = cspace_yaml if cspace_yaml else None
+        if use_scene or cspace_for_build:
+            collision_checker = build_collision_checker_for_feasibility(
+                urdf_path=inputs.urdf_path,
+                project_root=repo_root,
+                scene_yaml=scene_yaml,
+                scene_calibrate=coll_cfg.scene_calibrate,
+                scene_calibrate_n_samples=coll_cfg.scene_calibrate_n_samples,
+                scene_calibrate_seed=coll_cfg.scene_calibrate_seed,
+                cspace_forbidden_yaml=cspace_for_build,
+            )
+
     ik_cfg = load_ik_config_as_object(solver=inputs.config.solver)
     ee_frame = robot_config.fixture_name if robot_config and robot_config.fixture_name else ik_cfg.ee_frame_name
 
     fk_solver, ik_solver, robot_data = create_solvers(
         inputs.urdf_path, solver=inputs.config.solver, ik_config=ik_cfg,
         ee_frame_name=ee_frame,
+        collision_checker=collision_checker,
     )
 
     final_vel_lims = inputs.velocity_limits_rad_s
@@ -147,6 +173,7 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
         max_ik_failures_per_trajectory=inputs.config.max_ik_failures_per_trajectory,
         multi_solution_weights=ms_weights,
         j5_threshold_deg=inputs.config.singularity.j5_threshold_deg,
+        collision_checker=collision_checker,
     )
 
     # Embedded-RS toolpaths (Exp 19–21). Standalone RS files are loaded later
@@ -226,6 +253,18 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
 
     if verbose:
         print(f"\nAnalyzing: {toolpath_name}")
+        coll_cfg = config.collision
+        if inputs.collision_disabled:
+            print("  Collision: disabled (--no-collision)")
+        elif inputs.collision_cspace_only and (
+            inputs.cspace_forbidden_yaml or coll_cfg.cspace_forbidden_yaml
+        ):
+            print(
+                "  Collision: C-space only ("
+                f"{inputs.cspace_forbidden_yaml or coll_cfg.cspace_forbidden_yaml})"
+            )
+        elif coll_cfg.enabled:
+            print(f"  Collision: scene ({coll_cfg.scene_yaml})")
 
     out_path = _resolve_output_path(inputs, toolpath_name)
     # Defer mkdir until something is actually written (fast validation / pass-only).
@@ -415,14 +454,26 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
                     final_vel_lims,
                 )
 
+        collision_ok = feasibility_flags.get("collision_ok", True)
+        collision_enabled = feasibility_flags.get("collision_check_enabled", False)
         level1_valid = reachability_ok and c0_ok and c1_ok
+        if collision_enabled:
+            level1_valid = level1_valid and collision_ok
         if verbose:
             status = "PASS" if level1_valid else "FAIL"
             if config.continuity.enable_c1:
                 c1_status = f"C1={c1_ok}"
             else:
                 c1_status = "C1=not evaluated (disabled)"
-            print(f"    Feasibility: {status} (reach={reachability_ok}, C0={c0_ok}, {c1_status})")
+            coll_status = (
+                f"collision={collision_ok}"
+                if collision_enabled
+                else "collision=off"
+            )
+            print(
+                f"    Feasibility: {status} (reach={reachability_ok}, C0={c0_ok}, "
+                f"{c1_status}, {coll_status})"
+            )
 
         export_csvs = config.output.export_trajectory_csvs
         write_failed_only = config.output.write_failed_trajectories_only
@@ -531,6 +582,8 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
             "mean_min_singular_value": traj_result["mean_min_singular_value"],
             "early_terminated": traj_result.get("early_terminated", False),
             "ik_failure_count": traj_result.get("ik_failure_count", 0),
+            "collision_reject_count": traj_result.get("collision_reject_count", 0),
+            "collision_output_leak_count": traj_result.get("collision_output_leak_count", 0),
             "feasibility_flags": feasibility_flags,
             "level1_valid": level1_valid,
             "safety_tier": safety_tier,

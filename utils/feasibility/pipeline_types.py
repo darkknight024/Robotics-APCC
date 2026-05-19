@@ -42,6 +42,10 @@ class FeasibilityPipelineInputs:
     # When True, enable failure-relevant graphs for Level-1-failing trajectories
     # even if config ``generate_graphs`` flags are False (used by input validation).
     force_failure_graphs: bool = False
+    # Runtime collision overrides (do not mutate shared FeasibilityConfig in batch workers)
+    collision_disabled: bool = False
+    cspace_forbidden_yaml: Optional[str] = None
+    collision_cspace_only: bool = False
 
 
 @dataclass
