@@ -1,11 +1,15 @@
-import os
 from pathlib import Path
+import sys
 
 import numpy as np
-import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.calibration.joint_dynamics import get_exp24_neutral, load_joint_dynamics
-from core.calibration.tcp_dynamics import compute_a_tcp_tangential
+from tests.experiment24_validation import (
+    create_exp24_results_dir,
+    evaluate_exp24_dataset,
+)
 
 
 def test_exp24_neutral_values_are_radians():
@@ -23,37 +27,33 @@ def test_load_joint_dynamics_from_robots_config():
     assert dyn.q_dot_max.shape == (6,)
 
 
-@pytest.mark.integration
-def test_exp24_tcp_accel_cross_validation_against_exp23_home_y_axis():
-    if os.environ.get("RUN_FEATURE3_D2_INTEGRATION") != "1":
-        pytest.skip("Set RUN_FEATURE3_D2_INTEGRATION=1 to run robot-model cross validation")
-
-    from core import create_solvers
-    from core.blend_zone.calibration import load_rs_csv
-    from utils.config_loader import get_robot_by_name, load_ik_config_as_object
-
+def test_exp24_tcp_accel_cross_validation_against_robotstudio_csv():
     repo = Path(__file__).resolve().parents[1]
-    robot = get_robot_by_name("IRB 1300-7/1.4")
-    ik_cfg = load_ik_config_as_object(solver="pin")
-    fk_solver, _ik_solver, _robot_data = create_solvers(
-        str(repo / robot.urdf_path),
-        solver="pin",
-        ik_config=ik_cfg,
-        ee_frame_name=ik_cfg.ee_frame_name,
-    )
+    out_dir = create_exp24_results_dir("exp24_tcp_accel_cross_validation", repo)
+    metrics = evaluate_exp24_dataset(out_dir, repo)
 
-    rs_csv = (
-        repo
-        / "Robot_APCC/Experiments/Experiment_23/Results - RobotStudio/v2/straight_line_trajectories/v100.csv"
-    )
-    rs = load_rs_csv(rs_csv)
-    q_home = np.deg2rad(rs.joints_deg[0])
-    dyn = get_exp24_neutral()
+    # J1-J3 produce substantial TCP translation in Experiment 24; these are the
+    # clean validation axes for the RobotStudio linear_acceleration column.
+    primary = [
+        m for m in metrics
+        if m.configuration == "neutral_position" and m.joint in (1, 2, 3)
+        and m.n_accel_samples > 0
+    ]
+    assert primary, "No neutral J1-J3 acceleration samples were evaluated"
 
-    a_tcp = compute_a_tcp_tangential(
-        q_home,
-        np.array([0.0, 1.0, 0.0]),
-        dyn,
-        lambda q: fk_solver.get_jacobian(q, local_frame=False),
-    )
-    assert a_tcp == pytest.approx(5300.0, rel=0.15)
+    median_rel = float(np.median([m.accel_median_rel_error for m in primary]))
+    p90_rel = float(np.percentile([m.accel_median_rel_error for m in primary], 90))
+
+    assert median_rel < 0.12, f"median accel relative error {median_rel:.3f}; see {out_dir}"
+    assert p90_rel < 0.20, f"P90 accel relative error {p90_rel:.3f}; see {out_dir}"
+    print(f"Experiment 24 acceleration validation written to: {out_dir}")
+
+
+def main() -> None:
+    test_exp24_neutral_values_are_radians()
+    test_load_joint_dynamics_from_robots_config()
+    test_exp24_tcp_accel_cross_validation_against_robotstudio_csv()
+
+
+if __name__ == "__main__":
+    main()

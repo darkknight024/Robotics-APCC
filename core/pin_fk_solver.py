@@ -136,7 +136,11 @@ class PinocchioFKSolver(BaseFKSolver):
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
 
-        frame_type = pin.LOCAL if local_frame else pin.WORLD
+        # Pinocchio's WORLD frame uses the spatial-action convention and is not
+        # the classical geometric Jacobian expected by the rest of this codebase.
+        # LOCAL_WORLD_ALIGNED keeps the origin at the end-effector frame while
+        # expressing both angular and linear rows in world/base axes.
+        frame_type = pin.LOCAL if local_frame else pin.LOCAL_WORLD_ALIGNED
         J_pin = pin.computeFrameJacobian(
             self.model, self.data, q, self.ee_frame_id, frame_type
         )
