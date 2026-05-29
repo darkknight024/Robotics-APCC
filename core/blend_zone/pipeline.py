@@ -93,7 +93,7 @@ def _zone_to_dict(z: ZoneParams) -> dict:
     }
 
 
-def run_feature3_d1(
+def run_feature3(
     toolpath_csv: str,
     urdf_path: str,
     config,
@@ -109,8 +109,9 @@ def run_feature3_d1(
     reports: bool = True,
     plot_kinds: Optional[List[str]] = None,
     preloaded_load_result=None,
+    jacobian_dynamics_override: Optional[bool] = None,
 ) -> Feature3D1Result:
-    """Execute the full Feature 3 D1 pipeline: zone blending → speed profile.
+    """Execute the full Feature 3 pipeline: zone blending → speed profile.
 
     Args:
         toolpath_csv:          Path to toolpath CSV with zone columns (ignored when
@@ -138,6 +139,7 @@ def run_feature3_d1(
         compute_omega_e_from_dense_path,
         compute_joint_velocities_from_twist,
     )
+    from core.calibration.joint_dynamics import load_joint_dynamics
     from utils.csv_loader_toolpath import ToolpathLoadResultF3, load_toolpath_f3
     from core import create_solvers, FeasibilityAnalyzer
     from utils.config_loader import load_ik_config_as_object, get_robot_by_name
@@ -211,6 +213,24 @@ def run_feature3_d1(
     if final_accel_lims is None and robot_config and robot_config.acceleration_limits_rad_s2:
         final_accel_lims = np.array(robot_config.acceleration_limits_rad_s2)
 
+    robots_config_path = Path(__file__).resolve().parents[2] / "config" / "robots_config.yaml"
+    use_jacobian_dynamics = bool(
+        robot_config and getattr(robot_config, "use_jacobian_dynamics", False)
+    )
+    if jacobian_dynamics_override is not None:
+        use_jacobian_dynamics = bool(jacobian_dynamics_override)
+    joint_dynamics = None
+    if use_jacobian_dynamics:
+        joint_dynamics = load_joint_dynamics(robots_config_path, robot_model_name or None)
+        final_vel_lims = joint_dynamics.q_dot_max
+        final_accel_lims = joint_dynamics.q_ddot_accel
+
+    def _world_jacobian(q: np.ndarray) -> np.ndarray:
+        try:
+            return fk_solver.get_jacobian(q, local_frame=False)
+        except TypeError:
+            return fk_solver.get_jacobian(q)
+
     sing_threshold = (
         config.singularity.threshold if config.singularity.enabled else 0.0
     )
@@ -243,12 +263,18 @@ def run_feature3_d1(
             k_corner_dip=getattr(robot_config, "k_corner_dip", 0.0),
             T_settle_s=robot_config.T_settle_s,
             is_calibrated=True,
+            joint_dynamics=joint_dynamics,
+            jacobian_eval=_world_jacobian,
+            use_jacobian_dynamics=use_jacobian_dynamics,
         )
     else:
         calibration = SpeedCalibration(
             a_tcp_mm_s2=f3_cfg.a_tcp_mm_s2,
             T_settle_s=f3_cfg.T_settle_s,
             is_calibrated=f3_cfg.is_calibrated,
+            joint_dynamics=joint_dynamics,
+            jacobian_eval=_world_jacobian if use_jacobian_dynamics else None,
+            use_jacobian_dynamics=use_jacobian_dynamics,
         )
 
     # ── Process each trajectory ──
@@ -351,7 +377,7 @@ def run_feature3_d1(
 
         # ── Step 7: Speed profile ──
         speed_result = predict_speed_profile(
-            dense_path, blend_geoms, calibration=calibration,
+            dense_path, blend_geoms, calibration=calibration, q_path=joint_angles_rad,
         )
         if verbose:
             print(
@@ -525,3 +551,13 @@ def run_feature3_d1(
     return Feature3D1Result(
         feasible=False, infeasible_reason="No trajectories processed"
     )
+
+
+def run_feature3_d1(*args, **kwargs) -> Feature3D1Result:
+    """Backward-compatible D1 entry point.
+
+    D2 extends the same pipeline with Jacobian dynamics behind the
+    ``calibration.use_jacobian_dynamics`` feature flag.
+    """
+
+    return run_feature3(*args, **kwargs)

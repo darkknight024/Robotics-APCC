@@ -92,6 +92,8 @@ class BlendArcGeometry:
         r_tcp_eff_mm:       Effective TCP zone radius used (after overlap reduction).
         arc_length_mm:      Total arc length of the cubic blend.
         rho_min_mm:         Minimum radius of curvature at the arc apex ``t = 0.5``.
+        centripetal_normal: (3,) Unit vector from the Bézier apex toward the
+                            programmed corner, in base/world frame.
         r_ori_eff_mm:       Effective orientation zone (populated by M3).
         ori_onset_in_mm:    Arc-length from waypoint where SLERP starts on incoming seg.
         ori_onset_out_mm:   Arc-length from waypoint where SLERP ends on outgoing seg.
@@ -108,6 +110,7 @@ class BlendArcGeometry:
     r_tcp_eff_mm: float
     arc_length_mm: float
     rho_min_mm: float
+    centripetal_normal: np.ndarray = field(default_factory=lambda: np.zeros(3))
     # Populated by M3 (orientation_zone)
     r_ori_eff_mm: float = 0.0
     ori_onset_in_mm: float = 0.0
@@ -279,6 +282,13 @@ def compute_blend_geometry(
 
     arc_len = _compute_arc_length_gauss_cubic(entry_point, inner_p1, inner_p2, exit_point)
     rho_min = _compute_rho_min_cubic(r_tcp, corner_angle, shape_k)
+    apex = _cubic_bezier(entry_point, inner_p1, inner_p2, exit_point, 0.5)
+    normal = P_curr - apex
+    normal_norm = np.linalg.norm(normal)
+    if normal_norm > 1e-12:
+        normal = normal / normal_norm
+    else:
+        normal = np.zeros(3)
 
     return BlendArcGeometry(
         waypoint_idx=idx,
@@ -292,6 +302,7 @@ def compute_blend_geometry(
         r_tcp_eff_mm=r_tcp,
         arc_length_mm=arc_len,
         rho_min_mm=rho_min,
+        centripetal_normal=normal,
     )
 
 

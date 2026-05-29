@@ -49,6 +49,7 @@ from .speed_profile import (
 )
 from .pipeline import (
     Feature3D1Result,
+    run_feature3,
     run_feature3_d1,
 )
 from .calibration import (
@@ -93,7 +94,7 @@ __all__ = [
     # M5
     "SpeedCalibration", "SpeedProfileResult", "predict_speed_profile",
     # Pipeline
-    "Feature3D1Result", "run_feature3_d1",
+    "Feature3D1Result", "run_feature3", "run_feature3_d1",
     # Calibration
     "CalibrationResult", "CalibrationOffset",
     "run_calibration", "compute_calibration_offsets",

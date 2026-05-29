@@ -70,6 +70,16 @@ robots:
       # the corner).  Empirically k_corner = 0.50 matches the z5/z10/z50 dips
       # on the v20 and v500 corner sets within ~1 mm/s.  Set to 0 to disable.
       k_corner_dip: 0.50
+      # Experiment 24 measured per-joint dynamics at neutral configuration.
+      # Values are stored here in degrees for readability and converted to
+      # radians by core/calibration/joint_dynamics.py.
+      joint_dynamics:
+        source: Experiment_24_v1
+        configuration: neutral
+        q_dot_max_deg_s: [280.0, 180.0, 250.0, 500.0, 415.8, 720.0]
+        q_ddot_accel_deg_s2: [2826, 662, 1526, 6886, 6124, 11006]
+        q_ddot_decel_deg_s2: [2850, 662, 1589, 6834, 6143, 11059]
+      use_jacobian_dynamics: true
       T_settle_s: 0.2                  # Fine-point settling time (NOT calibrated — proposal default)
       is_calibrated: true
       calibration_source: "Experiment_23"

@@ -70,6 +70,11 @@ def generate_f3_report(
             "a_accel_mm_s2": speed_result.calibration.a_accel,
             "a_decel_mm_s2": speed_result.calibration.a_decel,
             "rho_min_scale": speed_result.calibration.rho_min_scale,
+            "use_jacobian_dynamics": speed_result.calibration.use_jacobian_dynamics,
+            "joint_dynamics_source": (
+                speed_result.calibration.joint_dynamics.source
+                if speed_result.calibration.joint_dynamics is not None else ""
+            ),
             "T_settle_s": speed_result.calibration.T_settle_s,
             "is_calibrated": speed_result.calibration.is_calibrated,
         },
@@ -82,6 +87,12 @@ def generate_f3_report(
             ),
             "v_actual_min_mm_s": float(np.min(v_act)),
             "v_actual_max_mm_s": float(np.max(v_act)),
+            "v_joint_ceiling_min_mm_s": (
+                float(np.min(speed_result.v_joint_ceiling[np.isfinite(speed_result.v_joint_ceiling)]))
+                if len(speed_result.v_joint_ceiling)
+                and np.any(np.isfinite(speed_result.v_joint_ceiling))
+                else float("inf")
+            ),
             "mean_gap_pct": mean_gap,
             "rms_gap_pct": rms_gap,
             "pct_at_speed_5pct": pct_at_speed,

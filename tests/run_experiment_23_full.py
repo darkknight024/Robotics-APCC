@@ -627,12 +627,13 @@ def _run_single_task(
     show_3d: bool = False,
     with_speed_fit: bool = False,
     lite: bool = False,
+    feature3_version: str = "d2",
 ) -> Tuple[bool, List[object], Optional[object]]:
     """Run solver on one toolpath, then generate RS comparison if available.
 
     Returns (success, verification_results, blend_arc_result_or_None).
     """
-    from core.blend_zone import run_feature3_d1
+    from core.blend_zone import run_feature3
     from core.blend_zone.verification import (
         generate_trajectory_comparison_plots,
         show_3d_blend_comparison,
@@ -674,7 +675,7 @@ def _run_single_task(
 
     # Run solver if needed
     if not result_csvs or not skip_existing:
-        run_feature3_d1(
+        run_feature3(
             toolpath_csv=task["csv"],
             urdf_path=str(_REPO / robot_config.urdf_path),
             config=cfg,
@@ -691,6 +692,7 @@ def _run_single_task(
                 ["speed_profile", "tcp_pose_deviation"] if lite else None
             ),
             preloaded_load_result=lr_preloaded,
+            jacobian_dynamics_override=(feature3_version == "d2"),
         )
         result_csvs = sorted(out_dir.rglob("*_result.csv"))
 
@@ -1124,6 +1126,7 @@ def phase_run(
     with_speed_fit: bool = False,
     lite: bool = False,
     rs_version: Optional[str] = None,
+    feature3_version: str = "d2",
 ):
     """Run solver on all toolpaths, generating RS comparison alongside.
 
@@ -1231,6 +1234,7 @@ def phase_run(
                 verbose=verbose, show_3d=show_3d,
                 with_speed_fit=with_speed_fit,
                 lite=lite,
+                feature3_version=feature3_version,
             )
             ok += 1
             rs_info = ""
@@ -1726,6 +1730,9 @@ Examples:
                         help="Use RobotStudio results from Results - RobotStudio/<version> "
                              "for single-toolpath comparisons.  This is mainly for "
                              "re-recorded siping runs such as v5.")
+    parser.add_argument("--feature3-version", choices=["d1", "d2"], default="d2",
+                        help="Select scalar D1 speed dynamics or D2 Jacobian dynamics "
+                             "(default: d2).")
     args = parser.parse_args()
 
     if args.run_dir:
@@ -1737,6 +1744,7 @@ Examples:
     print(f"\nExperiment 23 — Feature 3 D1")
     print(f"Run dir : {run_dir}")
     print(f"Phase   : {args.phase}")
+    print(f"F3 mode : {args.feature3_version}")
     print(f"Time    : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     t_total = time.time()
@@ -1764,6 +1772,7 @@ Examples:
             with_speed_fit=args.with_speed_fit,
             lite=args.lite,
             rs_version=args.rs_version,
+            feature3_version=args.feature3_version,
         )
 
     if args.phase in ("all", "calibrate"):

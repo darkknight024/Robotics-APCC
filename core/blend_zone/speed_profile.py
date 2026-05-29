@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 import numpy as np
 
@@ -104,6 +104,9 @@ class SpeedCalibration:
     k_corner_dip: float = 0.0           # 0 ⇒ disabled (no universal dip)
     T_settle_s: float = _PLACEHOLDER_T_SETTLE
     is_calibrated: bool = False
+    joint_dynamics: Optional[Any] = None
+    jacobian_eval: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    use_jacobian_dynamics: bool = False
 
     @property
     def a_accel(self) -> float:
@@ -140,6 +143,10 @@ class SpeedProfileResult:
     v_blend_ceiling: np.ndarray
     is_blend_arc: np.ndarray
     total_duration_s: float
+    v_joint_ceiling: np.ndarray = field(default_factory=lambda: np.array([]))
+    v_ceiling: np.ndarray = field(default_factory=lambda: np.array([]))
+    a_accel_profile_mm_s2: np.ndarray = field(default_factory=lambda: np.array([]))
+    a_decel_profile_mm_s2: np.ndarray = field(default_factory=lambda: np.array([]))
     fine_point_indices: List[int] = field(default_factory=list)
     calibration: SpeedCalibration = field(default_factory=SpeedCalibration)
 
@@ -264,11 +271,35 @@ def _corner_dip_ceiling(
     return v_cmd_mm_s * max(1.0 - reduction, 0.0)
 
 
+def _path_tangents(dense_path: DensePath) -> np.ndarray:
+    """Unit TCP tangent per dense sample, in world/base frame."""
+
+    positions_mm = dense_path.poses[:, :3] * 1000.0
+    M = len(positions_mm)
+    tangents = np.zeros((M, 3), dtype=float)
+    for k in range(M):
+        if M == 1:
+            break
+        if k == 0:
+            delta = positions_mm[1] - positions_mm[0]
+        elif k == M - 1:
+            delta = positions_mm[-1] - positions_mm[-2]
+        else:
+            delta = positions_mm[k + 1] - positions_mm[k - 1]
+        norm = np.linalg.norm(delta)
+        if norm > 1e-9:
+            tangents[k] = delta / norm
+        elif k > 0:
+            tangents[k] = tangents[k - 1]
+    return tangents
+
+
 def predict_speed_profile(
     dense_path: DensePath,
     blend_geoms: List[Optional[BlendArcGeometry]],
     calibration: Optional[SpeedCalibration] = None,
     v_topp_ceiling: Optional[np.ndarray] = None,
+    q_path: Optional[np.ndarray] = None,
 ) -> SpeedProfileResult:
     """Predict the actual TCP speed profile over the full dense path.
 
@@ -288,6 +319,7 @@ def predict_speed_profile(
         blend_geoms:      Per-waypoint blend geometry (from M2+M3).
         calibration:      :class:`SpeedCalibration` constants.
         v_topp_ceiling:   (M,) optional TOPP-RA speed ceiling in mm/s.
+        q_path:           (M, 6) joint path for Jacobian dynamics.
 
     Returns:
         :class:`SpeedProfileResult` with the full speed prediction.
@@ -420,38 +452,121 @@ def predict_speed_profile(
                         )
                         v_blend_ceil[k] = min(v_blend_ceil[k], v_corner)
 
-    # ── Base profile: min(v_cmd, v_blend_ceil) ──
-    v_profile = np.minimum(v_cmd, v_blend_ceil)
+    # ── Step 2: Jacobian dynamics (D2) or scalar-calibration fallback ──
+    v_joint_ceil = np.full(M, np.inf)
+    a_accel_profile = np.full(M, float(a_accel))
+    a_decel_profile = np.full(M, float(a_decel))
 
-    # ── Step 2: Forward pass (acceleration constraint with a_accel) ──
-    v_forward = np.copy(v_profile)
-    v_forward[0] = 0.0                       # path start: fine point
+    use_jacobian = (
+        calibration.use_jacobian_dynamics
+        and calibration.joint_dynamics is not None
+        and calibration.jacobian_eval is not None
+        and q_path is not None
+        and len(q_path) == M
+    )
+
+    if use_jacobian:
+        from core.calibration.tcp_dynamics import (
+            compute_a_tcp_centripetal,
+            compute_a_tcp_tangential,
+            compute_v_joint_max,
+        )
+
+        tangents = _path_tangents(dense_path)
+        for k in range(M):
+            if np.linalg.norm(tangents[k]) < 1e-12:
+                continue
+
+            try:
+                v_joint_ceil[k] = compute_v_joint_max(
+                    q_path[k],
+                    tangents[k],
+                    calibration.joint_dynamics,
+                    calibration.jacobian_eval,
+                )
+                a_accel_profile[k] = compute_a_tcp_tangential(
+                    q_path[k],
+                    tangents[k],
+                    calibration.joint_dynamics,
+                    calibration.jacobian_eval,
+                    phase="accel",
+                )
+                a_decel_profile[k] = compute_a_tcp_tangential(
+                    q_path[k],
+                    tangents[k],
+                    calibration.joint_dynamics,
+                    calibration.jacobian_eval,
+                    phase="decel",
+                )
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                logger.warning("Jacobian tangential dynamics failed at sample %d: %s", k, exc)
+
+            if is_blend[k] and blend_wp is not None:
+                geom = geom_by_idx.get(int(blend_wp[k]))
+                normal = getattr(geom, "centripetal_normal", None) if geom is not None else None
+                if normal is not None and np.linalg.norm(normal) > 1e-12:
+                    try:
+                        a_centri = compute_a_tcp_centripetal(
+                            q_path[k],
+                            normal,
+                            calibration.joint_dynamics,
+                            calibration.jacobian_eval,
+                        )
+                        if np.isfinite(a_centri) and a_centri > 0:
+                            rho_k = (
+                                _bezier_local_rho_mm(
+                                    geom.r_tcp_eff_mm,
+                                    geom.corner_angle_rad,
+                                    float(blend_t[k]) if blend_t is not None and np.isfinite(blend_t[k]) else 0.5,
+                                    shape_k=getattr(geom, "shape_k", 2.0 / 3.0),
+                                )
+                                if geom is not None else np.inf
+                            )
+                            v_blend_ceil[k] = min(
+                                v_blend_ceil[k],
+                                _blend_speed_ceiling(rho_k * rho_scale, a_centri),
+                            )
+                    except (ValueError, np.linalg.LinAlgError) as exc:
+                        logger.warning("Jacobian centripetal dynamics failed at sample %d: %s", k, exc)
+
+    elif calibration.use_jacobian_dynamics:
+        logger.warning(
+            "Jacobian dynamics requested but missing joint_dynamics, jacobian_eval, "
+            "or q_path; falling back to scalar calibration"
+        )
+
+    # ── Base ceilings before reachability passes ──
+    v_cmd_ceiling = np.where((v_cmd > 0.0) & np.isfinite(v_cmd), v_cmd, np.inf)
+    v_ceiling = np.minimum(v_blend_ceil, v_joint_ceil)
+    if v_topp_ceiling is not None and len(v_topp_ceiling) == M:
+        v_ceiling = np.minimum(v_ceiling, v_topp_ceiling)
+    v_limit_for_goal = np.minimum(v_cmd_ceiling, v_ceiling)
+
+    # ── Step 3: Forward pass (acceleration constraint) ──
+    u_fwd = np.square(v_limit_for_goal)
+    u_fwd[0] = 0.0                       # path start: fine point
     for k in range(1, M):
         ds = arc_s[k] - arc_s[k - 1]
         if ds < 1e-9:
-            v_forward[k] = min(v_forward[k], v_forward[k - 1])
+            u_fwd[k] = min(u_fwd[k], u_fwd[k - 1])
             continue
-        v_max_accel = np.sqrt(max(v_forward[k - 1] ** 2 + 2.0 * a_accel * ds, 0.0))
-        v_forward[k] = min(v_forward[k], v_max_accel)
+        a_step = min(a_accel_profile[k - 1], a_accel_profile[k])
+        u_fwd[k] = min(u_fwd[k], u_fwd[k - 1] + 2.0 * a_step * ds)
 
-    # ── Step 3: Backward pass (deceleration constraint with a_decel) ──
-    v_backward = np.copy(v_profile)
-    v_backward[-1] = 0.0                     # path end: fine point
+    # ── Step 4: Backward pass (deceleration constraint) ──
+    u_bwd = np.square(v_limit_for_goal)
+    u_bwd[-1] = 0.0                     # path end: fine point
     for k in range(M - 2, -1, -1):
         ds = arc_s[k + 1] - arc_s[k]
         if ds < 1e-9:
-            v_backward[k] = min(v_backward[k], v_backward[k + 1])
+            u_bwd[k] = min(u_bwd[k], u_bwd[k + 1])
             continue
-        v_max_decel = np.sqrt(max(v_backward[k + 1] ** 2 + 2.0 * a_decel * ds, 0.0))
-        v_backward[k] = min(v_backward[k], v_max_decel)
+        a_step = min(a_decel_profile[k], a_decel_profile[k + 1])
+        u_bwd[k] = min(u_bwd[k], u_bwd[k + 1] + 2.0 * a_step * ds)
 
     # ── Combine ──
-    v_actual = np.minimum(v_forward, v_backward)
-    v_actual = np.minimum(v_actual, v_blend_ceil)
-    v_actual = np.minimum(v_actual, v_cmd)
-
-    if v_topp_ceiling is not None and len(v_topp_ceiling) == M:
-        v_actual = np.minimum(v_actual, v_topp_ceiling)
+    v_optimal = np.sqrt(np.maximum(np.minimum(u_fwd, u_bwd), 0.0))
+    v_actual = np.minimum(v_optimal, v_cmd_ceiling)
 
     v_actual[0] = 0.0
     v_actual[-1] = 0.0
@@ -474,7 +589,7 @@ def predict_speed_profile(
         "Speed profile: v_actual range [%.1f, %.1f] mm/s, "
         "total duration %.2f s, %d fine-point stops "
         "(a_blend=%.0f, a_accel=%.0f, a_decel=%.0f, ρ_scale=%.2f, "
-        "a_n_blend=%.0f, k_corner_dip=%.2f)",
+        "a_n_blend=%.0f, k_corner_dip=%.2f, jacobian_dynamics=%s)",
         float(np.min(v_actual)),
         float(np.max(v_actual)),
         total_time,
@@ -482,6 +597,7 @@ def predict_speed_profile(
         a_blend, a_accel, a_decel, rho_scale,
         a_n_blend_eff if calibration.a_n_blend > 0 else 0.0,
         k_corner,
+        use_jacobian,
     )
 
     return SpeedProfileResult(
@@ -491,6 +607,10 @@ def predict_speed_profile(
         v_blend_ceiling=v_blend_ceil,
         is_blend_arc=is_blend,
         total_duration_s=total_time,
+        v_joint_ceiling=v_joint_ceil,
+        v_ceiling=v_ceiling,
+        a_accel_profile_mm_s2=a_accel_profile,
+        a_decel_profile_mm_s2=a_decel_profile,
         fine_point_indices=fine_indices,
         calibration=calibration,
     )
