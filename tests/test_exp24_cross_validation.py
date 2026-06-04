@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 
@@ -10,6 +11,20 @@ from tests.experiment24_validation import (
     create_exp24_results_dir,
     evaluate_exp24_dataset,
 )
+
+
+def _timestamped_cross_validation_dir(repo: Path) -> Path:
+    import datetime as _dt
+
+    root = repo / "Robot_APCC" / "Experiments" / "Experiment_23" / "Results" / "cross_validation"
+    root.mkdir(parents=True, exist_ok=True)
+    while True:
+        out = root / _dt.datetime.now().strftime("%m_%d_%y_%H_%M_%S")
+        try:
+            out.mkdir()
+            return out
+        except FileExistsError:
+            time.sleep(1.0)
 
 
 def test_exp24_neutral_values_are_radians():
@@ -49,10 +64,45 @@ def test_exp24_tcp_accel_cross_validation_against_robotstudio_csv():
     print(f"Experiment 24 acceleration validation written to: {out_dir}")
 
 
+def test_exp24_dynamics_cross_validate_feature3_v6_speed_profiles():
+    """Run Feature 3 D2 on Experiment 23 V6 and compare against RobotStudio."""
+    repo = Path(__file__).resolve().parents[1]
+    out_dir = _timestamped_cross_validation_dir(repo)
+
+    from tests.run_experiment_23_full import phase_run
+
+    ok, fail = phase_run(
+        out_dir,
+        skip_existing=False,
+        v6_only=True,
+        blend_threshold_mm=1.0,
+        with_speed_fit=True,
+        lite=True,
+        feature3_version="d2",
+    )
+
+    summary = out_dir / "verification_summary" / "summary_table.txt"
+    assert summary.exists(), f"Missing V6 summary table in {out_dir}"
+    assert ok == 30, f"Expected 30 V6 trajectories with RS ground truth, got {ok}; see {out_dir}"
+    assert fail == 0, f"V6 cross-validation failures: {fail}; see {out_dir}"
+
+    note = (
+        "Experiment 23 V6 cross-validation\n"
+        "==================================\n"
+        "Ran Feature 3 D2 Jacobian dynamics against V6 corner recordings.\n"
+        "V6 RobotStudio ground truth exists for v200/v500 and zones z0/z10/z50.\n"
+        "Waypoint variants z1/z5 are present in Toolpaths_And_Waypoints/v6 but are\n"
+        "not included here because matching V6 RobotStudio CSVs are not present.\n"
+    )
+    (out_dir / "cross_validation_notes.txt").write_text(note, encoding="utf-8")
+    print(f"Experiment 23 V6 cross-validation written to: {out_dir}")
+
+
 def main() -> None:
     test_exp24_neutral_values_are_radians()
     test_load_joint_dynamics_from_robots_config()
     test_exp24_tcp_accel_cross_validation_against_robotstudio_csv()
+    test_exp24_dynamics_cross_validate_feature3_v6_speed_profiles()
 
 
 if __name__ == "__main__":

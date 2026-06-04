@@ -609,9 +609,13 @@ def _extract_rs_blend_indices(
 
         chord_mm = float(np.linalg.norm(solver_exit - solver_entry))
         hint = float(solver_arc_length_hint_mm) if solver_arc_length_hint_mm > 0 else 0.0
+        # Keep the extracted RS window close to the modeled blend arc length.
+        # A previous 1.6x expansion was useful for very sparse 24 ms logs, but
+        # it over-selects adjacent straight motion on dense V6 logger data and
+        # creates false geometry failures (RS "blend" length >> solver length).
         target_span = max(
-            chord_mm * 1.35,
-            hint * 1.6 if hint > 0 else 0.0,
+            chord_mm,
+            hint if hint > 0 else 0.0,
             8.0,
             float(s_cum[hi] - s_cum[lo]) + 1e-6,
         )
@@ -773,8 +777,11 @@ def compare_blend_arcs(
         # Hausdorff distance
         hausdorff = _hausdorff(solver_arc, rs_blend)
 
-        # Nearest-point deviation: for each solver point, distance to closest RS point
-        nn_dev, _ = _nearest_distances(solver_arc, rs_blend)
+        # Point-to-polyline deviation: treat the RS blend as a continuous
+        # piecewise-linear curve.  Nearest-vertex distance overstates errors on
+        # V6 high-speed logs where adjacent RS samples can be several mm apart.
+        from .verification import _project_points_to_polyline
+        _proj, nn_dev = _project_points_to_polyline(solver_arc, rs_blend)
         mean_dev = float(np.mean(nn_dev))
         max_dev = float(np.max(nn_dev))
         p95_dev = float(np.percentile(nn_dev, 95))

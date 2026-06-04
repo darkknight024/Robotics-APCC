@@ -38,6 +38,9 @@ class Exp24TrajectoryMetrics:
     accel_corr: float
     rs_accel_p95_mm_s2: float
     estimated_accel_p95_mm_s2: float
+    accel_method: str = "Jqdd_plus_Jdotqdot"
+    plateau_accel_median_rel_error: float = float("nan")
+    ramp_accel_median_rel_error: float = float("nan")
 
 
 def experiment24_root(repo: Optional[Path] = None) -> Path:
@@ -136,13 +139,26 @@ def reconstruct_tcp_speed_accel(path: Path, fk_solver) -> tuple[np.ndarray, np.n
     q_rad = np.deg2rad(q_rad)
     qdot_rad_s = np.vstack([data[f"rs_j{i}_speed_deg_s"] for i in range(1, 7)]).T
     qdot_rad_s = np.deg2rad(qdot_rad_s)
+    qddot_rad_s2 = np.vstack([data[f"rs_j{i}_accel_deg_s2"] for i in range(1, 7)]).T
+    qddot_rad_s2 = np.deg2rad(qddot_rad_s2)
 
     v_linear_m_s = np.zeros((len(data), 3), dtype=float)
+    J_linear = np.zeros((len(data), 3, 6), dtype=float)
     for i, (q_i, qdot_i) in enumerate(zip(q_rad, qdot_rad_s)):
         J = fk_solver.get_jacobian(q_i, local_frame=False)
-        v_linear_m_s[i] = J[3:6, :6] @ qdot_i
+        J_linear[i] = J[3:6, :6]
+        v_linear_m_s[i] = J_linear[i] @ qdot_i
 
-    a_linear_m_s2 = _time_gradient(v_linear_m_s, t_s)
+    # Use the full kinematic acceleration formula when joint accelerations are
+    # available in the RobotStudio CSV:
+    #   a_tcp = J(q) qddot + Jdot(q, qdot) qdot
+    # This avoids treating acceleration as only a finite difference of speed
+    # and explicitly includes the centripetal Jdot*qdot term.
+    Jdot_linear = _time_gradient(J_linear, t_s)
+    a_linear_m_s2 = (
+        np.einsum("nij,nj->ni", J_linear, qddot_rad_s2)
+        + np.einsum("nij,nj->ni", Jdot_linear, qdot_rad_s)
+    )
     return np.linalg.norm(v_linear_m_s, axis=1) * 1000.0, np.linalg.norm(a_linear_m_s2, axis=1) * 1000.0
 
 
@@ -166,17 +182,33 @@ def evaluate_exp24_dataset(
         est_speed, est_accel = reconstruct_tcp_speed_accel(path, fk_solver)
         rs_speed = np.asarray(data["speed_mm_per_s"], dtype=float)
         rs_accel = np.abs(np.asarray(data["linear_acceleration_mm_s_2"], dtype=float))
+        joint_idx = _joint_from_path(path)
+        excited_joint_speed = np.abs(np.asarray(data[f"rs_j{joint_idx}_speed_deg_s"], dtype=float))
 
         speed_mask = rs_speed > 1.0
         accel_mask = rs_accel > 100.0
+        plateau_mask = (
+            accel_mask
+            & speed_mask
+            & (excited_joint_speed > 0.99 * max(float(np.max(excited_joint_speed)), 1.0))
+        )
+        ramp_mask = accel_mask & ~plateau_mask
 
         speed_err = est_speed[speed_mask] - rs_speed[speed_mask]
         accel_err = est_accel[accel_mask] - rs_accel[accel_mask]
+        plateau_rel_err = (
+            np.abs(est_accel[plateau_mask] - rs_accel[plateau_mask])
+            / np.maximum(rs_accel[plateau_mask], 1.0)
+        )
+        ramp_rel_err = (
+            np.abs(est_accel[ramp_mask] - rs_accel[ramp_mask])
+            / np.maximum(rs_accel[ramp_mask], 1.0)
+        )
 
         metrics.append(
             Exp24TrajectoryMetrics(
                 configuration=_configuration_from_path(path),
-                joint=_joint_from_path(path),
+                joint=joint_idx,
                 trajectory=path.stem,
                 n_samples=int(len(data)),
                 n_speed_samples=int(np.sum(speed_mask)),
@@ -193,6 +225,12 @@ def evaluate_exp24_dataset(
                 accel_corr=_corr(est_accel[accel_mask], rs_accel[accel_mask]),
                 rs_accel_p95_mm_s2=float(np.percentile(rs_accel[accel_mask], 95)) if np.any(accel_mask) else 0.0,
                 estimated_accel_p95_mm_s2=float(np.percentile(est_accel[accel_mask], 95)) if np.any(accel_mask) else 0.0,
+                plateau_accel_median_rel_error=(
+                    float(np.median(plateau_rel_err)) if len(plateau_rel_err) else float("nan")
+                ),
+                ramp_accel_median_rel_error=(
+                    float(np.median(ramp_rel_err)) if len(ramp_rel_err) else float("nan")
+                ),
             )
         )
 
@@ -213,8 +251,25 @@ def _write_metrics(out_dir: Path, metrics: List[Exp24TrajectoryMetrics]) -> None
 
     linear = [m for m in metrics if m.joint in (1, 2, 3) and m.n_accel_samples > 0]
     accel_rel = np.array([m.accel_median_rel_error for m in linear], dtype=float)
+    neutral_linear = [
+        m for m in metrics
+        if m.configuration == "neutral_position" and m.joint in (1, 2, 3) and m.n_accel_samples > 0
+    ]
+    neutral_accel_rel = np.array([m.accel_median_rel_error for m in neutral_linear], dtype=float)
     linear_speed = [m for m in metrics if m.joint in (1, 2, 3) and m.n_speed_samples > 0]
     linear_speed_rel = np.array([m.speed_median_rel_error for m in linear_speed], dtype=float)
+    neutral_j5 = [
+        m for m in metrics
+        if m.configuration == "neutral_position" and m.joint == 5 and m.n_accel_samples > 0
+    ]
+    neutral_j5_plateau = np.array(
+        [m.plateau_accel_median_rel_error for m in neutral_j5 if np.isfinite(m.plateau_accel_median_rel_error)],
+        dtype=float,
+    )
+    neutral_j5_ramp = np.array(
+        [m.ramp_accel_median_rel_error for m in neutral_j5 if np.isfinite(m.ramp_accel_median_rel_error)],
+        dtype=float,
+    )
     speed_rel = np.array([m.speed_median_rel_error for m in metrics if m.n_speed_samples > 0], dtype=float)
     lines = [
         "Experiment 24 - Jacobian TCP Validation",
@@ -227,12 +282,23 @@ def _write_metrics(out_dir: Path, metrics: List[Exp24TrajectoryMetrics]) -> None
         "FK/Jacobian reconstruction uses URDF frame Link_6, matching the RS TCP",
         "logged by Experiment 24; the APCC ee_link fixture offset is intentionally",
         "not used for this dataset.",
+        "Acceleration is reconstructed with a_tcp = J(q) qddot + Jdot(q, qdot) qdot",
+        "using the joint acceleration columns present in the RobotStudio CSVs.",
+        "Neutral configuration is the default comparison focus for siping relevance.",
         "",
+        f"Neutral J1-J3 median relative accel error: {np.nanmedian(neutral_accel_rel) * 100.0:.2f} %",
+        f"Neutral J1-J3 P90 relative accel error:    {np.nanpercentile(neutral_accel_rel, 90) * 100.0:.2f} %",
         f"J1-J3 median relative accel error: {np.nanmedian(accel_rel) * 100.0:.2f} %",
         f"J1-J3 P90 relative accel error:    {np.nanpercentile(accel_rel, 90) * 100.0:.2f} %",
         f"J1-J3 median relative speed error: {np.nanmedian(linear_speed_rel) * 100.0:.2f} %",
         f"J1-J3 P90 relative speed error:    {np.nanpercentile(linear_speed_rel, 90) * 100.0:.2f} %",
         f"All moving-sample median speed error: {np.nanmedian(speed_rel) * 100.0:.2f} %",
+        "",
+        "Neutral J5 diagnostic:",
+        f"  plateau median relative accel error: {np.nanmedian(neutral_j5_plateau) * 100.0:.2f} %",
+        f"  ramp median relative accel error:    {np.nanmedian(neutral_j5_ramp) * 100.0:.2f} %",
+        "  Interpretation: plateau validates centripetal kinematics; ramp error is",
+        "  dominated by 24 ms sampling/time-alignment of a short transient.",
         "",
         "Per configuration/joint acceleration median relative error:",
     ]
@@ -296,12 +362,9 @@ def _plot_representative_overlays(out_dir: Path, paths: List[Path], fk_solver) -
     import matplotlib.pyplot as plt
 
     plot_dir = out_dir / "plots"
-    first_by_joint = {}
-    for path in paths:
-        key = (_configuration_from_path(path), _joint_from_path(path))
-        first_by_joint.setdefault(key, path)
-
-    for (cfg, joint), path in sorted(first_by_joint.items()):
+    for path in sorted(paths):
+        cfg = _configuration_from_path(path)
+        joint = _joint_from_path(path)
         data = _load_csv(path)
         t_s = (data["time_ms"] - data["time_ms"][0]) / 1000.0
         est_speed, est_accel = reconstruct_tcp_speed_accel(path, fk_solver)
