@@ -121,8 +121,12 @@ from .config_loader import (
     load_yaml,
     get_default_ik_config,
     load_ik_config_as_object,
+    load_fixture_config,
+    get_fixture_by_name,
+    get_fixture_transform_4x4,
     KnifePose,
     RobotConfig,
+    FixtureConfig,
     FeasibilityConfig,
     Feature3D1Config,
 )

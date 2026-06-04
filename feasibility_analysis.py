@@ -97,7 +97,7 @@ def main():
     parser.add_argument(
         "--urdf", "-u",
         default="Assets/Robot APCC/IRB_1300_1400_URDF/urdf/"
-                "IRB_1300_1400_URDF_with_fixture.urdf",
+                "IRB_1300_1400_URDF.urdf",
     )
     parser.add_argument(
         "--config", "-c", default="config/batch_feasibility_config.yaml",

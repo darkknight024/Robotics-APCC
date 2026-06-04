@@ -190,16 +190,19 @@ def run_feature3_d1(
 
     # ── Set up IK solvers ──
     ik_cfg = load_ik_config_as_object(solver=config.solver)
-    fk_solver, ik_solver, robot_data = create_solvers(
-        urdf_path, solver=config.solver, ik_config=ik_cfg,
-        ee_frame_name=ik_cfg.ee_frame_name,
-    )
 
     robot_config = None
     try:
         robot_config = get_robot_by_name(robot_model_name)
     except (ValueError, Exception):
         pass
+
+    ee_frame = robot_config.fixture_name if robot_config and robot_config.fixture_name else ik_cfg.ee_frame_name
+
+    fk_solver, ik_solver, robot_data = create_solvers(
+        urdf_path, solver=config.solver, ik_config=ik_cfg,
+        ee_frame_name=ee_frame,
+    )
 
     final_vel_lims = velocity_limits_rad_s
     if robot_config and robot_config.velocity_limits_rad_s:

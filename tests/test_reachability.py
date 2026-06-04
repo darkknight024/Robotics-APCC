@@ -432,6 +432,7 @@ def process_combination(
     knife_translation_m: Optional[np.ndarray] = None,
     knife_quaternion: Optional[np.ndarray] = None,
     collision_checker=None,
+    fixture_name: str = None,
 ) -> ToolpathResult:
     """Process one robot/toolpath combination for reachability."""
     if not use_base_frame and (knife_name is None or knife_translation_m is None or knife_quaternion is None):
@@ -443,9 +444,11 @@ def process_combination(
     ik_config = load_ik_config_as_object(solver=solver_type)
     if ee_frame_override:
         ik_config.ee_frame_name = ee_frame_override
+
+    ee_frame = fixture_name or ik_config.ee_frame_name
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name,
+        ee_frame_name=ee_frame,
     )
 
     trajectories_t_p_k, speeds = load_toolpath_trajectories(toolpath_path)
@@ -642,6 +645,7 @@ def main():
                     toolpath_path=str(toolpath_file), output_dir=robot_output,
                     solver_type=solver_type, ee_frame_override=args.ee_frame,
                     use_base_frame=True, collision_checker=coll_checker,
+                    fixture_name=robot.fixture_name,
                 )
                 all_results.append(result)
         else:
@@ -663,6 +667,7 @@ def main():
                         knife_translation_m=knife.translation_m,
                         knife_quaternion=knife.quaternion,
                         collision_checker=coll_checker,
+                        fixture_name=robot.fixture_name,
                     )
                     all_results.append(result)
 

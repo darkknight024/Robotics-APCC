@@ -46,9 +46,11 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
         pass
 
     ik_cfg = load_ik_config_as_object(solver=inputs.config.solver)
+    ee_frame = robot_config.fixture_name if robot_config and robot_config.fixture_name else ik_cfg.ee_frame_name
+
     fk_solver, ik_solver, robot_data = create_solvers(
         inputs.urdf_path, solver=inputs.config.solver, ik_config=ik_cfg,
-        ee_frame_name=ik_cfg.ee_frame_name,
+        ee_frame_name=ee_frame,
     )
 
     final_vel_lims = inputs.velocity_limits_rad_s

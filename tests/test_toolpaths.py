@@ -72,6 +72,7 @@ class TrajectoryComparisonTask:
     adaptive_scale: bool
     save_csv: bool
     generate_plots: bool
+    fixture_name: str = "ee_link"
 
 
 def load_robostudio_joints_csv(csv_path: str) -> Dict[int, np.ndarray]:
@@ -180,10 +181,11 @@ def process_single_trajectory(task: TrajectoryComparisonTask) -> Dict[str, Any]:
     
     try:
         # Create solvers via factory
+        ee_frame = task.fixture_name or task.ik_config.ee_frame_name
         fk_solver, ik_solver, robot_data = create_solvers(
             task.urdf_path, solver=task.solver_type,
             ik_config=task.ik_config,
-            ee_frame_name=task.ik_config.ee_frame_name
+            ee_frame_name=ee_frame,
         )
         
         # Run IK on all waypoints
@@ -388,7 +390,8 @@ def process_batch(config_path: str) -> Dict[str, Any]:
                         solver_type=solver_type,
                         adaptive_scale=adaptive_scale,
                         save_csv=save_csv,
-                        generate_plots=generate_plots
+                        generate_plots=generate_plots,
+                        fixture_name=robot.fixture_name,
                     ))
     
     print(f"\nPrepared {len(tasks)} trajectory comparison tasks")

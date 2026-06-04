@@ -166,11 +166,22 @@ def load_knife_config(config_path: str) -> Dict[str, KnifePose]:
 # =============================================================================
 
 @dataclass
+class FixtureConfig:
+    """End-effector fixture pose relative to the robot flange (Link_6)."""
+    name: str
+    description: str
+    parent_link: str
+    origin_xyz: List[float]
+    origin_rpy: List[float]
+
+
+@dataclass
 class RobotConfig:
     """Robot configuration including calibrated dynamic parameters."""
     name: str
     urdf_path: str
     reach_m: float
+    fixture_name: str = "ee_link"
     velocity_limits_rad_s: Optional[List[float]] = None
     acceleration_limits_rad_s2: Optional[List[float]] = None
     joint_jump_limit_rad: Optional[float] = None
@@ -187,6 +198,52 @@ class RobotConfig:
     is_calibrated: bool = False
     blend_model_rmse_mm_s: float = 0.0
     calibration_source: str = ""
+
+
+def load_fixture_config(config_path: str = None) -> Dict[str, FixtureConfig]:
+    """Load fixture configuration (end-effector poses relative to flange).
+
+    Args:
+        config_path: Path to fixture_config.yaml. Uses default if None.
+
+    Returns:
+        Dict mapping fixture name to FixtureConfig.
+    """
+    if config_path is None:
+        config_path = str(Path(__file__).parent.parent / "config" / "fixture_config.yaml")
+
+    config = load_yaml(config_path)
+    result = {}
+    for name, data in config.get('fixtures', {}).items():
+        result[name] = FixtureConfig(
+            name=name,
+            description=data.get('description', ''),
+            parent_link=data.get('parent_link', 'Link_6'),
+            origin_xyz=list(data.get('origin', {}).get('xyz', [0, 0, 0])),
+            origin_rpy=list(data.get('origin', {}).get('rpy', [0, 0, 0])),
+        )
+    return result
+
+
+def get_fixture_by_name(fixture_name: str, config_path: str = None) -> Optional[FixtureConfig]:
+    """Get a fixture by name. Returns None if fixture_name is a bare link (e.g. 'Link_6')."""
+    if not fixture_name:
+        return None
+    fixtures = load_fixture_config(config_path)
+    return fixtures.get(fixture_name)
+
+
+def get_fixture_transform_4x4(fixture_name: str, config_path: str = None):
+    """Build the 4x4 transform for a named fixture, or None if not applicable.
+
+    Returns None when fixture_name refers to a raw link already in the URDF
+    (e.g. 'Link_6') rather than a configured fixture.
+    """
+    fixture = get_fixture_by_name(fixture_name, config_path)
+    if fixture is None:
+        return None
+    from utils.urdf_loader import build_transform_from_xyz_rpy
+    return build_transform_from_xyz_rpy(fixture.origin_xyz, fixture.origin_rpy)
 
 
 def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
@@ -206,6 +263,7 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
             name=name,
             urdf_path=robot_data.get('urdf_path', ''),
             reach_m=float(robot_data.get('reach_m', 1.0)),
+            fixture_name=robot_data.get('fixture_name', 'ee_link'),
             velocity_limits_rad_s=robot_data.get('velocity_limits_rad_s'),
             acceleration_limits_rad_s2=robot_data.get('acceleration_limits_rad_s2'),
             joint_jump_limit_rad=joint_jump_limit_rad,

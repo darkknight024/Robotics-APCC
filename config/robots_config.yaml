@@ -16,7 +16,8 @@ robots:
   # -------------------------------------------------------------------------
   - name: "IRB 1300-7/1.4"
     description: "ABB IRB 1300 with 7kg payload, 1.4m reach"
-    urdf_path: "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf"
+    urdf_path: "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"
+    fixture_name: "ee_link"
     reach_m: 1.4
     payload_kg: 7
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
@@ -80,7 +81,8 @@ robots:
   # -------------------------------------------------------------------------
   - name: "IRB 1300-10/1.15"
     description: "ABB IRB 1300 with 10kg payload, 1.15m reach"
-    urdf_path: "Assets/Robot APCC/IRB_1300_1150_URDF/IRB-1300-1150 URDF_v2/urdf/IRB_1300_1150_URDF_with_fixture.urdf"  
+    urdf_path: "Assets/Robot APCC/IRB_1300_1150_URDF/IRB-1300-1150 URDF_v2/urdf/IRB_1300_1150_URDF.urdf"
+    fixture_name: "ee_link"
     reach_m: 1.15
     payload_kg: 10
     velocity_limits_rad_s: [4.887, 3.979, 5.864, 8.727, 7.245, 12.566]
@@ -91,7 +93,8 @@ robots:
   # -------------------------------------------------------------------------
   - name: "IRB 1300-11/0.9"
     description: "ABB IRB 1300 with 11kg payload, 0.9m reach"
-    urdf_path: "Assets/Robot APCC/IRB_1300_900_URDF/IRB-1300-900 URDF_v2/urdf/IRB_1300_900_URDF_with_fixture.urdf"
+    urdf_path: "Assets/Robot APCC/IRB_1300_900_URDF/IRB-1300-900 URDF_v2/urdf/IRB_1300_900_URDF.urdf"
+    fixture_name: "ee_link"
     reach_m: 0.9
     payload_kg: 11
     velocity_limits_rad_s: [4.887, 3.979, 5.760, 8.727, 7.245, 12.566]
