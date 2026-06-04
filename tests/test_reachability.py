@@ -441,7 +441,7 @@ def process_combination(
     print(f"\n  Toolpath: {toolpath_name}")
 
     fixture_config = None
-    ee_frame_name = "ee_link"
+    ee_frame_name = "Link_6"
     if fixture_name:
         from utils import get_fixture_by_name
         fixture_config = get_fixture_by_name(fixture_name)

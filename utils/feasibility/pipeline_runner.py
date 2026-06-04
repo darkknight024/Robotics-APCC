@@ -46,7 +46,7 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
         pass
 
     fixture_config = None
-    ee_frame_name = "ee_link"
+    ee_frame_name = "Link_6"
     if inputs.config.fixture:
         from utils.config_loader import get_fixture_by_name
         fixture_config = get_fixture_by_name(inputs.config.fixture)
