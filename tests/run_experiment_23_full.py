@@ -64,6 +64,10 @@ _TOOLPATHS = _EXP23 / "Toolpaths_And_Waypoints"
 _RS_ROOT = _EXP23 / "Results - RobotStudio"
 _RESULTS_BASE = _EXP23 / "Results"
 
+_EXP24 = _REPO / "Robot_APCC" / "Experiments" / "Experiement_24"
+_EXP24_RS_V2_ORIENTATION = _EXP24 / "Results - RobotStudio" / "v2_orientation_varying_corners_24ms"
+_EXP24_RESULTS_BASE = _EXP24 / "Results"
+
 # V2 paths
 _TOOLPATHS_V2 = _TOOLPATHS / "v2"
 _RS_ROOT_V2 = _RS_ROOT / "v2"
@@ -425,6 +429,251 @@ def _build_v6_tasks(run_dir: Path) -> List[dict]:
                     v6=True,
                 ))
     return tasks
+
+
+# ─── Experiment 24 v2 orientation-corner geometry validation ──────────────────
+
+def _exp24_v2_geometry_run_dir() -> Path:
+    run_dir = _EXP24_RESULTS_BASE / _make_run_timestamp()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def _exp24_v2_parse_metadata(rs_csv: Path) -> Tuple[int, float, float]:
+    """Return (zone, orientation_change_deg, corner_angle_deg) from an Exp24 v2 CSV."""
+    data = np.genfromtxt(rs_csv, delimiter=",", names=True, dtype=None, encoding=None, max_rows=2)
+    row = data[0] if getattr(data, "shape", ()) else data
+    return int(row["zone"]), float(row["orientation_zone_change"]), float(row["corner_angle_deg"])
+
+
+def _exp24_v2_programmed_waypoints(rs_csv: Path) -> np.ndarray:
+    """Reconstruct the 3 programmed corner waypoints for Exp24 v2 geometry tests.
+
+    The v2 files contain the executed RS trace and metadata, not a separate
+    3-row waypoint input.  Per the experiment design, all corners use the same
+    400 mm incoming leg along +X, followed by a 400 mm outgoing leg at heading
+    ``-(180 - corner_angle)`` degrees from +X.
+    """
+    data = np.genfromtxt(rs_csv, delimiter=",", names=True, dtype=float)
+    if len(data) == 0:
+        raise ValueError(f"Empty Exp24 v2 CSV: {rs_csv}")
+
+    _zone, _ori, corner_angle = _exp24_v2_parse_metadata(rs_csv)
+    p0 = np.array([data["rs_x_mm"][0], data["rs_y_mm"][0], data["rs_z_mm"][0]], dtype=float)
+    p1 = p0 + np.array([400.0, 0.0, 0.0])
+    heading = -np.deg2rad(180.0 - corner_angle)
+    p2 = p1 + 400.0 * np.array([np.cos(heading), np.sin(heading), 0.0])
+    return np.vstack([p0, p1, p2])
+
+
+def _write_exp24_v2_waypoint_csv(rs_csv: Path, out_dir: Path) -> Path:
+    zone, _ori, _corner = _exp24_v2_parse_metadata(rs_csv)
+    data = np.genfromtxt(rs_csv, delimiter=",", names=True, dtype=float)
+    waypoints = _exp24_v2_programmed_waypoints(rs_csv)
+
+    # Geometry comparison only needs XYZ/zone/fine, but keeping quaternions and
+    # speed preserves the normal Feature 3 waypoint schema for plots/provenance.
+    q0 = [float(data["rs_qw"][0]), float(data["rs_qx"][0]), float(data["rs_qy"][0]), float(data["rs_qz"][0])]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_csv = out_dir / f"{rs_csv.stem}_programmed_waypoints.csv"
+    with open(out_csv, "w", encoding="utf-8") as f:
+        f.write("rs_x_mm,rs_y_mm,rs_z_mm,rs_qw,rs_qx,rs_qy,rs_qz,speed_mm_s,zone,fine\n")
+        for i, p in enumerate(waypoints):
+            fine = "true" if i in (0, len(waypoints) - 1) else "false"
+            f.write(
+                f"{p[0]:.9f},{p[1]:.9f},{p[2]:.9f},"
+                f"{q0[0]:.12g},{q0[1]:.12g},{q0[2]:.12g},{q0[3]:.12g},"
+                f"20,{zone},{fine}\n"
+            )
+    return out_csv
+
+
+def _exp24_v2_waypoints_m(rs_csv: Path) -> np.ndarray:
+    """Return reconstructed Exp24 v2 waypoints as (N,7) in metres + quaternions."""
+    data = np.genfromtxt(rs_csv, delimiter=",", names=True, dtype=float)
+    xyz_mm = _exp24_v2_programmed_waypoints(rs_csv)
+    quats = np.zeros((3, 4), dtype=float)
+    q_start = np.array([data["rs_qw"][0], data["rs_qx"][0], data["rs_qy"][0], data["rs_qz"][0]], dtype=float)
+    q_end = np.array([data["rs_qw"][-1], data["rs_qx"][-1], data["rs_qy"][-1], data["rs_qz"][-1]], dtype=float)
+    q_start /= np.linalg.norm(q_start)
+    q_end /= np.linalg.norm(q_end)
+    # Experiment design: orientation changes between segments.  Use the logged
+    # start orientation through the incoming segment and the logged final
+    # orientation on the outgoing segment.
+    quats[0] = q_start
+    quats[1] = q_start
+    quats[2] = q_end
+    return np.column_stack([xyz_mm / 1000.0, quats])
+
+
+def _quat_signed_aligned(q_ref: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Flip quaternion signs so components are comparable to q_ref over time."""
+    out = np.asarray(q, dtype=float).copy()
+    ref = np.asarray(q_ref, dtype=float)
+    for i in range(len(out)):
+        if np.dot(ref[i], out[i]) < 0.0:
+            out[i] = -out[i]
+    return out
+
+
+def _plot_exp24_v2_orientation_overlay(
+    rs_csv: Path,
+    waypoints_m: np.ndarray,
+    zone_specs: List[str],
+    out_dir: Path,
+    label: str,
+) -> Optional[Path]:
+    """Plot solver vs RS quaternion components and component deltas."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from core.blend_zone.zone_resolver import resolve_zone_list, apply_overlap_reduction
+    from core.blend_zone.blend_geometry import compute_blend_geometries
+    from core.blend_zone.orientation_zone import populate_orientation_zones
+    from core.blend_zone.path_sampler import sample_blended_path
+    from core.blend_zone.calibration import load_rs_csv
+    from core.blend_zone.verification import _arc_length_from_tcp
+
+    zones = apply_overlap_reduction(resolve_zone_list(zone_specs), waypoints_m)
+    blend_geoms = compute_blend_geometries(waypoints_m, zones)
+    populate_orientation_zones(blend_geoms, zones, waypoints_m)
+    dense_path = sample_blended_path(
+        waypoints_m,
+        zones,
+        blend_geoms,
+        np.full(len(waypoints_m), 20.0),
+        ds_mm=1.0,
+    )
+    rs = load_rs_csv(rs_csv)
+    s_sol = dense_path.arc_lengths
+    s_rs = _arc_length_from_tcp(rs.tcp_mm)
+    if len(s_rs) < 2 or len(s_sol) < 2:
+        return None
+
+    sol_q = _quat_signed_aligned(
+        np.column_stack([np.interp(s_sol, s_rs, rs.tcp_quat[:, c]) for c in range(4)]),
+        dense_path.poses[:, 3:7],
+    )
+    rs_q_on_sol = np.column_stack([np.interp(s_sol, s_rs, rs.tcp_quat[:, c]) for c in range(4)])
+    norms = np.linalg.norm(rs_q_on_sol, axis=1, keepdims=True)
+    rs_q_on_sol = rs_q_on_sol / np.clip(norms, 1e-12, None)
+    rs_q_on_sol = _quat_signed_aligned(sol_q, rs_q_on_sol)
+
+    fig, axes = plt.subplots(4, 2, figsize=(16, 12), sharex="col")
+    labels = ["qw", "qx", "qy", "qz"]
+    for i, comp in enumerate(labels):
+        ax = axes[i, 0]
+        ax.plot(s_rs, rs.tcp_quat[:, i], "b-", lw=1.2, alpha=0.8, label="RobotStudio")
+        ax.plot(s_sol, sol_q[:, i], "r--", lw=1.0, alpha=0.9, label="Solver")
+        ax.set_ylabel(comp)
+        ax.set_title(f"{comp} overlay")
+        ax.grid(True, alpha=0.3)
+        if i == 0:
+            ax.legend(fontsize=8, loc="best")
+
+        delta = sol_q[:, i] - rs_q_on_sol[:, i]
+        axd = axes[i, 1]
+        axd.plot(s_sol, delta, "purple", lw=0.8)
+        axd.axhline(0.0, color="k", lw=0.5, alpha=0.4)
+        axd.set_ylabel(f"Δ{comp}")
+        axd.set_title(
+            f"Δ{comp}  mean|Δ|={np.mean(np.abs(delta)):.5f}  max|Δ|={np.max(np.abs(delta)):.5f}"
+        )
+        axd.grid(True, alpha=0.3)
+
+    axes[-1, 0].set_xlabel("Arc length (mm)")
+    axes[-1, 1].set_xlabel("Solver arc length (mm)")
+    fig.suptitle(f"Orientation Quaternion Comparison — {label}", y=1.01)
+    fig.tight_layout()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "orientation_quaternion_overlay_delta.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def phase_exp24_v2_geometry(
+    run_dir: Path,
+    dry_run: bool = False,
+    blend_threshold_mm: float = 1.0,
+    plots: bool = True,
+) -> Tuple[int, int]:
+    """Compare Feature 3 Bézier geometry against Exp24 v2 orientation-corner RS traces."""
+    from core.blend_zone.blend_comparison import (
+        compare_blend_arcs,
+        generate_blend_comparison_plots,
+    )
+
+    csvs = sorted(_EXP24_RS_V2_ORIENTATION.glob("*.csv"))
+    print(f"\n{'='*70}")
+    print(f"EXPERIMENT 24 V2 GEOMETRY — {len(csvs)} RobotStudio traces")
+    print(f"{'='*70}")
+    print(f"  RS root: {_EXP24_RS_V2_ORIENTATION}")
+    print(f"  Output:  {run_dir}\n")
+
+    if not csvs:
+        raise FileNotFoundError(f"No Exp24 v2 CSVs found in {_EXP24_RS_V2_ORIENTATION}")
+
+    generated_dir = run_dir / "generated_waypoints"
+    blend_results: List[Tuple[str, object]] = []
+    ok = fail = 0
+
+    for i, rs_csv in enumerate(csvs, 1):
+        zone, ori, corner = _exp24_v2_parse_metadata(rs_csv)
+        label = f"exp24_v2/z{zone}/ori{ori:.0f}/{corner:.0f}_deg"
+        print(f"  [{i:2d}/{len(csvs)}] {'DRY' if dry_run else 'RUN'} {label} ", end="", flush=True)
+        if dry_run:
+            print(rs_csv.name)
+            continue
+        try:
+            wp_csv = _write_exp24_v2_waypoint_csv(rs_csv, generated_dir)
+            result = compare_blend_arcs(wp_csv, rs_csv)
+            out = run_dir / "orientation_corners" / f"z{zone}" / f"ori{ori:.0f}" / f"{corner:.0f}_deg"
+            generate_blend_comparison_plots(
+                result,
+                wp_csv,
+                out,
+                label=label,
+                plots=plots,
+            )
+            waypoints_m = _exp24_v2_waypoints_m(rs_csv)
+            zone_specs = ["fine", f"z{zone}", "fine"]
+            _plot_exp24_v2_orientation_overlay(
+                rs_csv,
+                waypoints_m,
+                zone_specs,
+                out,
+                label,
+            )
+            blend_results.append((label, result))
+            if result.max_deviation_mm > blend_threshold_mm:
+                print(f"OK ⚠ blend {result.max_deviation_mm:.2f}mm")
+            else:
+                print(f"OK blend {result.max_deviation_mm:.2f}mm")
+            ok += 1
+        except Exception as exc:
+            print(f"FAIL: {exc}")
+            fail += 1
+
+    if not dry_run:
+        _write_flagged_report(run_dir, blend_results, blend_threshold_mm)
+        summary = {
+            "dataset": "Experiment 24 v2 orientation-varying corners",
+            "rs_root": str(_EXP24_RS_V2_ORIENTATION),
+            "n_total": len(csvs),
+            "n_ok": ok,
+            "n_fail": fail,
+            "n_evaluated": len(blend_results),
+            "blend_threshold_mm": blend_threshold_mm,
+            "note": (
+                "Geometry-only validation. Programmed 3-waypoint corner inputs "
+                "are reconstructed from Exp24 v2 metadata and the known 400 mm "
+                "corner-leg geometry; velocity/acceleration are not used."
+            ),
+        }
+        with open(run_dir / "exp24_v2_geometry_summary.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+    return ok, fail
 
 
 def _build_single_toolpath_tasks(run_dir: Path, toolpath_arg: str) -> List[dict]:
@@ -1807,7 +2056,27 @@ Examples:
     parser.add_argument("--feature3-version", choices=["d1", "d2"], default="d2",
                         help="Select scalar D1 speed dynamics or D2 Jacobian dynamics "
                              "(default: d2).")
+    parser.add_argument("--exp24-v2-geometry", action="store_true",
+                        help="Run geometry-only Bézier blend validation on Experiment 24 "
+                             "v2 orientation-varying corner RobotStudio traces.")
     args = parser.parse_args()
+
+    if args.exp24_v2_geometry:
+        if args.run_dir:
+            run_dir = _EXP24_RESULTS_BASE / args.run_dir
+            run_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            run_dir = _exp24_v2_geometry_run_dir()
+        print(f"\nExperiment 24 v2 — Feature 3 geometry")
+        print(f"Run dir : {run_dir}")
+        print(f"Time    : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        phase_exp24_v2_geometry(
+            run_dir,
+            dry_run=args.dry_run,
+            blend_threshold_mm=args.blend_threshold,
+            plots=not args.lite,
+        )
+        return
 
     if args.run_dir:
         run_dir = _RESULTS_BASE / args.run_dir

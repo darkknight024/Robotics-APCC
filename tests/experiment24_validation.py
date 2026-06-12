@@ -43,6 +43,55 @@ class Exp24TrajectoryMetrics:
     ramp_accel_median_rel_error: float = float("nan")
 
 
+@dataclass
+class Exp24V2TrajectoryMetrics:
+    file: str
+    zone: int
+    orientation_change_deg: float
+    corner_angle_deg: float
+    n_samples: int
+    n_speed_samples: int
+    n_accel_samples: int
+    speed_rms_mm_s: float
+    speed_median_rel_error: float
+    speed_p90_rel_error: float
+    speed_corr: float
+    accel_rms_mm_s2: float
+    accel_median_rel_error: float
+    accel_p90_rel_error: float
+    accel_corr: float
+    rs_accel_p95_mm_s2: float
+    estimated_accel_p95_mm_s2: float
+    fk_position_max_error_mm: float
+    tcp_frame: str = "ee_link"
+    accel_method: str = "finite_diff_q_then_Jqdd_plus_Jdotqdot"
+
+
+@dataclass
+class Exp24V3TrajectoryMetrics:
+    file: str
+    corner_radius_mm: int
+    spacing_mm: int
+    speed_cmd_mm_s: int
+    n_rs_samples: int
+    n_solver_samples: int
+    direct_jac_speed_median_rel_error: float
+    direct_jac_accel_median_rel_error: float
+    direct_jac_accel_p90_rel_error: float
+    solver_speed_rms_mm_s: float
+    solver_speed_median_rel_error: float
+    solver_accel_median_abs_error_mm_s2: float
+    direct_jac_orientation_speed_median_rel_error: float
+    solver_orientation_speed_median_abs_error_deg_s: float
+    pose_mean_error_mm: float
+    pose_p95_error_mm: float
+    pose_max_error_mm: float
+    quat_mean_abs_error: float
+    quat_max_abs_error: float
+    fk_position_mean_error_mm: float
+    tcp_frame: str = "ee_link"
+
+
 def experiment24_root(repo: Optional[Path] = None) -> Path:
     repo = repo or Path(__file__).resolve().parents[1]
     root = repo / "Robot_APCC" / "Experiments" / _EXP24_DIRNAME
@@ -132,6 +181,21 @@ def _build_fk_solver(repo: Path):
     return fk_solver
 
 
+def _build_fk_solver_for_frame(repo: Path, frame_name: str):
+    from core import create_solvers
+    from utils.config_loader import get_robot_by_name, load_ik_config_as_object
+
+    robot = get_robot_by_name(_ROBOT_NAME)
+    ik_cfg = load_ik_config_as_object(solver="pin")
+    fk_solver, _ik_solver, _robot_data = create_solvers(
+        str(repo / robot.urdf_path),
+        solver="pin",
+        ik_config=ik_cfg,
+        ee_frame_name=frame_name,
+    )
+    return fk_solver
+
+
 def reconstruct_tcp_speed_accel(path: Path, fk_solver) -> tuple[np.ndarray, np.ndarray]:
     data = _load_csv(path)
     t_s = data["time_ms"] / 1000.0
@@ -160,6 +224,49 @@ def reconstruct_tcp_speed_accel(path: Path, fk_solver) -> tuple[np.ndarray, np.n
         + np.einsum("nij,nj->ni", Jdot_linear, qdot_rad_s)
     )
     return np.linalg.norm(v_linear_m_s, axis=1) * 1000.0, np.linalg.norm(a_linear_m_s2, axis=1) * 1000.0
+
+
+def reconstruct_tcp_speed_accel_from_joint_positions(
+    path: Path,
+    fk_solver,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Reconstruct TCP speed/acceleration from sampled joint positions.
+
+    Experiment 24 v2 orientation-varying corner CSVs do not include joint
+    velocity or acceleration columns.  We therefore estimate qdot/qddot from
+    the 24 ms joint-position samples, then apply:
+
+        v_tcp = J(q) qdot
+        a_tcp = J(q) qddot + Jdot(q, qdot) qdot
+    """
+
+    data = _load_csv(path)
+    t_s = data["time_ms"] / 1000.0
+    q_rad = np.vstack([data[f"rs_j{i}_deg"] for i in range(1, 7)]).T
+    q_rad = np.deg2rad(q_rad)
+    qdot_rad_s = _time_gradient(q_rad, t_s)
+    qddot_rad_s2 = _time_gradient(qdot_rad_s, t_s)
+
+    v_linear_m_s = np.zeros((len(data), 3), dtype=float)
+    J_linear = np.zeros((len(data), 3, 6), dtype=float)
+    fk_positions_m = np.zeros((len(data), 3), dtype=float)
+    for i, (q_i, qdot_i) in enumerate(zip(q_rad, qdot_rad_s)):
+        J = fk_solver.get_jacobian(q_i, local_frame=False)
+        J_linear[i] = J[3:6, :6]
+        v_linear_m_s[i] = J_linear[i] @ qdot_i
+        fk_positions_m[i] = fk_solver.solve(q_i).position_m
+
+    Jdot_linear = _time_gradient(J_linear, t_s)
+    a_linear_m_s2 = (
+        np.einsum("nij,nj->ni", J_linear, qddot_rad_s2)
+        + np.einsum("nij,nj->ni", Jdot_linear, qdot_rad_s)
+    )
+
+    return (
+        np.linalg.norm(v_linear_m_s, axis=1) * 1000.0,
+        np.linalg.norm(a_linear_m_s2, axis=1) * 1000.0,
+        fk_positions_m,
+    )
 
 
 def evaluate_exp24_dataset(
@@ -240,6 +347,520 @@ def evaluate_exp24_dataset(
     return metrics
 
 
+def iter_exp24_v2_csvs(repo: Optional[Path] = None) -> Iterable[Path]:
+    rs_root = experiment24_root(repo) / "Results - RobotStudio" / "v2_orientation_varying_corners_24ms"
+    yield from sorted(rs_root.glob("*.csv"))
+
+
+def iter_exp24_v3_rs_csvs(repo: Optional[Path] = None) -> Iterable[Path]:
+    rs_root = (
+        experiment24_root(repo)
+        / "Results - RobotStudio"
+        / "v3_siping_recordings_at_controlled_spacing"
+    )
+    yield from sorted(rs_root.rglob("*.csv"))
+
+
+def _exp24_v3_toolpath_for_rs(rs_csv: Path, repo: Path) -> Path:
+    toolpath = (
+        experiment24_root(repo)
+        / "Toolpaths"
+        / "v3_siping_recordings_at_controlled_spacing"
+        / rs_csv.name
+    )
+    if not toolpath.exists():
+        raise FileNotFoundError(f"Matching v3 toolpath not found for {rs_csv.name}: {toolpath}")
+    return toolpath
+
+
+def _parse_exp24_v3_filename(path: Path) -> tuple[int, int, int]:
+    import re
+
+    m = re.search(r"_(?P<radius>\d+)mm_corner_radius_(?P<spacing>\d+)mm_spacing_v(?P<speed>\d+)", path.name)
+    if not m:
+        return 0, 0, 0
+    return int(m.group("radius")), int(m.group("spacing")), int(m.group("speed"))
+
+
+def _rs_poses_tpk_to_base(rs_data: np.ndarray, repo: Path) -> np.ndarray:
+    from utils.config_loader import load_knife_config
+    from utils.transform_handler import transform_trajectory_to_base_frame
+
+    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
+    poses_tpk = np.column_stack([
+        rs_data["rs_x_mm"] / 1000.0,
+        rs_data["rs_y_mm"] / 1000.0,
+        rs_data["rs_z_mm"] / 1000.0,
+        rs_data["rs_qw"],
+        rs_data["rs_qx"],
+        rs_data["rs_qy"],
+        rs_data["rs_qz"],
+    ])
+    return transform_trajectory_to_base_frame(
+        poses_tpk,
+        knife.translation_m,
+        knife.quaternion,
+    )
+
+
+def _base_poses_to_tpk(poses_base: np.ndarray, repo: Path) -> np.ndarray:
+    """Transform solver poses from T_B_P back to native T_P_K for v3 comparison."""
+    from utils.config_loader import load_knife_config
+    from utils.transform_handler import (
+        invert_transform,
+        matrix_to_pose,
+        pose_to_matrix,
+    )
+
+    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
+    T_B_K = pose_to_matrix(knife.translation_m, knife.quaternion)
+    T_K_B = invert_transform(T_B_K)
+    out = np.zeros_like(poses_base, dtype=float)
+    for i, pose in enumerate(poses_base):
+        T_B_P = pose_to_matrix(pose[:3], pose[3:7])
+        T_K_P = T_K_B @ T_B_P
+        T_P_K = invert_transform(T_K_P)
+        t, q = matrix_to_pose(T_P_K)
+        out[i, :3] = t
+        out[i, 3:7] = q
+    return out
+
+
+def _reconstruct_from_rs_joint_state(path: Path, fk_solver) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    data = _load_csv(path)
+    t_s = data["time_ms"] / 1000.0
+    q_rad = np.deg2rad(np.vstack([data[f"rs_j{i}_deg"] for i in range(1, 7)]).T)
+    qdot_rad_s = np.deg2rad(np.vstack([data[f"rs_j{i}_speed_deg_s"] for i in range(1, 7)]).T)
+    qddot_rad_s2 = np.deg2rad(np.vstack([data[f"rs_j{i}_accel_deg_s2"] for i in range(1, 7)]).T)
+
+    v_linear = np.zeros((len(data), 3), dtype=float)
+    omega = np.zeros((len(data), 3), dtype=float)
+    J_linear = np.zeros((len(data), 3, 6), dtype=float)
+    fk_positions_m = np.zeros((len(data), 3), dtype=float)
+    for i, (q_i, qdot_i) in enumerate(zip(q_rad, qdot_rad_s)):
+        J = fk_solver.get_jacobian(q_i, local_frame=False)
+        omega[i] = J[:3, :6] @ qdot_i
+        J_linear[i] = J[3:6, :6]
+        v_linear[i] = J_linear[i] @ qdot_i
+        fk_positions_m[i] = fk_solver.solve(q_i).position_m
+
+    Jdot_linear = _time_gradient(J_linear, t_s)
+    a_linear = (
+        np.einsum("nij,nj->ni", J_linear, qddot_rad_s2)
+        + np.einsum("nij,nj->ni", Jdot_linear, qdot_rad_s)
+    )
+    return (
+        np.linalg.norm(v_linear, axis=1) * 1000.0,
+        np.linalg.norm(a_linear, axis=1) * 1000.0,
+        np.linalg.norm(omega, axis=1) * 180.0 / np.pi,
+        fk_positions_m,
+    )
+
+
+def _arc_length_mm(xyz_mm: np.ndarray) -> np.ndarray:
+    if len(xyz_mm) < 2:
+        return np.zeros(len(xyz_mm), dtype=float)
+    return np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xyz_mm, axis=0), axis=1))])
+
+
+def _solver_accel_from_speed(arc_mm: np.ndarray, speed_mm_s: np.ndarray) -> np.ndarray:
+    t = np.zeros(len(speed_mm_s), dtype=float)
+    for i in range(1, len(speed_mm_s)):
+        ds = max(float(arc_mm[i] - arc_mm[i - 1]), 0.0)
+        v_avg = max(float(0.5 * (speed_mm_s[i] + speed_mm_s[i - 1])), 1e-6)
+        t[i] = t[i - 1] + ds / v_avg
+    return np.abs(_time_gradient(speed_mm_s, t))
+
+
+def _time_from_arc_speed(arc_mm: np.ndarray, speed_mm_s: np.ndarray) -> np.ndarray:
+    t = np.zeros(len(speed_mm_s), dtype=float)
+    for i in range(1, len(speed_mm_s)):
+        ds = max(float(arc_mm[i] - arc_mm[i - 1]), 0.0)
+        v_avg = max(float(0.5 * (speed_mm_s[i] + speed_mm_s[i - 1])), 1e-6)
+        t[i] = t[i - 1] + ds / v_avg
+    return t
+
+
+def _speed_accel_from_xyz_time(xyz_mm: np.ndarray, time_ms: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    t = np.asarray(time_ms, dtype=float) / 1000.0
+    vel = _time_gradient(np.asarray(xyz_mm, dtype=float), t)
+    acc = _time_gradient(vel, t)
+    return np.linalg.norm(vel, axis=1), np.linalg.norm(acc, axis=1)
+
+
+def _align_quaternion_series(quats: np.ndarray) -> np.ndarray:
+    aligned = np.asarray(quats, dtype=float).copy()
+    for i in range(len(aligned)):
+        norm = np.linalg.norm(aligned[i])
+        if norm > 1e-12:
+            aligned[i] /= norm
+    for i in range(1, len(aligned)):
+        if np.dot(aligned[i - 1], aligned[i]) < 0.0:
+            aligned[i] = -aligned[i]
+    return aligned
+
+
+def _quat_signed_aligned(q_ref: np.ndarray, q: np.ndarray) -> np.ndarray:
+    out = _align_quaternion_series(q)
+    ref = _align_quaternion_series(q_ref)
+    for i in range(min(len(out), len(ref))):
+        if np.dot(ref[i], out[i]) < 0.0:
+            out[i] = -out[i]
+    return out
+
+
+def _orientation_speed_deg_s(quats: np.ndarray, time_ms: np.ndarray) -> np.ndarray:
+    q = _align_quaternion_series(quats)
+    t = np.asarray(time_ms, dtype=float) / 1000.0
+    speed = np.zeros(len(q), dtype=float)
+    if len(q) < 2:
+        return speed
+    for i in range(len(q) - 1):
+        dt = max(float(t[i + 1] - t[i]), 1e-9)
+        dot = abs(float(np.clip(np.dot(q[i], q[i + 1]), -1.0, 1.0)))
+        angle_deg = np.degrees(2.0 * np.arccos(dot))
+        speed[i] = angle_deg / dt
+    speed[-1] = speed[-2]
+    return speed
+
+
+def _plot_exp24_v3_pair(
+    out_dir: Path,
+    label: str,
+    rs_arc: np.ndarray,
+    rs_speed: np.ndarray,
+    rs_accel: np.ndarray,
+    rs_logged_speed: np.ndarray,
+    rs_logged_accel: np.ndarray,
+    rs_orientation_speed: np.ndarray,
+    rs_logged_orientation_speed: np.ndarray,
+    rs_quat: np.ndarray,
+    direct_speed: np.ndarray,
+    direct_accel: np.ndarray,
+    direct_orientation_speed: np.ndarray,
+    solver_arc: np.ndarray,
+    solver_speed: np.ndarray,
+    solver_accel: np.ndarray,
+    solver_orientation_speed: np.ndarray,
+    solver_xyz_mm: np.ndarray,
+    solver_quat: np.ndarray,
+    rs_xyz_on_solver: np.ndarray,
+    rs_quat_on_solver: np.ndarray,
+    pose_dev: np.ndarray,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(4, 1, figsize=(13, 12), sharex=False)
+    axes[0].plot(rs_arc, rs_speed, label="RS base-frame speed", lw=1.3)
+    axes[0].plot(rs_arc, rs_logged_speed, color="gray", alpha=0.45, label="RS logged native speed", lw=0.9)
+    axes[0].plot(rs_arc, direct_speed, "--", label="Jacobian from RS qdot", lw=1.0)
+    axes[0].plot(solver_arc, solver_speed, ":", label="Feature 3 D2 solver", lw=1.2)
+    axes[0].set_ylabel("Speed (mm/s)")
+    axes[0].set_title("TCP Speed")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="best")
+
+    axes[1].plot(rs_arc, np.abs(rs_accel), label="RS base-frame acceleration", lw=1.3)
+    axes[1].plot(rs_arc, np.abs(rs_logged_accel), color="gray", alpha=0.45, label="RS logged native acceleration", lw=0.9)
+    axes[1].plot(rs_arc, direct_accel, "--", label="Jacobian from RS qdot/qddot", lw=1.0)
+    axes[1].plot(solver_arc, solver_accel, ":", label="Feature 3 D2 solver", lw=1.2)
+    axes[1].set_ylabel("Acceleration (mm/s²)")
+    axes[1].set_title("TCP Acceleration Magnitude")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(loc="best")
+
+    axes[2].plot(rs_arc, rs_orientation_speed, label="RS base-frame orientation speed", lw=1.3)
+    axes[2].plot(rs_arc, rs_logged_orientation_speed, color="gray", alpha=0.45, label="RS logged native orientation speed", lw=0.9)
+    axes[2].plot(rs_arc, direct_orientation_speed, "--", label="Jacobian angular speed", lw=1.0)
+    axes[2].plot(solver_arc, solver_orientation_speed, ":", label="Feature 3 D2 solver", lw=1.2)
+    axes[2].set_ylabel("Orientation speed (deg/s)")
+    axes[2].set_title("TCP Orientation Speed")
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend(loc="best")
+
+    axes[3].plot(solver_arc, pose_dev, color="purple", lw=0.9)
+    axes[3].set_ylabel("Pose XYZ error (mm)")
+    axes[3].set_xlabel("Arc length (mm)")
+    axes[3].set_title("Solver pose distance to transformed RobotStudio base-frame polyline")
+    axes[3].grid(True, alpha=0.3)
+
+    fig.suptitle(label)
+    fig.tight_layout()
+    fig.savefig(out_dir / "v3_solver_vs_rs_dynamics.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(7, 2, figsize=(16, 18), sharex="col")
+    labels = ["X", "Y", "Z", "qw", "qx", "qy", "qz"]
+    solver_series = [solver_xyz_mm[:, 0], solver_xyz_mm[:, 1], solver_xyz_mm[:, 2],
+                     solver_quat[:, 0], solver_quat[:, 1], solver_quat[:, 2], solver_quat[:, 3]]
+    rs_series = [rs_xyz_on_solver[:, 0], rs_xyz_on_solver[:, 1], rs_xyz_on_solver[:, 2],
+                 rs_quat_on_solver[:, 0], rs_quat_on_solver[:, 1], rs_quat_on_solver[:, 2], rs_quat_on_solver[:, 3]]
+    units = ["mm", "mm", "mm", "", "", "", ""]
+    for i, (name, sol_y, rs_y, unit) in enumerate(zip(labels, solver_series, rs_series, units)):
+        axes[i, 0].plot(solver_arc, rs_y, "b-", lw=1.0, label="RobotStudio")
+        axes[i, 0].plot(solver_arc, sol_y, "r--", lw=1.0, label="Solver")
+        axes[i, 0].set_ylabel(f"{name} {unit}".strip())
+        axes[i, 0].set_title(f"{name} overlay")
+        delta = sol_y - rs_y
+        axes[i, 1].plot(solver_arc, delta, "purple", lw=0.8)
+        axes[i, 1].axhline(0.0, color="k", lw=0.5, alpha=0.4)
+        axes[i, 1].set_ylabel(f"Δ{name} {unit}".strip())
+        if unit == "mm":
+            axes[i, 1].set_title(f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.3f} max|Δ|={np.max(np.abs(delta)):.3f}")
+        else:
+            axes[i, 1].set_title(f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.5f} max|Δ|={np.max(np.abs(delta)):.5f}")
+        axes[i, 0].grid(True, alpha=0.3)
+        axes[i, 1].grid(True, alpha=0.3)
+    axes[0, 0].legend(fontsize=8, loc="best")
+    axes[-1, 0].set_xlabel("Solver arc length (mm)")
+    axes[-1, 1].set_xlabel("Solver arc length (mm)")
+    fig.suptitle(f"Full Base-Frame Pose Overlay and Deltas — {label}", y=1.005)
+    fig.tight_layout()
+    fig.savefig(out_dir / "v3_solver_vs_rs_full_pose.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def evaluate_exp24_v3_siping_dataset(
+    out_dir: Path,
+    repo: Optional[Path] = None,
+    csv_paths: Optional[List[Path]] = None,
+) -> List[Exp24V3TrajectoryMetrics]:
+    """Validate D2 dynamics on Experiment 24 v3 controlled-spacing siping data."""
+
+    repo = repo or Path(__file__).resolve().parents[1]
+    fk_solver = _build_fk_solver_for_frame(repo, "ee_link")
+    paths = csv_paths or list(iter_exp24_v3_rs_csvs(repo))
+    if not paths:
+        raise FileNotFoundError(f"No Experiment 24 v3 CSVs found under {experiment24_root(repo)}")
+
+    from core.blend_zone import run_feature3
+    from core.blend_zone.verification import _project_points_to_polyline
+    from utils.config_loader import get_robot_by_name, load_batch_config, load_knife_config
+    from utils.csv_loader_toolpath import prepare_toolpath_load_result_for_feature3
+
+    cfg = load_batch_config(str(repo / "config" / "batch_feasibility_config.yaml"))
+    cfg.feature3_d1.enabled = True
+    cfg.feature3_d1.generate_plots = False
+    cfg.feature3_d1.generate_report = True
+    cfg.use_base_frame = False
+    robot = get_robot_by_name(_ROBOT_NAME)
+    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
+
+    metrics: List[Exp24V3TrajectoryMetrics] = []
+    for rs_csv in paths:
+        radius, spacing, speed_cmd = _parse_exp24_v3_filename(rs_csv)
+        label = f"r{radius}_spacing{spacing}_v{speed_cmd}"
+        case_dir = out_dir / "v3_siping" / label
+        case_dir.mkdir(parents=True, exist_ok=True)
+
+        toolpath = _exp24_v3_toolpath_for_rs(rs_csv, repo)
+        rs_data = _load_csv(rs_csv)
+        rs_base = _rs_poses_tpk_to_base(rs_data, repo)
+        rs_xyz_base_mm = rs_base[:, :3] * 1000.0
+        rs_arc_base = _arc_length_mm(rs_xyz_base_mm)
+        rs_speed_base, rs_accel_base = _speed_accel_from_xyz_time(rs_xyz_base_mm, rs_data["time_ms"])
+        rs_orientation_speed_base = _orientation_speed_deg_s(rs_base[:, 3:7], rs_data["time_ms"])
+        rs_logged_speed = np.asarray(rs_data["speed_mm_per_s"], dtype=float)
+        rs_logged_accel = np.asarray(rs_data["linear_acceleration_mm_s_2"], dtype=float)
+        rs_logged_orientation_speed = np.asarray(rs_data["orientation_speed_deg_per_s"], dtype=float)
+
+        direct_speed, direct_accel, direct_orientation_speed, fk_positions_m = _reconstruct_from_rs_joint_state(rs_csv, fk_solver)
+        fk_err = np.linalg.norm((fk_positions_m - rs_base[:, :3]) * 1000.0, axis=1)
+
+        lr = prepare_toolpath_load_result_for_feature3(
+            str(toolpath),
+            custom_zone=False,
+            default_zone="z5",
+            default_v_cmd=float(speed_cmd),
+            use_base_frame=False,
+            knife_translation_m=knife.translation_m,
+            knife_quaternion=knife.quaternion,
+        )
+        result = run_feature3(
+            toolpath_csv=str(toolpath),
+            urdf_path=str(repo / robot.urdf_path),
+            config=cfg,
+            output_dir=str(case_dir / "solver"),
+            robot_model_name=_ROBOT_NAME,
+            robot_reach_m=robot.reach_m,
+            velocity_limits_rad_s=np.array(robot.velocity_limits_rad_s),
+            accel_limits_rad_s2=np.array(robot.acceleration_limits_rad_s2) if robot.acceleration_limits_rad_s2 else None,
+            verbose=False,
+            custom_zone=False,
+            plots=False,
+            reports=True,
+            preloaded_load_result=lr,
+            jacobian_dynamics_override=True,
+        )
+
+        solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
+        solver_time = _time_from_arc_speed(result.speed_profile.arc_lengths_mm, result.speed_profile.v_actual)
+        solver_speed_base, solver_accel_base = _speed_accel_from_xyz_time(
+            solver_xyz_mm,
+            solver_time * 1000.0,
+        )
+        solver_quat = _align_quaternion_series(result.dense_path.poses[:, 3:7])
+        solver_orientation_speed = _orientation_speed_deg_s(solver_quat, solver_time * 1000.0)
+        rs_proj_xyz, pose_dev = _project_points_to_polyline(solver_xyz_mm, rs_xyz_base_mm)
+
+        rs_speed_on_solver = np.interp(result.speed_profile.arc_lengths_mm, rs_arc_base, rs_speed_base)
+        rs_accel_on_solver = np.interp(result.speed_profile.arc_lengths_mm, rs_arc_base, np.abs(rs_accel_base))
+        rs_orientation_on_solver = np.interp(result.speed_profile.arc_lengths_mm, rs_arc_base, rs_orientation_speed_base)
+        rs_xyz_on_solver = np.column_stack([
+            np.interp(result.speed_profile.arc_lengths_mm, rs_arc_base, rs_xyz_base_mm[:, c])
+            for c in range(3)
+        ])
+        rs_quat_on_solver = np.column_stack([
+            np.interp(result.speed_profile.arc_lengths_mm, rs_arc_base, _align_quaternion_series(rs_base[:, 3:7])[:, c])
+            for c in range(4)
+        ])
+        rs_quat_on_solver = _align_quaternion_series(rs_quat_on_solver)
+        direct_speed_err = direct_speed - rs_speed_base
+        direct_accel_mask = np.abs(rs_accel_base) > 100.0
+        direct_accel_rel = (
+            np.abs(direct_accel[direct_accel_mask] - np.abs(rs_accel_base[direct_accel_mask]))
+            / np.maximum(np.abs(rs_accel_base[direct_accel_mask]), 1.0)
+        )
+        direct_orientation_rel = (
+            np.abs(direct_orientation_speed - rs_orientation_speed_base)
+            / np.maximum(rs_orientation_speed_base, 1.0)
+        )
+        solver_speed_err = solver_speed_base - rs_speed_on_solver
+        solver_speed_rel = np.abs(solver_speed_err) / np.maximum(rs_speed_on_solver, 1.0)
+        solver_accel_abs_err = np.abs(solver_accel_base - rs_accel_on_solver)
+        solver_orientation_abs_err = np.abs(solver_orientation_speed - rs_orientation_on_solver)
+        solver_quat = _quat_signed_aligned(rs_quat_on_solver, solver_quat)
+        quat_abs_err = np.abs(solver_quat - rs_quat_on_solver)
+
+        _plot_exp24_v3_pair(
+            case_dir,
+            label,
+            rs_arc_base,
+            rs_speed_base,
+            rs_accel_base,
+            rs_logged_speed,
+            rs_logged_accel,
+            rs_orientation_speed_base,
+            rs_logged_orientation_speed,
+            _align_quaternion_series(rs_base[:, 3:7]),
+            direct_speed,
+            direct_accel,
+            direct_orientation_speed,
+            result.speed_profile.arc_lengths_mm,
+            solver_speed_base,
+            solver_accel_base,
+            solver_orientation_speed,
+            solver_xyz_mm,
+            solver_quat,
+            rs_xyz_on_solver,
+            rs_quat_on_solver,
+            pose_dev,
+        )
+
+        metrics.append(
+            Exp24V3TrajectoryMetrics(
+                file=rs_csv.name,
+                corner_radius_mm=radius,
+                spacing_mm=spacing,
+                speed_cmd_mm_s=speed_cmd,
+                n_rs_samples=int(len(rs_data)),
+                n_solver_samples=int(result.dense_path.n_samples),
+                direct_jac_speed_median_rel_error=float(
+                    np.median(np.abs(direct_speed_err) / np.maximum(rs_speed_base, 1.0))
+                ),
+                direct_jac_accel_median_rel_error=(
+                    float(np.median(direct_accel_rel)) if len(direct_accel_rel) else float("nan")
+                ),
+                direct_jac_accel_p90_rel_error=(
+                    float(np.percentile(direct_accel_rel, 90)) if len(direct_accel_rel) else float("nan")
+                ),
+                solver_speed_rms_mm_s=float(np.sqrt(np.mean(solver_speed_err ** 2))),
+                solver_speed_median_rel_error=float(np.median(solver_speed_rel)),
+                solver_accel_median_abs_error_mm_s2=float(np.median(solver_accel_abs_err)),
+                direct_jac_orientation_speed_median_rel_error=float(np.median(direct_orientation_rel)),
+                solver_orientation_speed_median_abs_error_deg_s=float(np.median(solver_orientation_abs_err)),
+                pose_mean_error_mm=float(np.mean(pose_dev)),
+                pose_p95_error_mm=float(np.percentile(pose_dev, 95)),
+                pose_max_error_mm=float(np.max(pose_dev)),
+                quat_mean_abs_error=float(np.mean(quat_abs_err)),
+                quat_max_abs_error=float(np.max(quat_abs_err)),
+                fk_position_mean_error_mm=float(np.mean(fk_err)),
+            )
+        )
+
+    _write_v3_siping_metrics(out_dir, metrics)
+    return metrics
+
+
+def evaluate_exp24_v2_orientation_dataset(
+    out_dir: Path,
+    repo: Optional[Path] = None,
+    csv_paths: Optional[List[Path]] = None,
+) -> List[Exp24V2TrajectoryMetrics]:
+    """Validate Jacobian reconstruction on Experiment 24 v2 orientation corners."""
+
+    repo = repo or Path(__file__).resolve().parents[1]
+    fk_solver = _build_fk_solver_for_frame(repo, "ee_link")
+    paths = csv_paths or list(iter_exp24_v2_csvs(repo))
+    if not paths:
+        raise FileNotFoundError(
+            f"No Experiment 24 v2 CSVs found under {experiment24_root(repo)}"
+        )
+
+    metrics: List[Exp24V2TrajectoryMetrics] = []
+    plot_dir = out_dir / "v2_orientation_plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in paths:
+        data = _load_csv(path)
+        est_speed, est_accel, fk_positions_m = reconstruct_tcp_speed_accel_from_joint_positions(
+            path, fk_solver,
+        )
+        rs_speed = np.asarray(data["speed_mm_per_s"], dtype=float)
+        rs_accel = np.abs(np.asarray(data["linear_acceleration_mm_s_2"], dtype=float))
+        rs_positions_m = np.vstack([data["rs_x_mm"], data["rs_y_mm"], data["rs_z_mm"]]).T / 1000.0
+        fk_error_mm = np.linalg.norm((fk_positions_m - rs_positions_m) * 1000.0, axis=1)
+
+        speed_mask = rs_speed > 1.0
+        accel_mask = rs_accel > 100.0
+        speed_err = est_speed[speed_mask] - rs_speed[speed_mask]
+        accel_err = est_accel[accel_mask] - rs_accel[accel_mask]
+        speed_rel = np.abs(speed_err) / np.maximum(rs_speed[speed_mask], 1.0)
+        accel_rel = np.abs(accel_err) / np.maximum(rs_accel[accel_mask], 1.0)
+
+        metrics.append(
+            Exp24V2TrajectoryMetrics(
+                file=path.name,
+                zone=int(data["zone"][0]) if len(data) else 0,
+                orientation_change_deg=float(data["orientation_zone_change"][0]) if len(data) else 0.0,
+                corner_angle_deg=float(data["corner_angle_deg"][0]) if len(data) else 0.0,
+                n_samples=int(len(data)),
+                n_speed_samples=int(np.sum(speed_mask)),
+                n_accel_samples=int(np.sum(accel_mask)),
+                speed_rms_mm_s=float(np.sqrt(np.mean(speed_err ** 2))) if len(speed_err) else 0.0,
+                speed_median_rel_error=float(np.median(speed_rel)) if len(speed_rel) else float("nan"),
+                speed_p90_rel_error=float(np.percentile(speed_rel, 90)) if len(speed_rel) else float("nan"),
+                speed_corr=_corr(est_speed[speed_mask], rs_speed[speed_mask]),
+                accel_rms_mm_s2=float(np.sqrt(np.mean(accel_err ** 2))) if len(accel_err) else 0.0,
+                accel_median_rel_error=float(np.median(accel_rel)) if len(accel_rel) else float("nan"),
+                accel_p90_rel_error=float(np.percentile(accel_rel, 90)) if len(accel_rel) else float("nan"),
+                accel_corr=_corr(est_accel[accel_mask], rs_accel[accel_mask]),
+                rs_accel_p95_mm_s2=float(np.percentile(rs_accel[accel_mask], 95)) if np.any(accel_mask) else 0.0,
+                estimated_accel_p95_mm_s2=float(np.percentile(est_accel[accel_mask], 95)) if np.any(accel_mask) else 0.0,
+                fk_position_max_error_mm=float(np.max(fk_error_mm)) if len(fk_error_mm) else 0.0,
+            )
+        )
+
+    _write_v2_orientation_metrics(out_dir, metrics)
+    _plot_v2_orientation_overlays(out_dir, paths, fk_solver)
+    return metrics
+
+
 def _write_metrics(out_dir: Path, metrics: List[Exp24TrajectoryMetrics]) -> None:
     rows = [m.__dict__ for m in metrics]
     with open(out_dir / "trajectory_metrics.csv", "w", newline="", encoding="utf-8") as f:
@@ -311,6 +932,119 @@ def _write_metrics(out_dir: Path, metrics: List[Exp24TrajectoryMetrics]) -> None
             else:
                 lines.append(f"  {cfg:<18} J{joint}: n/a (RS linear acceleration is zero/absent)")
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_v2_orientation_metrics(out_dir: Path, metrics: List[Exp24V2TrajectoryMetrics]) -> None:
+    rows = [m.__dict__ for m in metrics]
+    with open(out_dir / "v2_orientation_metrics.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    with open(out_dir / "v2_orientation_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
+
+    accel_rel = np.array(
+        [m.accel_median_rel_error for m in metrics if np.isfinite(m.accel_median_rel_error)],
+        dtype=float,
+    )
+    speed_rel = np.array(
+        [m.speed_median_rel_error for m in metrics if np.isfinite(m.speed_median_rel_error)],
+        dtype=float,
+    )
+    fk_max = np.array([m.fk_position_max_error_mm for m in metrics], dtype=float)
+
+    lines = [
+        "Experiment 24 v2 - Orientation-Varying Corner Jacobian Validation",
+        "=" * 80,
+        f"Trajectories evaluated: {len(metrics)}",
+        "TCP frame: ee_link (matches the logged v2 TCP positions).",
+        "Velocity and acceleration are reconstructed from joint positions sampled at 24 ms:",
+        "  qdot = finite_difference(q)",
+        "  qddot = finite_difference(qdot)",
+        "  v_tcp = J(q) qdot",
+        "  a_tcp = J(q) qddot + Jdot(q, qdot) qdot",
+        "",
+        f"Median speed relative error: {np.nanmedian(speed_rel) * 100.0:.2f} %",
+        f"P90 speed relative error:    {np.nanpercentile(speed_rel, 90) * 100.0:.2f} %",
+        f"Median accel relative error: {np.nanmedian(accel_rel) * 100.0:.2f} %",
+        f"P90 accel relative error:    {np.nanpercentile(accel_rel, 90) * 100.0:.2f} %",
+        f"Max FK position error:       {np.nanmax(fk_max):.4f} mm",
+        "",
+        "By zone/orientation:",
+    ]
+    for zone in sorted({m.zone for m in metrics}):
+        for ori in sorted({m.orientation_change_deg for m in metrics if m.zone == zone}):
+            subset = [m for m in metrics if m.zone == zone and m.orientation_change_deg == ori]
+            a = np.array([m.accel_median_rel_error for m in subset if np.isfinite(m.accel_median_rel_error)])
+            s = np.array([m.speed_median_rel_error for m in subset if np.isfinite(m.speed_median_rel_error)])
+            lines.append(
+                f"  z{zone:<2d} ori={ori:>4.0f} deg: "
+                f"speed_med={np.nanmedian(s) * 100.0:6.2f}%  "
+                f"accel_med={np.nanmedian(a) * 100.0:6.2f}%  n={len(subset)}"
+            )
+    (out_dir / "v2_orientation_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_v3_siping_metrics(out_dir: Path, metrics: List[Exp24V3TrajectoryMetrics]) -> None:
+    rows = [m.__dict__ for m in metrics]
+    with open(out_dir / "v3_siping_metrics.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    with open(out_dir / "v3_siping_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
+
+    direct_speed = np.array([m.direct_jac_speed_median_rel_error for m in metrics], dtype=float)
+    direct_accel = np.array([
+        m.direct_jac_accel_median_rel_error for m in metrics
+        if np.isfinite(m.direct_jac_accel_median_rel_error)
+    ], dtype=float)
+    solver_speed = np.array([m.solver_speed_median_rel_error for m in metrics], dtype=float)
+    direct_ori = np.array([m.direct_jac_orientation_speed_median_rel_error for m in metrics], dtype=float)
+    solver_ori = np.array([m.solver_orientation_speed_median_abs_error_deg_s for m in metrics], dtype=float)
+    pose_mean = np.array([m.pose_mean_error_mm for m in metrics], dtype=float)
+    pose_p95 = np.array([m.pose_p95_error_mm for m in metrics], dtype=float)
+    quat_mean = np.array([m.quat_mean_abs_error for m in metrics], dtype=float)
+
+    lines = [
+        "Experiment 24 v3 - Controlled-Spacing Siping D2 Validation",
+        "=" * 80,
+        f"Trajectories evaluated: {len(metrics)}",
+        "Input toolpaths are T_P_K and are transformed to T_B_P using the existing",
+        "Zund knife pose and utils.transform_handler transformation utilities.",
+        "RobotStudio result poses are also native T_P_K; they are transformed to",
+        "T_B_P for all solver/Jacobian comparisons in this report. Native logged",
+        "speed/acceleration/orientation_speed are plotted in gray for reference.",
+        "",
+        "Direct RobotStudio joint-state Jacobian reconstruction:",
+        f"  median speed relative error: {np.nanmedian(direct_speed) * 100.0:.2f} %",
+        f"  P90 speed relative error:    {np.nanpercentile(direct_speed, 90) * 100.0:.2f} %",
+        f"  median accel relative error: {np.nanmedian(direct_accel) * 100.0:.2f} %",
+        f"  P90 accel relative error:    {np.nanpercentile(direct_accel, 90) * 100.0:.2f} %",
+        f"  median orientation-speed relative error: {np.nanmedian(direct_ori) * 100.0:.2f} %",
+        "",
+        "Feature 3 D2 solver replay from raw toolpaths:",
+        f"  median speed relative error: {np.nanmedian(solver_speed) * 100.0:.2f} %",
+        f"  P90 speed relative error:    {np.nanpercentile(solver_speed, 90) * 100.0:.2f} %",
+        f"  median orientation-speed abs error: {np.nanmedian(solver_ori):.2f} deg/s",
+        f"  median pose mean error:      {np.nanmedian(pose_mean):.3f} mm",
+        f"  median pose P95 error:       {np.nanmedian(pose_p95):.3f} mm",
+        f"  median quaternion mean |delta|: {np.nanmedian(quat_mean):.5f}",
+        "",
+        "Per trajectory:",
+    ]
+    for m in sorted(metrics, key=lambda x: (x.speed_cmd_mm_s, x.corner_radius_mm, x.spacing_mm)):
+        lines.append(
+            f"  r={m.corner_radius_mm:>1d}mm spacing={m.spacing_mm:>2d}mm v{m.speed_cmd_mm_s:<3d}: "
+            f"direct_v={m.direct_jac_speed_median_rel_error*100.0:6.2f}% "
+            f"direct_a={m.direct_jac_accel_median_rel_error*100.0:6.2f}% "
+            f"direct_ori={m.direct_jac_orientation_speed_median_rel_error*100.0:6.2f}% "
+            f"solver_v={m.solver_speed_median_rel_error*100.0:6.2f}% "
+            f"solver_ori={m.solver_orientation_speed_median_abs_error_deg_s:6.2f}deg/s "
+            f"pose_mean={m.pose_mean_error_mm:6.3f}mm "
+            f"pose_p95={m.pose_p95_error_mm:6.3f}mm"
+        )
+    (out_dir / "v3_siping_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _plot_metrics(out_dir: Path, metrics: List[Exp24TrajectoryMetrics]) -> None:
@@ -387,4 +1121,46 @@ def _plot_representative_overlays(out_dir: Path, paths: List[Path], fk_solver) -
         fig.suptitle(f"Experiment 24 {cfg} J{joint} {path.stem}")
         fig.tight_layout()
         fig.savefig(plot_dir / f"{cfg}_j{joint}_{path.stem}_overlay.png", dpi=150)
+        plt.close(fig)
+
+
+def _plot_v2_orientation_overlays(out_dir: Path, paths: List[Path], fk_solver) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plot_dir = out_dir / "v2_orientation_plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in sorted(paths):
+        data = _load_csv(path)
+        t_s = (data["time_ms"] - data["time_ms"][0]) / 1000.0
+        est_speed, est_accel, _fk_positions_m = reconstruct_tcp_speed_accel_from_joint_positions(
+            path, fk_solver,
+        )
+        rs_speed = np.asarray(data["speed_mm_per_s"], dtype=float)
+        rs_accel = np.abs(np.asarray(data["linear_acceleration_mm_s_2"], dtype=float))
+
+        fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+        axes[0].plot(t_s, rs_speed, label="RS TCP speed", linewidth=1.4)
+        axes[0].plot(t_s, est_speed, "--", label="Jacobian reconstructed speed", linewidth=1.1)
+        axes[0].set_ylabel("Speed (mm/s)")
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend(loc="best")
+
+        axes[1].plot(t_s, rs_accel, label="RS linear_acceleration", linewidth=1.4)
+        axes[1].plot(t_s, est_accel, "--", label="Jacobian reconstructed acceleration", linewidth=1.1)
+        axes[1].set_ylabel("Acceleration (mm/s²)")
+        axes[1].set_xlabel("Time from trajectory start (s)")
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend(loc="best")
+
+        zone = int(data["zone"][0]) if len(data) else 0
+        ori = float(data["orientation_zone_change"][0]) if len(data) else 0.0
+        corner = float(data["corner_angle_deg"][0]) if len(data) else 0.0
+        fig.suptitle(f"Exp24 v2 z{zone} ori={ori:.0f}deg corner={corner:.0f}deg")
+        fig.tight_layout()
+        safe_stem = path.stem.replace("..", ".")
+        fig.savefig(plot_dir / f"{safe_stem}_overlay.png", dpi=150)
         plt.close(fig)

@@ -216,6 +216,8 @@ def sample_blended_path(
         q_norm = np.linalg.norm(quats[i])
         if q_norm > 1e-10:
             quats[i] = quats[i] / q_norm
+        if i > 0 and np.dot(quats[i - 1], quats[i]) < 0.0:
+            quats[i] = -quats[i]
 
     all_pos: List[np.ndarray] = []
     all_quat: List[np.ndarray] = []
