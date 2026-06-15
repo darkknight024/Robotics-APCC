@@ -61,7 +61,7 @@ def test_speed_profile_vs_robotstudio_exp24_v2_orientation_corners():
 def test_speed_profile_vs_robotstudio_exp24_v3_controlled_siping():
     repo = Path(__file__).resolve().parents[1]
     out_dir = create_exp24_results_dir("exp24_v3_controlled_siping_d2_validation", repo)
-    metrics = evaluate_exp24_v3_siping_dataset(out_dir, repo)
+    metrics = evaluate_exp24_v3_siping_dataset(out_dir, repo, corner_debug=False)
 
     assert len(metrics) == 16, f"Expected 16 Experiment 24 v3 files, got {len(metrics)}"
     direct_speed = np.array([m.direct_jac_speed_median_rel_error for m in metrics], dtype=float)

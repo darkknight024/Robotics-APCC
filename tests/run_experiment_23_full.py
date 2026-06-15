@@ -2059,7 +2059,36 @@ Examples:
     parser.add_argument("--exp24-v2-geometry", action="store_true",
                         help="Run geometry-only Bézier blend validation on Experiment 24 "
                              "v2 orientation-varying corner RobotStudio traces.")
+    parser.add_argument("--exp24-v3-siping", action="store_true",
+                        help="Run Experiment 24 v3 controlled-spacing siping validation.")
+    parser.add_argument("--corner-debug", action="store_true",
+                        help="For --exp24-v3-siping, emit focused 3D corner debug plots.")
+    parser.add_argument("--max-debug-corners", type=int, default=8,
+                        help="Maximum corner debug plots per v3 siping trajectory.")
     args = parser.parse_args()
+
+    if args.exp24_v3_siping:
+        from tests.experiment24_validation import (
+            create_exp24_results_dir,
+            evaluate_exp24_v3_siping_dataset,
+        )
+
+        if args.run_dir:
+            run_dir = _EXP24_RESULTS_BASE / args.run_dir
+            run_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            run_dir = create_exp24_results_dir("exp24_v3_controlled_siping_d2_validation", _REPO)
+        print(f"\nExperiment 24 v3 — Controlled-spacing siping")
+        print(f"Run dir : {run_dir}")
+        print(f"Corner debug: {args.corner_debug}")
+        metrics = evaluate_exp24_v3_siping_dataset(
+            run_dir,
+            _REPO,
+            corner_debug=args.corner_debug,
+            max_debug_corners=args.max_debug_corners,
+        )
+        print(f"Evaluated {len(metrics)} trajectories")
+        return
 
     if args.exp24_v2_geometry:
         if args.run_dir:

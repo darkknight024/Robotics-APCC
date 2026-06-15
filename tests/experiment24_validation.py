@@ -83,6 +83,8 @@ class Exp24V3TrajectoryMetrics:
     solver_accel_median_abs_error_mm_s2: float
     direct_jac_orientation_speed_median_rel_error: float
     solver_orientation_speed_median_abs_error_deg_s: float
+    raw_to_solver_rms_error_mm: float
+    raw_to_rs_rms_error_mm: float
     pose_mean_error_mm: float
     pose_p95_error_mm: float
     pose_max_error_mm: float
@@ -488,6 +490,29 @@ def _speed_accel_from_xyz_time(xyz_mm: np.ndarray, time_ms: np.ndarray) -> tuple
     return np.linalg.norm(vel, axis=1), np.linalg.norm(acc, axis=1)
 
 
+def _project_to_waypoint_index(points_mm: np.ndarray, waypoints_mm: np.ndarray) -> np.ndarray:
+    """Project points onto raw waypoint polyline and return fractional waypoint index."""
+    if len(waypoints_mm) < 2:
+        return np.zeros(len(points_mm), dtype=float)
+    best_dist = np.full(len(points_mm), np.inf)
+    best_idx = np.zeros(len(points_mm), dtype=float)
+    for i in range(len(waypoints_mm) - 1):
+        a = waypoints_mm[i]
+        b = waypoints_mm[i + 1]
+        seg = b - a
+        seg_len2 = float(np.dot(seg, seg))
+        if seg_len2 < 1e-18:
+            continue
+        t = np.sum((points_mm - a) * seg, axis=1) / seg_len2
+        t = np.clip(t, 0.0, 1.0)
+        proj = a + t[:, None] * seg
+        dist = np.linalg.norm(points_mm - proj, axis=1)
+        update = dist < best_dist
+        best_dist = np.where(update, dist, best_dist)
+        best_idx = np.where(update, i + t, best_idx)
+    return best_idx
+
+
 def _align_quaternion_series(quats: np.ndarray) -> np.ndarray:
     aligned = np.asarray(quats, dtype=float).copy()
     for i in range(len(aligned)):
@@ -546,6 +571,10 @@ def _plot_exp24_v3_pair(
     solver_quat: np.ndarray,
     rs_xyz_on_solver: np.ndarray,
     rs_quat_on_solver: np.ndarray,
+    raw_waypoints_xyz_mm: np.ndarray,
+    raw_waypoints_quat: np.ndarray,
+    raw_to_solver_rms_error_mm: float,
+    raw_to_rs_rms_error_mm: float,
     pose_dev: np.ndarray,
 ) -> None:
     import matplotlib
@@ -594,29 +623,78 @@ def _plot_exp24_v3_pair(
     fig.savefig(out_dir / "v3_solver_vs_rs_dynamics.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
+    raw_arc = _arc_length_mm(raw_waypoints_xyz_mm)
+    raw_quat = _quat_signed_aligned(
+        np.column_stack([
+            np.interp(raw_arc, solver_arc, solver_quat[:, c])
+            for c in range(4)
+        ]),
+        raw_waypoints_quat,
+    )
+
     fig, axes = plt.subplots(7, 2, figsize=(16, 18), sharex="col")
     labels = ["X", "Y", "Z", "qw", "qx", "qy", "qz"]
-    solver_series = [solver_xyz_mm[:, 0], solver_xyz_mm[:, 1], solver_xyz_mm[:, 2],
-                     solver_quat[:, 0], solver_quat[:, 1], solver_quat[:, 2], solver_quat[:, 3]]
-    rs_series = [rs_xyz_on_solver[:, 0], rs_xyz_on_solver[:, 1], rs_xyz_on_solver[:, 2],
-                 rs_quat_on_solver[:, 0], rs_quat_on_solver[:, 1], rs_quat_on_solver[:, 2], rs_quat_on_solver[:, 3]]
+    solver_series = [
+        solver_xyz_mm[:, 0], solver_xyz_mm[:, 1], solver_xyz_mm[:, 2],
+        solver_quat[:, 0], solver_quat[:, 1], solver_quat[:, 2], solver_quat[:, 3],
+    ]
+    rs_series = [
+        rs_xyz_on_solver[:, 0], rs_xyz_on_solver[:, 1], rs_xyz_on_solver[:, 2],
+        rs_quat_on_solver[:, 0], rs_quat_on_solver[:, 1], rs_quat_on_solver[:, 2], rs_quat_on_solver[:, 3],
+    ]
+    raw_series = [
+        raw_waypoints_xyz_mm[:, 0], raw_waypoints_xyz_mm[:, 1], raw_waypoints_xyz_mm[:, 2],
+        raw_quat[:, 0], raw_quat[:, 1], raw_quat[:, 2], raw_quat[:, 3],
+    ]
     units = ["mm", "mm", "mm", "", "", "", ""]
-    for i, (name, sol_y, rs_y, unit) in enumerate(zip(labels, solver_series, rs_series, units)):
+
+    for i, (name, sol_y, rs_y, raw_y, unit) in enumerate(
+        zip(labels, solver_series, rs_series, raw_series, units)
+    ):
         axes[i, 0].plot(solver_arc, rs_y, "b-", lw=1.0, label="RobotStudio")
         axes[i, 0].plot(solver_arc, sol_y, "r--", lw=1.0, label="Solver")
+        axes[i, 0].plot(
+            raw_arc,
+            raw_y,
+            "ko",
+            ms=2.2,
+            alpha=0.65,
+            label="Raw transformed waypoints" if i == 0 else None,
+        )
         axes[i, 0].set_ylabel(f"{name} {unit}".strip())
         axes[i, 0].set_title(f"{name} overlay")
+
         delta = sol_y - rs_y
         axes[i, 1].plot(solver_arc, delta, "purple", lw=0.8)
         axes[i, 1].axhline(0.0, color="k", lw=0.5, alpha=0.4)
         axes[i, 1].set_ylabel(f"Δ{name} {unit}".strip())
         if unit == "mm":
-            axes[i, 1].set_title(f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.3f} max|Δ|={np.max(np.abs(delta)):.3f}")
+            axes[i, 1].set_title(
+                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.3f} "
+                f"max|Δ|={np.max(np.abs(delta)):.3f}"
+            )
         else:
-            axes[i, 1].set_title(f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.5f} max|Δ|={np.max(np.abs(delta)):.5f}")
+            axes[i, 1].set_title(
+                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.5f} "
+                f"max|Δ|={np.max(np.abs(delta)):.5f}"
+            )
         axes[i, 0].grid(True, alpha=0.3)
         axes[i, 1].grid(True, alpha=0.3)
+
     axes[0, 0].legend(fontsize=8, loc="best")
+    axes[0, 1].text(
+        0.98,
+        0.95,
+        (
+            f"Raw WP → solver RMS: {raw_to_solver_rms_error_mm:.3f} mm\n"
+            f"Raw WP → RS RMS:     {raw_to_rs_rms_error_mm:.3f} mm"
+        ),
+        transform=axes[0, 1].transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.85),
+    )
     axes[-1, 0].set_xlabel("Solver arc length (mm)")
     axes[-1, 1].set_xlabel("Solver arc length (mm)")
     fig.suptitle(f"Full Base-Frame Pose Overlay and Deltas — {label}", y=1.005)
@@ -624,11 +702,227 @@ def _plot_exp24_v3_pair(
     fig.savefig(out_dir / "v3_solver_vs_rs_full_pose.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
+    # Waypoint-index diagnostic: use the raw transformed waypoint polyline as
+    # the abscissa so dense siping path tracking can be read by intended
+    # waypoint progress instead of solver arc-length.
+    solver_wp_idx = _project_to_waypoint_index(solver_xyz_mm, raw_waypoints_xyz_mm)
+    rs_wp_idx = _project_to_waypoint_index(rs_xyz_on_solver, raw_waypoints_xyz_mm)
+    raw_idx = np.arange(len(raw_waypoints_xyz_mm), dtype=float)
+
+    fig, axes = plt.subplots(7, 2, figsize=(16, 18), sharex="col")
+    for i, (name, sol_y, rs_y, raw_y, unit) in enumerate(
+        zip(labels, solver_series, rs_series, raw_series, units)
+    ):
+        axes[i, 0].plot(rs_wp_idx, rs_y, "b-", lw=1.0, label="RobotStudio")
+        axes[i, 0].plot(solver_wp_idx, sol_y, "r--", lw=1.0, label="Solver")
+        axes[i, 0].plot(
+            raw_idx,
+            raw_y,
+            "ko",
+            ms=2.2,
+            alpha=0.65,
+            label="Raw waypoints" if i == 0 else None,
+        )
+        axes[i, 0].set_ylabel(f"{name} {unit}".strip())
+        axes[i, 0].set_title(f"{name} vs waypoint index")
+
+        # Delta is meaningful after interpolating RobotStudio to solver waypoint-index.
+        order = np.argsort(rs_wp_idx)
+        rs_idx_sorted = rs_wp_idx[order]
+        rs_y_sorted = rs_y[order]
+        unique_idx, unique_first = np.unique(rs_idx_sorted, return_index=True)
+        unique_y = rs_y_sorted[unique_first]
+        rs_on_solver_idx = np.interp(solver_wp_idx, unique_idx, unique_y)
+        delta = sol_y - rs_on_solver_idx
+        axes[i, 1].plot(solver_wp_idx, delta, "purple", lw=0.8)
+        axes[i, 1].axhline(0.0, color="k", lw=0.5, alpha=0.4)
+        axes[i, 1].set_ylabel(f"Δ{name} {unit}".strip())
+        if unit == "mm":
+            axes[i, 1].set_title(
+                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.3f} "
+                f"max|Δ|={np.max(np.abs(delta)):.3f}"
+            )
+        else:
+            axes[i, 1].set_title(
+                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.5f} "
+                f"max|Δ|={np.max(np.abs(delta)):.5f}"
+            )
+        axes[i, 0].grid(True, alpha=0.3)
+        axes[i, 1].grid(True, alpha=0.3)
+    axes[0, 0].legend(fontsize=8, loc="best")
+    axes[-1, 0].set_xlabel("Waypoint progress index")
+    axes[-1, 1].set_xlabel("Waypoint progress index")
+    fig.suptitle(f"Full Pose by Raw Waypoint Index — {label}", y=1.005)
+    fig.tight_layout()
+    fig.savefig(out_dir / "v3_solver_vs_rs_pose_by_waypoint_index.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _select_corner_waypoints(waypoints_m: np.ndarray, max_corners: int = 8) -> List[int]:
+    xyz = waypoints_m[:, :3] * 1000.0
+    scores = []
+    for i in range(1, len(xyz) - 1):
+        a = xyz[i] - xyz[i - 1]
+        b = xyz[i + 1] - xyz[i]
+        na = np.linalg.norm(a)
+        nb = np.linalg.norm(b)
+        if na < 1e-9 or nb < 1e-9:
+            continue
+        cosang = np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0)
+        turn_deg = float(np.degrees(np.arccos(cosang)))
+        scores.append((turn_deg, i))
+    # Keep the strongest corners and de-duplicate nearby picks so one physical
+    # peak does not consume the whole debug budget.
+    selected: List[int] = []
+    for _score, idx in sorted(scores, reverse=True):
+        if all(abs(idx - prev) >= 3 for prev in selected):
+            selected.append(idx)
+        if len(selected) >= max_corners:
+            break
+    return sorted(selected)
+
+
+def _plot_v3_corner_debug(
+    out_dir: Path,
+    label: str,
+    waypoints_m: np.ndarray,
+    solver_xyz_mm: np.ndarray,
+    rs_xyz_mm: np.ndarray,
+    corner_indices: List[int],
+    window_mm: float = 80.0,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from core.blend_zone.zone_resolver import resolve_zone_list, apply_overlap_reduction
+    from core.blend_zone.blend_geometry import compute_blend_geometries
+
+    if not corner_indices:
+        return
+    zones = apply_overlap_reduction(resolve_zone_list(["z5"] * len(waypoints_m)), waypoints_m)
+    blend_geoms = compute_blend_geometries(waypoints_m, zones)
+    wpxyz = waypoints_m[:, :3] * 1000.0
+
+    debug_dir = out_dir / "corner_debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    def _local_arc_length(points: np.ndarray) -> float:
+        if len(points) < 2:
+            return 0.0
+        return float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+
+    def _ordered_segment_between(points: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+        """Return the ordered path slice between samples nearest start/end."""
+        if len(points) < 2:
+            return points
+        i0 = int(np.argmin(np.linalg.norm(points - start, axis=1)))
+        i1 = int(np.argmin(np.linalg.norm(points - end, axis=1)))
+        lo, hi = sorted((i0, i1))
+        # Include a tiny context margin but keep a single continuous strand.
+        lo = max(0, lo - 1)
+        hi = min(len(points) - 1, hi + 1)
+        return points[lo:hi + 1]
+
+    from core.blend_zone.verification import _project_points_to_polyline
+
+    for idx in corner_indices:
+        center = wpxyz[idx]
+        raw_lo = max(0, idx - 1)
+        raw_hi = min(len(wpxyz) - 1, idx + 1)
+        raw_local = wpxyz[raw_lo:raw_hi + 1]
+        raw_mask = np.zeros(len(wpxyz), dtype=bool)
+        raw_mask[raw_lo:raw_hi + 1] = True
+        solver_local = _ordered_segment_between(solver_xyz_mm, raw_local[0], raw_local[-1])
+        rs_local = _ordered_segment_between(rs_xyz_mm, raw_local[0], raw_local[-1])
+        if len(solver_local) < 2 or len(rs_local) < 2:
+            continue
+
+        raw_corner_len = _local_arc_length(raw_local)
+        solver_len = _local_arc_length(solver_local)
+        rs_len = _local_arc_length(rs_local)
+        _proj_solver_to_raw, d_solver_to_raw = _project_points_to_polyline(solver_local, raw_local)
+        _proj_rs_to_raw, d_rs_to_raw = _project_points_to_polyline(rs_local, raw_local)
+
+        fig = plt.figure(figsize=(11, 9))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.plot(
+            raw_local[:, 0], raw_local[:, 1], raw_local[:, 2],
+            "ko-", ms=5, lw=1.2, alpha=0.9, label="Raw WP[i-1], WP[i], WP[i+1]",
+        )
+        ax.scatter([center[0]], [center[1]], [center[2]], c="black", s=80, marker="^", label=f"Peak WP{idx}")
+        ax.plot(
+            rs_local[:, 0], rs_local[:, 1], rs_local[:, 2],
+            "b-", lw=1.3, alpha=0.85, label="RobotStudio transformed path",
+        )
+        ax.plot(
+            solver_local[:, 0], solver_local[:, 1], solver_local[:, 2],
+            "r--", lw=1.2, alpha=0.9, label="Solver blended path",
+        )
+
+        geom = blend_geoms[idx] if idx < len(blend_geoms) else None
+        geom_info = ""
+        if geom is not None:
+            from core.blend_zone.blend_geometry import _cubic_bezier
+
+            t_vals = np.linspace(0.0, 1.0, 100)
+            arc = np.array([
+                _cubic_bezier(
+                    geom.entry_point_mm,
+                    geom.inner_p1_mm,
+                    geom.inner_p2_mm,
+                    geom.exit_point_mm,
+                    t,
+                )
+                for t in t_vals
+            ])
+            ax.plot(arc[:, 0], arc[:, 1], arc[:, 2], color="orange", lw=2.0, label="Local Bézier arc")
+            ax.scatter(
+                [geom.entry_point_mm[0], geom.exit_point_mm[0], geom.control_point_mm[0]],
+                [geom.entry_point_mm[1], geom.exit_point_mm[1], geom.control_point_mm[1]],
+                [geom.entry_point_mm[2], geom.exit_point_mm[2], geom.control_point_mm[2]],
+                c=["green", "purple", "black"], s=[35, 35, 45], label="entry/exit/corner",
+            )
+            entry_dist = float(np.linalg.norm(geom.entry_point_mm - geom.control_point_mm))
+            exit_dist = float(np.linalg.norm(geom.exit_point_mm - geom.control_point_mm))
+            geom_info = (
+                f"r_eff={geom.r_tcp_eff_mm:.2f} mm, "
+                f"Bezier={geom.arc_length_mm:.1f} mm, "
+                f"entry/exit={entry_dist:.1f}/{exit_dist:.1f} mm\n"
+            )
+
+        info = (
+            f"WP{idx}: raw={raw_corner_len:.1f} mm, "
+            f"solver={solver_len:.1f} mm, RS={rs_len:.1f} mm\n"
+            f"max dist to raw: solver={np.max(d_solver_to_raw):.2f} mm, "
+            f"RS={np.max(d_rs_to_raw):.2f} mm\n"
+            f"{geom_info}"
+        )
+        ax.text2D(
+            0.02,
+            0.98,
+            info,
+            transform=ax.transAxes,
+            va="top",
+            fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.8),
+        )
+
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.set_zlabel("Z (mm)")
+        ax.set_title(f"{label} corner debug WP{idx}")
+        ax.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(debug_dir / f"corner_wp{idx:03d}_blend_geometry_3d.png", dpi=160, bbox_inches="tight")
+        plt.close(fig)
 
 def evaluate_exp24_v3_siping_dataset(
     out_dir: Path,
     repo: Optional[Path] = None,
     csv_paths: Optional[List[Path]] = None,
+    corner_debug: bool = False,
+    max_debug_corners: int = 8,
 ) -> List[Exp24V3TrajectoryMetrics]:
     """Validate D2 dynamics on Experiment 24 v3 controlled-spacing siping data."""
 
@@ -736,6 +1030,12 @@ def evaluate_exp24_v3_siping_dataset(
         solver_orientation_abs_err = np.abs(solver_orientation_speed - rs_orientation_on_solver)
         solver_quat = _quat_signed_aligned(rs_quat_on_solver, solver_quat)
         quat_abs_err = np.abs(solver_quat - rs_quat_on_solver)
+        raw_waypoints_xyz_mm = lr.waypoints[0][:, :3] * 1000.0
+        raw_waypoints_quat = _align_quaternion_series(lr.waypoints[0][:, 3:7])
+        _proj_raw_solver, raw_solver_dist = _project_points_to_polyline(raw_waypoints_xyz_mm, solver_xyz_mm)
+        _proj_raw_rs, raw_rs_dist = _project_points_to_polyline(raw_waypoints_xyz_mm, rs_xyz_base_mm)
+        raw_to_solver_rms = float(np.sqrt(np.mean(raw_solver_dist ** 2)))
+        raw_to_rs_rms = float(np.sqrt(np.mean(raw_rs_dist ** 2)))
 
         _plot_exp24_v3_pair(
             case_dir,
@@ -759,8 +1059,21 @@ def evaluate_exp24_v3_siping_dataset(
             solver_quat,
             rs_xyz_on_solver,
             rs_quat_on_solver,
+            raw_waypoints_xyz_mm,
+            raw_waypoints_quat,
+            raw_to_solver_rms,
+            raw_to_rs_rms,
             pose_dev,
         )
+        if corner_debug:
+            _plot_v3_corner_debug(
+                case_dir,
+                label,
+                lr.waypoints[0],
+                solver_xyz_mm,
+                rs_xyz_base_mm,
+                _select_corner_waypoints(lr.waypoints[0], max_corners=max_debug_corners),
+            )
 
         metrics.append(
             Exp24V3TrajectoryMetrics(
@@ -784,6 +1097,8 @@ def evaluate_exp24_v3_siping_dataset(
                 solver_accel_median_abs_error_mm_s2=float(np.median(solver_accel_abs_err)),
                 direct_jac_orientation_speed_median_rel_error=float(np.median(direct_orientation_rel)),
                 solver_orientation_speed_median_abs_error_deg_s=float(np.median(solver_orientation_abs_err)),
+                raw_to_solver_rms_error_mm=raw_to_solver_rms,
+                raw_to_rs_rms_error_mm=raw_to_rs_rms,
                 pose_mean_error_mm=float(np.mean(pose_dev)),
                 pose_p95_error_mm=float(np.percentile(pose_dev, 95)),
                 pose_max_error_mm=float(np.max(pose_dev)),
@@ -1002,6 +1317,8 @@ def _write_v3_siping_metrics(out_dir: Path, metrics: List[Exp24V3TrajectoryMetri
     solver_speed = np.array([m.solver_speed_median_rel_error for m in metrics], dtype=float)
     direct_ori = np.array([m.direct_jac_orientation_speed_median_rel_error for m in metrics], dtype=float)
     solver_ori = np.array([m.solver_orientation_speed_median_abs_error_deg_s for m in metrics], dtype=float)
+    raw_solver_rms = np.array([m.raw_to_solver_rms_error_mm for m in metrics], dtype=float)
+    raw_rs_rms = np.array([m.raw_to_rs_rms_error_mm for m in metrics], dtype=float)
     pose_mean = np.array([m.pose_mean_error_mm for m in metrics], dtype=float)
     pose_p95 = np.array([m.pose_p95_error_mm for m in metrics], dtype=float)
     quat_mean = np.array([m.quat_mean_abs_error for m in metrics], dtype=float)
@@ -1027,6 +1344,8 @@ def _write_v3_siping_metrics(out_dir: Path, metrics: List[Exp24V3TrajectoryMetri
         f"  median speed relative error: {np.nanmedian(solver_speed) * 100.0:.2f} %",
         f"  P90 speed relative error:    {np.nanpercentile(solver_speed, 90) * 100.0:.2f} %",
         f"  median orientation-speed abs error: {np.nanmedian(solver_ori):.2f} deg/s",
+        f"  median raw waypoint → solver RMS: {np.nanmedian(raw_solver_rms):.3f} mm",
+        f"  median raw waypoint → RobotStudio RMS: {np.nanmedian(raw_rs_rms):.3f} mm",
         f"  median pose mean error:      {np.nanmedian(pose_mean):.3f} mm",
         f"  median pose P95 error:       {np.nanmedian(pose_p95):.3f} mm",
         f"  median quaternion mean |delta|: {np.nanmedian(quat_mean):.5f}",
@@ -1041,6 +1360,8 @@ def _write_v3_siping_metrics(out_dir: Path, metrics: List[Exp24V3TrajectoryMetri
             f"direct_ori={m.direct_jac_orientation_speed_median_rel_error*100.0:6.2f}% "
             f"solver_v={m.solver_speed_median_rel_error*100.0:6.2f}% "
             f"solver_ori={m.solver_orientation_speed_median_abs_error_deg_s:6.2f}deg/s "
+            f"raw2solver={m.raw_to_solver_rms_error_mm:6.3f}mm "
+            f"raw2rs={m.raw_to_rs_rms_error_mm:6.3f}mm "
             f"pose_mean={m.pose_mean_error_mm:6.3f}mm "
             f"pose_p95={m.pose_p95_error_mm:6.3f}mm"
         )

@@ -43,8 +43,8 @@ Provides the core feasibility logic (solver-agnostic):
 - **compute_singularity_proximity()** – Minimum singular value of Jacobian
 - **compute_condition_number()** – κ = σ_max / σ_min
 - **check_reachability()** – IK solver (Pinocchio or EAIK) with retries
-- **score_ik_solution_breakdown()** – Weighted EAIK multi-solution cost (use ``.total`` for scalar; C0 + soft singularity penalty − manipulability reward)
-- **`_select_best_multi_solution()`** – Scores all `info['all_solutions']` candidates, filters by joint limits, and picks the lowest-cost one
+- **score_ik_solution_breakdown()** – Weighted EAIK multi-solution cost (use `.total` for scalar; C0 + soft singularity penalty − manipulability reward)
+- `**_select_best_multi_solution()`** – Scores all `info['all_solutions']` candidates, filters by joint limits, and picks the lowest-cost one
 
 ---
 
@@ -158,6 +158,8 @@ graph LR
     Target -->|Config or CLI| EAIK
 ```
 
+
+
 ---
 
 ## Running the Scripts
@@ -205,19 +207,21 @@ python feasibility_analysis.py \
 
 **CLI Arguments:**
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--toolpath`, `-t` | Required | Toolpath CSV file |
-| `--urdf`, `-u` | IRB_1300_1400_URDF_with_fixture.urdf | Robot URDF path |
-| `--knife-config`, `-k` | config/knife_config.yaml | Knife poses YAML |
-| `--knife-pose` | pose_1 | Knife pose name |
-| `--output`, `-o` | output/feasibility/ | Output directory |
-| `--reach`, `-r` | 1.4 | Robot reach in meters |
-| `--singularity-threshold` | 0.01 | Singularity warning threshold |
-| `--speed` | 100 | End-effector speed in mm/s |
-| `--solver` | pin | Solver: "pin" or "eaik" |
-| `--base_frame` | False | Toolpath is in robot base frame; skip knife transform |
-| `--no-continuity` | False | Skip continuity analysis |
+
+| Argument                  | Default                              | Description                                           |
+| ------------------------- | ------------------------------------ | ----------------------------------------------------- |
+| `--toolpath`, `-t`        | Required                             | Toolpath CSV file                                     |
+| `--urdf`, `-u`            | IRB_1300_1400_URDF_with_fixture.urdf | Robot URDF path                                       |
+| `--knife-config`, `-k`    | config/knife_config.yaml             | Knife poses YAML                                      |
+| `--knife-pose`            | pose_1                               | Knife pose name                                       |
+| `--output`, `-o`          | output/feasibility/                  | Output directory                                      |
+| `--reach`, `-r`           | 1.4                                  | Robot reach in meters                                 |
+| `--singularity-threshold` | 0.01                                 | Singularity warning threshold                         |
+| `--speed`                 | 100                                  | End-effector speed in mm/s                            |
+| `--solver`                | pin                                  | Solver: "pin" or "eaik"                               |
+| `--base_frame`            | False                                | Toolpath is in robot base frame; skip knife transform |
+| `--no-continuity`         | False                                | Skip continuity analysis                              |
+
 
 ### Batch Processing (`feasibility_analysis_batch.py`)
 
@@ -234,12 +238,14 @@ python feasibility_analysis_batch.py \
 
 **CLI Arguments:**
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--config`, `-c` | config/batch_feasibility_config.yaml | Path to batch config YAML |
-| `--output`, `-o` | (from config) | Override output directory |
-| `--workers`, `-w` | 1 | Number of parallel workers |
-| `--solver` | (from config) | Override solver: "pin" or "eaik" |
+
+| Argument          | Default                              | Description                      |
+| ----------------- | ------------------------------------ | -------------------------------- |
+| `--config`, `-c`  | config/batch_feasibility_config.yaml | Path to batch config YAML        |
+| `--output`, `-o`  | (from config)                        | Override output directory        |
+| `--workers`, `-w` | 1                                    | Number of parallel workers       |
+| `--solver`        | (from config)                        | Override solver: "pin" or "eaik" |
+
 
 ---
 
@@ -505,10 +511,12 @@ manipulability:
 #### Output
 
 Per trajectory:
+
 - `decomposed_manipulability_{trajectory_name}.png` — 4-panel figure (translational, rotational, normalized, directional)
 - `directional_manipulability_{trajectory_name}.png` — standalone directional manipulability
 
 Aggregated across trajectories:
+
 - `aggregated_decomposed_manipulability.png` — mean/min bar charts per component
 
 Report section `DECOMPOSED MANIPULABILITY` with mean and min for each component per trajectory.
@@ -521,16 +529,17 @@ A trajectory is **continuously feasible** when both C0 and C1 checks pass for ev
 
 ### Terminology
 
-| Term | Meaning |
-|------|---------|
-| **Desired TCP speed** | The commanded end-effector speed stored in the toolpath CSV (column 8, or the `speed` column in header-based CSVs). Unit: mm/s. |
+
+| Term                   | Meaning                                                                                                                                                                                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Desired TCP speed**  | The commanded end-effector speed stored in the toolpath CSV (column 8, or the `speed` column in header-based CSVs). Unit: mm/s.                                                                                                                                            |
 | **Interpolated speed** | The TCP velocity obtained by fitting a cubic spline through the Cartesian waypoint positions and differentiating analytically. This is the speed the robot would actually achieve if it followed the spline path. Shown in plots for comparison against the desired speed. |
-| **Velocity ratio** | `max_j( |Δq_j / Δt| / limit_j )` — if > 1.0 at any segment, the robot cannot physically execute the motion at the commanded speed without exceeding a joint velocity limit. |
+| **Velocity ratio**     | `max_j(                                                                                                                                                                                                                                                                    |
+
 
 ### How TCP Speed from the CSV Is Used
 
 1. **Extraction** — `csv_loader_toolpath.py` reads speed per waypoint. For T0-marker CSVs (no header), column index 7 is parsed. For header-based CSVs (e.g. `waypoints_all.csv`), the column named `speed` is used. If neither is found, all waypoints default to 100 mm/s and a warning is emitted.
-
 2. **Time-step computation** — The speed drives the time step between consecutive waypoints:
 
 ```
@@ -543,7 +552,7 @@ where:
 
 This replaces any arbitrary fixed time step and ensures the feasibility check answers: "can the robot reach the next waypoint **at the speed the CSV commands**?"
 
-3. **C1 check** — Using the computed Δt, the joint velocity ratio for each segment is:
+1. **C1 check** — Using the computed Δt, the joint velocity ratio for each segment is:
 
 ```
 ratio_i = max over joints j of:  |shortest_angular_distance(q_j^{i-1}, q_j^i)| / (Δt_i × limit_j)
@@ -551,7 +560,7 @@ ratio_i = max over joints j of:  |shortest_angular_distance(q_j^{i-1}, q_j^i)| /
 
 If `ratio_i > 1.0`, joint `j` would need to move faster than its hardware limit to arrive on time.
 
-4. **Plots** — The continuity dashboard overlays the desired speed (orange markers from CSV) against the interpolated speed (green cubic-spline derivative) so you can visually confirm whether the robot can track the commanded speed profile.
+1. **Plots** — The continuity dashboard overlays the desired speed (orange markers from CSV) against the interpolated speed (green cubic-spline derivative) so you can visually confirm whether the robot can track the commanded speed profile.
 
 ### C0 Continuity (Position-Level)
 
@@ -576,10 +585,12 @@ The threshold `joint_jump_limit_rad` comes from `robots_config.yaml` (default 0.
 
 **What the plots show:**
 
-| Plot | Content |
-|------|---------|
+
+| Plot                           | Content                                                                                                                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **C0 per-waypoint** (3 panels) | Panel 1: bar chart of `d_i` per segment (green/red vs threshold). Panel 2: per-joint angular jumps in degrees (6 lines). Panel 3: Cartesian TCP distance in mm per segment. |
-| **C0 summary** (aggregated) | Max `d_i` per trajectory as a bar chart with threshold line and pass/fail colouring. |
+| **C0 summary** (aggregated)    | Max `d_i` per trajectory as a bar chart with threshold line and pass/fail colouring.                                                                                        |
+
 
 ### C1 Continuity (Velocity-Level)
 
@@ -606,34 +617,40 @@ A ratio of 1.5 means the worst joint would need to move at 150% of its limit —
 
 **What the plots show:**
 
-| Plot | Content |
-|------|---------|
+
+| Plot                                      | Content                                                                                                                    |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | **C1 per-waypoint** (`continuity_c1.png`) | Cartesian position, velocity magnitude (interpolated vs desired), velocity components, and per-joint velocities vs limits. |
-| **C1 summary** (aggregated) | Max velocity ratio per trajectory with pass/fail. |
+| **C1 summary** (aggregated)               | Max velocity ratio per trajectory with pass/fail.                                                                          |
+
 
 ### Combined C0 + C1 Dashboard
 
 `continuity_dashboard_trajectory_N.png` — a single 4-panel figure per trajectory:
 
-| Panel | Content |
-|-------|---------|
-| Top-left | C0: joint-space distance per segment with threshold line |
-| Top-right | C1: velocity ratio per segment with limit line at 1.0 |
-| Bottom-left | TCP speed profile: desired (orange, from CSV) vs interpolated (green, cubic spline derivative) |
-| Bottom-right | Overall verdict: **CONTINUOUS** (both pass) or **NOT CONTINUOUS** (either fails) |
+
+| Panel        | Content                                                                                        |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| Top-left     | C0: joint-space distance per segment with threshold line                                       |
+| Top-right    | C1: velocity ratio per segment with limit line at 1.0                                          |
+| Bottom-left  | TCP speed profile: desired (orange, from CSV) vs interpolated (green, cubic spline derivative) |
+| Bottom-right | Overall verdict: **CONTINUOUS** (both pass) or **NOT CONTINUOUS** (either fails)               |
+
 
 ### What Changed (Summary)
 
-| Area | Before | After |
-|------|--------|-------|
-| **C0 plots** | C0 computed internally but never plotted | Full per-waypoint and aggregated C0 graphs |
-| **C0 in report** | Only pass/fail flag | Max jump, mean jump, per-trajectory status in text report |
-| **Speed extraction** | Silently defaulted to 100 mm/s on failure | `speed_extracted` flag tracked; warning printed and included in report when defaulted |
-| **CSV formats** | Only T0-marker (index-based columns) | Also header-based CSVs (column names: `x`, `y`, `z`, `qw`, `qx`, `qy`, `qz`, `speed`) |
-| **Base frame** | Only knife-frame input (`feasibility_analysis.py`) | `--base_frame` flag skips knife transform; toolpath used as-is |
-| **Dashboard** | Separate C1-only plot | Combined C0+C1+speed dashboard per trajectory |
-| **EAIK multi-solution** | Only "closest" or "min_norm" single pick | Greedy scoring across all valid solutions for optimal C0/C1/manipulability |
-| **Formulas** | No change | No change — same `shortest_angular_distance`, same `dt = dist / speed`, same velocity ratio |
+
+| Area                    | Before                                             | After                                                                                       |
+| ----------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **C0 plots**            | C0 computed internally but never plotted           | Full per-waypoint and aggregated C0 graphs                                                  |
+| **C0 in report**        | Only pass/fail flag                                | Max jump, mean jump, per-trajectory status in text report                                   |
+| **Speed extraction**    | Silently defaulted to 100 mm/s on failure          | `speed_extracted` flag tracked; warning printed and included in report when defaulted       |
+| **CSV formats**         | Only T0-marker (index-based columns)               | Also header-based CSVs (column names: `x`, `y`, `z`, `qw`, `qx`, `qy`, `qz`, `speed`)       |
+| **Base frame**          | Only knife-frame input (`feasibility_analysis.py`) | `--base_frame` flag skips knife transform; toolpath used as-is                              |
+| **Dashboard**           | Separate C1-only plot                              | Combined C0+C1+speed dashboard per trajectory                                               |
+| **EAIK multi-solution** | Only "closest" or "min_norm" single pick           | Greedy scoring across all valid solutions for optimal C0/C1/manipulability                  |
+| **Formulas**            | No change                                          | No change — same `shortest_angular_distance`, same `dt = dist / speed`, same velocity ratio |
+
 
 ---
 
@@ -668,17 +685,19 @@ cost(q) = w_c0  × ‖Δq‖₂
 - **μ** — Yoshikawa manipulability (higher is better; it is **subtracted**, so higher μ lowers cost).
 - The **log** singularity term replaces a raw `1/σ_min` penalty so costs stay bounded and comparable to the C0 and manipulability terms near singularities.
 
-| Weight | Effect when increased | Typical use-case |
-|--------|-----------------------|------------------|
-| `c0` | Strongly favours smooth branch transitions; reduces C0 jumps | Trajectories with frequent IK branch switches |
-| `singularity` | Stronger push away from small σ_min (still smooth via log) | Paths near wrist or other singularities |
-| `manipulability` | Prefers dexterous configurations (higher Yoshikawa index) | General-purpose — keeps the robot away from kinematic edge cases |
+
+| Weight           | Effect when increased                                        | Typical use-case                                                 |
+| ---------------- | ------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `c0`             | Strongly favours smooth branch transitions; reduces C0 jumps | Trajectories with frequent IK branch switches                    |
+| `singularity`    | Stronger push away from small σ_min (still smooth via log)   | Paths near wrist or other singularities                          |
+| `manipulability` | Prefers dexterous configurations (higher Yoshikawa index)    | General-purpose — keeps the robot away from kinematic edge cases |
+
 
 **Tuning guide:**
 
-- Raise **`c0`** if branch switches still cause large joint jumps.
-- Raise **`singularity`** if candidates cluster too close to singular poses; lower it if the log term still dominates everything else after retuning.
-- Raise **`manipulability`** to prefer dexterity over the other terms.
+- Raise `**c0`** if branch switches still cause large joint jumps.
+- Raise `**singularity**` if candidates cluster too close to singular poses; lower it if the log term still dominates everything else after retuning.
+- Raise `**manipulability**` to prefer dexterity over the other terms.
 - C1 / velocity-limit checks are **separate** (continuity phase); they are **not** part of this branch-selection score.
 
 This feature is **ignored** when the solver is `"pin"` (Pinocchio returns a single solution per call).
@@ -726,14 +745,14 @@ When the EAIK solver is used, it returns multiple geometrically valid IK solutio
 
 1. **Collection**: After trajectory analysis completes, for each waypoint, extract all candidates from `ik_debug_info['all_solutions']`.
 2. **Scoring**: Score each candidate using the same cost function as multi-solution selection:
-   - `cost = w_c0 × ‖Δq‖ + w_sing × log(1 + 1/max(σ_min, ε)) − w_manip × μ`
-   - σ_min is the Jacobian’s smallest singular value; ε is a small floor (~1e‑9). The **log** form avoids unbounded `1/σ_min` spikes near singularities. (C1 velocity terms are not part of this branch score; they appear elsewhere in continuity checks.)
+  - `cost = w_c0 × ‖Δq‖ + w_sing × log(1 + 1/max(σ_min, ε)) − w_manip × μ`
+  - σ_min is the Jacobian’s smallest singular value; ε is a small floor (~1e‑9). The **log** form avoids unbounded `1/σ_min` spikes near singularities. (C1 velocity terms are not part of this branch score; they appear elsewhere in continuity checks.)
 3. **Visualization**: For each joint, create a scatter plot:
-   - **X-axis**: Waypoint index (0 to N-1)
-   - **Y-axis**: Joint angle (degrees)
-   - **Colour-map**: Cost (green = good/low, red = bad/high)
-   - **Annotation**: Each dot is labelled with its cost value
-   - **Selected solution**: Highlighted with a black square outline
+  - **X-axis**: Waypoint index (0 to N-1)
+  - **Y-axis**: Joint angle (degrees)
+  - **Colour-map**: Cost (green = good/low, red = bad/high)
+  - **Annotation**: Each dot is labelled with its cost value
+  - **Selected solution**: Highlighted with a black square outline
 4. **Output**: One PNG per joint (6 total for a 6-DOF robot), saved to `eaik_solutions_scores_j{1..6}.png`
 
 #### Configuration
@@ -764,18 +783,14 @@ Robot trajectories are defined as sequences of Cartesian waypoints. The **distan
 #### How It Works
 
 1. **Arc-length Computation**: For each segment, calculate Cartesian distance between consecutive waypoints:
-   \[ \text{arc\_length}_i = \|\mathbf{p}_{i+1} - \mathbf{p}_i\|_2 \]
-
+   \text{arclength}*i = \mathbf{p}*{i+1} - \mathbf{p}_i_2 
 2. **Density Check**: For each segment, compute the maximum allowed spacing based on check frequency and commanded speed:
-   \[ \text{max\_spacing}_i = \frac{\text{speed}_i}{\text{check\_frequency}} \]
+   \text{maxspacing}_i = \frac{\text{speed}_i}{\text{checkfrequency}} 
    Example: at 100 mm/s with 50 Hz check frequency → max 2 mm between waypoints.
-
 3. **Flagging**: Mark segments where `arc_length > max_spacing` as **sparse**.
-
 4. **Optional Densification**: If `interpolate_sparse: true`, interpolate intermediate poses using:
-   - Linear interpolation for position
-   - SLERP (spherical linear interpolation) for orientation (quaternion)
-
+  - Linear interpolation for position
+  - SLERP (spherical linear interpolation) for orientation (quaternion)
 5. **Reporting**: Add density status and sparse segment indices to the text report and generate a bar chart.
 
 #### Configuration
@@ -821,20 +836,16 @@ time_parameterization:
 #### How It Works
 
 1. **Path Construction**: Create a cubic spline through all joint configurations:
-   \[ \mathbf{q}(s) : s \in [0, 1] \to \mathbb{R}^6 \]
-
+   \mathbf{q}(s) : s \in [0, 1] \to \mathbb{R}^6 
 2. **Constraints Setup**: Define per-joint limits as intervals:
-   - Velocity: \( -\dot{q}_{\text{limit},j} \leq \dot{q}_j(t) \leq +\dot{q}_{\text{limit},j} \)
-   - Acceleration: \( -\ddot{q}_{\text{limit},j} \leq \ddot{q}_j(t) \leq +\ddot{q}_{\text{limit},j} \)
-
+  - Velocity:  -\dot{q}_{\text{limit},j} \leq \dot{q}*j(t) \leq +\dot{q}*{\text{limit},j} 
+  - Acceleration:  -\ddot{q}_{\text{limit},j} \leq \ddot{q}*j(t) \leq +\ddot{q}*{\text{limit},j} 
 3. **TOPP-RA Algorithm**: Solves the optimal control problem:
-   \[ \min T \quad \text{subject to velocity/acceleration constraints and path} \]
-   Returns the time-optimal parametrization \( t(s) \) and path velocity profile \( \dot{s}(t) \).
-
+   \min T \quad \text{subject to velocity/acceleration constraints and path} 
+   Returns the time-optimal parametrization  t(s)  and path velocity profile  \dot{s}(t) .
 4. **Feasibility Check**: Compare minimum traversal time vs. target time:
-   - If \( t_{\min} \leq t_{\text{target}} \) → **FEASIBLE** (trajectory can be executed at target speed)
-   - If \( t_{\min} > t_{\text{target}} \) → **INFEASIBLE** (must reduce speed or remove waypoints)
-
+  - If  t_{\min} \leq t_{\text{target}}  → **FEASIBLE** (trajectory can be executed at target speed)
+  - If  t_{\min} > t_{\text{target}}  → **INFEASIBLE** (must reduce speed or remove waypoints)
 5. **Output**: Report feasibility status, time ratio, and a plot of the time-optimal velocity profile.
 
 #### Configuration
@@ -858,7 +869,7 @@ The import is guarded: if `toppra` is not installed and the check is enabled, a 
 #### Output
 
 - **Text report**: Feasibility status, minimum traversal time, target duration, time ratio
-- **Plot** (`topp_ra_{trajectory_name}.png`): Time-optimal velocity profile \( \dot{s}(t) \) showing how the robot must move along the path to respect all constraints
+- **Plot** (`topp_ra_{trajectory_name}.png`): Time-optimal velocity profile  \dot{s}(t)  showing how the robot must move along the path to respect all constraints
 - **Console**: Feasibility status (FEASIBLE/INFEASIBLE) with ratio printed during batch execution
 
 #### Use Case
@@ -877,3 +888,4 @@ The import is guarded: if `toppra` is not installed and the check is enabled, a 
 - [Pinocchio](https://github.com/stack-of-tasks/pinocchio) – Rigid-body dynamics
 - [EAIK](https://github.com/rpiRobotics/eaik) – Analytical IK solver
 - Yoshikawa (1985), "Manipulability of Robotic Mechanisms"
+
