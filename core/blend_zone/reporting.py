@@ -71,6 +71,7 @@ def generate_f3_report(
             "a_decel_mm_s2": speed_result.calibration.a_decel,
             "rho_min_scale": speed_result.calibration.rho_min_scale,
             "use_jacobian_dynamics": speed_result.calibration.use_jacobian_dynamics,
+            "max_orientation_speed_deg_s": speed_result.calibration.max_orientation_speed_deg_s,
             "joint_dynamics_source": (
                 speed_result.calibration.joint_dynamics.source
                 if speed_result.calibration.joint_dynamics is not None else ""

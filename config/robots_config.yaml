@@ -70,6 +70,7 @@ robots:
       # the corner).  Empirically k_corner = 0.50 matches the z5/z10/z50 dips
       # on the v20 and v500 corner sets within ~1 mm/s.  Set to 0 to disable.
       k_corner_dip: 0.50
+      max_orientation_speed_deg_s: 1000.0 # Hard TCP orientation-speed ceiling from RobotStudio vmax setting
       # Experiment 24 measured per-joint dynamics at neutral configuration.
       # Values are stored here in degrees for readability and converted to
       # radians by core/calibration/joint_dynamics.py.

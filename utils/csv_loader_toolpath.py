@@ -477,7 +477,9 @@ def _parse_f3_headerless_preset(vals: List[float], n_cols: int, default_v_cmd: f
 def _parse_f3_headerless_custom(vals: List[float], n_cols: int, default_v_cmd: float, default_zone: str):
     """Parse zone + speed from a headerless row in CUSTOM zone mode.
 
-    Layout A (14-col): x,y,z,qw,qx,qy,qz, speed, pzone_tcp, pzone_ori, pzone_eax, zone_ori, ...
+    Layout A (14-col): x,y,z,qw,qx,qy,qz, speed,
+        pzone_tcp, pzone_ori, pzone_eax, zone_ori, zone_leax, zone_reax.
+        Only pzone_tcp, pzone_ori, and zone_ori are used by Feature 3.
     Layout B (10/11):  x,y,z,qw,qx,qy,qz, pzone_tcp, pzone_ori, zone_ori [, v_cmd]
     """
     zone_spec = default_zone

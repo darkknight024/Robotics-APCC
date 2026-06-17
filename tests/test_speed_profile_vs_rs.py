@@ -10,6 +10,7 @@ from tests.experiment24_validation import (
     evaluate_exp24_dataset,
     evaluate_exp24_v2_orientation_dataset,
     evaluate_exp24_v3_siping_dataset,
+    evaluate_exp24_v4_base_frame_dataset,
 )
 
 
@@ -73,10 +74,22 @@ def test_speed_profile_vs_robotstudio_exp24_v3_controlled_siping():
     print(f"Experiment 24 v3 controlled-siping validation written to: {out_dir}")
 
 
+def test_speed_profile_vs_robotstudio_exp24_v4_base_frame_siping():
+    repo = Path(__file__).resolve().parents[1]
+    out_dir = create_exp24_results_dir("exp24_v4_base_frame_siping_d2_validation", repo)
+    metrics = evaluate_exp24_v4_base_frame_dataset(out_dir, repo)
+
+    assert len(metrics) >= 1, "Expected at least one Experiment 24 v4 file"
+    summary = out_dir / "v4_base_frame_summary.txt"
+    assert summary.exists()
+    print(f"Experiment 24 v4 base-frame validation written to: {out_dir}")
+
+
 def main() -> None:
     test_speed_profile_vs_robotstudio_exp24_joint_sweeps()
     test_speed_profile_vs_robotstudio_exp24_v2_orientation_corners()
     test_speed_profile_vs_robotstudio_exp24_v3_controlled_siping()
+    test_speed_profile_vs_robotstudio_exp24_v4_base_frame_siping()
 
 
 if __name__ == "__main__":

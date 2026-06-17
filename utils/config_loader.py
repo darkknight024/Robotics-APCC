@@ -184,6 +184,7 @@ class RobotConfig:
     a_n_blend_mm_s2: float = 0.0        # normal-accel limit inside blends (0 ⇒ disabled)
     k_corner_dip: float = 0.0           # universal corner-speed-reduction coefficient (0 ⇒ disabled)
     use_jacobian_dynamics: bool = False
+    max_orientation_speed_deg_s: float = 0.0  # scalar TCP orientation-speed ceiling (0 ⇒ disabled)
     T_settle_s: float = 0.2
     is_calibrated: bool = False
     blend_model_rmse_mm_s: float = 0.0
@@ -219,6 +220,7 @@ def load_robots_config(config_path: str = None) -> Dict[str, RobotConfig]:
             a_n_blend_mm_s2=float(cal.get('a_n_blend_mm_s2', 0.0)),
             k_corner_dip=float(cal.get('k_corner_dip', 0.0)),
             use_jacobian_dynamics=bool(cal.get('use_jacobian_dynamics', False)),
+            max_orientation_speed_deg_s=float(cal.get('max_orientation_speed_deg_s', 0.0)),
             T_settle_s=float(cal.get('T_settle_s', 0.2)),
             is_calibrated=bool(cal.get('is_calibrated', False)),
             blend_model_rmse_mm_s=float(cal.get('blend_model_rmse_mm_s', 0.0)),

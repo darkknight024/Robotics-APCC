@@ -107,6 +107,7 @@ class SpeedCalibration:
     joint_dynamics: Optional[Any] = None
     jacobian_eval: Optional[Callable[[np.ndarray], np.ndarray]] = None
     use_jacobian_dynamics: bool = False
+    max_orientation_speed_deg_s: float = 0.0  # 0 ⇒ disabled
 
     @property
     def a_accel(self) -> float:
@@ -144,6 +145,7 @@ class SpeedProfileResult:
     is_blend_arc: np.ndarray
     total_duration_s: float
     v_joint_ceiling: np.ndarray = field(default_factory=lambda: np.array([]))
+    v_orientation_ceiling: np.ndarray = field(default_factory=lambda: np.array([]))
     v_ceiling: np.ndarray = field(default_factory=lambda: np.array([]))
     a_accel_profile_mm_s2: np.ndarray = field(default_factory=lambda: np.array([]))
     a_decel_profile_mm_s2: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -292,6 +294,46 @@ def _path_tangents(dense_path: DensePath) -> np.ndarray:
         elif k > 0:
             tangents[k] = tangents[k - 1]
     return tangents
+
+
+def _orientation_speed_ceiling(
+    dense_path: DensePath,
+    max_orientation_speed_deg_s: float,
+) -> np.ndarray:
+    """TCP speed ceiling from scalar orientation speed limit.
+
+    For each path interval, ``orientation_speed = dtheta_deg/ds_mm * v_mm_s``.
+    Therefore ``v_max = omega_max / (dtheta_deg/ds_mm)``.  The interval ceiling
+    is applied to both adjacent samples to keep the forward/backward pass local.
+    """
+
+    M = dense_path.n_samples
+    ceiling = np.full(M, np.inf)
+    if max_orientation_speed_deg_s <= 0.0 or M < 2:
+        return ceiling
+
+    quats = np.asarray(dense_path.poses[:, 3:7], dtype=float).copy()
+    for i in range(M):
+        norm = np.linalg.norm(quats[i])
+        if norm > 1e-12:
+            quats[i] /= norm
+        if i > 0 and np.dot(quats[i - 1], quats[i]) < 0.0:
+            quats[i] = -quats[i]
+
+    arc_s = dense_path.arc_lengths
+    for i in range(1, M):
+        ds = float(arc_s[i] - arc_s[i - 1])
+        if ds <= 1e-9:
+            continue
+        dot = abs(float(np.clip(np.dot(quats[i - 1], quats[i]), -1.0, 1.0)))
+        dtheta_deg = float(np.degrees(2.0 * np.arccos(dot)))
+        if dtheta_deg <= 1e-9:
+            continue
+        v_max = max_orientation_speed_deg_s * ds / dtheta_deg
+        ceiling[i - 1] = min(ceiling[i - 1], v_max)
+        ceiling[i] = min(ceiling[i], v_max)
+
+    return ceiling
 
 
 def predict_speed_profile(
@@ -454,6 +496,10 @@ def predict_speed_profile(
 
     # ── Step 2: Jacobian dynamics (D2) or scalar-calibration fallback ──
     v_joint_ceil = np.full(M, np.inf)
+    v_orientation_ceil = _orientation_speed_ceiling(
+        dense_path,
+        calibration.max_orientation_speed_deg_s,
+    )
     a_accel_profile = np.full(M, float(a_accel))
     a_decel_profile = np.full(M, float(a_decel))
 
@@ -538,6 +584,7 @@ def predict_speed_profile(
     # ── Base ceilings before reachability passes ──
     v_cmd_ceiling = np.where((v_cmd > 0.0) & np.isfinite(v_cmd), v_cmd, np.inf)
     v_ceiling = np.minimum(v_blend_ceil, v_joint_ceil)
+    v_ceiling = np.minimum(v_ceiling, v_orientation_ceil)
     if v_topp_ceiling is not None and len(v_topp_ceiling) == M:
         v_ceiling = np.minimum(v_ceiling, v_topp_ceiling)
     v_limit_for_goal = np.minimum(v_cmd_ceiling, v_ceiling)
@@ -608,6 +655,7 @@ def predict_speed_profile(
         is_blend_arc=is_blend,
         total_duration_s=total_time,
         v_joint_ceiling=v_joint_ceil,
+        v_orientation_ceiling=v_orientation_ceil,
         v_ceiling=v_ceiling,
         a_accel_profile_mm_s2=a_accel_profile,
         a_decel_profile_mm_s2=a_decel_profile,

@@ -266,6 +266,7 @@ def run_feature3(
             joint_dynamics=joint_dynamics,
             jacobian_eval=_world_jacobian,
             use_jacobian_dynamics=use_jacobian_dynamics,
+            max_orientation_speed_deg_s=getattr(robot_config, "max_orientation_speed_deg_s", 0.0),
         )
     else:
         calibration = SpeedCalibration(
@@ -275,6 +276,7 @@ def run_feature3(
             joint_dynamics=joint_dynamics,
             jacobian_eval=_world_jacobian if use_jacobian_dynamics else None,
             use_jacobian_dynamics=use_jacobian_dynamics,
+            max_orientation_speed_deg_s=getattr(robot_config, "max_orientation_speed_deg_s", 0.0) if robot_config else 0.0,
         )
 
     # ── Process each trajectory ──
