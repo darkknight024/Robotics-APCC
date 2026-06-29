@@ -10,12 +10,15 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 _ROBOT_NAME = "IRB 1300-7/1.4"
@@ -114,6 +117,30 @@ class Exp24V4TrajectoryMetrics:
     tcp_frame: str = "ee_link"
 
 
+@dataclass
+class Exp24V6TrajectoryMetrics:
+    file: str
+    zone_mode: str
+    n_rs_samples: int
+    n_solver_samples: int
+    n_corner_events: int
+    n_near_collinear_events: int
+    direct_jac_speed_median_rel_error: float
+    direct_jac_accel_median_rel_error: float
+    direct_jac_orientation_speed_median_rel_error: float
+    solver_speed_rms_mm_s: float
+    solver_speed_median_rel_error: float
+    solver_accel_p95_mm_s2: float
+    rs_accel_p95_mm_s2: float
+    solver_orientation_speed_median_abs_error_deg_s: float
+    raw_to_solver_rms_error_mm: float
+    raw_to_rs_rms_error_mm: float
+    pose_mean_error_mm: float
+    pose_p95_error_mm: float
+    pose_max_error_mm: float
+    tcp_frame: str = "ee_link"
+
+
 def experiment24_root(repo: Optional[Path] = None) -> Path:
     repo = repo or Path(__file__).resolve().parents[1]
     root = repo / "Robot_APCC" / "Experiments" / _EXP24_DIRNAME
@@ -166,15 +193,24 @@ def _time_gradient(values: np.ndarray, t_s: np.ndarray) -> np.ndarray:
     if n < 2:
         return grad
     for i in range(n):
-        if i == 0:
-            dt = max(t_s[1] - t_s[0], 1e-9)
-            grad[i] = (values[1] - values[0]) / dt
-        elif i == n - 1:
-            dt = max(t_s[-1] - t_s[-2], 1e-9)
-            grad[i] = (values[-1] - values[-2]) / dt
+        left = i - 1
+        while left >= 0 and t_s[i] - t_s[left] <= 1e-9:
+            left -= 1
+        right = i + 1
+        while right < n and t_s[right] - t_s[i] <= 1e-9:
+            right += 1
+
+        if left >= 0 and right < n:
+            dt = t_s[right] - t_s[left]
+            grad[i] = (values[right] - values[left]) / dt
+        elif right < n:
+            dt = t_s[right] - t_s[i]
+            grad[i] = (values[right] - values[i]) / dt
+        elif left >= 0:
+            dt = t_s[i] - t_s[left]
+            grad[i] = (values[i] - values[left]) / dt
         else:
-            dt = max(t_s[i + 1] - t_s[i - 1], 1e-9)
-            grad[i] = (values[i + 1] - values[i - 1]) / dt
+            grad[i] = grad[i - 1] if i > 0 else 0.0
     return grad
 
 
@@ -388,6 +424,23 @@ def iter_exp24_v4_rs_csvs(repo: Optional[Path] = None) -> Iterable[Path]:
     yield from sorted(rs_root.rglob("*.csv"))
 
 
+def iter_exp24_v6_rs_csvs(repo: Optional[Path] = None) -> Iterable[Path]:
+    rs_root = experiment24_root(repo) / "Results - RobotStudio" / "v6_constant_tool_orientation_recordings"
+    yield from sorted(rs_root.glob("*.csv"))
+
+
+def _exp24_v6_toolpath_for_rs(rs_csv: Path, repo: Path) -> Path:
+    toolpath = (
+        experiment24_root(repo)
+        / "Toolpaths"
+        / "v6_constant_tool_orientation_recordings"
+        / rs_csv.name
+    )
+    if not toolpath.exists():
+        raise FileNotFoundError(f"Matching v6 toolpath not found for {rs_csv.name}: {toolpath}")
+    return toolpath
+
+
 def _exp24_v4_toolpath_for_rs(rs_csv: Path, repo: Path) -> Path:
     toolpath = (
         experiment24_root(repo)
@@ -578,7 +631,13 @@ def _orientation_speed_deg_s(quats: np.ndarray, time_ms: np.ndarray) -> np.ndarr
     if len(q) < 2:
         return speed
     for i in range(len(q) - 1):
-        dt = max(float(t[i + 1] - t[i]), 1e-9)
+        dt = float(t[i + 1] - t[i])
+        if dt <= 1e-6:
+            # Duplicate solver samples can share the same arc/time stamp at
+            # blend/ramp boundaries.  They are not physical time intervals;
+            # carrying the previous value avoids artificial infinite spikes.
+            speed[i] = speed[i - 1] if i > 0 else 0.0
+            continue
         dot = abs(float(np.clip(np.dot(q[i], q[i + 1]), -1.0, 1.0)))
         angle_deg = np.degrees(2.0 * np.arccos(dot))
         speed[i] = angle_deg / dt
@@ -1029,6 +1088,18 @@ def evaluate_exp24_v3_siping_dataset(
             jacobian_dynamics_override=True,
         )
 
+        if result.speed_profile is None:
+            raise RuntimeError(
+                f"Feature 3 did not produce a speed profile for {rs_csv.name}: "
+                f"{result.infeasible_reason or 'unknown infeasibility'}"
+            )
+
+        if result.speed_profile is None:
+            raise RuntimeError(
+                f"Feature 3 did not produce a speed profile for {rs_csv.name}: "
+                f"{result.infeasible_reason or 'unknown infeasibility'}"
+            )
+
         solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
         solver_time = _time_from_arc_speed(result.speed_profile.arc_lengths_mm, result.speed_profile.v_actual)
         solver_speed_base, solver_accel_base = _speed_accel_from_xyz_time(
@@ -1240,6 +1311,209 @@ def _plot_v4_speed_overlay(
     plt.close(fig)
 
 
+def _write_speed_profile_summary(
+    out_dir: Path,
+    label: str,
+    rs_speed: np.ndarray,
+    solver_speed: np.ndarray,
+    rs_speed_on_solver: np.ndarray,
+    solver_arc: np.ndarray,
+) -> None:
+    active = (rs_speed_on_solver > 1.0) | (solver_speed > 1.0)
+    err = solver_speed[active] - rs_speed_on_solver[active]
+    abs_err = np.abs(err)
+    safe = np.maximum(rs_speed_on_solver[active], 1.0)
+    rel = abs_err / safe
+
+    lines = [
+        "Speed Profile Summary",
+        "=" * 80,
+        f"Trajectory: {label}",
+        "Comparison: RobotStudio logged native TCP speed vs Feature 3 D2 solver TCP speed",
+        "",
+        f"Solver samples: {len(solver_speed)}",
+        f"Solver arc length: {float(solver_arc[-1]) if len(solver_arc) else 0.0:.3f} mm",
+        "",
+        "RobotStudio speed:",
+        f"  min/median/max: {np.min(rs_speed):.3f} / {np.median(rs_speed):.3f} / {np.max(rs_speed):.3f} mm/s",
+        "Solver speed:",
+        f"  min/median/max: {np.min(solver_speed):.3f} / {np.median(solver_speed):.3f} / {np.max(solver_speed):.3f} mm/s",
+        "",
+        "Error on solver arc grid:",
+        f"  mean abs error:   {np.mean(abs_err):.3f} mm/s",
+        f"  median abs error: {np.median(abs_err):.3f} mm/s",
+        f"  RMS error:        {np.sqrt(np.mean(err ** 2)):.3f} mm/s",
+        f"  P95 abs error:    {np.percentile(abs_err, 95):.3f} mm/s",
+        f"  max abs error:    {np.max(abs_err):.3f} mm/s",
+        f"  median rel error: {np.median(rel) * 100.0:.2f} %",
+        "",
+        "Interpretation notes:",
+        "- This file compares speed only; pose/orientation plots are written separately.",
+        "- Large negative solver-RS errors generally indicate solver speed dips.",
+        "- For v4, local dips should be checked against blend, joint, and orientation ceilings.",
+    ]
+    (out_dir / "speed_profile_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _plot_v4_waypoint_speed_windows(
+    out_dir: Path,
+    label: str,
+    raw_waypoints_xyz_mm: np.ndarray,
+    solver_arc: np.ndarray,
+    solver_speed: np.ndarray,
+    solver_accel: np.ndarray,
+    rs_arc: np.ndarray,
+    rs_speed: np.ndarray,
+    rs_accel: np.ndarray,
+    corner_indices: List[int],
+    window_idx: float = 1.5,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out = out_dir / "speed_windows"
+    out.mkdir(parents=True, exist_ok=True)
+    wp_progress_solver = _project_to_waypoint_index(
+        np.column_stack([
+            np.interp(solver_arc, solver_arc, raw_waypoints_xyz_mm[0, 0] + np.zeros_like(solver_arc)),
+            np.zeros_like(solver_arc),
+            np.zeros_like(solver_arc),
+        ]),
+        raw_waypoints_xyz_mm,
+    )
+    # The helper above is geometry based; for speed windows we need monotonically
+    # map solver/RS samples onto raw-waypoint progress by projecting actual poses.
+    # Recomputed by caller-independent interpolation below.
+    del wp_progress_solver
+
+    for idx in corner_indices:
+        lo = idx - window_idx
+        hi = idx + window_idx
+        # Approximate waypoint progress by arc fraction along raw polyline.
+        raw_arc = _arc_length_mm(raw_waypoints_xyz_mm)
+        center_s = raw_arc[idx]
+        lo_s = np.interp(max(0.0, lo), np.arange(len(raw_arc)), raw_arc)
+        hi_s = np.interp(min(len(raw_arc) - 1.0, hi), np.arange(len(raw_arc)), raw_arc)
+        sol_mask = (solver_arc >= lo_s) & (solver_arc <= hi_s)
+        rs_mask = (rs_arc >= lo_s) & (rs_arc <= hi_s)
+        if np.sum(sol_mask) < 2 or np.sum(rs_mask) < 2:
+            continue
+
+        fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+        axes[0].plot(rs_arc[rs_mask] - center_s, rs_speed[rs_mask], "b-", lw=1.3, label="RobotStudio")
+        axes[0].plot(solver_arc[sol_mask] - center_s, solver_speed[sol_mask], "r--", lw=1.2, label="Solver")
+        axes[0].axvline(0.0, color="k", lw=0.8, alpha=0.4, label=f"WP{idx}")
+        axes[0].set_ylabel("TCP speed (mm/s)")
+        axes[0].set_title(f"{label} speed around WP{idx}")
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend(loc="best")
+
+        axes[1].plot(rs_arc[rs_mask] - center_s, np.abs(rs_accel[rs_mask]), "b-", lw=1.3, label="RobotStudio")
+        axes[1].plot(solver_arc[sol_mask] - center_s, np.abs(solver_accel[sol_mask]), "r--", lw=1.2, label="Solver")
+        axes[1].axvline(0.0, color="k", lw=0.8, alpha=0.4)
+        axes[1].set_ylabel("|TCP accel| (mm/s²)")
+        axes[1].set_xlabel("Arc length relative to waypoint (mm)")
+        axes[1].set_title(f"{label} acceleration around WP{idx}")
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend(loc="best")
+
+        fig.tight_layout()
+        fig.savefig(out / f"wp{idx:03d}_speed_accel_window.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _write_waypoint_speed_diagnostics(
+    out_dir: Path,
+    label: str,
+    waypoints_m: np.ndarray,
+    zone_specs: List[str],
+    solver_arc: np.ndarray,
+    solver_speed: np.ndarray,
+    speed_profile,
+    rs_arc: np.ndarray,
+    rs_speed: np.ndarray,
+    turn_threshold_deg: float,
+) -> tuple[int, int]:
+    from core.blend_zone.blend_geometry import compute_blend_geometries
+    from core.blend_zone.zone_resolver import resolve_zone_list, apply_overlap_reduction
+
+    waypoints_xyz_mm = waypoints_m[:, :3] * 1000.0
+    raw_arc = _arc_length_mm(waypoints_xyz_mm)
+    zones = apply_overlap_reduction(resolve_zone_list(zone_specs), waypoints_m)
+    geoms = compute_blend_geometries(waypoints_m, zones)
+    geom_by_idx = {g.waypoint_idx: g for g in geoms if g is not None}
+
+    rows = []
+    n_events = 0
+    n_near = 0
+    for idx in range(1, len(waypoints_xyz_mm) - 1):
+        a = waypoints_xyz_mm[idx] - waypoints_xyz_mm[idx - 1]
+        b = waypoints_xyz_mm[idx + 1] - waypoints_xyz_mm[idx]
+        na = np.linalg.norm(a)
+        nb = np.linalg.norm(b)
+        if na < 1e-9 or nb < 1e-9:
+            continue
+        cosang = np.clip(float(np.dot(a, b) / (na * nb)), -1.0, 1.0)
+        turn_deg = float(np.degrees(np.arccos(cosang)))
+        is_near = turn_deg < turn_threshold_deg
+        if is_near:
+            n_near += 1
+            continue
+        n_events += 1
+
+        geom = geom_by_idx.get(idx)
+        zone_eff = float(geom.r_tcp_eff_mm) if geom is not None else 0.0
+        window_mm = max(2.0, min(25.0, max(zone_eff * 2.0, 0.5 * min(na, nb))))
+        center_s = raw_arc[idx]
+        sol_mask = (solver_arc >= center_s - window_mm) & (solver_arc <= center_s + window_mm)
+        rs_mask = (rs_arc >= center_s - window_mm) & (rs_arc <= center_s + window_mm)
+
+        def _dip(values: np.ndarray, mask: np.ndarray) -> float:
+            local = values[mask]
+            return float(np.max(local) - np.min(local)) if len(local) else float("nan")
+
+        local_ceiling = float("inf")
+        if len(getattr(speed_profile, "v_ceiling", [])) == len(solver_arc) and np.any(sol_mask):
+            finite = speed_profile.v_ceiling[sol_mask]
+            finite = finite[np.isfinite(finite)]
+            if len(finite):
+                local_ceiling = float(np.min(finite))
+
+        rows.append({
+            "label": label,
+            "waypoint_idx": idx,
+            "turn_angle_deg": turn_deg,
+            "effective_zone_mm": zone_eff,
+            "window_mm": window_mm,
+            "local_ceiling_mm_s": local_ceiling,
+            "solver_speed_dip_mm_s": _dip(solver_speed, sol_mask),
+            "rs_speed_dip_mm_s": _dip(rs_speed, rs_mask),
+            "solver_min_speed_mm_s": float(np.min(solver_speed[sol_mask])) if np.any(sol_mask) else float("nan"),
+            "rs_min_speed_mm_s": float(np.min(rs_speed[rs_mask])) if np.any(rs_mask) else float("nan"),
+        })
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "label",
+        "waypoint_idx",
+        "turn_angle_deg",
+        "effective_zone_mm",
+        "window_mm",
+        "local_ceiling_mm_s",
+        "solver_speed_dip_mm_s",
+        "rs_speed_dip_mm_s",
+        "solver_min_speed_mm_s",
+        "rs_min_speed_mm_s",
+    ]
+    with open(out_dir / "waypoint_speed_diagnostics.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return n_events, n_near
+
+
 def evaluate_exp24_v4_base_frame_dataset(
     out_dir: Path,
     repo: Optional[Path] = None,
@@ -1273,11 +1547,14 @@ def evaluate_exp24_v4_base_frame_dataset(
         toolpath = _exp24_v4_toolpath_for_rs(rs_csv, repo)
 
         rs_data = _load_csv(rs_csv)
-        rs_xyz_mm = np.vstack([rs_data["rs_x_mm"], rs_data["rs_y_mm"], rs_data["rs_z_mm"]]).T
+        rs_base = _rs_poses_tpk_to_base(rs_data, repo)
+        rs_xyz_mm = rs_base[:, :3] * 1000.0
         rs_arc = _arc_length_mm(rs_xyz_mm)
-        rs_speed = np.asarray(rs_data["speed_mm_per_s"], dtype=float)
-        rs_accel = np.asarray(rs_data["linear_acceleration_mm_s_2"], dtype=float)
-        rs_orientation_speed = np.asarray(rs_data["orientation_speed_deg_per_s"], dtype=float)
+        rs_speed, rs_accel = _speed_accel_from_xyz_time(rs_xyz_mm, rs_data["time_ms"])
+        rs_orientation_speed = _orientation_speed_deg_s(rs_base[:, 3:7], rs_data["time_ms"])
+        rs_logged_speed = np.asarray(rs_data["speed_mm_per_s"], dtype=float)
+        rs_logged_accel = np.asarray(rs_data["linear_acceleration_mm_s_2"], dtype=float)
+        rs_logged_orientation_speed = np.asarray(rs_data["orientation_speed_deg_per_s"], dtype=float)
 
         direct_speed, direct_accel, direct_orientation_speed, fk_positions_m = _reconstruct_from_rs_joint_state(rs_csv, fk_solver)
 
@@ -1289,7 +1566,9 @@ def evaluate_exp24_v4_base_frame_dataset(
             custom_zone=True,
             default_zone="z5",
             default_v_cmd=20.0,
-            use_base_frame=True,
+            use_base_frame=False,
+            knife_translation_m=knife.translation_m,
+            knife_quaternion=knife.quaternion,
         )
         result = run_feature3(
             toolpath_csv=str(toolpath),
@@ -1307,6 +1586,12 @@ def evaluate_exp24_v4_base_frame_dataset(
             preloaded_load_result=lr,
             jacobian_dynamics_override=True,
         )
+
+        if result.speed_profile is None:
+            raise RuntimeError(
+                f"Feature 3 did not produce a speed profile for {rs_csv.name}: "
+                f"{result.infeasible_reason or 'unknown infeasibility'}"
+            )
 
         solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
         solver_arc = result.speed_profile.arc_lengths_mm
@@ -1340,6 +1625,14 @@ def evaluate_exp24_v4_base_frame_dataset(
         )
 
         _plot_v4_speed_overlay(case_dir, label, rs_arc, rs_speed, solver_arc, solver_speed)
+        _write_speed_profile_summary(
+            case_dir,
+            label,
+            rs_speed,
+            solver_speed,
+            rs_speed_on_solver,
+            solver_arc,
+        )
         _plot_exp24_v3_pair(
             case_dir,
             label,
@@ -1371,6 +1664,18 @@ def evaluate_exp24_v4_base_frame_dataset(
             float(np.sqrt(np.mean(raw_rs_dist ** 2))),
             pose_dev,
         )
+        _plot_v4_waypoint_speed_windows(
+            case_dir,
+            label,
+            raw_waypoints_xyz_mm,
+            solver_arc,
+            solver_speed,
+            _solver_accel_xyz,
+            rs_arc,
+            rs_speed,
+            np.abs(rs_accel),
+            _select_corner_waypoints(lr.waypoints[0], max_corners=8),
+        )
 
         metrics.append(
             Exp24V4TrajectoryMetrics(
@@ -1393,6 +1698,214 @@ def evaluate_exp24_v4_base_frame_dataset(
         )
 
     _write_v4_base_frame_metrics(out_dir, metrics)
+    return metrics
+
+
+def evaluate_exp24_v6_constant_orientation_dataset(
+    out_dir: Path,
+    repo: Optional[Path] = None,
+    csv_paths: Optional[List[Path]] = None,
+) -> List[Exp24V6TrajectoryMetrics]:
+    """Validate v6 constant-orientation siping recordings in base frame."""
+
+    repo = repo or Path(__file__).resolve().parents[1]
+    fk_solver = _build_fk_solver_for_frame(repo, "ee_link")
+    paths = csv_paths or list(iter_exp24_v6_rs_csvs(repo))
+    if not paths:
+        raise FileNotFoundError(f"No Experiment 24 v6 CSVs found under {experiment24_root(repo)}")
+
+    from core.blend_zone import run_feature3
+    from core.blend_zone.verification import _project_points_to_polyline
+    from utils.config_loader import get_robot_by_name, load_batch_config, load_knife_config
+    from utils.csv_loader_toolpath import prepare_toolpath_load_result_for_feature3
+
+    cfg = load_batch_config(str(repo / "config" / "batch_feasibility_config.yaml"))
+    cfg.feature3_d1.enabled = True
+    cfg.feature3_d1.generate_plots = False
+    cfg.feature3_d1.generate_report = True
+    cfg.feature3_d1.ds_mm = 1.0
+    cfg.use_base_frame = False
+    cfg.solver = "pin"
+    robot = get_robot_by_name(_ROBOT_NAME)
+    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
+    turn_threshold_deg = float(getattr(cfg.feature3_d1, "min_corner_deflection_deg", 3.0))
+
+    metrics: List[Exp24V6TrajectoryMetrics] = []
+    for rs_csv in paths:
+        label = rs_csv.stem
+        case_dir = out_dir / "v6_constant_orientation" / label
+        case_dir.mkdir(parents=True, exist_ok=True)
+        toolpath = _exp24_v6_toolpath_for_rs(rs_csv, repo)
+
+        rs_data = _load_csv(rs_csv)
+        rs_base = _rs_poses_tpk_to_base(rs_data, repo)
+        rs_xyz_mm = rs_base[:, :3] * 1000.0
+        rs_arc = _arc_length_mm(rs_xyz_mm)
+        rs_speed, rs_accel = _speed_accel_from_xyz_time(rs_xyz_mm, rs_data["time_ms"])
+        rs_orientation_speed = _orientation_speed_deg_s(rs_base[:, 3:7], rs_data["time_ms"])
+        rs_logged_speed = np.asarray(rs_data["speed_mm_per_s"], dtype=float)
+        rs_logged_accel = np.asarray(rs_data["linear_acceleration_mm_s_2"], dtype=float)
+        rs_logged_orientation_speed = np.asarray(rs_data["orientation_speed_deg_per_s"], dtype=float)
+
+        direct_speed, direct_accel, direct_orientation_speed, _fk_positions_m = _reconstruct_from_rs_joint_state(
+            rs_csv, fk_solver,
+        )
+
+        lr = prepare_toolpath_load_result_for_feature3(
+            str(toolpath),
+            custom_zone=True,
+            default_zone="z5",
+            default_v_cmd=20.0,
+            use_base_frame=False,
+            knife_translation_m=knife.translation_m,
+            knife_quaternion=knife.quaternion,
+        )
+        result = run_feature3(
+            toolpath_csv=str(toolpath),
+            urdf_path=str(repo / robot.urdf_path),
+            config=cfg,
+            output_dir=str(case_dir / "solver"),
+            robot_model_name=_ROBOT_NAME,
+            robot_reach_m=robot.reach_m,
+            velocity_limits_rad_s=np.array(robot.velocity_limits_rad_s),
+            accel_limits_rad_s2=np.array(robot.acceleration_limits_rad_s2) if robot.acceleration_limits_rad_s2 else None,
+            verbose=False,
+            custom_zone=True,
+            plots=False,
+            reports=True,
+            preloaded_load_result=lr,
+            jacobian_dynamics_override=True,
+        )
+
+        if result.speed_profile is None:
+            raise RuntimeError(
+                f"Feature 3 did not produce a speed profile for {rs_csv.name}: "
+                f"{result.infeasible_reason or 'unknown infeasibility'}"
+            )
+
+        solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
+        solver_arc = result.speed_profile.arc_lengths_mm
+        solver_speed = result.speed_profile.v_actual
+        solver_time = _time_from_arc_speed(solver_arc, solver_speed)
+        _solver_speed_xyz, solver_accel_xyz = _speed_accel_from_xyz_time(solver_xyz_mm, solver_time * 1000.0)
+        solver_quat = _align_quaternion_series(result.dense_path.poses[:, 3:7])
+        solver_orientation_speed = _orientation_speed_deg_s(solver_quat, solver_time * 1000.0)
+
+        _proj, pose_dev = _project_points_to_polyline(solver_xyz_mm, rs_xyz_mm)
+        raw_waypoints_xyz_mm = lr.waypoints[0][:, :3] * 1000.0
+        _proj_raw_solver, raw_solver_dist = _project_points_to_polyline(raw_waypoints_xyz_mm, solver_xyz_mm)
+        _proj_raw_rs, raw_rs_dist = _project_points_to_polyline(raw_waypoints_xyz_mm, rs_xyz_mm)
+
+        rs_speed_on_solver = np.interp(solver_arc, rs_arc, rs_speed)
+        rs_orientation_on_solver = np.interp(solver_arc, rs_arc, rs_orientation_speed)
+        solver_speed_err = solver_speed - rs_speed_on_solver
+        solver_speed_rel = np.abs(solver_speed_err) / np.maximum(rs_speed_on_solver, 1.0)
+        solver_orientation_abs_err = np.abs(solver_orientation_speed - rs_orientation_on_solver)
+
+        active = rs_speed > 1.0
+        accel_mask = np.abs(rs_accel) > 100.0
+        direct_speed_rel = np.abs(direct_speed[active] - rs_speed[active]) / np.maximum(rs_speed[active], 1.0)
+        direct_accel_rel = (
+            np.abs(direct_accel[accel_mask] - np.abs(rs_accel[accel_mask]))
+            / np.maximum(np.abs(rs_accel[accel_mask]), 1.0)
+        )
+        direct_ori_rel = (
+            np.abs(direct_orientation_speed - rs_orientation_speed)
+            / np.maximum(rs_orientation_speed, 1.0)
+        )
+
+        _plot_v4_speed_overlay(case_dir, label, rs_arc, rs_speed, solver_arc, solver_speed)
+        _write_speed_profile_summary(
+            case_dir,
+            label,
+            rs_speed,
+            solver_speed,
+            rs_speed_on_solver,
+            solver_arc,
+        )
+        rs_quat = _align_quaternion_series(rs_base[:, 3:7])
+        _plot_exp24_v3_pair(
+            case_dir,
+            label,
+            rs_arc,
+            rs_speed,
+            np.abs(rs_accel),
+            rs_logged_speed,
+            rs_logged_accel,
+            rs_orientation_speed,
+            rs_logged_orientation_speed,
+            rs_quat,
+            direct_speed,
+            direct_accel,
+            direct_orientation_speed,
+            solver_arc,
+            _solver_speed_xyz,
+            solver_accel_xyz,
+            solver_orientation_speed,
+            solver_xyz_mm,
+            solver_quat,
+            np.column_stack([np.interp(solver_arc, rs_arc, rs_xyz_mm[:, c]) for c in range(3)]),
+            _align_quaternion_series(np.column_stack([
+                np.interp(solver_arc, rs_arc, rs_quat[:, c])
+                for c in range(4)
+            ])),
+            raw_waypoints_xyz_mm,
+            _align_quaternion_series(lr.waypoints[0][:, 3:7]),
+            float(np.sqrt(np.mean(raw_solver_dist ** 2))),
+            float(np.sqrt(np.mean(raw_rs_dist ** 2))),
+            pose_dev,
+        )
+        corner_indices = _select_corner_waypoints(lr.waypoints[0], max_corners=20)
+        _plot_v4_waypoint_speed_windows(
+            case_dir,
+            label,
+            raw_waypoints_xyz_mm,
+            solver_arc,
+            solver_speed,
+            solver_accel_xyz,
+            rs_arc,
+            rs_speed,
+            np.abs(rs_accel),
+            corner_indices,
+        )
+        n_events, n_near = _write_waypoint_speed_diagnostics(
+            case_dir,
+            label,
+            lr.waypoints[0],
+            lr.zone_specs[0],
+            solver_arc,
+            solver_speed,
+            result.speed_profile,
+            rs_arc,
+            rs_speed,
+            turn_threshold_deg,
+        )
+
+        metrics.append(
+            Exp24V6TrajectoryMetrics(
+                file=rs_csv.name,
+                zone_mode="custom_zonedata_from_toolpath_columns",
+                n_rs_samples=int(len(rs_data)),
+                n_solver_samples=int(result.dense_path.n_samples),
+                n_corner_events=n_events,
+                n_near_collinear_events=n_near,
+                direct_jac_speed_median_rel_error=float(np.median(direct_speed_rel)) if len(direct_speed_rel) else float("nan"),
+                direct_jac_accel_median_rel_error=float(np.median(direct_accel_rel)) if len(direct_accel_rel) else float("nan"),
+                direct_jac_orientation_speed_median_rel_error=float(np.median(direct_ori_rel)),
+                solver_speed_rms_mm_s=float(np.sqrt(np.mean(solver_speed_err ** 2))),
+                solver_speed_median_rel_error=float(np.median(solver_speed_rel)),
+                solver_accel_p95_mm_s2=float(np.percentile(np.abs(solver_accel_xyz), 95)) if len(solver_accel_xyz) else 0.0,
+                rs_accel_p95_mm_s2=float(np.percentile(np.abs(rs_accel), 95)) if len(rs_accel) else 0.0,
+                solver_orientation_speed_median_abs_error_deg_s=float(np.median(solver_orientation_abs_err)),
+                raw_to_solver_rms_error_mm=float(np.sqrt(np.mean(raw_solver_dist ** 2))),
+                raw_to_rs_rms_error_mm=float(np.sqrt(np.mean(raw_rs_dist ** 2))),
+                pose_mean_error_mm=float(np.mean(pose_dev)),
+                pose_p95_error_mm=float(np.percentile(pose_dev, 95)),
+                pose_max_error_mm=float(np.max(pose_dev)),
+            )
+        )
+
+    _write_v6_constant_orientation_metrics(out_dir, metrics)
     return metrics
 
 
@@ -1642,6 +2155,71 @@ def _write_v4_base_frame_metrics(out_dir: Path, metrics: List[Exp24V4TrajectoryM
     (out_dir / "v4_base_frame_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _write_v6_constant_orientation_metrics(out_dir: Path, metrics: List[Exp24V6TrajectoryMetrics]) -> None:
+    rows = [m.__dict__ for m in metrics]
+    with open(out_dir / "v6_constant_orientation_metrics.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    with open(out_dir / "v6_constant_orientation_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
+
+    direct_speed = np.array([m.direct_jac_speed_median_rel_error for m in metrics], dtype=float)
+    direct_accel = np.array([m.direct_jac_accel_median_rel_error for m in metrics], dtype=float)
+    direct_ori = np.array([m.direct_jac_orientation_speed_median_rel_error for m in metrics], dtype=float)
+    solver_speed = np.array([m.solver_speed_median_rel_error for m in metrics], dtype=float)
+    solver_rms = np.array([m.solver_speed_rms_mm_s for m in metrics], dtype=float)
+    solver_ori = np.array([m.solver_orientation_speed_median_abs_error_deg_s for m in metrics], dtype=float)
+    raw_solver = np.array([m.raw_to_solver_rms_error_mm for m in metrics], dtype=float)
+    raw_rs = np.array([m.raw_to_rs_rms_error_mm for m in metrics], dtype=float)
+    pose_mean = np.array([m.pose_mean_error_mm for m in metrics], dtype=float)
+    pose_p95 = np.array([m.pose_p95_error_mm for m in metrics], dtype=float)
+    events = np.array([m.n_corner_events for m in metrics], dtype=int)
+    near = np.array([m.n_near_collinear_events for m in metrics], dtype=int)
+
+    lines = [
+        "Experiment 24 v6 - Constant-Orientation D2 Validation",
+        "=" * 80,
+        f"Trajectories evaluated: {len(metrics)}",
+        "Input toolpaths and RobotStudio results are native T_P_K and are",
+        "transformed to base-frame T_B_P with the existing Zund knife pose.",
+        "Toolpath custom zonedata columns are honored for Feature 3 replay.",
+        "",
+        "Near-collinear event filtering:",
+        f"  median detected corner events: {np.median(events):.0f}",
+        f"  median skipped near-collinear waypoints: {np.median(near):.0f}",
+        "",
+        "Direct RobotStudio joint-state Jacobian reconstruction:",
+        f"  median speed relative error: {np.nanmedian(direct_speed) * 100.0:.2f} %",
+        f"  median accel relative error: {np.nanmedian(direct_accel) * 100.0:.2f} %",
+        f"  median orientation-speed relative error: {np.nanmedian(direct_ori) * 100.0:.2f} %",
+        "",
+        "Feature 3 D2 solver replay from raw base-frame toolpath:",
+        f"  median speed relative error: {np.nanmedian(solver_speed) * 100.0:.2f} %",
+        f"  median speed RMS error: {np.nanmedian(solver_rms):.3f} mm/s",
+        f"  median orientation-speed abs error: {np.nanmedian(solver_ori):.2f} deg/s",
+        f"  median raw waypoint -> solver RMS: {np.nanmedian(raw_solver):.3f} mm",
+        f"  median raw waypoint -> RobotStudio RMS: {np.nanmedian(raw_rs):.3f} mm",
+        f"  median pose mean error: {np.nanmedian(pose_mean):.3f} mm",
+        f"  median pose P95 error: {np.nanmedian(pose_p95):.3f} mm",
+        "",
+        "Per trajectory:",
+    ]
+    for m in metrics:
+        lines.append(
+            f"  {m.file}: direct_v={m.direct_jac_speed_median_rel_error*100.0:.2f}% "
+            f"direct_a={m.direct_jac_accel_median_rel_error*100.0:.2f}% "
+            f"direct_ori={m.direct_jac_orientation_speed_median_rel_error*100.0:.2f}% "
+            f"solver_v={m.solver_speed_median_rel_error*100.0:.2f}% "
+            f"solver_rms={m.solver_speed_rms_mm_s:.3f}mm/s "
+            f"events={m.n_corner_events} near_collinear={m.n_near_collinear_events} "
+            f"raw2solver={m.raw_to_solver_rms_error_mm:.3f}mm "
+            f"raw2rs={m.raw_to_rs_rms_error_mm:.3f}mm "
+            f"pose_mean={m.pose_mean_error_mm:.3f}mm"
+        )
+    (out_dir / "v6_constant_orientation_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _plot_metrics(out_dir: Path, metrics: List[Exp24TrajectoryMetrics]) -> None:
     import matplotlib
 
@@ -1759,3 +2337,49 @@ def _plot_v2_orientation_overlays(out_dir: Path, paths: List[Path], fk_solver) -
         safe_stem = path.stem.replace("..", ".")
         fig.savefig(plot_dir / f"{safe_stem}_overlay.png", dpi=150)
         plt.close(fig)
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run Experiment 24 validation utilities.")
+    parser.add_argument(
+        "--dataset",
+        choices=["v1", "v2", "v3", "v4", "v6"],
+        default="v6",
+        help="Experiment 24 dataset to validate (default: v6).",
+    )
+    parser.add_argument("--run-dir", help="Optional output folder name under Experiment 24 Results.")
+    parser.add_argument("--corner-debug", action="store_true", help="Emit v3 corner debug plots.")
+    parser.add_argument("--max-debug-corners", type=int, default=8)
+    args = parser.parse_args()
+
+    repo = Path(__file__).resolve().parents[1]
+    if args.run_dir:
+        out_dir = experiment24_root(repo) / "Results" / args.run_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = create_exp24_results_dir(f"exp24_{args.dataset}_validation", repo)
+
+    if args.dataset == "v1":
+        metrics = evaluate_exp24_dataset(out_dir, repo)
+    elif args.dataset == "v2":
+        metrics = evaluate_exp24_v2_orientation_dataset(out_dir, repo)
+    elif args.dataset == "v3":
+        metrics = evaluate_exp24_v3_siping_dataset(
+            out_dir,
+            repo,
+            corner_debug=args.corner_debug,
+            max_debug_corners=args.max_debug_corners,
+        )
+    elif args.dataset == "v4":
+        metrics = evaluate_exp24_v4_base_frame_dataset(out_dir, repo)
+    else:
+        metrics = evaluate_exp24_v6_constant_orientation_dataset(out_dir, repo)
+
+    print(f"Experiment 24 {args.dataset} validation written to: {out_dir}")
+    print(f"Evaluated {len(metrics)} trajectories")
+
+
+if __name__ == "__main__":
+    main()

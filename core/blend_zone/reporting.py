@@ -70,6 +70,8 @@ def generate_f3_report(
             "a_accel_mm_s2": speed_result.calibration.a_accel,
             "a_decel_mm_s2": speed_result.calibration.a_decel,
             "rho_min_scale": speed_result.calibration.rho_min_scale,
+            "enable_near_collinear_skip": speed_result.calibration.enable_near_collinear_skip,
+            "min_corner_deflection_deg": speed_result.calibration.min_corner_deflection_deg,
             "use_jacobian_dynamics": speed_result.calibration.use_jacobian_dynamics,
             "max_orientation_speed_deg_s": speed_result.calibration.max_orientation_speed_deg_s,
             "joint_dynamics_source": (

@@ -366,6 +366,8 @@ class Feature3D1Config:
     ds_mm: float = 1.0
     default_zone: str = "fine"
     default_v_cmd_mm_s: float = 300.0
+    enable_near_collinear_skip: bool = True
+    min_corner_deflection_deg: float = 3.0
     generate_plots: bool = True
     generate_report: bool = True
 

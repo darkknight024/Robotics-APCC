@@ -84,13 +84,20 @@ class SpeedCalibration:
                              applied inside every blend arc, independent of
                              zone size.  Models the IRC5 ``CornerPathReduction``
                              / S-curve jerk-limit behaviour which imposes
-                             ``v_dip ≈ v_cmd · (1 − k_corner · sin(δ/2))``
+                             ``v_dip ≈ v_cmd · (1 − k_corner · sin(θ/2))``
                              even when the centripetal limit does not bind
                              (that is what produces the ~10–15 % dips observed
-                             at z5 / z10 / z50).  ``δ`` is the *deflection
-                             angle* (``π − corner_angle_rad``).  Empirically
+                             at z5 / z10 / z50).  ``θ`` is the turn angle
+                             between adjacent segment directions (0 = straight).
+                             Empirically
                              calibrated to ``≈ 0.50`` against v20 corner set.
                              Set to ``0`` to disable.
+        enable_near_collinear_skip:
+                             If true, blend-speed and corner-dip ceilings are
+                             skipped for nearly straight waypoint perturbations.
+        min_corner_deflection_deg:
+                             Minimum turn angle that may produce a local speed
+                             reduction when the near-collinear skip is enabled.
         T_settle_s:          Fine-point settling time (seconds).
         is_calibrated:       True only after constants have been measured from
                              site data.
@@ -102,6 +109,8 @@ class SpeedCalibration:
     rho_min_scale: float = 1.0
     a_n_blend_mm_s2: float = 0.0        # 0 ⇒ disabled (use a_tcp)
     k_corner_dip: float = 0.0           # 0 ⇒ disabled (no universal dip)
+    enable_near_collinear_skip: bool = True
+    min_corner_deflection_deg: float = 3.0
     T_settle_s: float = _PLACEHOLDER_T_SETTLE
     is_calibrated: bool = False
     joint_dynamics: Optional[Any] = None
@@ -251,9 +260,9 @@ def _corner_dip_ceiling(
 
     where
 
-    * ``δ = π − corner_angle_rad`` is the **deflection** angle (how much
-      the TCP direction actually rotates across the corner; 30° for a
-      30° deflection, 180° for a U-turn).
+    * ``corner_angle_rad`` is the turn/deflection angle between adjacent
+      segment directions (0° for straight, 90° for a right-angle turn,
+      180° for a U-turn).
     * ``4·t·(1−t)`` is a smooth parabolic window that peaks at
       ``t = 0.5`` (blend apex) and vanishes at the arc endpoints, so the
       reduction fades continuously into the surrounding straights.
@@ -263,13 +272,13 @@ def _corner_dip_ceiling(
     """
     if k_corner_dip <= 1e-6 or v_cmd_mm_s <= 0:
         return np.inf
-    deflection = np.pi - corner_angle_rad
-    if deflection <= 1e-6:
+    turn_angle = corner_angle_rad
+    if turn_angle <= 1e-6:
         return np.inf
     # Smooth parabolic window; 0 at t=0,1 and 1 at t=0.5.
     t_safe = float(np.clip(blend_t, 0.0, 1.0))
     window = 4.0 * t_safe * (1.0 - t_safe)
-    reduction = k_corner_dip * np.sin(0.5 * deflection) * window
+    reduction = k_corner_dip * np.sin(0.5 * turn_angle) * window
     return v_cmd_mm_s * max(1.0 - reduction, 0.0)
 
 
@@ -406,6 +415,8 @@ def predict_speed_profile(
     )
 
     k_corner = max(0.0, float(calibration.k_corner_dip))
+    min_corner_rad = np.deg2rad(max(0.0, float(calibration.min_corner_deflection_deg)))
+    skip_near_collinear = bool(calibration.enable_near_collinear_skip)
 
     def _v_cmd_at_wp(wp_idx: int) -> float:
         """Representative commanded speed for a blend arc (first sample in it)."""
@@ -434,7 +445,11 @@ def predict_speed_profile(
     # speed ``√(a_n · ρ_min) < v_cmd_local``, i.e. the pure kinematic limit
     # actually binds.
     centripetal_wp: set = set()
+    near_collinear_wp: set = set()
     for wp_idx, geom in geom_by_idx.items():
+        if skip_near_collinear and geom.corner_angle_rad < min_corner_rad:
+            near_collinear_wp.add(wp_idx)
+            continue
         v_centri_apex = _blend_speed_ceiling(
             geom.rho_min_mm * rho_scale, a_n_blend_eff,
         )
@@ -449,6 +464,8 @@ def predict_speed_profile(
             wp_idx = int(blend_wp[k])
             geom = geom_by_idx.get(wp_idx)
             if geom is None:
+                continue
+            if wp_idx in near_collinear_wp:
                 continue
             t_k = float(blend_t[k])
 
@@ -478,6 +495,8 @@ def predict_speed_profile(
             if g is None:
                 continue
             wp_idx_legacy = getattr(g, "waypoint_idx", -1)
+            if wp_idx_legacy in near_collinear_wp:
+                continue
             is_centri = wp_idx_legacy in centripetal_wp
             v_centri = _blend_speed_ceiling(g.rho_min_mm * rho_scale, a_n_blend_eff)
             for k in range(M):
@@ -548,7 +567,10 @@ def predict_speed_profile(
                 logger.warning("Jacobian tangential dynamics failed at sample %d: %s", k, exc)
 
             if is_blend[k] and blend_wp is not None:
-                geom = geom_by_idx.get(int(blend_wp[k]))
+                wp_idx = int(blend_wp[k])
+                if wp_idx in near_collinear_wp:
+                    continue
+                geom = geom_by_idx.get(wp_idx)
                 normal = getattr(geom, "centripetal_normal", None) if geom is not None else None
                 if normal is not None and np.linalg.norm(normal) > 1e-12:
                     try:
@@ -636,7 +658,8 @@ def predict_speed_profile(
         "Speed profile: v_actual range [%.1f, %.1f] mm/s, "
         "total duration %.2f s, %d fine-point stops "
         "(a_blend=%.0f, a_accel=%.0f, a_decel=%.0f, ρ_scale=%.2f, "
-        "a_n_blend=%.0f, k_corner_dip=%.2f, jacobian_dynamics=%s)",
+        "a_n_blend=%.0f, k_corner_dip=%.2f, near_collinear_skip=%s@%.2fdeg, "
+        "jacobian_dynamics=%s)",
         float(np.min(v_actual)),
         float(np.max(v_actual)),
         total_time,
@@ -644,6 +667,8 @@ def predict_speed_profile(
         a_blend, a_accel, a_decel, rho_scale,
         a_n_blend_eff if calibration.a_n_blend > 0 else 0.0,
         k_corner,
+        skip_near_collinear,
+        float(calibration.min_corner_deflection_deg),
         use_jacobian,
     )
 

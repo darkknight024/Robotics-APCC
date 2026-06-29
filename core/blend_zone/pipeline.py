@@ -261,6 +261,8 @@ def run_feature3(
             rho_min_scale=robot_config.rho_min_scale,
             a_n_blend_mm_s2=getattr(robot_config, "a_n_blend_mm_s2", 0.0),
             k_corner_dip=getattr(robot_config, "k_corner_dip", 0.0),
+            enable_near_collinear_skip=getattr(f3_cfg, "enable_near_collinear_skip", True),
+            min_corner_deflection_deg=getattr(f3_cfg, "min_corner_deflection_deg", 3.0),
             T_settle_s=robot_config.T_settle_s,
             is_calibrated=True,
             joint_dynamics=joint_dynamics,
@@ -271,6 +273,8 @@ def run_feature3(
     else:
         calibration = SpeedCalibration(
             a_tcp_mm_s2=f3_cfg.a_tcp_mm_s2,
+            enable_near_collinear_skip=getattr(f3_cfg, "enable_near_collinear_skip", True),
+            min_corner_deflection_deg=getattr(f3_cfg, "min_corner_deflection_deg", 3.0),
             T_settle_s=f3_cfg.T_settle_s,
             is_calibrated=f3_cfg.is_calibrated,
             joint_dynamics=joint_dynamics,
