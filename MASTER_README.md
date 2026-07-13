@@ -18,6 +18,7 @@ A toolkit for validating robot kinematics using Pinocchio or EAIK analytical sol
 - [Documentation Guide](#documentation-guide)
 - [Data Flow](#data-flow)
 - [Coordinate Frames](#coordinate-frames)
+- [Reconfiguring End-Effector Fixture Pose](#reconfiguring-end-effector-fixture-pose)
 - [Quick Reference](#quick-reference)
 
 ---
@@ -127,7 +128,8 @@ Robotics-APCC/
 │   └── generate_plot_ik.py        # IK comparison & solver outcome plots
 │
 ├── config/                         # Main configuration files
-│   ├── robots_config.yaml         # Robot definitions (URDF, limits)
+│   ├── robots_config.yaml         # Robot definitions (URDF, fixture_name, limits)
+│   ├── fixture_config.yaml        # End-effector fixture poses (relative to Link_6)
 │   ├── knife_config.yaml          # Knife poses (T_B_K transforms)
 │   ├── ik_config.yaml             # IK solver parameters (all solvers)
 │   ├── batch_feasibility_config.yaml
@@ -482,6 +484,73 @@ CSV (T_P_K)  →  T_B_P = T_B_K @ inv(T_P_K)  →  IK Solver  →  Joint Angles
 
 ---
 
+## Reconfiguring End-Effector Fixture Pose
+
+Fixture TCP poses are **not** baked into the URDF. Robots load the base flange URDF (`Link_6`), and the tool center point is selected by name from YAML.
+
+### 1. Define or edit a fixture — `config/fixture_config.yaml`
+
+Each entry is a pose relative to the robot flange (`Link_6`):
+
+```yaml
+fixtures:
+  ee_link:
+    description: "Default APCC fixture (calibrated tool center point)"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.0998237, 0.123033, 0.0828027]   # meters
+      rpy: [0.001199, 0.000599, 2.782547]     # radians (roll, pitch, yaw)
+
+  ee_link_alt:                                 # example: add another TCP and switch to it
+    description: "Alternate fixture for siping trials"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.10, 0.12, 0.08]
+      rpy: [0.0, 0.0, 2.78]
+```
+
+### 2. Point the robot at that fixture — `config/robots_config.yaml`
+
+```yaml
+robots:
+  - name: "IRB 1300-7/1.4"
+    urdf_path: "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"  # base URDF (no fixture)
+    fixture_name: "ee_link"   # must match a key under fixtures: — or use "Link_6" for flange-only
+```
+
+| `fixture_name` | Behavior |
+|----------------|----------|
+| `"ee_link"` (or any key in `fixture_config.yaml`) | TCP = flange + that fixture transform |
+| `"Link_6"` | Track flange only (no extra fixture) |
+
+No URDF edits are required to try a new TCP. Loaders resolve `fixture_name` / `ee_frame_name` against `fixture_config.yaml` automatically.
+
+### 3. Run analysis
+
+Batch feasibility (uses robots from `batch_feasibility_config.yaml` → `robots_config.yaml`):
+
+```bash
+conda activate robotics
+python feasibility_analysis_batch.py --config config/batch_feasibility_config.yaml --workers 4
+```
+
+Single toolpath:
+
+```bash
+python feasibility_analysis.py --toolpath <csv> --knife-pose pose_1
+```
+
+Solver / reachability tests (override frame on the CLI if needed):
+
+```bash
+python tests/test_reachability.py --config tests/configs/test_reachability_config.yaml
+python tests/test_solvers.py --config tests/configs/test_solvers_config.yaml --ee-frame ee_link
+```
+
+**Typical workflow to compare fixtures:** add poses in `fixture_config.yaml` → change `fixture_name` on the robot → re-run `feasibility_analysis_batch.py` (or a single `feasibility_analysis.py` run).
+
+---
+
 ## Core Solver Architecture
 
 ### Abstract Base Classes (`core/base_solvers.py`)
@@ -540,7 +609,8 @@ class BaseIKSolver(ABC):
 
 | Config | Purpose |
 |--------|---------|
-| `config/robots_config.yaml` | Robot definitions (URDF, reach, velocity limits) |
+| `config/robots_config.yaml` | Robot definitions (URDF, `fixture_name`, reach, velocity limits) |
+| `config/fixture_config.yaml` | End-effector fixture poses (TCP vs `Link_6`) |
 | `config/knife_config.yaml` | Knife poses (T_B_K transforms) |
 | `config/ik_config.yaml` | IK solver parameters (both Pinocchio & EAIK) |
 | `config/batch_feasibility_config.yaml` | Batch feasibility settings |
