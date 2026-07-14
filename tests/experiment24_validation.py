@@ -424,16 +424,23 @@ def iter_exp24_v4_rs_csvs(repo: Optional[Path] = None) -> Iterable[Path]:
     yield from sorted(rs_root.rglob("*.csv"))
 
 
-def iter_exp24_v6_rs_csvs(repo: Optional[Path] = None) -> Iterable[Path]:
-    rs_root = experiment24_root(repo) / "Results - RobotStudio" / "v6_constant_tool_orientation_recordings"
+def iter_exp24_v6_rs_csvs(
+    repo: Optional[Path] = None,
+    dataset_name: str = "v6_constant_tool_orientation_recordings",
+) -> Iterable[Path]:
+    rs_root = experiment24_root(repo) / "Results - RobotStudio" / dataset_name
     yield from sorted(rs_root.glob("*.csv"))
 
 
-def _exp24_v6_toolpath_for_rs(rs_csv: Path, repo: Path) -> Path:
+def _exp24_v6_toolpath_for_rs(
+    rs_csv: Path,
+    repo: Path,
+    dataset_name: str = "v6_constant_tool_orientation_recordings",
+) -> Path:
     toolpath = (
         experiment24_root(repo)
         / "Toolpaths"
-        / "v6_constant_tool_orientation_recordings"
+        / dataset_name
         / rs_csv.name
     )
     if not toolpath.exists():
@@ -1705,12 +1712,14 @@ def evaluate_exp24_v6_constant_orientation_dataset(
     out_dir: Path,
     repo: Optional[Path] = None,
     csv_paths: Optional[List[Path]] = None,
+    dataset_name: str = "v6_constant_tool_orientation_recordings",
+    output_group: str = "v6_constant_orientation",
 ) -> List[Exp24V6TrajectoryMetrics]:
     """Validate v6 constant-orientation siping recordings in base frame."""
 
     repo = repo or Path(__file__).resolve().parents[1]
     fk_solver = _build_fk_solver_for_frame(repo, "ee_link")
-    paths = csv_paths or list(iter_exp24_v6_rs_csvs(repo))
+    paths = csv_paths or list(iter_exp24_v6_rs_csvs(repo, dataset_name=dataset_name))
     if not paths:
         raise FileNotFoundError(f"No Experiment 24 v6 CSVs found under {experiment24_root(repo)}")
 
@@ -1733,9 +1742,9 @@ def evaluate_exp24_v6_constant_orientation_dataset(
     metrics: List[Exp24V6TrajectoryMetrics] = []
     for rs_csv in paths:
         label = rs_csv.stem
-        case_dir = out_dir / "v6_constant_orientation" / label
+        case_dir = out_dir / output_group / label
         case_dir.mkdir(parents=True, exist_ok=True)
-        toolpath = _exp24_v6_toolpath_for_rs(rs_csv, repo)
+        toolpath = _exp24_v6_toolpath_for_rs(rs_csv, repo, dataset_name=dataset_name)
 
         rs_data = _load_csv(rs_csv)
         rs_base = _rs_poses_tpk_to_base(rs_data, repo)
