@@ -135,6 +135,12 @@ feature3_d1:
   # Near-straight waypoint jitter should not create artificial corner slowdowns.
   enable_near_collinear_skip: true
   min_corner_deflection_deg: 3.0
+  # Per-ceiling toggles for Feature 3 M5 (min of enabled ceilings → v_actual).
+  # Temporarily disable blend / corner slowdowns to study joint demand at v_cmd.
+  enable_blend_centripetal_ceiling: false  # √(a_n·ρ·ρ_scale) + Jacobian centripetal tighten
+  enable_corner_dip_ceiling: false         # k_corner_dip CornerPathReduction model
+  enable_joint_velocity_ceiling: true
+  enable_orientation_ceiling: true
   # Output toggles
   generate_plots: true         # Speed profile, joint utilisation, blend geometry PNGs
   generate_report: true        # JSON report with all scalar metrics

@@ -1318,6 +1318,316 @@ def _plot_v4_speed_overlay(
     plt.close(fig)
 
 
+def _finite_for_plot(values: np.ndarray, max_plot: float) -> np.ndarray:
+    """Replace non-finite / extremely large ceilings with NaN for plotting."""
+    out = np.asarray(values, dtype=float).copy()
+    if out.size == 0:
+        return out
+    out[~np.isfinite(out)] = np.nan
+    out[out > max_plot] = np.nan
+    return out
+
+
+def _plot_speed_ceiling_breakdown(
+    out_dir: Path,
+    label: str,
+    speed_profile,
+    rs_arc: np.ndarray,
+    rs_logged_speed: np.ndarray,
+    rs_speed: Optional[np.ndarray] = None,
+) -> None:
+    """Plot commanded, estimated, intermediate ceilings, and RobotStudio speeds.
+
+    Three subplots (separate from ``v3_solver_vs_rs_dynamics.png``):
+      1. Target / estimated vs RobotStudio
+      2. Intermediate ceilings (dashed) with estimated overlay
+      3. Binding envelope: v_cmd, v_ceiling, v_actual, RS logged
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    solver_arc = np.asarray(speed_profile.arc_lengths_mm, dtype=float)
+    v_cmd = np.asarray(speed_profile.v_cmd, dtype=float)
+    v_actual = np.asarray(speed_profile.v_actual, dtype=float)
+    rs_logged = np.asarray(rs_logged_speed, dtype=float)
+    rs_pose = np.asarray(rs_speed, dtype=float) if rs_speed is not None else None
+
+    def _safe_max(arr: Optional[np.ndarray]) -> float:
+        if arr is None or arr.size == 0:
+            return 0.0
+        finite = np.asarray(arr, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        return float(np.max(finite)) if finite.size else 0.0
+
+    op_peak = max(
+        _safe_max(v_cmd),
+        _safe_max(v_actual),
+        _safe_max(rs_logged),
+        _safe_max(rs_pose),
+        1.0,
+    )
+    # Operating-range ylim for panels that compare to RS / v_actual.
+    ylim_op = max(op_peak * 1.25, 20.0)
+
+    v_blend = getattr(speed_profile, "v_blend_ceiling", None)
+    v_joint = getattr(speed_profile, "v_joint_ceiling", None)
+    v_orient = getattr(speed_profile, "v_orientation_ceiling", None)
+    v_ceil = getattr(speed_profile, "v_ceiling", None)
+
+    # Ceiling panel needs a higher cap so joint ceilings remain visible without
+    # crushing the blend dips to a flat line; still clip unbound infinities.
+    ceiling_cap = max(op_peak * 4.0, 100.0)
+    ceil_peak = max(
+        _safe_max(_finite_for_plot(np.asarray(v_blend, dtype=float), ceiling_cap)) if v_blend is not None else 0.0,
+        _safe_max(_finite_for_plot(np.asarray(v_joint, dtype=float), ceiling_cap)) if v_joint is not None else 0.0,
+        _safe_max(_finite_for_plot(np.asarray(v_orient, dtype=float), ceiling_cap)) if v_orient is not None else 0.0,
+        op_peak,
+    )
+    ylim_ceil = max(ceil_peak * 1.1, ylim_op)
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
+
+    # ── 1. Target / estimated vs RobotStudio ──
+    ax = axes[0]
+    ax.plot(rs_arc, rs_logged, color="#1f77b4", lw=1.5, label="RS logged TCP speed")
+    if rs_pose is not None:
+        ax.plot(
+            rs_arc, rs_pose, color="#17becf", lw=1.1, alpha=0.9,
+            label="RS base-frame speed (from pose)",
+        )
+    ax.plot(solver_arc, v_cmd, color="#111111", lw=2.0, label="v_cmd (target)")
+    ax.plot(solver_arc, v_actual, color="#d62728", lw=2.0, label="v_actual (estimated)")
+    ax.set_ylabel("TCP speed (mm/s)")
+    ax.set_title("Target vs estimated vs RobotStudio")
+    ax.set_ylim(bottom=0.0, top=ylim_op)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9, ncol=2)
+
+    # ── 2. Intermediate ceilings ──
+    ax = axes[1]
+    ceiling_series = [
+        ("v_blend_ceiling", v_blend, "#2ca02c"),
+        ("v_joint_ceiling", v_joint, "#ff7f0e"),
+        ("v_orientation_ceiling", v_orient, "#9467bd"),
+    ]
+    for name, values, color in ceiling_series:
+        if values is None:
+            continue
+        arr = np.asarray(values, dtype=float)
+        if arr.size != solver_arc.size:
+            continue
+        ax.plot(
+            solver_arc,
+            _finite_for_plot(arr, ceiling_cap),
+            linestyle="--",
+            lw=1.2,
+            color=color,
+            label=name,
+        )
+    ax.plot(
+        solver_arc, v_actual, color="#d62728", lw=1.5, alpha=0.85,
+        label="v_actual (estimated)",
+    )
+    ax.set_ylabel("TCP speed (mm/s)")
+    ax.set_title("Intermediate speed ceilings (dashed) with estimated speed")
+    ax.set_ylim(bottom=0.0, top=ylim_ceil)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9, ncol=2)
+
+    # ── 3. Binding envelope ──
+    ax = axes[2]
+    ax.plot(rs_arc, rs_logged, color="#1f77b4", lw=1.4, label="RS logged TCP speed")
+    ax.plot(solver_arc, v_cmd, color="#111111", lw=2.0, label="v_cmd (target)")
+    if v_ceil is not None:
+        arr = np.asarray(v_ceil, dtype=float)
+        if arr.size == solver_arc.size:
+            ax.plot(
+                solver_arc,
+                _finite_for_plot(arr, ceiling_cap),
+                linestyle="--",
+                lw=1.4,
+                color="#8c564b",
+                label="v_ceiling (min intermediate)",
+            )
+    ax.plot(solver_arc, v_actual, color="#d62728", lw=2.0, label="v_actual (estimated)")
+    ax.set_xlabel("Arc length (mm)")
+    ax.set_ylabel("TCP speed (mm/s)")
+    ax.set_title("Binding envelope — how ceilings + reachability produce v_actual")
+    ax.set_ylim(bottom=0.0, top=ylim_op)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9, ncol=2)
+
+    fig.suptitle(f"TCP Speed Ceiling Breakdown — {label}", fontsize=13, y=1.01)
+    fig.tight_layout()
+    fig.savefig(out_dir / "speed_ceiling_breakdown_vs_rs.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _derivative_wrt_time(values: np.ndarray, time_s: np.ndarray) -> np.ndarray:
+    """Central / one-sided finite difference of ``values`` vs time."""
+    values = np.asarray(values, dtype=float)
+    time_s = np.asarray(time_s, dtype=float)
+    out = np.zeros_like(values)
+    n = len(time_s)
+    if n < 2:
+        return out
+    for i in range(n):
+        if i == 0:
+            dt = time_s[1] - time_s[0]
+            if dt > 1e-12:
+                out[i] = (values[1] - values[0]) / dt
+        elif i == n - 1:
+            dt = time_s[-1] - time_s[-2]
+            if dt > 1e-12:
+                out[i] = (values[-1] - values[-2]) / dt
+        else:
+            dt = time_s[i + 1] - time_s[i - 1]
+            if dt > 1e-12:
+                out[i] = (values[i + 1] - values[i - 1]) / dt
+    return out
+
+
+def _plot_solver_joint_dynamics(
+    out_dir: Path,
+    label: str,
+    speed_profile,
+    joint_velocity_result,
+    q_star: Optional[np.ndarray],
+    q_dot_max_rad_s: Optional[np.ndarray] = None,
+    q_ddot_max_rad_s2: Optional[np.ndarray] = None,
+) -> None:
+    """Plot solver joint velocity, acceleration, and TCP accel after speed-profile changes."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if joint_velocity_result is None or speed_profile is None:
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    arc = np.asarray(speed_profile.arc_lengths_mm, dtype=float)
+    v_actual = np.asarray(speed_profile.v_actual, dtype=float)
+    v_cmd = np.asarray(speed_profile.v_cmd, dtype=float)
+    time_s = _time_from_arc_speed(arc, v_actual)
+    q_dot = np.asarray(joint_velocity_result.q_dot, dtype=float)  # rad/s
+    q_dot_deg = np.rad2deg(q_dot)
+    q_ddot = np.column_stack([
+        _derivative_wrt_time(q_dot[:, j], time_s) for j in range(q_dot.shape[1])
+    ])
+    q_ddot_deg = np.rad2deg(q_ddot)
+
+    # Tangential TCP acceleration from the estimated speed profile.
+    tcp_accel = np.zeros_like(v_actual)
+    for i in range(1, len(arc) - 1):
+        ds = arc[i + 1] - arc[i - 1]
+        if ds > 1e-9:
+            dv_ds = (v_actual[i + 1] - v_actual[i - 1]) / ds
+            tcp_accel[i] = v_actual[i] * dv_ds
+
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+    n_joints = min(6, q_dot.shape[1])
+
+    # ── Joint velocities ──
+    fig, axes = plt.subplots(n_joints, 1, figsize=(14, 2.4 * n_joints), sharex=True)
+    if n_joints == 1:
+        axes = [axes]
+    for j in range(n_joints):
+        ax = axes[j]
+        ax.plot(arc, np.abs(q_dot_deg[:, j]), color=colors[j], lw=1.0, label=f"|q̇{j+1}|")
+        if q_dot_max_rad_s is not None and j < len(q_dot_max_rad_s):
+            lim = float(np.rad2deg(q_dot_max_rad_s[j]))
+            ax.axhline(lim, color="r", ls="--", alpha=0.55, lw=0.9, label=f"limit {lim:.0f} deg/s")
+        ax.set_ylabel(f"J{j+1} (deg/s)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper right", fontsize=8)
+        ax.set_ylim(bottom=0.0)
+    axes[-1].set_xlabel("Arc length (mm)")
+    axes[0].set_title(f"Solver joint velocity — {label}")
+    fig.tight_layout()
+    fig.savefig(out_dir / "solver_joint_velocity.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    # ── Joint accelerations ──
+    fig, axes = plt.subplots(n_joints, 1, figsize=(14, 2.4 * n_joints), sharex=True)
+    if n_joints == 1:
+        axes = [axes]
+    for j in range(n_joints):
+        ax = axes[j]
+        ax.plot(arc, np.abs(q_ddot_deg[:, j]), color=colors[j], lw=1.0, label=f"|q̈{j+1}|")
+        if q_ddot_max_rad_s2 is not None and j < len(q_ddot_max_rad_s2):
+            lim = float(np.rad2deg(q_ddot_max_rad_s2[j]))
+            ax.axhline(lim, color="r", ls="--", alpha=0.55, lw=0.9, label=f"limit {lim:.0f} deg/s²")
+        ax.set_ylabel(f"J{j+1} (deg/s²)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper right", fontsize=8)
+        ax.set_ylim(bottom=0.0)
+    axes[-1].set_xlabel("Arc length (mm)")
+    axes[0].set_title(f"Solver joint acceleration (d q̇ / dt) — {label}")
+    fig.tight_layout()
+    fig.savefig(out_dir / "solver_joint_acceleration.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    # ── Compact summary: peak util + TCP accel + q path rate ──
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
+    util = np.asarray(joint_velocity_result.utilisation_pct, dtype=float)
+    for j in range(n_joints):
+        axes[0].plot(arc, util[:, j], color=colors[j], lw=0.9, label=f"J{j+1}")
+    axes[0].axhline(100.0, color="r", ls="--", alpha=0.6, label="100% q̇ limit")
+    axes[0].set_ylabel("Utilisation (%)")
+    axes[0].set_title("Joint velocity utilisation")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="upper right", fontsize=8, ncol=4)
+
+    axes[1].plot(arc, v_cmd, color="#111111", lw=1.6, label="v_cmd")
+    axes[1].plot(arc, v_actual, color="#d62728", lw=1.6, label="v_actual")
+    axes[1].set_ylabel("TCP speed (mm/s)")
+    axes[1].set_title("TCP speed (context for joint demand)")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(loc="best", fontsize=9)
+
+    axes[2].plot(arc, tcp_accel, color="#8c564b", lw=1.2, label="TCP tangential accel")
+    axes[2].set_xlabel("Arc length (mm)")
+    axes[2].set_ylabel("Accel (mm/s²)")
+    axes[2].set_title("Solver TCP tangential acceleration from v_actual(s)")
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend(loc="best", fontsize=9)
+
+    fig.suptitle(f"Joint / TCP dynamics summary — {label}", fontsize=12, y=1.01)
+    fig.tight_layout()
+    fig.savefig(out_dir / "solver_joint_tcp_dynamics_summary.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    # Optional: joint-rate from q*(s) as a cross-check when available.
+    if q_star is not None and len(q_star) == len(time_s):
+        q_star = np.asarray(q_star, dtype=float)
+        q_dot_fd = np.column_stack([
+            _derivative_wrt_time(q_star[:, j], time_s) for j in range(min(6, q_star.shape[1]))
+        ])
+        fig, axes = plt.subplots(min(6, q_star.shape[1]), 1, figsize=(14, 2.2 * min(6, q_star.shape[1])), sharex=True)
+        if min(6, q_star.shape[1]) == 1:
+            axes = [axes]
+        for j in range(min(6, q_star.shape[1])):
+            axes[j].plot(arc, np.abs(np.rad2deg(q_dot[:, j])), color=colors[j], lw=1.0, label="from twist / J")
+            axes[j].plot(
+                arc, np.abs(np.rad2deg(q_dot_fd[:, j])), color=colors[j],
+                ls="--", lw=0.9, alpha=0.75, label="from dq*/dt",
+            )
+            axes[j].set_ylabel(f"J{j+1} (deg/s)")
+            axes[j].grid(True, alpha=0.3)
+            axes[j].legend(loc="upper right", fontsize=7)
+            axes[j].set_ylim(bottom=0.0)
+        axes[-1].set_xlabel("Arc length (mm)")
+        axes[0].set_title(f"Joint velocity cross-check — {label}")
+        fig.tight_layout()
+        fig.savefig(out_dir / "solver_joint_velocity_crosscheck.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+
 def _write_speed_profile_summary(
     out_dir: Path,
     label: str,
@@ -1824,6 +2134,14 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         )
 
         _plot_v4_speed_overlay(case_dir, label, rs_arc, rs_speed, solver_arc, solver_speed)
+        _plot_speed_ceiling_breakdown(
+            case_dir,
+            label,
+            result.speed_profile,
+            rs_arc,
+            rs_logged_speed,
+            rs_speed=rs_speed,
+        )
         _write_speed_profile_summary(
             case_dir,
             label,
@@ -1832,6 +2150,36 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             rs_speed_on_solver,
             solver_arc,
         )
+        cal = result.speed_profile.calibration
+        q_dot_max = None
+        q_ddot_max = None
+        if cal is not None and getattr(cal, "joint_dynamics", None) is not None:
+            q_dot_max = np.asarray(cal.joint_dynamics.q_dot_max, dtype=float)
+            q_ddot_max = np.asarray(cal.joint_dynamics.q_ddot_accel, dtype=float)
+        _plot_solver_joint_dynamics(
+            case_dir,
+            label,
+            result.speed_profile,
+            result.joint_velocity_result,
+            result.q_star,
+            q_dot_max_rad_s=q_dot_max,
+            q_ddot_max_rad_s2=q_ddot_max,
+        )
+        if cal is not None:
+            (case_dir / "speed_ceiling_flags.txt").write_text(
+                "\n".join([
+                    "Feature 3 M5 speed-ceiling toggles used for this run",
+                    "=" * 60,
+                    f"enable_blend_centripetal_ceiling: {cal.enable_blend_centripetal_ceiling}",
+                    f"enable_corner_dip_ceiling:        {cal.enable_corner_dip_ceiling}",
+                    f"enable_joint_velocity_ceiling:    {cal.enable_joint_velocity_ceiling}",
+                    f"enable_orientation_ceiling:       {cal.enable_orientation_ceiling}",
+                    "",
+                    "Source: config/batch_feasibility_config.yaml → feature3_d1",
+                    "Wired through SpeedCalibration in predict_speed_profile().",
+                ]) + "\n",
+                encoding="utf-8",
+            )
         rs_quat = _align_quaternion_series(rs_base[:, 3:7])
         _plot_exp24_v3_pair(
             case_dir,
@@ -2354,7 +2702,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Experiment 24 validation utilities.")
     parser.add_argument(
         "--dataset",
-        choices=["v1", "v2", "v3", "v4", "v6"],
+        choices=["v1", "v2", "v3", "v4", "v6", "v6_2"],
         default="v6",
         help="Experiment 24 dataset to validate (default: v6).",
     )
@@ -2383,6 +2731,13 @@ def main() -> None:
         )
     elif args.dataset == "v4":
         metrics = evaluate_exp24_v4_base_frame_dataset(out_dir, repo)
+    elif args.dataset == "v6_2":
+        metrics = evaluate_exp24_v6_constant_orientation_dataset(
+            out_dir,
+            repo,
+            dataset_name="v6_2",
+            output_group="v6_2_constant_orientation",
+        )
     else:
         metrics = evaluate_exp24_v6_constant_orientation_dataset(out_dir, repo)
 

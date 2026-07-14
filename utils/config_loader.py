@@ -368,6 +368,11 @@ class Feature3D1Config:
     default_v_cmd_mm_s: float = 300.0
     enable_near_collinear_skip: bool = True
     min_corner_deflection_deg: float = 3.0
+    # Per-ceiling toggles for M5 speed composition (True = include in min).
+    enable_blend_centripetal_ceiling: bool = True   # √(a_n·ρ·ρ_scale) + D2 jac centripetal
+    enable_corner_dip_ceiling: bool = True          # k_corner_dip model
+    enable_joint_velocity_ceiling: bool = True
+    enable_orientation_ceiling: bool = True
     generate_plots: bool = True
     generate_report: bool = True
 

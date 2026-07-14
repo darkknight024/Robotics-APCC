@@ -72,6 +72,10 @@ def generate_f3_report(
             "rho_min_scale": speed_result.calibration.rho_min_scale,
             "enable_near_collinear_skip": speed_result.calibration.enable_near_collinear_skip,
             "min_corner_deflection_deg": speed_result.calibration.min_corner_deflection_deg,
+            "enable_blend_centripetal_ceiling": speed_result.calibration.enable_blend_centripetal_ceiling,
+            "enable_corner_dip_ceiling": speed_result.calibration.enable_corner_dip_ceiling,
+            "enable_joint_velocity_ceiling": speed_result.calibration.enable_joint_velocity_ceiling,
+            "enable_orientation_ceiling": speed_result.calibration.enable_orientation_ceiling,
             "use_jacobian_dynamics": speed_result.calibration.use_jacobian_dynamics,
             "max_orientation_speed_deg_s": speed_result.calibration.max_orientation_speed_deg_s,
             "joint_dynamics_source": (

@@ -98,6 +98,16 @@ class SpeedCalibration:
         min_corner_deflection_deg:
                              Minimum turn angle that may produce a local speed
                              reduction when the near-collinear skip is enabled.
+        enable_blend_centripetal_ceiling:
+                             If false, skip √(a_n·ρ·ρ_scale) blend ceilings and
+                             the D2 Jacobian centripetal tighten on blends.
+        enable_corner_dip_ceiling:
+                             If false, skip the k_corner_dip CornerPathReduction
+                             model on loose zones.
+        enable_joint_velocity_ceiling:
+                             If false, do not apply Jacobian v_joint ceilings.
+        enable_orientation_ceiling:
+                             If false, do not apply the scalar ω_max ceiling.
         T_settle_s:          Fine-point settling time (seconds).
         is_calibrated:       True only after constants have been measured from
                              site data.
@@ -111,6 +121,10 @@ class SpeedCalibration:
     k_corner_dip: float = 0.0           # 0 ⇒ disabled (no universal dip)
     enable_near_collinear_skip: bool = True
     min_corner_deflection_deg: float = 3.0
+    enable_blend_centripetal_ceiling: bool = True
+    enable_corner_dip_ceiling: bool = True
+    enable_joint_velocity_ceiling: bool = True
+    enable_orientation_ceiling: bool = True
     T_settle_s: float = _PLACEHOLDER_T_SETTLE
     is_calibrated: bool = False
     joint_dynamics: Optional[Any] = None
@@ -406,7 +420,12 @@ def predict_speed_profile(
     # Map waypoint index → geometry for fast lookup
     geom_by_idx = {g.waypoint_idx: g for g in blend_geoms if g is not None}
 
-    # ── Step 1: Local centripetal ceiling per blend sample ──
+    enable_centri = bool(calibration.enable_blend_centripetal_ceiling)
+    enable_corner_dip = bool(calibration.enable_corner_dip_ceiling)
+    enable_v_joint = bool(calibration.enable_joint_velocity_ceiling)
+    enable_v_orient = bool(calibration.enable_orientation_ceiling)
+
+    # ── Step 1: Local blend ceilings per blend sample ──
     v_blend_ceil = np.full(M, np.inf)
 
     use_local = (
@@ -446,18 +465,21 @@ def predict_speed_profile(
     # actually binds.
     centripetal_wp: set = set()
     near_collinear_wp: set = set()
-    for wp_idx, geom in geom_by_idx.items():
-        if skip_near_collinear and geom.corner_angle_rad < min_corner_rad:
-            near_collinear_wp.add(wp_idx)
-            continue
-        v_centri_apex = _blend_speed_ceiling(
-            geom.rho_min_mm * rho_scale, a_n_blend_eff,
-        )
-        v_cmd_local = _v_cmd_at_wp(wp_idx)
-        if v_cmd_local > 0 and v_centri_apex < v_cmd_local:
-            centripetal_wp.add(wp_idx)
+    apply_blend_ceilings = enable_centri or enable_corner_dip
+    if apply_blend_ceilings:
+        for wp_idx, geom in geom_by_idx.items():
+            if skip_near_collinear and geom.corner_angle_rad < min_corner_rad:
+                near_collinear_wp.add(wp_idx)
+                continue
+            if enable_centri:
+                v_centri_apex = _blend_speed_ceiling(
+                    geom.rho_min_mm * rho_scale, a_n_blend_eff,
+                )
+                v_cmd_local = _v_cmd_at_wp(wp_idx)
+                if v_cmd_local > 0 and v_centri_apex < v_cmd_local:
+                    centripetal_wp.add(wp_idx)
 
-    if use_local:
+    if apply_blend_ceilings and use_local:
         for k in range(M):
             if not is_blend[k]:
                 continue
@@ -469,7 +491,7 @@ def predict_speed_profile(
                 continue
             t_k = float(blend_t[k])
 
-            if wp_idx in centripetal_wp:
+            if wp_idx in centripetal_wp and enable_centri:
                 # Centripetal regime: sharp narrow dip from curvature alone.
                 if not np.isfinite(t_k):
                     v_blend_ceil[k] = _blend_speed_ceiling(
@@ -483,13 +505,13 @@ def predict_speed_profile(
                 v_blend_ceil[k] = _blend_speed_ceiling(
                     rho_k * rho_scale, a_n_blend_eff,
                 )
-            else:
+            elif enable_corner_dip and wp_idx not in centripetal_wp:
                 # Corner-dip regime: shallow wide dip across the arc.
                 t_eff = t_k if np.isfinite(t_k) else 0.5
                 v_blend_ceil[k] = _corner_dip_ceiling(
                     float(v_cmd[k]), geom.corner_angle_rad, t_eff, k_corner,
                 )
-    else:
+    elif apply_blend_ceilings:
         # Legacy path: constant ρ_min across the arc region (fallback only)
         for g in blend_geoms:
             if g is None:
@@ -505,9 +527,9 @@ def predict_speed_profile(
                 pos_mm = dense_path.poses[k, :3] * 1000.0
                 d_to_control = np.linalg.norm(pos_mm - g.control_point_mm)
                 if d_to_control < g.r_tcp_eff_mm * 2.5:
-                    if is_centri:
+                    if is_centri and enable_centri:
                         v_blend_ceil[k] = min(v_blend_ceil[k], v_centri)
-                    else:
+                    elif enable_corner_dip and not is_centri:
                         v_corner = _corner_dip_ceiling(
                             float(v_cmd[k]), g.corner_angle_rad, 0.5, k_corner,
                         )
@@ -515,10 +537,13 @@ def predict_speed_profile(
 
     # ── Step 2: Jacobian dynamics (D2) or scalar-calibration fallback ──
     v_joint_ceil = np.full(M, np.inf)
-    v_orientation_ceil = _orientation_speed_ceiling(
-        dense_path,
-        calibration.max_orientation_speed_deg_s,
-    )
+    if enable_v_orient:
+        v_orientation_ceil = _orientation_speed_ceiling(
+            dense_path,
+            calibration.max_orientation_speed_deg_s,
+        )
+    else:
+        v_orientation_ceil = np.full(M, np.inf)
     a_accel_profile = np.full(M, float(a_accel))
     a_decel_profile = np.full(M, float(a_decel))
 
@@ -543,12 +568,13 @@ def predict_speed_profile(
                 continue
 
             try:
-                v_joint_ceil[k] = compute_v_joint_max(
-                    q_path[k],
-                    tangents[k],
-                    calibration.joint_dynamics,
-                    calibration.jacobian_eval,
-                )
+                if enable_v_joint:
+                    v_joint_ceil[k] = compute_v_joint_max(
+                        q_path[k],
+                        tangents[k],
+                        calibration.joint_dynamics,
+                        calibration.jacobian_eval,
+                    )
                 a_accel_profile[k] = compute_a_tcp_tangential(
                     q_path[k],
                     tangents[k],
@@ -566,7 +592,11 @@ def predict_speed_profile(
             except (ValueError, np.linalg.LinAlgError) as exc:
                 logger.warning("Jacobian tangential dynamics failed at sample %d: %s", k, exc)
 
-            if is_blend[k] and blend_wp is not None:
+            if (
+                enable_centri
+                and is_blend[k]
+                and blend_wp is not None
+            ):
                 wp_idx = int(blend_wp[k])
                 if wp_idx in near_collinear_wp:
                     continue
@@ -659,7 +689,8 @@ def predict_speed_profile(
         "total duration %.2f s, %d fine-point stops "
         "(a_blend=%.0f, a_accel=%.0f, a_decel=%.0f, ρ_scale=%.2f, "
         "a_n_blend=%.0f, k_corner_dip=%.2f, near_collinear_skip=%s@%.2fdeg, "
-        "jacobian_dynamics=%s)",
+        "jacobian_dynamics=%s, ceilings[blend_centri=%s, corner_dip=%s, "
+        "joint=%s, orient=%s])",
         float(np.min(v_actual)),
         float(np.max(v_actual)),
         total_time,
@@ -670,6 +701,10 @@ def predict_speed_profile(
         skip_near_collinear,
         float(calibration.min_corner_deflection_deg),
         use_jacobian,
+        enable_centri,
+        enable_corner_dip,
+        enable_v_joint,
+        enable_v_orient,
     )
 
     return SpeedProfileResult(

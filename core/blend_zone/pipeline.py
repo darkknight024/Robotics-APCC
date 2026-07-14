@@ -248,6 +248,17 @@ def run_feature3(
         j5_threshold_deg=config.singularity.j5_threshold_deg,
     )
 
+    ceiling_flags = dict(
+        enable_blend_centripetal_ceiling=getattr(
+            f3_cfg, "enable_blend_centripetal_ceiling", True
+        ),
+        enable_corner_dip_ceiling=getattr(f3_cfg, "enable_corner_dip_ceiling", True),
+        enable_joint_velocity_ceiling=getattr(
+            f3_cfg, "enable_joint_velocity_ceiling", True
+        ),
+        enable_orientation_ceiling=getattr(f3_cfg, "enable_orientation_ceiling", True),
+    )
+
     # Calibration: prefer robot config (robots_config.yaml) over batch config
     if robot_config and robot_config.is_calibrated:
         calibration = SpeedCalibration(
@@ -269,6 +280,7 @@ def run_feature3(
             jacobian_eval=_world_jacobian,
             use_jacobian_dynamics=use_jacobian_dynamics,
             max_orientation_speed_deg_s=getattr(robot_config, "max_orientation_speed_deg_s", 0.0),
+            **ceiling_flags,
         )
     else:
         calibration = SpeedCalibration(
@@ -281,6 +293,7 @@ def run_feature3(
             jacobian_eval=_world_jacobian if use_jacobian_dynamics else None,
             use_jacobian_dynamics=use_jacobian_dynamics,
             max_orientation_speed_deg_s=getattr(robot_config, "max_orientation_speed_deg_s", 0.0) if robot_config else 0.0,
+            **ceiling_flags,
         )
 
     # ── Process each trajectory ──
