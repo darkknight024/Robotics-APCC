@@ -395,6 +395,10 @@ class OutputConfig:
     """Output settings."""
     level1_only: bool = True
     save_analysis: bool = True
+    # When False, skip dense_ik / final_trajectory CSV exports (faster validation).
+    export_trajectory_csvs: bool = True
+    # When True, only write per-trajectory folders/plots for Level-1 failures.
+    write_failed_trajectories_only: bool = False
 
 
 @dataclass
@@ -496,6 +500,10 @@ def load_batch_config(config_path: str) -> FeasibilityConfig:
     output_cfg = OutputConfig(
         level1_only=output_section.get('level1_only', True),
         save_analysis=output_section.get('save_analysis', True),
+        export_trajectory_csvs=output_section.get('export_trajectory_csvs', True),
+        write_failed_trajectories_only=output_section.get(
+            'write_failed_trajectories_only', False
+        ),
     )
 
     ranking_section = raw.get('ranking', {}) or {}

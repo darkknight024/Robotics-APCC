@@ -49,6 +49,7 @@ def process_toolpath(
     verbose: bool = True,
     traj_id: Optional[int] = None,
     use_flat_output_structure: bool = False,
+    force_failure_graphs: bool = False,
 ) -> dict:
     """Process a single toolpath through the Feature 2 feasibility pipeline.
 
@@ -71,6 +72,7 @@ def process_toolpath(
         verbose=verbose,
         traj_id=traj_id,
         use_flat_output_structure=use_flat_output_structure,
+        force_failure_graphs=force_failure_graphs,
     )
     return run_feasibility_pipeline(inputs)
 

@@ -34,6 +34,9 @@ class FeasibilityPipelineInputs:
     verbose: bool = True
     traj_id: Optional[int] = None
     use_flat_output_structure: bool = False
+    # When True, enable failure-relevant graphs for Level-1-failing trajectories
+    # even if config ``generate_graphs`` flags are False (used by input validation).
+    force_failure_graphs: bool = False
 
 
 @dataclass

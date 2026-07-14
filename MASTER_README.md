@@ -19,6 +19,7 @@ A toolkit for validating robot kinematics using Pinocchio or EAIK analytical sol
 - [Data Flow](#data-flow)
 - [Coordinate Frames](#coordinate-frames)
 - [Reconfiguring End-Effector Fixture Pose](#reconfiguring-end-effector-fixture-pose)
+- [Toolpath Input Validation](#toolpath-input-validation)
 - [Quick Reference](#quick-reference)
 
 ---
@@ -125,13 +126,15 @@ Robotics-APCC/
 │   ├── csv_loader_toolpath.py     # Toolpath CSV loader
 │   ├── csv_loader_robostudio.py   # RobotStudio test data loader
 │   ├── feasibility_plot.py        # Feasibility & continuity plots
-│   └── generate_plot_ik.py        # IK comparison & solver outcome plots
+│   ├── generate_plot_ik.py        # IK comparison & solver outcome plots
+│   └── validate_toolpath_input.py # Incoming toolpath Level-1 validation
 │
 ├── config/                         # Main configuration files
 │   ├── robots_config.yaml         # Robot definitions (URDF, fixture_name, limits)
 │   ├── fixture_config.yaml        # End-effector fixture poses (relative to Link_6)
 │   ├── knife_config.yaml          # Knife poses (T_B_K transforms)
 │   ├── ik_config.yaml             # IK solver parameters (all solvers)
+│   ├── toolpath_validation_config.yaml  # Input validation (knife, URDF, checks)
 │   ├── batch_feasibility_config.yaml
 │   ├── combinatorial_search_config.yaml
 │   └── scoring_weights.yaml
@@ -594,16 +597,40 @@ class BaseIKSolver(ABC):
 
 ---
 
+## Toolpath Input Validation
+
+Use this before running feasibility or batch analysis on new raw toolpath CSVs. It transforms each path into the robot base frame with the configured knife pose (default: **Zund**), then runs the existing Feature 2 feasibility pipeline with the same numerical thresholds as `feasibility_analysis.py` / `batch_feasibility_config.yaml`.
+
+Results are written **inside the input folder** as `validation_MM_DD_YY_HH_MM_SS/`. Passing toolpaths leave no subfolders. Failed toolpaths get a folder (same name as the CSV stem) with only failed `trajectory_<N>/` artifacts and failure-relevant graphs (toggle with `--dump-failures` / `--no-dump-failures`; dumps are on by default). No dense/final trajectory CSVs are written.
+
+```bash
+# Uses toolpaths_input from config (default: Assets/Robot APCC/Toolpaths/Successful)
+python utils/validate_toolpath_input.py
+
+# Single CSV or folder of CSVs (folder is non-recursive; non-CSV files ignored)
+python utils/validate_toolpath_input.py -i path/to/toolpath.csv
+python utils/validate_toolpath_input.py -i path/to/folder/
+
+# Skip failure graphs for a faster run
+python utils/validate_toolpath_input.py --no-dump-failures
+```
+
+Configure input path, knife pose, robot/URDF, and check toggles in `config/toolpath_validation_config.yaml`. Exit `0` = all pass; `1` = one or more failures.
+
+---
+
 ## Quick Reference
 
 | Task | Command |
 |------|---------|
 | **Single toolpath feasibility** | `python feasibility_analysis.py --toolpath <csv> --knife-pose pose_1` |
 | **Batch feasibility** | `python feasibility_analysis_batch.py --config config/batch_feasibility_config.yaml --workers 4` |
+| **Toolpath input validation** | `python utils/validate_toolpath_input.py -i <csv_or_folder>` |
+| **Toolpath input validation (no dumps)** | `python utils/validate_toolpath_input.py --no-dump-failures` |
 | **Combinatorial search** | `python combinatorial_search.py --config config/combinatorial_search_config.yaml --workers 8` |
 | **Test FK/IK vs RobotStudio** | `python tests/test_solvers.py --config tests/configs/test_solvers_config.yaml` |
 | **Reachability test** | `python tests/test_reachability.py --config tests/configs/test_reachability_config.yaml` |
-| **Toolpath validation** | `python tests/test_toolpaths.py --config config/toolpath_config.yaml` |
+| **Toolpath vs RobotStudio** | `python tests/test_toolpaths.py --config config/toolpath_config.yaml` |
 | **Automated experiments** | `python tests/run_experiments.py --config tests/configs/experiments_config.yaml` |
 | **Time benchmark IK** | `python tests/timebenchmarking.py --input <csv_folder> --output <dir>` |
 
@@ -613,6 +640,7 @@ class BaseIKSolver(ABC):
 | `config/fixture_config.yaml` | End-effector fixture poses (TCP vs `Link_6`) |
 | `config/knife_config.yaml` | Knife poses (T_B_K transforms) |
 | `config/ik_config.yaml` | IK solver parameters (both Pinocchio & EAIK) |
+| `config/toolpath_validation_config.yaml` | Incoming toolpath input validation settings |
 | `config/batch_feasibility_config.yaml` | Batch feasibility settings |
 | `config/combinatorial_search_config.yaml` | Combinatorial search & ranking |
 | `tests/configs/experiments_config.yaml` | Experiment definitions (robots, toolpaths, solvers, runs) |
