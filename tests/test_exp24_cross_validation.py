@@ -30,14 +30,18 @@ def _timestamped_cross_validation_dir(repo: Path) -> Path:
 def test_exp24_neutral_values_are_radians():
     dyn = get_exp24_neutral()
     np.testing.assert_allclose(dyn.q_dot_max, np.deg2rad([280.0, 180.0, 250.0, 500.0, 415.8, 720.0]))
-    np.testing.assert_allclose(dyn.q_ddot_accel, np.deg2rad([2826, 662, 1526, 6886, 6124, 11006]))
-    np.testing.assert_allclose(dyn.q_ddot_decel, np.deg2rad([2850, 662, 1589, 6834, 6143, 11059]))
+    np.testing.assert_allclose(
+        dyn.q_ddot_accel, np.deg2rad([11102, 21533, 33677, 144, 10037, 11259])
+    )
+    np.testing.assert_allclose(
+        dyn.q_ddot_decel, np.deg2rad([7275, 22498, 30712, 246, 11370, 7083])
+    )
 
 
 def test_load_joint_dynamics_from_robots_config():
     repo = Path(__file__).resolve().parents[1]
     dyn = load_joint_dynamics(repo / "config" / "robots_config.yaml")
-    assert dyn.source == "Experiment_24_v1"
+    assert dyn.source == "Experiment_24_v8"
     assert dyn.configuration == "neutral"
     assert dyn.q_dot_max.shape == (6,)
 

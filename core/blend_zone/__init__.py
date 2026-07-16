@@ -47,6 +47,14 @@ from .speed_profile import (
     SpeedProfileResult,
     predict_speed_profile,
 )
+from .topp_on_blended_path import (
+    BlendedToppResult,
+    CornerSpeedLimit,
+    ConstantSpeedResult,
+    compute_time_optimal_on_blended_path,
+    compute_corner_no_dip_speeds,
+    compute_constant_speed_result,
+)
 from .pipeline import (
     Feature3D1Result,
     run_feature3,
@@ -93,6 +101,11 @@ __all__ = [
     "DensePath", "sample_blended_path",
     # M5
     "SpeedCalibration", "SpeedProfileResult", "predict_speed_profile",
+    # F3 D2 — time-optimal + no-dip constant-speed limits
+    "BlendedToppResult", "CornerSpeedLimit", "ConstantSpeedResult",
+    "compute_time_optimal_on_blended_path",
+    "compute_corner_no_dip_speeds",
+    "compute_constant_speed_result",
     # Pipeline
     "Feature3D1Result", "run_feature3", "run_feature3_d1",
     # Calibration

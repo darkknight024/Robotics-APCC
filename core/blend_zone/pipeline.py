@@ -61,6 +61,12 @@ class Feature3D1Result:
         dense_path:            The dense SE(3) blended path from M4.
         blend_geoms:           The raw blend arc geometry list from M2.
         waypoints_m:           (N, 7) original programmed waypoints in metres.
+        time_optimal:          Optional F3 D2 time-optimal profile
+                               (BlendedToppResult) from Step 7b.
+        corner_speed_limits:   Optional per-corner no-dip TCP speed limits
+                               (List[CornerSpeedLimit]) from Step 7c.
+        constant_speed:        Optional global no-dip constant-speed result
+                               (ConstantSpeedResult) from Step 7c.
     """
 
     feasible: bool
@@ -78,6 +84,9 @@ class Feature3D1Result:
     dense_path: Optional[DensePath] = None
     blend_geoms: Optional[List[Optional[BlendArcGeometry]]] = None
     waypoints_m: Optional[np.ndarray] = None
+    time_optimal: Optional[Any] = None
+    corner_speed_limits: Optional[list] = None
+    constant_speed: Optional[Any] = None
 
 
 def _zone_to_dict(z: ZoneParams) -> dict:
@@ -257,6 +266,13 @@ def run_feature3(
             f3_cfg, "enable_joint_velocity_ceiling", True
         ),
         enable_orientation_ceiling=getattr(f3_cfg, "enable_orientation_ceiling", True),
+        enable_joint_acceleration_ceiling=getattr(
+            f3_cfg, "enable_joint_acceleration_ceiling", True
+        ),
+        # [ESTIMATE] uniform scale on the Exp24 joint accel limits.
+        joint_accel_limit_scale=float(
+            getattr(f3_cfg, "joint_accel_limit_scale", 1.0)
+        ),
     )
 
     # Calibration: prefer robot config (robots_config.yaml) over batch config
@@ -406,6 +422,151 @@ def run_feature3(
                 f"duration {speed_result.total_duration_s:.2f} s"
             )
 
+        # ── Step 7b: F3 D2 time-optimal profile (TOPP-RA on blended q*) ──
+        topp_blended = None
+        want_topp = bool(getattr(f3_cfg, "compute_time_optimal", False))
+        want_corner = bool(getattr(f3_cfg, "compute_corner_limits", False))
+        want_apply_topp = bool(getattr(f3_cfg, "apply_topp_ceiling", False))
+        # ESTIMATE: the Exp24 joint acceleration limits need further
+        # dynamics modelling; site guidance allows exceeding them by a
+        # configurable factor (see feature3_d1.joint_accel_limit_scale).
+        q_ddot_scale = float(getattr(f3_cfg, "joint_accel_limit_scale", 1.0))
+        if want_topp and joint_dynamics is not None:
+            from .topp_on_blended_path import compute_time_optimal_on_blended_path
+            topp_blended = compute_time_optimal_on_blended_path(
+                q_star=joint_angles_rad,
+                arc_lengths_mm=dense_path.arc_lengths,
+                dense_path=dense_path,
+                joint_dynamics=joint_dynamics,
+                n_gridpoints=int(getattr(f3_cfg, "topp_n_gridpoints", 0)),
+                max_knots=int(getattr(f3_cfg, "topp_max_knots", 2000)),
+                q_ddot_scale=q_ddot_scale,
+            )
+            n_fine = len(speed_result.fine_point_indices)
+            m5_traversal = (
+                speed_result.total_duration_s
+                - calibration.T_settle_s * n_fine
+            )
+            if topp_blended.feasible and np.isfinite(topp_blended.duration_s):
+                gap = topp_blended.duration_s - m5_traversal
+                if gap > 0.05 * max(topp_blended.duration_s, 1e-9):
+                    logger.warning(
+                        "TOPP-RA duration %.3fs exceeds M5 traversal %.3fs by "
+                        "%.3fs (>5%%). TOPP should be the tighter bound — check "
+                        "constraint scaling or spline fidelity "
+                        "(max_interp_error=%.4f rad).",
+                        topp_blended.duration_s, m5_traversal, gap,
+                        topp_blended.max_interp_error_rad,
+                    )
+                if verbose:
+                    print(
+                        f"    TOPP-RA: duration={topp_blended.duration_s:.3f}s "
+                        f"(M5 traversal={m5_traversal:.3f}s), "
+                        f"v_tcp range [{np.min(topp_blended.v_tcp_profile_mm_s):.0f}, "
+                        f"{np.max(topp_blended.v_tcp_profile_mm_s):.0f}] mm/s"
+                    )
+            elif verbose:
+                reason = (
+                    f"infeasible at arc {topp_blended.infeasible_arc_mm:.1f} mm"
+                    if topp_blended.infeasible_arc_mm is not None
+                    else "not feasible"
+                )
+                print(f"    TOPP-RA: {reason}")
+
+            # Optional: apply the TOPP TCP profile as v_topp_ceiling and re-run M5.
+            if (
+                want_apply_topp
+                and topp_blended.feasible
+                and np.any(np.isfinite(topp_blended.v_tcp_profile_mm_s))
+            ):
+                speed_result = predict_speed_profile(
+                    dense_path,
+                    blend_geoms,
+                    calibration=calibration,
+                    q_path=joint_angles_rad,
+                    v_topp_ceiling=topp_blended.v_tcp_profile_mm_s,
+                )
+                if verbose:
+                    print(
+                        f"    Speed profile (TOPP-clamped): v_actual "
+                        f"[{np.min(speed_result.v_actual):.0f}, "
+                        f"{np.max(speed_result.v_actual):.0f}] mm/s, "
+                        f"duration {speed_result.total_duration_s:.2f} s"
+                    )
+        elif want_topp and verbose:
+            print(
+                "    TOPP-RA time-optimal requested but joint_dynamics unavailable "
+                "(use_jacobian_dynamics=false?); skipping"
+            )
+
+        # ── Step 7c: F3 D2 no-dip constant-speed limits (per corner + global) ──
+        corner_speed_limits = None
+        constant_speed = None
+        if want_corner and joint_dynamics is not None:
+            from .topp_on_blended_path import (
+                compute_constant_speed_result,
+                compute_corner_no_dip_speeds,
+            )
+
+            def _corner_ik(positions_m: np.ndarray, quats: np.ndarray) -> np.ndarray:
+                sub = analyzer.analyze_trajectory(positions_m, quats)
+                return sub["joint_angles_rad"]
+
+            try:
+                corner_speed_limits = compute_corner_no_dip_speeds(
+                    q_star=joint_angles_rad,
+                    dense_path=dense_path,
+                    blend_geoms=blend_geoms,
+                    joint_dynamics=joint_dynamics,
+                    ik_fn=_corner_ik,
+                    corner_ds_mm=float(getattr(f3_cfg, "corner_analysis_ds_mm", 0.5)),
+                    q_ddot_scale=q_ddot_scale,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Corner no-dip analysis failed: %s", exc)
+                corner_speed_limits = None
+
+            try:
+                constant_speed = compute_constant_speed_result(
+                    q_star=joint_angles_rad,
+                    arc_lengths_mm=dense_path.arc_lengths,
+                    dense_path=dense_path,
+                    joint_dynamics=joint_dynamics,
+                    q_ddot_scale=q_ddot_scale,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Global constant-speed analysis failed: %s", exc)
+                constant_speed = None
+
+            if verbose and corner_speed_limits:
+                vs = [
+                    c.v_max_no_dip_mm_s for c in corner_speed_limits
+                    if np.isfinite(c.v_max_no_dip_mm_s)
+                ]
+                if vs:
+                    print(
+                        f"    Corner no-dip limits: {len(corner_speed_limits)} corners, "
+                        f"v_max_no_dip range [{min(vs):.0f}, {max(vs):.0f}] mm/s"
+                    )
+                else:
+                    print(
+                        f"    Corner no-dip limits: {len(corner_speed_limits)} corners "
+                        "(all inf — no binding constraint detected)"
+                    )
+            if verbose and constant_speed is not None:
+                print(
+                    f"    Global constant speed: v_flat="
+                    f"{constant_speed.v_flat_mm_s:.1f} mm/s "
+                    f"(binding J{constant_speed.binding_joint + 1} "
+                    f"{constant_speed.binding_constraint}, "
+                    f"steady-state duration {constant_speed.duration_s:.2f} s)"
+                )
+        elif want_corner and verbose:
+            print(
+                "    Corner no-dip analysis requested but joint_dynamics unavailable; "
+                "skipping"
+            )
+
         # ── Step 8: Joint velocities via Jacobian inversion ──
         joint_vel_result = None
         if np.all(np.isfinite(joint_angles_rad)):
@@ -465,6 +626,9 @@ def run_feature3(
             dense_path=dense_path,
             blend_geoms=blend_geoms,
             waypoints_m=waypoints,
+            time_optimal=topp_blended,
+            corner_speed_limits=corner_speed_limits,
+            constant_speed=constant_speed,
         )
 
         # ── Step 10: Plots and reports ──
@@ -474,6 +638,8 @@ def run_feature3(
                 traj_out, dense_path, speed_result, joint_vel_result,
                 blend_geoms, waypoints, final_vel_lims, traj_name,
                 plot_kinds=plot_kinds,
+                time_optimal=topp_blended,
+                corner_limits=corner_speed_limits,
             )
             # Reuse existing Feature-2 EAIK branch visualization style for F3.
             #

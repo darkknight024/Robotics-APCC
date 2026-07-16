@@ -76,6 +76,12 @@ def generate_f3_report(
             "enable_corner_dip_ceiling": speed_result.calibration.enable_corner_dip_ceiling,
             "enable_joint_velocity_ceiling": speed_result.calibration.enable_joint_velocity_ceiling,
             "enable_orientation_ceiling": speed_result.calibration.enable_orientation_ceiling,
+            "enable_joint_acceleration_ceiling": getattr(
+                speed_result.calibration, "enable_joint_acceleration_ceiling", True
+            ),
+            "joint_accel_limit_scale": getattr(
+                speed_result.calibration, "joint_accel_limit_scale", 1.0
+            ),
             "use_jacobian_dynamics": speed_result.calibration.use_jacobian_dynamics,
             "max_orientation_speed_deg_s": speed_result.calibration.max_orientation_speed_deg_s,
             "joint_dynamics_source": (
@@ -113,6 +119,91 @@ def generate_f3_report(
             "max_utilisation_pct": joint_vel_result.max_utilisation.tolist(),
             "n_violations": len(joint_vel_result.violations),
         }
+
+    # ── F3 D2: Time-optimal TOPP-RA profile ──
+    topp = getattr(result, "time_optimal", None)
+    if topp is not None:
+        v_tcp = np.asarray(topp.v_tcp_profile_mm_s, dtype=float)
+        finite = v_tcp[np.isfinite(v_tcp)]
+        n_fine = len(speed_result.fine_point_indices)
+        t_settle_s = float(getattr(speed_result.calibration, "T_settle_s", 0.0))
+        m5_traversal = speed_result.total_duration_s - t_settle_s * n_fine
+        ratio = float("inf")
+        if m5_traversal > 1e-6 and np.isfinite(topp.duration_s):
+            ratio = float(topp.duration_s / m5_traversal)
+        report["time_optimal"] = {
+            "feasible": bool(topp.feasible),
+            "duration_s": (
+                float(topp.duration_s) if np.isfinite(topp.duration_s) else None
+            ),
+            "infeasible_arc_mm": (
+                float(topp.infeasible_arc_mm)
+                if topp.infeasible_arc_mm is not None else None
+            ),
+            "v_tcp_min_mm_s": float(np.min(finite)) if finite.size else None,
+            "v_tcp_max_mm_s": float(np.max(finite)) if finite.size else None,
+            "v_tcp_mean_mm_s": float(np.mean(finite)) if finite.size else None,
+            "max_interp_error_rad": float(topp.max_interp_error_rad),
+            "n_gridpoints_used": int(topp.n_gridpoints_used),
+            "n_knots_used": int(topp.n_knots_used),
+            "m5_traversal_s": float(m5_traversal),
+            "duration_vs_m5_traversal_ratio": ratio,
+        }
+
+    # ── F3 D2: Global no-dip constant TCP speed ──
+    cs = getattr(result, "constant_speed", None)
+    if cs is not None:
+        report["constant_speed"] = {
+            "v_flat_mm_s": (
+                float(cs.v_flat_mm_s) if np.isfinite(cs.v_flat_mm_s) else None
+            ),
+            "v_vel_limit_mm_s": (
+                float(cs.v_vel_limit_mm_s)
+                if np.isfinite(cs.v_vel_limit_mm_s) else None
+            ),
+            "v_accel_limit_mm_s": (
+                float(cs.v_accel_limit_mm_s)
+                if np.isfinite(cs.v_accel_limit_mm_s) else None
+            ),
+            "binding_joint": int(cs.binding_joint),
+            "binding_constraint": str(cs.binding_constraint),
+            "binding_arc_length_mm": float(cs.binding_arc_length_mm),
+            "steady_state_duration_s": (
+                float(cs.duration_s) if np.isfinite(cs.duration_s) else None
+            ),
+            "q_ddot_scale_applied": float(cs.q_ddot_scale),
+        }
+
+    # ── F3 D2: Per-corner no-dip TCP speed limits ──
+    corner_limits = getattr(result, "corner_speed_limits", None)
+    if corner_limits:
+        report["corner_speed_limits"] = [
+            {
+                "waypoint_idx": int(c.waypoint_idx),
+                "v_max_no_dip_mm_s": (
+                    float(c.v_max_no_dip_mm_s)
+                    if np.isfinite(c.v_max_no_dip_mm_s) else None
+                ),
+                "binding_joint": int(c.binding_joint),
+                "binding_constraint": str(c.binding_constraint),
+                "binding_arc_length_mm": float(c.binding_arc_length_mm),
+                "v_joint_limit_mm_s": (
+                    float(c.v_joint_limit_mm_s)
+                    if np.isfinite(c.v_joint_limit_mm_s) else None
+                ),
+                "v_accel_limit_mm_s": (
+                    float(c.v_accel_limit_mm_s)
+                    if np.isfinite(c.v_accel_limit_mm_s) else None
+                ),
+                "n_arc_samples": int(c.n_arc_samples),
+                "resampled": bool(c.resampled),
+                "rho_min_mm": float(c.rho_min_mm),
+                "arc_length_mm": float(c.arc_length_mm),
+                "corner_angle_rad": float(c.corner_angle_rad),
+                "notes": str(c.notes),
+            }
+            for c in corner_limits
+        ]
 
     report_path = Path(output_dir) / "f3_d1_report.json"
     with open(report_path, "w", encoding="utf-8") as f:

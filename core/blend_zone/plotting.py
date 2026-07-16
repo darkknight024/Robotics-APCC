@@ -35,6 +35,8 @@ def generate_all_f3_plots(
     velocity_limits_rad_s: np.ndarray,
     traj_name: str,
     plot_kinds: Optional[Iterable[str]] = None,
+    time_optimal=None,
+    corner_limits: Optional[list] = None,
 ) -> None:
     """Generate all Feature 3 D1 diagnostic plots.
 
@@ -47,6 +49,9 @@ def generate_all_f3_plots(
         waypoints_m:            (N, 7) original programmed waypoints.
         velocity_limits_rad_s:  (6,) per-joint velocity limits.
         traj_name:              Label for plot titles.
+        plot_kinds:             Optional subset of plot names to render.
+        time_optimal:           Optional BlendedToppResult (F3 D2, Feature A).
+        corner_limits:          Optional list of CornerSpeedLimit (F3 D2, Feature B).
     """
     try:
         import matplotlib
@@ -66,6 +71,8 @@ def generate_all_f3_plots(
         "tcp_pose_deviation",
         "blend_geometry_3d",
         "zone_summary",
+        "topp_ceiling",
+        "corner_limits",
     }
 
     if "speed_profile" in selected:
@@ -85,6 +92,11 @@ def generate_all_f3_plots(
         _plot_blend_geometry_3d(output_dir, dense_path, blend_geoms, traj_name, plt)
     if "zone_summary" in selected:
         _plot_zone_summary(output_dir, blend_geoms, waypoints_m, traj_name, plt)
+    if "topp_ceiling" in selected and time_optimal is not None:
+        _plot_topp_ceiling(output_dir, dense_path, speed_result, time_optimal,
+                           corner_limits, traj_name, plt)
+    if "corner_limits" in selected and corner_limits:
+        _plot_corner_limits(output_dir, speed_result, corner_limits, traj_name, plt)
 
 
 def _plot_speed_profile(out: Path, sr, name: str, plt) -> None:
@@ -430,4 +442,154 @@ def _plot_zone_summary(
     fig.suptitle(f"Zone Blend Summary — {name}", fontsize=13, fontweight="bold")
     plt.tight_layout()
     fig.savefig(out / "zone_summary.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_topp_ceiling(
+    out: Path,
+    dense_path,
+    speed_result,
+    topp,
+    corner_limits: Optional[list],
+    name: str,
+    plt,
+) -> None:
+    """F3 D2 Feature A: TOPP-RA time-optimal v_tcp vs M5 v_actual + v_cmd.
+
+    Shows the headroom between the controller's actual speed (M5) and the
+    physical time-optimal envelope (TOPP-RA).  Blend-arc regions are
+    shaded; per-corner no-dip markers (Feature B) are overlaid when
+    provided.
+    """
+    if topp is None:
+        return
+    v_topp = np.asarray(topp.v_tcp_profile_mm_s, dtype=float)
+    if v_topp.size == 0 or not np.any(np.isfinite(v_topp)):
+        return
+
+    arc_s = speed_result.arc_lengths_mm
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+    ax = axes[0]
+    if np.any(dense_path.is_blend_arc):
+        ax.fill_between(
+            arc_s, 0, np.max(v_topp[np.isfinite(v_topp)]) * 1.05,
+            where=dense_path.is_blend_arc, color="orange", alpha=0.10,
+            label="blend arc",
+        )
+    ax.plot(arc_s, speed_result.v_cmd, "b--", alpha=0.5, linewidth=1.0, label="v_cmd")
+    ax.plot(arc_s, speed_result.v_actual, "r-", linewidth=1.2, label="v_actual (M5)")
+    ax.plot(arc_s, v_topp, color="#2ca02c", linewidth=1.4,
+            label="v_tcp (TOPP-RA time-optimal)")
+
+    if corner_limits:
+        vs = [c.v_max_no_dip_mm_s for c in corner_limits
+              if np.isfinite(c.v_max_no_dip_mm_s)]
+        arcs = [c.binding_arc_length_mm for c in corner_limits
+                if np.isfinite(c.v_max_no_dip_mm_s)]
+        if vs:
+            ax.scatter(arcs, vs, marker="v", color="purple", s=60,
+                       zorder=5, label="v_max_no_dip (per corner)")
+
+    duration_s = topp.duration_s if np.isfinite(topp.duration_s) else float("nan")
+    n_fine = len(speed_result.fine_point_indices)
+    t_settle = float(getattr(speed_result.calibration, "T_settle_s", 0.0))
+    m5_traversal = speed_result.total_duration_s - t_settle * n_fine
+    title = (
+        f"TOPP-RA time-optimal vs M5 — {name}   "
+        f"(TOPP={duration_s:.3f}s, M5_traversal={m5_traversal:.3f}s)"
+    )
+    ax.set_title(title)
+    ax.set_ylabel("TCP speed (mm/s)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=8)
+
+    # Headroom = TOPP - M5 v_actual (positive means room to speed up).
+    ax2 = axes[1]
+    headroom = v_topp - speed_result.v_actual
+    ax2.plot(arc_s, headroom, color="#8c564b", linewidth=1.1,
+             label="TOPP - v_actual")
+    ax2.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
+    ax2.fill_between(arc_s, 0, headroom, where=headroom >= 0,
+                     alpha=0.15, color="green")
+    ax2.fill_between(arc_s, 0, headroom, where=headroom < 0,
+                     alpha=0.20, color="red")
+    ax2.set_xlabel("Arc length (mm)")
+    ax2.set_ylabel("Headroom (mm/s)")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc="best", fontsize=8)
+
+    plt.tight_layout()
+    fig.savefig(out / "topp_ceiling.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_corner_limits(
+    out: Path,
+    speed_result,
+    corner_limits: list,
+    name: str,
+    plt,
+) -> None:
+    """F3 D2 Feature B: per-corner max constant TCP speed, coloured by
+    binding constraint (velocity vs acceleration)."""
+    if not corner_limits:
+        return
+
+    finite = [c for c in corner_limits if np.isfinite(c.v_max_no_dip_mm_s)]
+    if not finite:
+        return
+
+    indices = list(range(len(corner_limits)))
+    wp_labels = [str(c.waypoint_idx) for c in corner_limits]
+
+    def _val_or_nan(v):
+        return v if np.isfinite(v) else np.nan
+
+    vs = [_val_or_nan(c.v_max_no_dip_mm_s) for c in corner_limits]
+    vs_vel = [_val_or_nan(c.v_joint_limit_mm_s) for c in corner_limits]
+    vs_acc = [_val_or_nan(c.v_accel_limit_mm_s) for c in corner_limits]
+    colors = [
+        "#1f77b4" if c.binding_constraint == "velocity"
+        else "#d62728" if c.binding_constraint == "acceleration"
+        else "gray"
+        for c in corner_limits
+    ]
+
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8))
+
+    ax = axes[0]
+    ax.bar(indices, vs, color=colors, alpha=0.75)
+    for i, c in enumerate(corner_limits):
+        if not np.isfinite(c.v_max_no_dip_mm_s):
+            continue
+        ax.text(i, c.v_max_no_dip_mm_s, f"J{c.binding_joint+1}",
+                ha="center", va="bottom", fontsize=7, color="black")
+    ax.set_xticks(indices)
+    ax.set_xticklabels(wp_labels, fontsize=7)
+    ax.set_xlabel("Waypoint index (per corner)")
+    ax.set_ylabel("v_max_no_dip (mm/s)")
+    ax.set_title(
+        f"Per-corner max constant TCP speed — {name}   "
+        "(blue = velocity-bound, red = accel-bound)"
+    )
+    ax.grid(True, alpha=0.3, axis="y")
+
+    ax2 = axes[1]
+    width = 0.4
+    x = np.arange(len(indices))
+    ax2.bar(x - width / 2, vs_vel, width=width, color="#1f77b4", alpha=0.75,
+            label="v_joint_limit (accel disabled)")
+    ax2.bar(x + width / 2, vs_acc, width=width, color="#d62728", alpha=0.75,
+            label="v_accel_limit (vel disabled)")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(wp_labels, fontsize=7)
+    ax2.set_xlabel("Waypoint index (per corner)")
+    ax2.set_ylabel("Speed limit (mm/s)")
+    ax2.set_title("Per-corner constraint decomposition (isolated limits)")
+    ax2.grid(True, alpha=0.3, axis="y")
+    ax2.legend(loc="best", fontsize=8)
+
+    plt.tight_layout()
+    fig.savefig(out / "corner_limits.png", dpi=150, bbox_inches="tight")
     plt.close(fig)

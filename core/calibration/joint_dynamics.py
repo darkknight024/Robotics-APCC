@@ -37,16 +37,16 @@ class JointDynamicsCalibration:
 def get_exp24_neutral() -> JointDynamicsCalibration:
     """Return the hardcoded Experiment 24 neutral-position limits."""
 
-    # Experiment 24 summary values in degrees:
+    # Experiment 24 summary values in degrees (accel/decel from Exp24 v8 RS):
     # q_dot_max_deg_s:       [280.0, 180.0, 250.0, 500.0, 415.8, 720.0]
-    # q_ddot_accel_deg_s2:   [2826,  662,   1526,  6886,  6124,  11006]
-    # q_ddot_decel_deg_s2:   [2850,  662,   1589,  6834,  6143,  11059]
+    # q_ddot_accel_deg_s2:   [11102, 21533, 33677, 144, 10037, 11259]
+    # q_ddot_decel_deg_s2:   [7275,  22498, 30712, 246, 11370, 7083]
     return JointDynamicsCalibration(
         q_dot_max=np.deg2rad([280.0, 180.0, 250.0, 500.0, 415.8, 720.0]),
-        q_ddot_accel=np.deg2rad([2826.0, 662.0, 1526.0, 6886.0, 6124.0, 11006.0]),
-        q_ddot_decel=np.deg2rad([2850.0, 662.0, 1589.0, 6834.0, 6143.0, 11059.0]),
+        q_ddot_accel=np.deg2rad([11102.0, 21533.0, 33677.0, 144.0, 10037.0, 11259.0]),
+        q_ddot_decel=np.deg2rad([7275.0, 22498.0, 30712.0, 246.0, 11370.0, 7083.0]),
         configuration="neutral",
-        source="Experiment_24_v1",
+        source="Experiment_24_v8",
     )
 
 

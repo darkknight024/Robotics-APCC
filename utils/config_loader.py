@@ -373,8 +373,23 @@ class Feature3D1Config:
     enable_corner_dip_ceiling: bool = True          # k_corner_dip model
     enable_joint_velocity_ceiling: bool = True
     enable_orientation_ceiling: bool = True
+    # Joint acceleration is not a min-ceiling: it bounds the forward/backward
+    # reachability ramps via the Jacobian tangential a_accel/a_decel profiles.
+    enable_joint_acceleration_ceiling: bool = True
     generate_plots: bool = True
     generate_report: bool = True
+    # ── F3 D2: time-optimal (TOPP-RA) + no-dip constant-speed limits ──
+    compute_time_optimal: bool = False              # Feature A: TOPP-RA on blended q*
+    compute_corner_limits: bool = False             # Feature B: per-corner + global no-dip TCP speed
+    apply_topp_ceiling: bool = False                # If True: re-run M5 with TOPP v_tcp as ceiling
+    corner_analysis_ds_mm: float = 0.5              # Fine ds (mm) for local IK re-sample of tight arcs
+    topp_n_gridpoints: int = 0                      # 0 → min(len(knots), 1000)
+    topp_max_knots: int = 2000                      # Downsample threshold (keeps all blend samples)
+    # [ESTIMATE — NEEDS FURTHER MODELING] Multiplier on the Exp24 joint
+    # acceleration limits used by Features A/B.  The per-configuration /
+    # per-payload robot dynamics model is not finished; site guidance
+    # allows exceeding the measured estimates (e.g. 1.5 = +50%).
+    joint_accel_limit_scale: float = 1.0
 
 
 @dataclass

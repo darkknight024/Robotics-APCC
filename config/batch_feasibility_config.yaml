@@ -122,10 +122,18 @@ topp_ra:
 feature3_d1:
   enabled: false
   custom_zone: false            # false → preset zone number (z0,z1,…); true → (pzone_tcp,pzone_ori,zone_ori)
-  # Calibration constants (from site experiments V1 and V2)
-  # Real calibration param will be updated in robot_config.yaml
-  a_tcp_mm_s2: 2500.0         # Effective TCP acceleration capability (mm/s²) — PLACEHOLDER
-  T_settle_s: 0.2             # Fine-point settling time (seconds) — PLACEHOLDER
+  # ===========================================================================
+  # [ESTIMATE — NEEDS FURTHER MODELING] The constants below are crude
+  # placeholders, not calibrated physics. Track them until proper models land:
+  #   a_tcp_mm_s2              — scalar TCP accel capability; supplanted by
+  #                              Jacobian dynamics when use_jacobian_dynamics=true
+  #   T_settle_s               — fine-point settling time; never measured on site
+  #   joint_accel_limit_scale  — fudge factor on the Exp24 joint accel limits;
+  #                              the per-configuration/payload dynamics model
+  #                              (inertia, motor torque curves) is not built yet
+  # ===========================================================================
+  a_tcp_mm_s2: 2500.0         # [ESTIMATE] Effective TCP acceleration capability (mm/s²)
+  T_settle_s: 0.2             # [ESTIMATE] Fine-point settling time (seconds)
   is_calibrated: false         # Set true ONLY after V1/V2 calibration
   # Path sampling resolution
   ds_mm: 5.0                  # Arc-length spacing between dense samples (mm)
@@ -140,10 +148,28 @@ feature3_d1:
   enable_blend_centripetal_ceiling: false  # √(a_n·ρ·ρ_scale) + Jacobian centripetal tighten
   enable_corner_dip_ceiling: false         # k_corner_dip CornerPathReduction model
   enable_joint_velocity_ceiling: true
-  enable_orientation_ceiling: true
+  enable_orientation_ceiling: false
+  # Joint acceleration is not a min-ceiling: it bounds the forward/backward
+  # reachability ramps (per-sample Jacobian tangential a_accel/a_decel).
+  # Its magnitude is scaled by joint_accel_limit_scale below ([ESTIMATE]).
+  enable_joint_acceleration_ceiling: true
   # Output toggles
   generate_plots: true         # Speed profile, joint utilisation, blend geometry PNGs
   generate_report: true        # JSON report with all scalar metrics
+  # ── F3 D2: TOPP-RA time-optimal + no-dip constant TCP speed limits ──
+  # Both require use_jacobian_dynamics=true on the robot config so that
+  # JointDynamicsCalibration (q_dot_max, q_ddot_accel/decel) is loaded.
+  compute_time_optimal: false      # Feature A: TOPP-RA on the fixed blended q*
+  compute_corner_limits: false     # Feature B: per-corner + global no-dip constant TCP speed
+  apply_topp_ceiling: false        # If true: re-run M5 with the TOPP v_tcp as v_topp_ceiling
+  corner_analysis_ds_mm: 0.5       # Fine ds (mm) for local IK re-sample of tight/sub-mm arcs
+  topp_n_gridpoints: 0             # 0 → min(len(knots), 1000); avoids 10k+ LP blowups
+  topp_max_knots: 2000             # Cap TOPP-RA spline knots (all blend samples kept)
+  # Multiplier on robots_config.yaml joint accel/decel limits for Features A/B
+  # and the M5 joint-accel ceiling.  Limits are now the observed peaks from
+  # Exp24 v8 RS (vel_test_100_50_50_z200_v6000); keep at 1.0 unless you want
+  # to deliberately over/under-bind relative to that recording.
+  joint_accel_limit_scale: 1.0
 
 # =============================================================================
 # Ranking (used by combinatorial search only)

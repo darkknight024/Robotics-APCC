@@ -108,6 +108,21 @@ class SpeedCalibration:
                              If false, do not apply Jacobian v_joint ceilings.
         enable_orientation_ceiling:
                              If false, do not apply the scalar ω_max ceiling.
+        enable_joint_acceleration_ceiling:
+                             If false, the forward/backward reachability passes
+                             run with effectively unlimited tangential
+                             acceleration — joint accelerations no longer
+                             constrain how fast v_actual can ramp.  This is
+                             not a min-ceiling like the others: joint accel
+                             enters M5 through the per-sample a_accel/a_decel
+                             profiles (Jacobian tangential limits), not
+                             through v_ceiling.
+        joint_accel_limit_scale:
+                             [ESTIMATE] multiplier on the Exp24 joint
+                             acceleration limits wherever they shape the
+                             speed profile (the D2 Jacobian tangential
+                             a_accel/a_decel profiles scale linearly with
+                             the per-joint q̈ limits).  1.5 = allow +50%.
         T_settle_s:          Fine-point settling time (seconds).
         is_calibrated:       True only after constants have been measured from
                              site data.
@@ -125,6 +140,8 @@ class SpeedCalibration:
     enable_corner_dip_ceiling: bool = True
     enable_joint_velocity_ceiling: bool = True
     enable_orientation_ceiling: bool = True
+    enable_joint_acceleration_ceiling: bool = True
+    joint_accel_limit_scale: float = 1.0
     T_settle_s: float = _PLACEHOLDER_T_SETTLE
     is_calibrated: bool = False
     joint_dynamics: Optional[Any] = None
@@ -547,6 +564,22 @@ def predict_speed_profile(
     a_accel_profile = np.full(M, float(a_accel))
     a_decel_profile = np.full(M, float(a_decel))
 
+    # Joint-acceleration handling (not a min-ceiling: it bounds the
+    # forward/backward reachability ramps via a_accel/a_decel).
+    enable_joint_accel = getattr(
+        calibration, "enable_joint_acceleration_ceiling", True,
+    )
+    # [ESTIMATE] uniform scale on the Exp24 per-joint q̈ limits; the
+    # Jacobian tangential a_tcp is linear in that scaling, so applying it
+    # to the resulting profiles is exact.
+    accel_scale = float(
+        getattr(calibration, "joint_accel_limit_scale", 1.0) or 1.0
+    )
+    if not enable_joint_accel:
+        _A_UNBOUNDED = 1.0e12  # mm/s² — reachability passes become no-ops
+        a_accel_profile[:] = _A_UNBOUNDED
+        a_decel_profile[:] = _A_UNBOUNDED
+
     use_jacobian = (
         calibration.use_jacobian_dynamics
         and calibration.joint_dynamics is not None
@@ -575,20 +608,21 @@ def predict_speed_profile(
                         calibration.joint_dynamics,
                         calibration.jacobian_eval,
                     )
-                a_accel_profile[k] = compute_a_tcp_tangential(
-                    q_path[k],
-                    tangents[k],
-                    calibration.joint_dynamics,
-                    calibration.jacobian_eval,
-                    phase="accel",
-                )
-                a_decel_profile[k] = compute_a_tcp_tangential(
-                    q_path[k],
-                    tangents[k],
-                    calibration.joint_dynamics,
-                    calibration.jacobian_eval,
-                    phase="decel",
-                )
+                if enable_joint_accel:
+                    a_accel_profile[k] = accel_scale * compute_a_tcp_tangential(
+                        q_path[k],
+                        tangents[k],
+                        calibration.joint_dynamics,
+                        calibration.jacobian_eval,
+                        phase="accel",
+                    )
+                    a_decel_profile[k] = accel_scale * compute_a_tcp_tangential(
+                        q_path[k],
+                        tangents[k],
+                        calibration.joint_dynamics,
+                        calibration.jacobian_eval,
+                        phase="decel",
+                    )
             except (ValueError, np.linalg.LinAlgError) as exc:
                 logger.warning("Jacobian tangential dynamics failed at sample %d: %s", k, exc)
 

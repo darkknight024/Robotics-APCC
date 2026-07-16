@@ -141,6 +141,38 @@ class Exp24V6TrajectoryMetrics:
     tcp_frame: str = "ee_link"
 
 
+@dataclass
+class Exp24TimeOptimalTrajectoryMetrics:
+    """Per-trajectory rollup of Feature A + Feature B for the D2 summary.
+
+    Populated only when ``--time-optimal`` is on.  All numbers come from
+    :class:`core.blend_zone.topp_on_blended_path.BlendedToppResult` and
+    :class:`core.blend_zone.topp_on_blended_path.CornerSpeedLimit` — this
+    script only aggregates.
+    """
+
+    file: str
+    # Feature A — TOPP-RA time-optimal
+    topp_feasible: bool
+    topp_duration_s: float
+    topp_v_tcp_min_mm_s: float
+    topp_v_tcp_max_mm_s: float
+    topp_v_tcp_mean_mm_s: float
+    m5_traversal_s: float
+    duration_ratio_topp_over_m5: float
+    topp_max_interp_error_rad: float
+    # Feature B — per-corner constant-speed no-dip
+    n_corners_analysed: int
+    corner_v_flat_min_mm_s: float
+    corner_v_flat_max_mm_s: float
+    corner_v_flat_median_mm_s: float
+    n_corners_velocity_bound: int
+    n_corners_accel_bound: int
+    # Feature B — global constant-speed no-dip (whole path)
+    v_flat_global_mm_s: float = float("nan")
+    v_flat_duration_s: float = float("nan")
+
+
 def experiment24_root(repo: Optional[Path] = None) -> Path:
     repo = repo or Path(__file__).resolve().parents[1]
     root = repo / "Robot_APCC" / "Experiments" / _EXP24_DIRNAME
@@ -652,214 +684,6 @@ def _orientation_speed_deg_s(quats: np.ndarray, time_ms: np.ndarray) -> np.ndarr
     return speed
 
 
-def _plot_exp24_v3_pair(
-    out_dir: Path,
-    label: str,
-    rs_arc: np.ndarray,
-    rs_speed: np.ndarray,
-    rs_accel: np.ndarray,
-    rs_logged_speed: np.ndarray,
-    rs_logged_accel: np.ndarray,
-    rs_orientation_speed: np.ndarray,
-    rs_logged_orientation_speed: np.ndarray,
-    rs_quat: np.ndarray,
-    direct_speed: np.ndarray,
-    direct_accel: np.ndarray,
-    direct_orientation_speed: np.ndarray,
-    solver_arc: np.ndarray,
-    solver_speed: np.ndarray,
-    solver_accel: np.ndarray,
-    solver_orientation_speed: np.ndarray,
-    solver_xyz_mm: np.ndarray,
-    solver_quat: np.ndarray,
-    rs_xyz_on_solver: np.ndarray,
-    rs_quat_on_solver: np.ndarray,
-    raw_waypoints_xyz_mm: np.ndarray,
-    raw_waypoints_quat: np.ndarray,
-    raw_to_solver_rms_error_mm: float,
-    raw_to_rs_rms_error_mm: float,
-    pose_dev: np.ndarray,
-) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    fig, axes = plt.subplots(4, 1, figsize=(13, 12), sharex=False)
-    axes[0].plot(rs_arc, rs_speed, label="RS base-frame speed", lw=1.3)
-    axes[0].plot(rs_arc, rs_logged_speed, color="gray", alpha=0.45, label="RS logged native speed", lw=0.9)
-    axes[0].plot(rs_arc, direct_speed, "--", label="Jacobian from RS qdot", lw=1.0)
-    axes[0].plot(solver_arc, solver_speed, ":", label="Feature 3 D2 solver", lw=1.2)
-    axes[0].set_ylabel("Speed (mm/s)")
-    axes[0].set_title("TCP Speed")
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend(loc="best")
-
-    axes[1].plot(rs_arc, np.abs(rs_accel), label="RS base-frame acceleration", lw=1.3)
-    axes[1].plot(rs_arc, np.abs(rs_logged_accel), color="gray", alpha=0.45, label="RS logged native acceleration", lw=0.9)
-    axes[1].plot(rs_arc, direct_accel, "--", label="Jacobian from RS qdot/qddot", lw=1.0)
-    axes[1].plot(solver_arc, solver_accel, ":", label="Feature 3 D2 solver", lw=1.2)
-    axes[1].set_ylabel("Acceleration (mm/s²)")
-    axes[1].set_title("TCP Acceleration Magnitude")
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend(loc="best")
-
-    axes[2].plot(rs_arc, rs_orientation_speed, label="RS base-frame orientation speed", lw=1.3)
-    axes[2].plot(rs_arc, rs_logged_orientation_speed, color="gray", alpha=0.45, label="RS logged native orientation speed", lw=0.9)
-    axes[2].plot(rs_arc, direct_orientation_speed, "--", label="Jacobian angular speed", lw=1.0)
-    axes[2].plot(solver_arc, solver_orientation_speed, ":", label="Feature 3 D2 solver", lw=1.2)
-    axes[2].set_ylabel("Orientation speed (deg/s)")
-    axes[2].set_title("TCP Orientation Speed")
-    axes[2].grid(True, alpha=0.3)
-    axes[2].legend(loc="best")
-
-    axes[3].plot(solver_arc, pose_dev, color="purple", lw=0.9)
-    axes[3].set_ylabel("Pose XYZ error (mm)")
-    axes[3].set_xlabel("Arc length (mm)")
-    axes[3].set_title("Solver pose distance to transformed RobotStudio base-frame polyline")
-    axes[3].grid(True, alpha=0.3)
-
-    fig.suptitle(label)
-    fig.tight_layout()
-    fig.savefig(out_dir / "v3_solver_vs_rs_dynamics.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    raw_arc = _arc_length_mm(raw_waypoints_xyz_mm)
-    raw_quat = _quat_signed_aligned(
-        np.column_stack([
-            np.interp(raw_arc, solver_arc, solver_quat[:, c])
-            for c in range(4)
-        ]),
-        raw_waypoints_quat,
-    )
-
-    fig, axes = plt.subplots(7, 2, figsize=(16, 18), sharex="col")
-    labels = ["X", "Y", "Z", "qw", "qx", "qy", "qz"]
-    solver_series = [
-        solver_xyz_mm[:, 0], solver_xyz_mm[:, 1], solver_xyz_mm[:, 2],
-        solver_quat[:, 0], solver_quat[:, 1], solver_quat[:, 2], solver_quat[:, 3],
-    ]
-    rs_series = [
-        rs_xyz_on_solver[:, 0], rs_xyz_on_solver[:, 1], rs_xyz_on_solver[:, 2],
-        rs_quat_on_solver[:, 0], rs_quat_on_solver[:, 1], rs_quat_on_solver[:, 2], rs_quat_on_solver[:, 3],
-    ]
-    raw_series = [
-        raw_waypoints_xyz_mm[:, 0], raw_waypoints_xyz_mm[:, 1], raw_waypoints_xyz_mm[:, 2],
-        raw_quat[:, 0], raw_quat[:, 1], raw_quat[:, 2], raw_quat[:, 3],
-    ]
-    units = ["mm", "mm", "mm", "", "", "", ""]
-
-    for i, (name, sol_y, rs_y, raw_y, unit) in enumerate(
-        zip(labels, solver_series, rs_series, raw_series, units)
-    ):
-        axes[i, 0].plot(solver_arc, rs_y, "b-", lw=1.0, label="RobotStudio")
-        axes[i, 0].plot(solver_arc, sol_y, "r--", lw=1.0, label="Solver")
-        axes[i, 0].plot(
-            raw_arc,
-            raw_y,
-            "ko",
-            ms=2.2,
-            alpha=0.65,
-            label="Raw transformed waypoints" if i == 0 else None,
-        )
-        axes[i, 0].set_ylabel(f"{name} {unit}".strip())
-        axes[i, 0].set_title(f"{name} overlay")
-
-        delta = sol_y - rs_y
-        axes[i, 1].plot(solver_arc, delta, "purple", lw=0.8)
-        axes[i, 1].axhline(0.0, color="k", lw=0.5, alpha=0.4)
-        axes[i, 1].set_ylabel(f"Δ{name} {unit}".strip())
-        if unit == "mm":
-            axes[i, 1].set_title(
-                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.3f} "
-                f"max|Δ|={np.max(np.abs(delta)):.3f}"
-            )
-        else:
-            axes[i, 1].set_title(
-                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.5f} "
-                f"max|Δ|={np.max(np.abs(delta)):.5f}"
-            )
-        axes[i, 0].grid(True, alpha=0.3)
-        axes[i, 1].grid(True, alpha=0.3)
-
-    axes[0, 0].legend(fontsize=8, loc="best")
-    axes[0, 1].text(
-        0.98,
-        0.95,
-        (
-            f"Raw WP → solver RMS: {raw_to_solver_rms_error_mm:.3f} mm\n"
-            f"Raw WP → RS RMS:     {raw_to_rs_rms_error_mm:.3f} mm"
-        ),
-        transform=axes[0, 1].transAxes,
-        ha="right",
-        va="top",
-        fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.85),
-    )
-    axes[-1, 0].set_xlabel("Solver arc length (mm)")
-    axes[-1, 1].set_xlabel("Solver arc length (mm)")
-    fig.suptitle(f"Full Base-Frame Pose Overlay and Deltas — {label}", y=1.005)
-    fig.tight_layout()
-    fig.savefig(out_dir / "v3_solver_vs_rs_full_pose.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    # Waypoint-index diagnostic: use the raw transformed waypoint polyline as
-    # the abscissa so dense siping path tracking can be read by intended
-    # waypoint progress instead of solver arc-length.
-    solver_wp_idx = _project_to_waypoint_index(solver_xyz_mm, raw_waypoints_xyz_mm)
-    rs_wp_idx = _project_to_waypoint_index(rs_xyz_on_solver, raw_waypoints_xyz_mm)
-    raw_idx = np.arange(len(raw_waypoints_xyz_mm), dtype=float)
-
-    fig, axes = plt.subplots(7, 2, figsize=(16, 18), sharex="col")
-    for i, (name, sol_y, rs_y, raw_y, unit) in enumerate(
-        zip(labels, solver_series, rs_series, raw_series, units)
-    ):
-        axes[i, 0].plot(rs_wp_idx, rs_y, "b-", lw=1.0, label="RobotStudio")
-        axes[i, 0].plot(solver_wp_idx, sol_y, "r--", lw=1.0, label="Solver")
-        axes[i, 0].plot(
-            raw_idx,
-            raw_y,
-            "ko",
-            ms=2.2,
-            alpha=0.65,
-            label="Raw waypoints" if i == 0 else None,
-        )
-        axes[i, 0].set_ylabel(f"{name} {unit}".strip())
-        axes[i, 0].set_title(f"{name} vs waypoint index")
-
-        # Delta is meaningful after interpolating RobotStudio to solver waypoint-index.
-        order = np.argsort(rs_wp_idx)
-        rs_idx_sorted = rs_wp_idx[order]
-        rs_y_sorted = rs_y[order]
-        unique_idx, unique_first = np.unique(rs_idx_sorted, return_index=True)
-        unique_y = rs_y_sorted[unique_first]
-        rs_on_solver_idx = np.interp(solver_wp_idx, unique_idx, unique_y)
-        delta = sol_y - rs_on_solver_idx
-        axes[i, 1].plot(solver_wp_idx, delta, "purple", lw=0.8)
-        axes[i, 1].axhline(0.0, color="k", lw=0.5, alpha=0.4)
-        axes[i, 1].set_ylabel(f"Δ{name} {unit}".strip())
-        if unit == "mm":
-            axes[i, 1].set_title(
-                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.3f} "
-                f"max|Δ|={np.max(np.abs(delta)):.3f}"
-            )
-        else:
-            axes[i, 1].set_title(
-                f"Δ{name} mean|Δ|={np.mean(np.abs(delta)):.5f} "
-                f"max|Δ|={np.max(np.abs(delta)):.5f}"
-            )
-        axes[i, 0].grid(True, alpha=0.3)
-        axes[i, 1].grid(True, alpha=0.3)
-    axes[0, 0].legend(fontsize=8, loc="best")
-    axes[-1, 0].set_xlabel("Waypoint progress index")
-    axes[-1, 1].set_xlabel("Waypoint progress index")
-    fig.suptitle(f"Full Pose by Raw Waypoint Index — {label}", y=1.005)
-    fig.tight_layout()
-    fig.savefig(out_dir / "v3_solver_vs_rs_pose_by_waypoint_index.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
 
 def _select_corner_waypoints(waypoints_m: np.ndarray, max_corners: int = 8) -> List[int]:
     xyz = waypoints_m[:, :3] * 1000.0
@@ -1026,8 +850,17 @@ def evaluate_exp24_v3_siping_dataset(
     csv_paths: Optional[List[Path]] = None,
     corner_debug: bool = False,
     max_debug_corners: int = 8,
+    include_d2: bool = False,
 ) -> List[Exp24V3TrajectoryMetrics]:
-    """Validate D2 dynamics on Experiment 24 v3 controlled-spacing siping data."""
+    """Validate D2 dynamics on Experiment 24 v3 controlled-spacing siping data.
+
+    When ``include_d2`` is True, also compute F3 D2 Feature A (TOPP-RA
+    time-optimal v_tcp) and Feature B (per-corner constant-speed v_flat),
+    overlay both on the standard speed comparison plot, and roll up a
+    ``time_optimal_summary.txt`` at ``out_dir``.  These come out of
+    ``run_feature3`` on ``result.time_optimal`` / ``result.corner_speed_limits``
+    with no additional solver math in this script.
+    """
 
     repo = repo or Path(__file__).resolve().parents[1]
     fk_solver = _build_fk_solver_for_frame(repo, "ee_link")
@@ -1044,11 +877,15 @@ def evaluate_exp24_v3_siping_dataset(
     cfg.feature3_d1.enabled = True
     cfg.feature3_d1.generate_plots = False
     cfg.feature3_d1.generate_report = True
+    cfg.feature3_d1.compute_time_optimal = include_d2
+    cfg.feature3_d1.compute_corner_limits = include_d2
     cfg.use_base_frame = False
     robot = get_robot_by_name(_ROBOT_NAME)
     knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
 
     metrics: List[Exp24V3TrajectoryMetrics] = []
+    d2_rows: List[Exp24TimeOptimalTrajectoryMetrics] = []
+    d2_corners: List[tuple] = []
     for rs_csv in paths:
         radius, spacing, speed_cmd = _parse_exp24_v3_filename(rs_csv)
         label = f"r{radius}_spacing{spacing}_v{speed_cmd}"
@@ -1057,6 +894,7 @@ def evaluate_exp24_v3_siping_dataset(
 
         toolpath = _exp24_v3_toolpath_for_rs(rs_csv, repo)
         rs_data = _load_csv(rs_csv)
+        rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2 = _rs_joint_states_deg(rs_data)
         rs_base = _rs_poses_tpk_to_base(rs_data, repo)
         rs_xyz_base_mm = rs_base[:, :3] * 1000.0
         rs_arc_base = _arc_length_mm(rs_xyz_base_mm)
@@ -1152,34 +990,37 @@ def evaluate_exp24_v3_siping_dataset(
         raw_to_solver_rms = float(np.sqrt(np.mean(raw_solver_dist ** 2)))
         raw_to_rs_rms = float(np.sqrt(np.mean(raw_rs_dist ** 2)))
 
-        _plot_exp24_v3_pair(
-            case_dir,
-            label,
-            rs_arc_base,
-            rs_speed_base,
-            rs_accel_base,
-            rs_logged_speed,
-            rs_logged_accel,
-            rs_orientation_speed_base,
-            rs_logged_orientation_speed,
-            _align_quaternion_series(rs_base[:, 3:7]),
-            direct_speed,
-            direct_accel,
-            direct_orientation_speed,
-            result.speed_profile.arc_lengths_mm,
-            solver_speed_base,
-            solver_accel_base,
-            solver_orientation_speed,
-            solver_xyz_mm,
-            solver_quat,
-            rs_xyz_on_solver,
-            rs_quat_on_solver,
-            raw_waypoints_xyz_mm,
-            raw_waypoints_quat,
-            raw_to_solver_rms,
-            raw_to_rs_rms,
-            pose_dev,
+        _emit_m5_joint_vs_rs(
+            case_dir, label, result,
+            rs_arc_base, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
+            rs_speed_mm_s=rs_speed_base,
+            rs_accel_mm_s2=rs_accel_base,
         )
+        _write_traversal_times(
+            case_dir, label, result,
+            rs_time_ms=np.asarray(rs_data["time_ms"], dtype=float),
+            calibration_T_settle_s=cfg.feature3_d1.T_settle_s,
+        )
+        if include_d2:
+            d2_row = _reduce_time_optimal_metrics(
+                rs_csv.name, result,
+                calibration_T_settle_s=cfg.feature3_d1.T_settle_s,
+            )
+            if d2_row is not None:
+                d2_rows.append(d2_row)
+                d2_corners.append(
+                    (rs_csv.name, getattr(result, "corner_speed_limits", None) or [])
+                )
+            _write_d2_case_outputs(
+                case_dir, label, result, raw_waypoints_xyz_mm,
+                toolpath_csv=toolpath,
+                rs_arc_mm=rs_arc_base,
+                rs_q_deg=rs_q_deg,
+                rs_qdot_deg_s=rs_qdot_deg_s,
+                rs_qddot_deg_s2=rs_qddot_deg_s2,
+                rs_speed_mm_s=rs_speed_base,
+                rs_accel_mm_s2=rs_accel_base,
+            )
         if corner_debug:
             _plot_v3_corner_debug(
                 case_dir,
@@ -1224,6 +1065,8 @@ def evaluate_exp24_v3_siping_dataset(
         )
 
     _write_v3_siping_metrics(out_dir, metrics)
+    if include_d2 and d2_rows:
+        _write_time_optimal_summary(out_dir, d2_rows, d2_corners)
     return metrics
 
 
@@ -1291,180 +1134,8 @@ def evaluate_exp24_v2_orientation_dataset(
     return metrics
 
 
-def _plot_v4_speed_overlay(
-    out_dir: Path,
-    label: str,
-    rs_arc: np.ndarray,
-    rs_speed: np.ndarray,
-    solver_arc: np.ndarray,
-    solver_speed: np.ndarray,
-) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(13, 5))
-    ax.plot(rs_arc, rs_speed, "b-", lw=1.4, label="RS logged native TCP speed")
-    ax.plot(solver_arc, solver_speed, "r--", lw=1.2, label="Feature 3 D2 solver TCP speed")
-    ax.set_title(f"RS Logged Native TCP vs Feature 3 D2 Solver Speed — {label}")
-    ax.set_xlabel("Arc length (mm)")
-    ax.set_ylabel("TCP speed (mm/s)")
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best")
-    fig.tight_layout()
-    fig.savefig(out_dir / "v4_rs_logged_tcp_vs_solver_speed.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
 
 
-def _finite_for_plot(values: np.ndarray, max_plot: float) -> np.ndarray:
-    """Replace non-finite / extremely large ceilings with NaN for plotting."""
-    out = np.asarray(values, dtype=float).copy()
-    if out.size == 0:
-        return out
-    out[~np.isfinite(out)] = np.nan
-    out[out > max_plot] = np.nan
-    return out
-
-
-def _plot_speed_ceiling_breakdown(
-    out_dir: Path,
-    label: str,
-    speed_profile,
-    rs_arc: np.ndarray,
-    rs_logged_speed: np.ndarray,
-    rs_speed: Optional[np.ndarray] = None,
-) -> None:
-    """Plot commanded, estimated, intermediate ceilings, and RobotStudio speeds.
-
-    Three subplots (separate from ``v3_solver_vs_rs_dynamics.png``):
-      1. Target / estimated vs RobotStudio
-      2. Intermediate ceilings (dashed) with estimated overlay
-      3. Binding envelope: v_cmd, v_ceiling, v_actual, RS logged
-    """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    solver_arc = np.asarray(speed_profile.arc_lengths_mm, dtype=float)
-    v_cmd = np.asarray(speed_profile.v_cmd, dtype=float)
-    v_actual = np.asarray(speed_profile.v_actual, dtype=float)
-    rs_logged = np.asarray(rs_logged_speed, dtype=float)
-    rs_pose = np.asarray(rs_speed, dtype=float) if rs_speed is not None else None
-
-    def _safe_max(arr: Optional[np.ndarray]) -> float:
-        if arr is None or arr.size == 0:
-            return 0.0
-        finite = np.asarray(arr, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        return float(np.max(finite)) if finite.size else 0.0
-
-    op_peak = max(
-        _safe_max(v_cmd),
-        _safe_max(v_actual),
-        _safe_max(rs_logged),
-        _safe_max(rs_pose),
-        1.0,
-    )
-    # Operating-range ylim for panels that compare to RS / v_actual.
-    ylim_op = max(op_peak * 1.25, 20.0)
-
-    v_blend = getattr(speed_profile, "v_blend_ceiling", None)
-    v_joint = getattr(speed_profile, "v_joint_ceiling", None)
-    v_orient = getattr(speed_profile, "v_orientation_ceiling", None)
-    v_ceil = getattr(speed_profile, "v_ceiling", None)
-
-    # Ceiling panel needs a higher cap so joint ceilings remain visible without
-    # crushing the blend dips to a flat line; still clip unbound infinities.
-    ceiling_cap = max(op_peak * 4.0, 100.0)
-    ceil_peak = max(
-        _safe_max(_finite_for_plot(np.asarray(v_blend, dtype=float), ceiling_cap)) if v_blend is not None else 0.0,
-        _safe_max(_finite_for_plot(np.asarray(v_joint, dtype=float), ceiling_cap)) if v_joint is not None else 0.0,
-        _safe_max(_finite_for_plot(np.asarray(v_orient, dtype=float), ceiling_cap)) if v_orient is not None else 0.0,
-        op_peak,
-    )
-    ylim_ceil = max(ceil_peak * 1.1, ylim_op)
-
-    fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
-
-    # ── 1. Target / estimated vs RobotStudio ──
-    ax = axes[0]
-    ax.plot(rs_arc, rs_logged, color="#1f77b4", lw=1.5, label="RS logged TCP speed")
-    if rs_pose is not None:
-        ax.plot(
-            rs_arc, rs_pose, color="#17becf", lw=1.1, alpha=0.9,
-            label="RS base-frame speed (from pose)",
-        )
-    ax.plot(solver_arc, v_cmd, color="#111111", lw=2.0, label="v_cmd (target)")
-    ax.plot(solver_arc, v_actual, color="#d62728", lw=2.0, label="v_actual (estimated)")
-    ax.set_ylabel("TCP speed (mm/s)")
-    ax.set_title("Target vs estimated vs RobotStudio")
-    ax.set_ylim(bottom=0.0, top=ylim_op)
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=9, ncol=2)
-
-    # ── 2. Intermediate ceilings ──
-    ax = axes[1]
-    ceiling_series = [
-        ("v_blend_ceiling", v_blend, "#2ca02c"),
-        ("v_joint_ceiling", v_joint, "#ff7f0e"),
-        ("v_orientation_ceiling", v_orient, "#9467bd"),
-    ]
-    for name, values, color in ceiling_series:
-        if values is None:
-            continue
-        arr = np.asarray(values, dtype=float)
-        if arr.size != solver_arc.size:
-            continue
-        ax.plot(
-            solver_arc,
-            _finite_for_plot(arr, ceiling_cap),
-            linestyle="--",
-            lw=1.2,
-            color=color,
-            label=name,
-        )
-    ax.plot(
-        solver_arc, v_actual, color="#d62728", lw=1.5, alpha=0.85,
-        label="v_actual (estimated)",
-    )
-    ax.set_ylabel("TCP speed (mm/s)")
-    ax.set_title("Intermediate speed ceilings (dashed) with estimated speed")
-    ax.set_ylim(bottom=0.0, top=ylim_ceil)
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=9, ncol=2)
-
-    # ── 3. Binding envelope ──
-    ax = axes[2]
-    ax.plot(rs_arc, rs_logged, color="#1f77b4", lw=1.4, label="RS logged TCP speed")
-    ax.plot(solver_arc, v_cmd, color="#111111", lw=2.0, label="v_cmd (target)")
-    if v_ceil is not None:
-        arr = np.asarray(v_ceil, dtype=float)
-        if arr.size == solver_arc.size:
-            ax.plot(
-                solver_arc,
-                _finite_for_plot(arr, ceiling_cap),
-                linestyle="--",
-                lw=1.4,
-                color="#8c564b",
-                label="v_ceiling (min intermediate)",
-            )
-    ax.plot(solver_arc, v_actual, color="#d62728", lw=2.0, label="v_actual (estimated)")
-    ax.set_xlabel("Arc length (mm)")
-    ax.set_ylabel("TCP speed (mm/s)")
-    ax.set_title("Binding envelope — how ceilings + reachability produce v_actual")
-    ax.set_ylim(bottom=0.0, top=ylim_op)
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=9, ncol=2)
-
-    fig.suptitle(f"TCP Speed Ceiling Breakdown — {label}", fontsize=13, y=1.01)
-    fig.tight_layout()
-    fig.savefig(out_dir / "speed_ceiling_breakdown_vs_rs.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _derivative_wrt_time(values: np.ndarray, time_s: np.ndarray) -> np.ndarray:
@@ -1491,141 +1162,97 @@ def _derivative_wrt_time(values: np.ndarray, time_s: np.ndarray) -> np.ndarray:
     return out
 
 
-def _plot_solver_joint_dynamics(
+
+def _fmt_duration_s(value: float) -> str:
+    if value is None or not np.isfinite(value):
+        return "n/a"
+    return f"{float(value):.3f} s"
+
+
+def _write_traversal_times(
     out_dir: Path,
     label: str,
-    speed_profile,
-    joint_velocity_result,
-    q_star: Optional[np.ndarray],
-    q_dot_max_rad_s: Optional[np.ndarray] = None,
-    q_ddot_max_rad_s2: Optional[np.ndarray] = None,
+    result,
+    rs_time_ms: Optional[np.ndarray] = None,
+    calibration_T_settle_s: float = 0.0,
 ) -> None:
-    """Plot solver joint velocity, acceleration, and TCP accel after speed-profile changes."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    if joint_velocity_result is None or speed_profile is None:
-        return
-
+    """Write path-traversal duration for commanded / M5 / TOPP / v_flat / RS."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    arc = np.asarray(speed_profile.arc_lengths_mm, dtype=float)
-    v_actual = np.asarray(speed_profile.v_actual, dtype=float)
-    v_cmd = np.asarray(speed_profile.v_cmd, dtype=float)
-    time_s = _time_from_arc_speed(arc, v_actual)
-    q_dot = np.asarray(joint_velocity_result.q_dot, dtype=float)  # rad/s
-    q_dot_deg = np.rad2deg(q_dot)
-    q_ddot = np.column_stack([
-        _derivative_wrt_time(q_dot[:, j], time_s) for j in range(q_dot.shape[1])
-    ])
-    q_ddot_deg = np.rad2deg(q_ddot)
+    sp = getattr(result, "speed_profile", None)
 
-    # Tangential TCP acceleration from the estimated speed profile.
-    tcp_accel = np.zeros_like(v_actual)
-    for i in range(1, len(arc) - 1):
-        ds = arc[i + 1] - arc[i - 1]
-        if ds > 1e-9:
-            dv_ds = (v_actual[i + 1] - v_actual[i - 1]) / ds
-            tcp_accel[i] = v_actual[i] * dv_ds
+    commanded_s = float("nan")
+    m5_s = float("nan")
+    m5_raw_s = float("nan")
+    path_len_mm = float("nan")
+    if sp is not None:
+        arc = np.asarray(sp.arc_lengths_mm, dtype=float)
+        v_cmd = np.asarray(sp.v_cmd, dtype=float)
+        v_act = np.asarray(sp.v_actual, dtype=float)
+        if len(arc) >= 2:
+            path_len_mm = float(arc[-1] - arc[0])
+            commanded_s = float(_time_from_arc_speed(arc, v_cmd)[-1])
+            m5_raw_s = float(_time_from_arc_speed(arc, v_act)[-1])
+            n_fine = len(getattr(sp, "fine_point_indices", []) or [])
+            settle = float(calibration_T_settle_s) * n_fine
+            # Prefer settle-adjusted M5 duration when available (matches
+            # time_optimal_summary), else fall back to integral of v_actual.
+            if np.isfinite(getattr(sp, "total_duration_s", float("nan"))):
+                m5_s = float(sp.total_duration_s) - settle
+            else:
+                m5_s = m5_raw_s
 
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
-    n_joints = min(6, q_dot.shape[1])
+    topp = getattr(result, "time_optimal", None)
+    topp_s = (
+        float(topp.duration_s)
+        if topp is not None and np.isfinite(getattr(topp, "duration_s", float("nan")))
+        else float("nan")
+    )
 
-    # ── Joint velocities ──
-    fig, axes = plt.subplots(n_joints, 1, figsize=(14, 2.4 * n_joints), sharex=True)
-    if n_joints == 1:
-        axes = [axes]
-    for j in range(n_joints):
-        ax = axes[j]
-        ax.plot(arc, np.abs(q_dot_deg[:, j]), color=colors[j], lw=1.0, label=f"|q̇{j+1}|")
-        if q_dot_max_rad_s is not None and j < len(q_dot_max_rad_s):
-            lim = float(np.rad2deg(q_dot_max_rad_s[j]))
-            ax.axhline(lim, color="r", ls="--", alpha=0.55, lw=0.9, label=f"limit {lim:.0f} deg/s")
-        ax.set_ylabel(f"J{j+1} (deg/s)")
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="upper right", fontsize=8)
-        ax.set_ylim(bottom=0.0)
-    axes[-1].set_xlabel("Arc length (mm)")
-    axes[0].set_title(f"Solver joint velocity — {label}")
-    fig.tight_layout()
-    fig.savefig(out_dir / "solver_joint_velocity.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    cs = getattr(result, "constant_speed", None)
+    v_flat = (
+        float(cs.v_flat_mm_s)
+        if cs is not None and np.isfinite(getattr(cs, "v_flat_mm_s", float("nan")))
+        else float("nan")
+    )
+    v_flat_s = (
+        float(cs.duration_s)
+        if cs is not None and np.isfinite(getattr(cs, "duration_s", float("nan")))
+        else float("nan")
+    )
+    if not np.isfinite(v_flat_s) and np.isfinite(v_flat) and v_flat > 1e-9 and np.isfinite(path_len_mm):
+        v_flat_s = path_len_mm / v_flat
 
-    # ── Joint accelerations ──
-    fig, axes = plt.subplots(n_joints, 1, figsize=(14, 2.4 * n_joints), sharex=True)
-    if n_joints == 1:
-        axes = [axes]
-    for j in range(n_joints):
-        ax = axes[j]
-        ax.plot(arc, np.abs(q_ddot_deg[:, j]), color=colors[j], lw=1.0, label=f"|q̈{j+1}|")
-        if q_ddot_max_rad_s2 is not None and j < len(q_ddot_max_rad_s2):
-            lim = float(np.rad2deg(q_ddot_max_rad_s2[j]))
-            ax.axhline(lim, color="r", ls="--", alpha=0.55, lw=0.9, label=f"limit {lim:.0f} deg/s²")
-        ax.set_ylabel(f"J{j+1} (deg/s²)")
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="upper right", fontsize=8)
-        ax.set_ylim(bottom=0.0)
-    axes[-1].set_xlabel("Arc length (mm)")
-    axes[0].set_title(f"Solver joint acceleration (d q̇ / dt) — {label}")
-    fig.tight_layout()
-    fig.savefig(out_dir / "solver_joint_acceleration.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    rs_s = float("nan")
+    if rs_time_ms is not None and len(rs_time_ms) >= 2:
+        rs_s = float((rs_time_ms[-1] - rs_time_ms[0]) / 1000.0)
 
-    # ── Compact summary: peak util + TCP accel + q path rate ──
-    fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
-    util = np.asarray(joint_velocity_result.utilisation_pct, dtype=float)
-    for j in range(n_joints):
-        axes[0].plot(arc, util[:, j], color=colors[j], lw=0.9, label=f"J{j+1}")
-    axes[0].axhline(100.0, color="r", ls="--", alpha=0.6, label="100% q̇ limit")
-    axes[0].set_ylabel("Utilisation (%)")
-    axes[0].set_title("Joint velocity utilisation")
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend(loc="upper right", fontsize=8, ncol=4)
-
-    axes[1].plot(arc, v_cmd, color="#111111", lw=1.6, label="v_cmd")
-    axes[1].plot(arc, v_actual, color="#d62728", lw=1.6, label="v_actual")
-    axes[1].set_ylabel("TCP speed (mm/s)")
-    axes[1].set_title("TCP speed (context for joint demand)")
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend(loc="best", fontsize=9)
-
-    axes[2].plot(arc, tcp_accel, color="#8c564b", lw=1.2, label="TCP tangential accel")
-    axes[2].set_xlabel("Arc length (mm)")
-    axes[2].set_ylabel("Accel (mm/s²)")
-    axes[2].set_title("Solver TCP tangential acceleration from v_actual(s)")
-    axes[2].grid(True, alpha=0.3)
-    axes[2].legend(loc="best", fontsize=9)
-
-    fig.suptitle(f"Joint / TCP dynamics summary — {label}", fontsize=12, y=1.01)
-    fig.tight_layout()
-    fig.savefig(out_dir / "solver_joint_tcp_dynamics_summary.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    # Optional: joint-rate from q*(s) as a cross-check when available.
-    if q_star is not None and len(q_star) == len(time_s):
-        q_star = np.asarray(q_star, dtype=float)
-        q_dot_fd = np.column_stack([
-            _derivative_wrt_time(q_star[:, j], time_s) for j in range(min(6, q_star.shape[1]))
-        ])
-        fig, axes = plt.subplots(min(6, q_star.shape[1]), 1, figsize=(14, 2.2 * min(6, q_star.shape[1])), sharex=True)
-        if min(6, q_star.shape[1]) == 1:
-            axes = [axes]
-        for j in range(min(6, q_star.shape[1])):
-            axes[j].plot(arc, np.abs(np.rad2deg(q_dot[:, j])), color=colors[j], lw=1.0, label="from twist / J")
-            axes[j].plot(
-                arc, np.abs(np.rad2deg(q_dot_fd[:, j])), color=colors[j],
-                ls="--", lw=0.9, alpha=0.75, label="from dq*/dt",
-            )
-            axes[j].set_ylabel(f"J{j+1} (deg/s)")
-            axes[j].grid(True, alpha=0.3)
-            axes[j].legend(loc="upper right", fontsize=7)
-            axes[j].set_ylim(bottom=0.0)
-        axes[-1].set_xlabel("Arc length (mm)")
-        axes[0].set_title(f"Joint velocity cross-check — {label}")
-        fig.tight_layout()
-        fig.savefig(out_dir / "solver_joint_velocity_crosscheck.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+    lines = [
+        "Path traversal times",
+        "=" * 72,
+        f"Trajectory: {label}",
+        f"Path length: {path_len_mm:.1f} mm" if np.isfinite(path_len_mm) else "Path length: n/a",
+        "",
+        "Mode                                              Duration",
+        "-" * 72,
+        f"Commanded (toolpath v_cmd, integral ds/v)         {_fmt_duration_s(commanded_s)}",
+        f"Solver M5 (estimated at toolpath command)         {_fmt_duration_s(m5_s)}",
+        f"TOPP-RA optimal (time-optimal on blended path)    {_fmt_duration_s(topp_s)}",
+        f"Constant v_flat (no corner dips)                  {_fmt_duration_s(v_flat_s)}"
+        + (f"  @ {v_flat:.1f} mm/s" if np.isfinite(v_flat) else ""),
+        f"RobotStudio recorded run                          {_fmt_duration_s(rs_s)}",
+        "",
+        "Notes:",
+        "- Commanded / M5 times integrate along the solver dense arc.",
+        "- TOPP-RA and v_flat require --time-optimal (Feature A / B).",
+        "- RobotStudio duration is (t_last - t_first) from the RS CSV.",
+        "- RS was recorded at the toolpath commanded speed, not at TOPP/v_flat.",
+    ]
+    if np.isfinite(m5_raw_s) and np.isfinite(m5_s) and abs(m5_raw_s - m5_s) > 1e-3:
+        lines.append(
+            f"- M5 raw integral ds/v_actual = {m5_raw_s:.3f} s "
+            f"(settle-adjusted value shown above)."
+        )
+    (out_dir / "traversal_times.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_speed_profile_summary(
@@ -1671,74 +1298,6 @@ def _write_speed_profile_summary(
     ]
     (out_dir / "speed_profile_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-
-def _plot_v4_waypoint_speed_windows(
-    out_dir: Path,
-    label: str,
-    raw_waypoints_xyz_mm: np.ndarray,
-    solver_arc: np.ndarray,
-    solver_speed: np.ndarray,
-    solver_accel: np.ndarray,
-    rs_arc: np.ndarray,
-    rs_speed: np.ndarray,
-    rs_accel: np.ndarray,
-    corner_indices: List[int],
-    window_idx: float = 1.5,
-) -> None:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    out = out_dir / "speed_windows"
-    out.mkdir(parents=True, exist_ok=True)
-    wp_progress_solver = _project_to_waypoint_index(
-        np.column_stack([
-            np.interp(solver_arc, solver_arc, raw_waypoints_xyz_mm[0, 0] + np.zeros_like(solver_arc)),
-            np.zeros_like(solver_arc),
-            np.zeros_like(solver_arc),
-        ]),
-        raw_waypoints_xyz_mm,
-    )
-    # The helper above is geometry based; for speed windows we need monotonically
-    # map solver/RS samples onto raw-waypoint progress by projecting actual poses.
-    # Recomputed by caller-independent interpolation below.
-    del wp_progress_solver
-
-    for idx in corner_indices:
-        lo = idx - window_idx
-        hi = idx + window_idx
-        # Approximate waypoint progress by arc fraction along raw polyline.
-        raw_arc = _arc_length_mm(raw_waypoints_xyz_mm)
-        center_s = raw_arc[idx]
-        lo_s = np.interp(max(0.0, lo), np.arange(len(raw_arc)), raw_arc)
-        hi_s = np.interp(min(len(raw_arc) - 1.0, hi), np.arange(len(raw_arc)), raw_arc)
-        sol_mask = (solver_arc >= lo_s) & (solver_arc <= hi_s)
-        rs_mask = (rs_arc >= lo_s) & (rs_arc <= hi_s)
-        if np.sum(sol_mask) < 2 or np.sum(rs_mask) < 2:
-            continue
-
-        fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
-        axes[0].plot(rs_arc[rs_mask] - center_s, rs_speed[rs_mask], "b-", lw=1.3, label="RobotStudio")
-        axes[0].plot(solver_arc[sol_mask] - center_s, solver_speed[sol_mask], "r--", lw=1.2, label="Solver")
-        axes[0].axvline(0.0, color="k", lw=0.8, alpha=0.4, label=f"WP{idx}")
-        axes[0].set_ylabel("TCP speed (mm/s)")
-        axes[0].set_title(f"{label} speed around WP{idx}")
-        axes[0].grid(True, alpha=0.3)
-        axes[0].legend(loc="best")
-
-        axes[1].plot(rs_arc[rs_mask] - center_s, np.abs(rs_accel[rs_mask]), "b-", lw=1.3, label="RobotStudio")
-        axes[1].plot(solver_arc[sol_mask] - center_s, np.abs(solver_accel[sol_mask]), "r--", lw=1.2, label="Solver")
-        axes[1].axvline(0.0, color="k", lw=0.8, alpha=0.4)
-        axes[1].set_ylabel("|TCP accel| (mm/s²)")
-        axes[1].set_xlabel("Arc length relative to waypoint (mm)")
-        axes[1].set_title(f"{label} acceleration around WP{idx}")
-        axes[1].grid(True, alpha=0.3)
-        axes[1].legend(loc="best")
-
-        fig.tight_layout()
-        fig.savefig(out / f"wp{idx:03d}_speed_accel_window.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
 
 
 def _write_waypoint_speed_diagnostics(
@@ -1835,8 +1394,12 @@ def evaluate_exp24_v4_base_frame_dataset(
     out_dir: Path,
     repo: Optional[Path] = None,
     csv_paths: Optional[List[Path]] = None,
+    include_d2: bool = False,
 ) -> List[Exp24V4TrajectoryMetrics]:
-    """Validate v4 base-frame siping data without any coordinate transform."""
+    """Validate v4 base-frame siping data without any coordinate transform.
+
+    See :func:`evaluate_exp24_v3_siping_dataset` for the ``include_d2`` flag.
+    """
 
     repo = repo or Path(__file__).resolve().parents[1]
     fk_solver = _build_fk_solver_for_frame(repo, "ee_link")
@@ -1853,10 +1416,14 @@ def evaluate_exp24_v4_base_frame_dataset(
     cfg.feature3_d1.enabled = True
     cfg.feature3_d1.generate_plots = False
     cfg.feature3_d1.generate_report = True
+    cfg.feature3_d1.compute_time_optimal = include_d2
+    cfg.feature3_d1.compute_corner_limits = include_d2
     cfg.use_base_frame = True
     robot = get_robot_by_name(_ROBOT_NAME)
 
     metrics: List[Exp24V4TrajectoryMetrics] = []
+    d2_rows: List[Exp24TimeOptimalTrajectoryMetrics] = []
+    d2_corners: List[tuple] = []
     for rs_csv in paths:
         label = rs_csv.stem
         case_dir = out_dir / "v4_base_frame" / label
@@ -1864,6 +1431,7 @@ def evaluate_exp24_v4_base_frame_dataset(
         toolpath = _exp24_v4_toolpath_for_rs(rs_csv, repo)
 
         rs_data = _load_csv(rs_csv)
+        rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2 = _rs_joint_states_deg(rs_data)
         rs_base = _rs_poses_tpk_to_base(rs_data, repo)
         rs_xyz_mm = rs_base[:, :3] * 1000.0
         rs_arc = _arc_length_mm(rs_xyz_mm)
@@ -1941,7 +1509,6 @@ def evaluate_exp24_v4_base_frame_dataset(
             / np.maximum(rs_orientation_speed, 1.0)
         )
 
-        _plot_v4_speed_overlay(case_dir, label, rs_arc, rs_speed, solver_arc, solver_speed)
         _write_speed_profile_summary(
             case_dir,
             label,
@@ -1950,49 +1517,37 @@ def evaluate_exp24_v4_base_frame_dataset(
             rs_speed_on_solver,
             solver_arc,
         )
-        _plot_exp24_v3_pair(
-            case_dir,
-            label,
-            rs_arc,
-            rs_speed,
-            np.abs(rs_accel),
-            rs_speed,
-            rs_accel,
-            rs_orientation_speed,
-            rs_orientation_speed,
-            _align_quaternion_series(np.vstack([rs_data["rs_qw"], rs_data["rs_qx"], rs_data["rs_qy"], rs_data["rs_qz"]]).T),
-            direct_speed,
-            direct_accel,
-            direct_orientation_speed,
-            solver_arc,
-            _solver_speed_xyz,
-            _solver_accel_xyz,
-            solver_orientation_speed,
-            solver_xyz_mm,
-            solver_quat,
-            np.column_stack([np.interp(solver_arc, rs_arc, rs_xyz_mm[:, c]) for c in range(3)]),
-            _align_quaternion_series(np.column_stack([
-                np.interp(solver_arc, rs_arc, _align_quaternion_series(np.vstack([rs_data["rs_qw"], rs_data["rs_qx"], rs_data["rs_qy"], rs_data["rs_qz"]]).T)[:, c])
-                for c in range(4)
-            ])),
-            raw_waypoints_xyz_mm,
-            _align_quaternion_series(lr.waypoints[0][:, 3:7]),
-            float(np.sqrt(np.mean(raw_solver_dist ** 2))),
-            float(np.sqrt(np.mean(raw_rs_dist ** 2))),
-            pose_dev,
+        _emit_m5_joint_vs_rs(
+            case_dir, label, result,
+            rs_arc, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
+            rs_speed_mm_s=rs_speed,
+            rs_accel_mm_s2=rs_accel,
         )
-        _plot_v4_waypoint_speed_windows(
-            case_dir,
-            label,
-            raw_waypoints_xyz_mm,
-            solver_arc,
-            solver_speed,
-            _solver_accel_xyz,
-            rs_arc,
-            rs_speed,
-            np.abs(rs_accel),
-            _select_corner_waypoints(lr.waypoints[0], max_corners=8),
+        _write_traversal_times(
+            case_dir, label, result,
+            rs_time_ms=np.asarray(rs_data["time_ms"], dtype=float),
+            calibration_T_settle_s=cfg.feature3_d1.T_settle_s,
         )
+        if include_d2:
+            d2_row = _reduce_time_optimal_metrics(
+                rs_csv.name, result,
+                calibration_T_settle_s=cfg.feature3_d1.T_settle_s,
+            )
+            if d2_row is not None:
+                d2_rows.append(d2_row)
+                d2_corners.append(
+                    (rs_csv.name, getattr(result, "corner_speed_limits", None) or [])
+                )
+            _write_d2_case_outputs(
+                case_dir, label, result, raw_waypoints_xyz_mm,
+                toolpath_csv=toolpath,
+                rs_arc_mm=rs_arc,
+                rs_q_deg=rs_q_deg,
+                rs_qdot_deg_s=rs_qdot_deg_s,
+                rs_qddot_deg_s2=rs_qddot_deg_s2,
+                rs_speed_mm_s=rs_speed,
+                rs_accel_mm_s2=rs_accel,
+            )
 
         metrics.append(
             Exp24V4TrajectoryMetrics(
@@ -2015,6 +1570,8 @@ def evaluate_exp24_v4_base_frame_dataset(
         )
 
     _write_v4_base_frame_metrics(out_dir, metrics)
+    if include_d2 and d2_rows:
+        _write_time_optimal_summary(out_dir, d2_rows, d2_corners)
     return metrics
 
 
@@ -2024,8 +1581,12 @@ def evaluate_exp24_v6_constant_orientation_dataset(
     csv_paths: Optional[List[Path]] = None,
     dataset_name: str = "v6_constant_tool_orientation_recordings",
     output_group: str = "v6_constant_orientation",
+    include_d2: bool = False,
 ) -> List[Exp24V6TrajectoryMetrics]:
-    """Validate v6 constant-orientation siping recordings in base frame."""
+    """Validate v6 constant-orientation siping recordings in base frame.
+
+    See :func:`evaluate_exp24_v3_siping_dataset` for the ``include_d2`` flag.
+    """
 
     repo = repo or Path(__file__).resolve().parents[1]
     fk_solver = _build_fk_solver_for_frame(repo, "ee_link")
@@ -2043,6 +1604,8 @@ def evaluate_exp24_v6_constant_orientation_dataset(
     cfg.feature3_d1.generate_plots = False
     cfg.feature3_d1.generate_report = True
     cfg.feature3_d1.ds_mm = 1.0
+    cfg.feature3_d1.compute_time_optimal = include_d2
+    cfg.feature3_d1.compute_corner_limits = include_d2
     cfg.use_base_frame = False
     cfg.solver = "pin"
     robot = get_robot_by_name(_ROBOT_NAME)
@@ -2050,6 +1613,8 @@ def evaluate_exp24_v6_constant_orientation_dataset(
     turn_threshold_deg = float(getattr(cfg.feature3_d1, "min_corner_deflection_deg", 3.0))
 
     metrics: List[Exp24V6TrajectoryMetrics] = []
+    d2_rows: List[Exp24TimeOptimalTrajectoryMetrics] = []
+    d2_corners: List[tuple] = []
     for rs_csv in paths:
         label = rs_csv.stem
         case_dir = out_dir / output_group / label
@@ -2057,6 +1622,7 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         toolpath = _exp24_v6_toolpath_for_rs(rs_csv, repo, dataset_name=dataset_name)
 
         rs_data = _load_csv(rs_csv)
+        rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2 = _rs_joint_states_deg(rs_data)
         rs_base = _rs_poses_tpk_to_base(rs_data, repo)
         rs_xyz_mm = rs_base[:, :3] * 1000.0
         rs_arc = _arc_length_mm(rs_xyz_mm)
@@ -2133,15 +1699,6 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             / np.maximum(rs_orientation_speed, 1.0)
         )
 
-        _plot_v4_speed_overlay(case_dir, label, rs_arc, rs_speed, solver_arc, solver_speed)
-        _plot_speed_ceiling_breakdown(
-            case_dir,
-            label,
-            result.speed_profile,
-            rs_arc,
-            rs_logged_speed,
-            rs_speed=rs_speed,
-        )
         _write_speed_profile_summary(
             case_dir,
             label,
@@ -2151,19 +1708,16 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             solver_arc,
         )
         cal = result.speed_profile.calibration
-        q_dot_max = None
-        q_ddot_max = None
-        if cal is not None and getattr(cal, "joint_dynamics", None) is not None:
-            q_dot_max = np.asarray(cal.joint_dynamics.q_dot_max, dtype=float)
-            q_ddot_max = np.asarray(cal.joint_dynamics.q_ddot_accel, dtype=float)
-        _plot_solver_joint_dynamics(
-            case_dir,
-            label,
-            result.speed_profile,
-            result.joint_velocity_result,
-            result.q_star,
-            q_dot_max_rad_s=q_dot_max,
-            q_ddot_max_rad_s2=q_ddot_max,
+        _emit_m5_joint_vs_rs(
+            case_dir, label, result,
+            rs_arc, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
+            rs_speed_mm_s=rs_speed,
+            rs_accel_mm_s2=rs_accel,
+        )
+        _write_traversal_times(
+            case_dir, label, result,
+            rs_time_ms=np.asarray(rs_data["time_ms"], dtype=float),
+            calibration_T_settle_s=cfg.feature3_d1.T_settle_s,
         )
         if cal is not None:
             (case_dir / "speed_ceiling_flags.txt").write_text(
@@ -2180,51 +1734,26 @@ def evaluate_exp24_v6_constant_orientation_dataset(
                 ]) + "\n",
                 encoding="utf-8",
             )
-        rs_quat = _align_quaternion_series(rs_base[:, 3:7])
-        _plot_exp24_v3_pair(
-            case_dir,
-            label,
-            rs_arc,
-            rs_speed,
-            np.abs(rs_accel),
-            rs_logged_speed,
-            rs_logged_accel,
-            rs_orientation_speed,
-            rs_logged_orientation_speed,
-            rs_quat,
-            direct_speed,
-            direct_accel,
-            direct_orientation_speed,
-            solver_arc,
-            _solver_speed_xyz,
-            solver_accel_xyz,
-            solver_orientation_speed,
-            solver_xyz_mm,
-            solver_quat,
-            np.column_stack([np.interp(solver_arc, rs_arc, rs_xyz_mm[:, c]) for c in range(3)]),
-            _align_quaternion_series(np.column_stack([
-                np.interp(solver_arc, rs_arc, rs_quat[:, c])
-                for c in range(4)
-            ])),
-            raw_waypoints_xyz_mm,
-            _align_quaternion_series(lr.waypoints[0][:, 3:7]),
-            float(np.sqrt(np.mean(raw_solver_dist ** 2))),
-            float(np.sqrt(np.mean(raw_rs_dist ** 2))),
-            pose_dev,
-        )
-        corner_indices = _select_corner_waypoints(lr.waypoints[0], max_corners=20)
-        _plot_v4_waypoint_speed_windows(
-            case_dir,
-            label,
-            raw_waypoints_xyz_mm,
-            solver_arc,
-            solver_speed,
-            solver_accel_xyz,
-            rs_arc,
-            rs_speed,
-            np.abs(rs_accel),
-            corner_indices,
-        )
+        if include_d2:
+            d2_row = _reduce_time_optimal_metrics(
+                rs_csv.name, result,
+                calibration_T_settle_s=cfg.feature3_d1.T_settle_s,
+            )
+            if d2_row is not None:
+                d2_rows.append(d2_row)
+                d2_corners.append(
+                    (rs_csv.name, getattr(result, "corner_speed_limits", None) or [])
+                )
+            _write_d2_case_outputs(
+                case_dir, label, result, raw_waypoints_xyz_mm,
+                toolpath_csv=toolpath,
+                rs_arc_mm=rs_arc,
+                rs_q_deg=rs_q_deg,
+                rs_qdot_deg_s=rs_qdot_deg_s,
+                rs_qddot_deg_s2=rs_qddot_deg_s2,
+                rs_speed_mm_s=rs_speed,
+                rs_accel_mm_s2=rs_accel,
+            )
         n_events, n_near = _write_waypoint_speed_diagnostics(
             case_dir,
             label,
@@ -2263,6 +1792,8 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         )
 
     _write_v6_constant_orientation_metrics(out_dir, metrics)
+    if include_d2 and d2_rows:
+        _write_time_optimal_summary(out_dir, d2_rows, d2_corners)
     return metrics
 
 
@@ -2696,19 +2227,936 @@ def _plot_v2_orientation_overlays(out_dir: Path, paths: List[Path], fk_solver) -
         plt.close(fig)
 
 
+
+# ─── F3 D2 time-optimal helpers (report/plot only; no solver math) ─────
+
+
+def _reduce_time_optimal_metrics(
+    file: str, result, calibration_T_settle_s: float,
+) -> Optional[Exp24TimeOptimalTrajectoryMetrics]:
+    """Flatten a :class:`Feature3D1Result` D2 payload into a summary row.
+
+    Returns ``None`` if the result has no ``time_optimal`` block.
+    """
+    topp = getattr(result, "time_optimal", None)
+    if topp is None:
+        return None
+
+    sp = result.speed_profile
+    n_fine = len(sp.fine_point_indices) if sp is not None else 0
+    m5_traversal = (
+        sp.total_duration_s - calibration_T_settle_s * n_fine
+        if sp is not None else float("nan")
+    )
+    ratio = (
+        float(topp.duration_s / m5_traversal)
+        if np.isfinite(topp.duration_s) and m5_traversal > 1e-9
+        else float("inf")
+    )
+    v = np.asarray(topp.v_tcp_profile_mm_s, dtype=float)
+    v_fin = v[np.isfinite(v)] if v.size else v
+    if v_fin.size:
+        v_min = float(v_fin.min())
+        v_max = float(v_fin.max())
+        v_mean = float(v_fin.mean())
+    else:
+        v_min = v_max = v_mean = float("nan")
+
+    corners = getattr(result, "corner_speed_limits", None) or []
+    vflat_all = [c.v_max_no_dip_mm_s for c in corners
+                 if np.isfinite(c.v_max_no_dip_mm_s)]
+    cs = getattr(result, "constant_speed", None)
+    v_flat_global = (
+        float(cs.v_flat_mm_s) if cs is not None and np.isfinite(cs.v_flat_mm_s)
+        else float("nan")
+    )
+    v_flat_duration = (
+        float(cs.duration_s) if cs is not None and np.isfinite(cs.duration_s)
+        else float("nan")
+    )
+    return Exp24TimeOptimalTrajectoryMetrics(
+        file=file,
+        topp_feasible=bool(topp.feasible),
+        topp_duration_s=(
+            float(topp.duration_s) if np.isfinite(topp.duration_s) else float("nan")
+        ),
+        topp_v_tcp_min_mm_s=v_min,
+        topp_v_tcp_max_mm_s=v_max,
+        topp_v_tcp_mean_mm_s=v_mean,
+        m5_traversal_s=float(m5_traversal),
+        duration_ratio_topp_over_m5=ratio,
+        topp_max_interp_error_rad=float(topp.max_interp_error_rad),
+        n_corners_analysed=len(corners),
+        corner_v_flat_min_mm_s=float(min(vflat_all)) if vflat_all else float("nan"),
+        corner_v_flat_max_mm_s=float(max(vflat_all)) if vflat_all else float("nan"),
+        corner_v_flat_median_mm_s=(
+            float(np.median(vflat_all)) if vflat_all else float("nan")
+        ),
+        n_corners_velocity_bound=sum(
+            1 for c in corners if c.binding_constraint == "velocity"
+        ),
+        n_corners_accel_bound=sum(
+            1 for c in corners if c.binding_constraint == "acceleration"
+        ),
+        v_flat_global_mm_s=v_flat_global,
+        v_flat_duration_s=v_flat_duration,
+    )
+
+
+def _write_time_optimal_summary(
+    out_dir: Path,
+    rows: List[Exp24TimeOptimalTrajectoryMetrics],
+    per_trajectory_corners: List[tuple],
+) -> None:
+    """Write ``time_optimal_summary.txt`` and a companion CSV/JSON.
+
+    ``per_trajectory_corners`` is a list of ``(file, List[CornerSpeedLimit])``
+    tuples so we can also spell out per-corner joint-dynamics info
+    (binding joint, velocity-only and accel-only ceilings, joint
+    velocity/accel utilisation at v_flat).
+    """
+    if not rows:
+        return
+    # CSV + JSON of the flat metrics.
+    dict_rows = [r.__dict__ for r in rows]
+    with open(out_dir / "time_optimal_metrics.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(dict_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(dict_rows)
+    with open(out_dir / "time_optimal_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(dict_rows, f, indent=2)
+
+    # Human-readable summary.
+    durations = np.array([r.topp_duration_s for r in rows], dtype=float)
+    v_tcp_max = np.array([r.topp_v_tcp_max_mm_s for r in rows], dtype=float)
+    v_flat_min = np.array([r.corner_v_flat_min_mm_s for r in rows], dtype=float)
+    v_flat_glob = np.array([r.v_flat_global_mm_s for r in rows], dtype=float)
+    ratio = np.array([r.duration_ratio_topp_over_m5 for r in rows], dtype=float)
+    fin = lambda a: a[np.isfinite(a)]
+
+    def _fmt(name: str, arr: np.ndarray, unit: str) -> str:
+        a = fin(arr)
+        if not len(a):
+            return f"  {name}: (no finite values)"
+        return (
+            f"  {name}: min={a.min():.3f} median={np.median(a):.3f} "
+            f"max={a.max():.3f} mean={a.mean():.3f} {unit}"
+        )
+
+    lines = [
+        "F3 D2 time-optimal + no-dip summary",
+        "===================================",
+        f"Trajectories analysed: {len(rows)}",
+        "",
+        "Feature A — TOPP-RA time-optimal (physics envelope, ignores toolpath v_cmd)",
+        _fmt("min traversal time (best speed)", durations, "s"),
+        _fmt("peak TCP speed reached          ", v_tcp_max, "mm/s"),
+        _fmt("duration ratio TOPP / M5        ", ratio, "(1.0 = tight)"),
+        "",
+        "Feature B — constant-speed no-dip TCP speed (v_flat)",
+        _fmt("global v_flat (whole path)      ", v_flat_glob, "mm/s"),
+        _fmt("min per-corner v_flat           ", v_flat_min, "mm/s"),
+        "",
+    ]
+
+    for r in rows:
+        lines.append(
+            f"- {r.file}: "
+            f"best={r.topp_duration_s:.3f}s (v_tcp<= {r.topp_v_tcp_max_mm_s:.0f} mm/s), "
+            f"M5={r.m5_traversal_s:.3f}s, ratio={r.duration_ratio_topp_over_m5:.2f}, "
+            f"v_flat_global={r.v_flat_global_mm_s:.1f} mm/s "
+            f"(flat duration {r.v_flat_duration_s:.1f}s), "
+            f"corners={r.n_corners_analysed} "
+            f"(vel-bound={r.n_corners_velocity_bound}, "
+            f"acc-bound={r.n_corners_accel_bound}), "
+            f"per-corner v_flat in "
+            f"[{r.corner_v_flat_min_mm_s:.1f}, {r.corner_v_flat_max_mm_s:.1f}] mm/s, "
+            f"interp_err={r.topp_max_interp_error_rad:.4f} rad"
+        )
+
+    # Per-corner joint-dynamics at v_flat.
+    lines.append("")
+    lines.append("Joint dynamics at v_flat (constant speed through each corner)")
+    lines.append("--------------------------------------------------------------")
+    lines.append(
+        "  For each corner: at v = v_flat, the binding joint sits at "
+        "100% of its velocity or acceleration limit; other joints ride "
+        "proportionally lower.  v_vel_only / v_acc_only isolate the two "
+        "constraints (accel-only means: if you disabled the accel "
+        "constraint, this is the velocity-limited ceiling; and vice versa)."
+    )
+    for file, corners in per_trajectory_corners:
+        if not corners:
+            continue
+        lines.append(f"\n  {file}: {len(corners)} corner(s)")
+        for c in corners:
+            if not np.isfinite(c.v_max_no_dip_mm_s):
+                lines.append(
+                    f"    wp={c.waypoint_idx:4d}  v_flat=inf  "
+                    f"(no binding constraint; corner unloaded)"
+                )
+                continue
+            v_flat = c.v_max_no_dip_mm_s
+            v_vel = c.v_joint_limit_mm_s
+            v_acc = c.v_accel_limit_mm_s
+            # Utilisations of the two isolated ceilings AT v_flat:
+            #   velocity util = v_flat / v_vel_only    (linear, 1.0 if vel-bound)
+            #   accel util    = (v_flat / v_acc_only)² (quadratic, 1.0 if acc-bound)
+            vel_util = 100.0 * (v_flat / v_vel) if np.isfinite(v_vel) and v_vel > 0 else float("nan")
+            acc_util = (
+                100.0 * (v_flat / v_acc) ** 2
+                if np.isfinite(v_acc) and v_acc > 0 else float("nan")
+            )
+            lines.append(
+                f"    wp={c.waypoint_idx:4d}  v_flat={v_flat:7.2f} mm/s  "
+                f"binding=J{c.binding_joint + 1} {c.binding_constraint:12s}  "
+                f"v_vel_only={v_vel:7.1f} mm/s (util={vel_util:5.1f}%)  "
+                f"v_acc_only={v_acc:7.1f} mm/s (util={acc_util:5.1f}%)  "
+                f"arc={c.binding_arc_length_mm:.1f} mm  "
+                f"rho_min={c.rho_min_mm:.2f} mm"
+                + (f"  [resampled]" if c.resampled else "")
+            )
+    (out_dir / "time_optimal_summary.txt").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8",
+    )
+
+
+def _blend_arc_intervals(dense_path) -> List[tuple]:
+    """Return [(arc_start_mm, arc_end_mm), ...] for each blend-arc run."""
+    intervals: List[tuple] = []
+    is_b = np.asarray(dense_path.is_blend_arc, dtype=bool)
+    arc = np.asarray(dense_path.arc_lengths, dtype=float)
+    start = None
+    for k in range(len(is_b)):
+        if is_b[k] and start is None:
+            start = arc[k]
+        elif not is_b[k] and start is not None:
+            intervals.append((start, arc[k]))
+            start = None
+    if start is not None:
+        intervals.append((start, arc[-1]))
+    return intervals
+
+
+def _shade_blend_arcs(ax, intervals: List[tuple]) -> None:
+    for a0, a1 in intervals:
+        ax.axvspan(a0, a1, color="orange", alpha=0.08, lw=0)
+
+
+def _rs_joint_states_deg(rs_data) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract RS joint position / velocity / acceleration in degrees.
+
+    Returns
+    -------
+    q_deg : (N, 6)
+    qdot_deg_s : (N, 6)
+    qddot_deg_s2 : (N, 6)
+        Missing columns are filled with NaN (caller skips overlay).
+    """
+    n = len(rs_data)
+    q = np.full((n, 6), np.nan, dtype=float)
+    qdot = np.full((n, 6), np.nan, dtype=float)
+    qddot = np.full((n, 6), np.nan, dtype=float)
+    names = getattr(rs_data.dtype, "names", None) or ()
+    for j in range(6):
+        j1 = j + 1
+        pos_key = f"rs_j{j1}_deg"
+        vel_key = f"rs_j{j1}_speed_deg_s"
+        acc_key = f"rs_j{j1}_accel_deg_s2"
+        if pos_key in names:
+            q[:, j] = np.asarray(rs_data[pos_key], dtype=float)
+        if vel_key in names:
+            qdot[:, j] = np.asarray(rs_data[vel_key], dtype=float)
+        if acc_key in names:
+            qddot[:, j] = np.asarray(rs_data[acc_key], dtype=float)
+    return q, qdot, qddot
+
+
+def _interp_series_vs_arc(
+    src_arc_mm: np.ndarray,
+    values: np.ndarray,
+    dst_arc_mm: np.ndarray,
+    *,
+    unwrap_deg: bool = False,
+) -> np.ndarray:
+    """Resample (N, C) values from ``src_arc`` onto ``dst_arc``.
+
+    When ``unwrap_deg`` is True (joint positions), each column is unwrapped
+    in radians before interpolation so branch cuts do not invent jumps.
+    """
+    src = np.asarray(src_arc_mm, dtype=float)
+    dst = np.asarray(dst_arc_mm, dtype=float)
+    vals = np.asarray(values, dtype=float)
+    if vals.ndim == 1:
+        vals = vals[:, None]
+    out = np.full((len(dst), vals.shape[1]), np.nan, dtype=float)
+    if len(src) < 2 or len(dst) == 0:
+        return out
+    order = np.argsort(src)
+    src_s = src[order]
+    for j in range(vals.shape[1]):
+        y = vals[order, j]
+        finite = np.isfinite(y) & np.isfinite(src_s)
+        if np.count_nonzero(finite) < 2:
+            continue
+        yy = y[finite]
+        xx = src_s[finite]
+        if unwrap_deg:
+            yy = np.rad2deg(np.unwrap(np.deg2rad(yy)))
+        out[:, j] = np.interp(dst, xx, yy)
+    return out
+
+
+def _m5_solver_joint_states_deg(
+    result,
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    """Solver joint states for the toolpath/M5 speed profile, in degrees.
+
+    Returns ``(arc_mm, q_deg, qdot_deg_s, qddot_deg_s2)``.  Acceleration is
+    obtained by differentiating M6 ``q_dot`` with respect to the M5 time
+    parameterisation.
+    """
+    if result.speed_profile is None or result.joint_velocity_result is None:
+        return None, None, None, None
+    arc = np.asarray(result.speed_profile.arc_lengths_mm, dtype=float)
+    v_actual = np.asarray(result.speed_profile.v_actual, dtype=float)
+    time_s = _time_from_arc_speed(arc, v_actual)
+    qdot_rad = np.asarray(result.joint_velocity_result.q_dot, dtype=float)
+    qddot_rad = np.column_stack([
+        _derivative_wrt_time(qdot_rad[:, j], time_s) for j in range(qdot_rad.shape[1])
+    ])
+    q_deg = None
+    if result.q_star is not None and len(result.q_star) == len(arc):
+        q_deg = np.rad2deg(np.asarray(result.q_star, dtype=float))
+    return arc, q_deg, np.rad2deg(qdot_rad), np.rad2deg(qddot_rad)
+
+
+def _emit_m5_joint_vs_rs(
+    case_dir: Path,
+    label: str,
+    result,
+    rs_arc_mm: np.ndarray,
+    rs_q_deg: np.ndarray,
+    rs_qdot_deg_s: np.ndarray,
+    rs_qddot_deg_s2: np.ndarray,
+    rs_speed_mm_s: Optional[np.ndarray] = None,
+    rs_accel_mm_s2: Optional[np.ndarray] = None,
+) -> None:
+    """Emit toolpath/M5 joint + TCP overlays vs RobotStudio."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    m5_arc, m5_q, m5_qd, m5_qdd = _m5_solver_joint_states_deg(result)
+    if m5_qd is not None:
+        cal = result.speed_profile.calibration if result.speed_profile else None
+        jd = getattr(cal, "joint_dynamics", None) if cal is not None else None
+        q_dot_lim = np.rad2deg(np.asarray(jd.q_dot_max, dtype=float)) if jd is not None else None
+        q_ddot_lim = (
+            np.rad2deg(np.asarray(jd.q_ddot_accel, dtype=float)) if jd is not None else None
+        )
+        blend = _blend_arc_intervals(result.dense_path) if result.dense_path is not None else None
+        _emit_joint_vs_rs_compare(
+            case_dir, label, "toolpath / M5 target velocity",
+            m5_arc, m5_q, m5_qd, m5_qdd,
+            rs_arc_mm, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
+            q_dot_lim_deg_s=q_dot_lim,
+            q_ddot_lim_deg_s2=q_ddot_lim,
+            blend_intervals=blend,
+            rs_note="RS = recorded RobotStudio run at the toolpath commanded speed",
+        )
+
+    if result.speed_profile is None or result.dense_path is None:
+        return
+    solver_arc = np.asarray(result.speed_profile.arc_lengths_mm, dtype=float)
+    solver_v = np.asarray(result.speed_profile.v_actual, dtype=float)
+    solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
+    t_s = _time_from_arc_speed(solver_arc, solver_v)
+    _v_chk, solver_a = _speed_accel_from_xyz_time(solver_xyz_mm, t_s * 1000.0)
+    _plot_d2_tcp_panel(
+        case_dir / "tcp_speed_and_accel.png",
+        solver_arc, solver_v, solver_a,
+        f"Toolpath / M5 execution — {label}",
+        plt,
+        blend_intervals=_blend_arc_intervals(result.dense_path),
+        corner_limits=getattr(result, "corner_speed_limits", None),
+        rs_arc_mm=rs_arc_mm,
+        rs_speed_mm_s=rs_speed_mm_s,
+        rs_accel_mm_s2=rs_accel_mm_s2,
+    )
+
+
+def _plot_one_joint_compare_grid(
+    out_path: Path,
+    arc_mm: np.ndarray,
+    solver_vals: np.ndarray,
+    rs_vals: Optional[np.ndarray],
+    ylabel: str,
+    title: str,
+    plt,
+    *,
+    blend_intervals: Optional[List[tuple]] = None,
+    limits: Optional[np.ndarray] = None,
+    limits_unscaled: Optional[np.ndarray] = None,
+    abs_value: bool = False,
+) -> None:
+    """2×3 signed (or abs) per-joint overlay: solver vs RS vs arc length."""
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8), sharex=True)
+    n = min(6, solver_vals.shape[1])
+    for j in range(6):
+        ax = axes[j // 3][j % 3]
+        if blend_intervals:
+            _shade_blend_arcs(ax, blend_intervals)
+        if j < n and np.any(np.isfinite(solver_vals[:, j])):
+            y_s = np.abs(solver_vals[:, j]) if abs_value else solver_vals[:, j]
+            ax.plot(arc_mm, y_s, lw=1.1, color="#d62728", label="solver")
+        if rs_vals is not None and j < rs_vals.shape[1] and np.any(np.isfinite(rs_vals[:, j])):
+            y_r = np.abs(rs_vals[:, j]) if abs_value else rs_vals[:, j]
+            ax.plot(arc_mm, y_r, lw=1.0, color="#1f77b4", alpha=0.85, label="RobotStudio")
+        if limits is not None and j < len(limits) and np.isfinite(limits[j]):
+            lim = float(limits[j])
+            if abs_value:
+                ax.axhline(lim, color="red", ls="--", lw=1.0, label=f"limit {lim:.1f}")
+            else:
+                ax.axhline(lim, color="red", ls="--", lw=0.9, alpha=0.7)
+                ax.axhline(-lim, color="red", ls="--", lw=0.9, alpha=0.7, label=f"±limit {lim:.1f}")
+        if (
+            limits_unscaled is not None
+            and j < len(limits_unscaled)
+            and np.isfinite(limits_unscaled[j])
+            and (limits is None or abs(limits_unscaled[j] - limits[j]) > 1e-9)
+        ):
+            u = float(limits_unscaled[j])
+            ax.axhline(u if abs_value else u, color="darkred", ls=":", lw=0.8, alpha=0.7)
+            if not abs_value:
+                ax.axhline(-u, color="darkred", ls=":", lw=0.8, alpha=0.7)
+        if j < n and rs_vals is not None and j < rs_vals.shape[1]:
+            both = np.isfinite(solver_vals[:, j]) & np.isfinite(rs_vals[:, j])
+            if np.count_nonzero(both) > 0:
+                err = np.abs(solver_vals[both, j] - rs_vals[both, j])
+                ax.set_title(
+                    f"J{j+1}  |err| med={np.median(err):.2f}  p95={np.percentile(err, 95):.2f}",
+                    fontsize=9,
+                )
+            else:
+                ax.set_title(f"J{j+1}", fontsize=10)
+        else:
+            ax.set_title(f"J{j+1}", fontsize=10)
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best", fontsize=7)
+        if j >= 3:
+            ax.set_xlabel("Arc length (mm)")
+    fig.suptitle(title, fontsize=12)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _emit_joint_vs_rs_compare(
+    out_dir: Path,
+    label: str,
+    mode_name: str,
+    solver_arc_mm: np.ndarray,
+    solver_q_deg: Optional[np.ndarray],
+    solver_qdot_deg_s: Optional[np.ndarray],
+    solver_qddot_deg_s2: Optional[np.ndarray],
+    rs_arc_mm: np.ndarray,
+    rs_q_deg: np.ndarray,
+    rs_qdot_deg_s: np.ndarray,
+    rs_qddot_deg_s2: np.ndarray,
+    *,
+    q_dot_lim_deg_s: Optional[np.ndarray] = None,
+    q_ddot_lim_deg_s2: Optional[np.ndarray] = None,
+    q_ddot_lim_unscaled_deg_s2: Optional[np.ndarray] = None,
+    blend_intervals: Optional[List[tuple]] = None,
+    rs_note: str = "RS = recorded RobotStudio run at the toolpath commanded speed",
+) -> None:
+    """Write signed joint position / velocity / acceleration vs RS overlays.
+
+    Solver estimates must already be in degrees / deg/s / deg/s².  RS traces
+    are resampled onto the solver arc-length axis for signature comparison.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    arc = np.asarray(solver_arc_mm, dtype=float)
+    rs_q_on = _interp_series_vs_arc(rs_arc_mm, rs_q_deg, arc, unwrap_deg=True)
+    rs_qd_on = _interp_series_vs_arc(rs_arc_mm, rs_qdot_deg_s, arc)
+    rs_qdd_on = _interp_series_vs_arc(rs_arc_mm, rs_qddot_deg_s2, arc)
+
+    if solver_q_deg is not None:
+        _plot_one_joint_compare_grid(
+            out_dir / "joint_position_vs_rs.png",
+            arc, np.asarray(solver_q_deg, dtype=float), rs_q_on,
+            "q (deg)",
+            f"Joint position — {mode_name} — {label}\n{rs_note}",
+            plt, blend_intervals=blend_intervals,
+        )
+    if solver_qdot_deg_s is not None:
+        _plot_one_joint_compare_grid(
+            out_dir / "joint_velocity_vs_rs.png",
+            arc, np.asarray(solver_qdot_deg_s, dtype=float), rs_qd_on,
+            "q̇ (deg/s)",
+            f"Joint velocity — {mode_name} — {label}\n{rs_note}",
+            plt, blend_intervals=blend_intervals, limits=q_dot_lim_deg_s,
+        )
+    if solver_qddot_deg_s2 is not None:
+        _plot_one_joint_compare_grid(
+            out_dir / "joint_acceleration_vs_rs.png",
+            arc, np.asarray(solver_qddot_deg_s2, dtype=float), rs_qdd_on,
+            "q̈ (deg/s²)",
+            f"Joint acceleration — {mode_name} — {label}\n{rs_note}",
+            plt, blend_intervals=blend_intervals,
+            limits=q_ddot_lim_deg_s2,
+            limits_unscaled=q_ddot_lim_unscaled_deg_s2,
+        )
+
+    lines = [
+        f"Joint state vs RobotStudio — {mode_name} — {label}",
+        "=" * 60,
+        rs_note,
+        "Solver values converted rad → deg before comparison.",
+        "RS series resampled onto the solver arc-length axis.",
+        "",
+    ]
+    for name, sol, rs in (
+        ("position (deg)", solver_q_deg, rs_q_on),
+        ("velocity (deg/s)", solver_qdot_deg_s, rs_qd_on),
+        ("acceleration (deg/s²)", solver_qddot_deg_s2, rs_qdd_on),
+    ):
+        lines.append(f"{name}:")
+        if sol is None:
+            lines.append("  (solver trace unavailable)")
+            continue
+        sol_a = np.asarray(sol, dtype=float)
+        for j in range(min(6, sol_a.shape[1])):
+            both = np.isfinite(sol_a[:, j]) & np.isfinite(rs[:, j])
+            if np.count_nonzero(both) == 0:
+                lines.append(f"  J{j+1}: n/a")
+                continue
+            err = np.abs(sol_a[both, j] - rs[both, j])
+            corr = _corr(sol_a[both, j], rs[both, j])
+            lines.append(
+                f"  J{j+1}: |err| med={np.median(err):.3f}  p95={np.percentile(err, 95):.3f}  "
+                f"max={np.max(err):.3f}  corr={corr:.3f}"
+            )
+        lines.append("")
+    (out_dir / "joint_vs_rs_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+
+def _plot_d2_tcp_panel(
+    out_path: Path,
+    arc_mm: np.ndarray,
+    v_mm_s: np.ndarray,
+    a_mm_s2: np.ndarray,
+    title: str,
+    plt,
+    blend_intervals: Optional[List[tuple]] = None,
+    corner_limits: Optional[List] = None,
+    rs_arc_mm: Optional[np.ndarray] = None,
+    rs_speed_mm_s: Optional[np.ndarray] = None,
+    rs_accel_mm_s2: Optional[np.ndarray] = None,
+) -> None:
+    """TCP speed + scalar TCP acceleration vs arc length (optional RS overlay)."""
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    ax = axes[0]
+    if blend_intervals:
+        _shade_blend_arcs(ax, blend_intervals)
+    if rs_arc_mm is not None and rs_speed_mm_s is not None:
+        ax.plot(
+            rs_arc_mm, np.asarray(rs_speed_mm_s, dtype=float),
+            lw=1.2, color="#1f77b4", alpha=0.9, label="RobotStudio TCP speed",
+        )
+    ax.plot(arc_mm, v_mm_s, lw=1.2, color="#2ca02c", label="solver TCP speed")
+    if corner_limits:
+        arcs = [c.binding_arc_length_mm for c in corner_limits
+                if np.isfinite(c.v_max_no_dip_mm_s)]
+        vs = [c.v_max_no_dip_mm_s for c in corner_limits
+              if np.isfinite(c.v_max_no_dip_mm_s)]
+        if vs:
+            ax.scatter(arcs, vs, marker="v", s=40, color="purple", zorder=5,
+                       label="per-corner v_flat")
+    ax.set_ylabel("TCP speed (mm/s)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9)
+    ax2 = axes[1]
+    if blend_intervals:
+        _shade_blend_arcs(ax2, blend_intervals)
+    if rs_arc_mm is not None and rs_accel_mm_s2 is not None:
+        ax2.plot(
+            rs_arc_mm, np.abs(np.asarray(rs_accel_mm_s2, dtype=float)),
+            lw=1.0, color="#1f77b4", alpha=0.9, label="RobotStudio |TCP accel|",
+        )
+    ax2.plot(arc_mm, np.abs(np.asarray(a_mm_s2, dtype=float)),
+             lw=1.0, color="#d62728", label="solver |TCP accel|")
+    ax2.set_ylabel("TCP accel (mm/s²)")
+    ax2.set_xlabel("Arc length (mm)")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc="best", fontsize=9)
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_d2_pose_tracking(
+    out_path: Path,
+    raw_waypoints_xyz_mm: np.ndarray,
+    solver_xyz_mm: np.ndarray,
+    title: str,
+    plt,
+) -> None:
+    """XY path overlay + per-waypoint deviation to the blended dense path."""
+    from core.blend_zone.verification import _project_points_to_polyline
+
+    _proj, dev = _project_points_to_polyline(raw_waypoints_xyz_mm, solver_xyz_mm)
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    ax = axes[0]
+    ax.plot(solver_xyz_mm[:, 0], solver_xyz_mm[:, 1], lw=1.0,
+            color="#1f77b4", label="blended dense path")
+    ax.plot(raw_waypoints_xyz_mm[:, 0], raw_waypoints_xyz_mm[:, 1], "x",
+            ms=3, color="#d62728", label="programmed waypoints")
+    ax.set_xlabel("X (mm)")
+    ax.set_ylabel("Y (mm)")
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9)
+    ax2 = axes[1]
+    ax2.plot(range(len(dev)), dev, lw=1.0, color="#9467bd")
+    ax2.set_xlabel("Waypoint index")
+    ax2.set_ylabel("Deviation to blended path (mm)")
+    ax2.set_title(
+        f"mean={np.mean(dev):.3f}  p95={np.percentile(dev, 95):.3f}  "
+        f"max={np.max(dev):.3f} mm"
+    )
+    ax2.grid(True, alpha=0.3)
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _nearest_dense_indices(
+    waypoints_xyz_mm: np.ndarray, solver_xyz_mm: np.ndarray,
+) -> np.ndarray:
+    """Index of the nearest dense-path sample for each waypoint."""
+    idx = np.zeros(len(waypoints_xyz_mm), dtype=int)
+    for i, w in enumerate(waypoints_xyz_mm):
+        idx[i] = int(np.argmin(np.linalg.norm(solver_xyz_mm - w[None, :], axis=1)))
+    return idx
+
+
+def _segment_max_speeds(v_dense: np.ndarray, wp_dense_idx: np.ndarray) -> np.ndarray:
+    """Per-waypoint target speed = max of the profile over the segment
+    ending at that waypoint.
+
+    The toolpath speed column is a *segment target* (RAPID: ``MoveL p_i,
+    v_i`` applies to the motion ending at ``p_i``), so the commanded value
+    that best reproduces a varying optimal profile is the segment's peak —
+    the controller ramps toward it under its own acceleration envelope.
+    The first waypoint (no incoming segment) reuses the first segment's
+    value.
+    """
+    n = len(wp_dense_idx)
+    out = np.zeros(n, dtype=float)
+    prev = int(wp_dense_idx[0])
+    for i in range(n):
+        hi = int(wp_dense_idx[i])
+        lo = min(prev, hi)
+        out[i] = float(np.max(v_dense[lo:hi + 1])) if hi >= lo else float(v_dense[hi])
+        prev = hi
+    if n > 1:
+        out[0] = out[1]
+    return out
+
+
+def _write_optimal_toolpath_csv(
+    out_dir: Path,
+    toolpath_csv: Path,
+    waypoint_speeds_mm_s: np.ndarray,
+) -> None:
+    """Copy the toolpath CSV with the 8th column (speed) replaced by the
+    estimated optimal per-waypoint speed.
+
+    Everything else in the file (headers, counts, pose columns, zonedata
+    columns, line order) is preserved verbatim.  A row is treated as a
+    waypoint row when its first 8 comma-separated fields all parse as
+    floats.
+    """
+    lines = Path(toolpath_csv).read_text(encoding="utf-8").splitlines()
+    out_lines: List[str] = []
+    wp_i = 0
+    for line in lines:
+        parts = line.split(",")
+        is_data = len(parts) >= 8
+        if is_data:
+            try:
+                for p in parts[:8]:
+                    float(p)
+            except ValueError:
+                is_data = False
+        if is_data and wp_i < len(waypoint_speeds_mm_s):
+            parts[7] = f"{waypoint_speeds_mm_s[wp_i]:.2f}"
+            out_lines.append(",".join(parts))
+            wp_i += 1
+        else:
+            out_lines.append(line)
+    out_path = out_dir / Path(toolpath_csv).name
+    out_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    if wp_i != len(waypoint_speeds_mm_s):
+        print(
+            f"  [optimal toolpath] WARNING: wrote {wp_i} waypoint speeds but "
+            f"{len(waypoint_speeds_mm_s)} were estimated ({out_path.name})"
+        )
+
+
+def _write_d2_case_outputs(
+    case_dir: Path,
+    label: str,
+    result,
+    raw_waypoints_xyz_mm: np.ndarray,
+    toolpath_csv: Optional[Path] = None,
+    rs_arc_mm: Optional[np.ndarray] = None,
+    rs_q_deg: Optional[np.ndarray] = None,
+    rs_qdot_deg_s: Optional[np.ndarray] = None,
+    rs_qddot_deg_s2: Optional[np.ndarray] = None,
+    rs_speed_mm_s: Optional[np.ndarray] = None,
+    rs_accel_mm_s2: Optional[np.ndarray] = None,
+) -> None:
+    """Emit `optimal/` and `constant_velocity/` folders for one trajectory.
+
+    `optimal/` shows the robot running the F3 D2 Feature A (TOPP-RA
+    time-optimal) profile; `constant_velocity/` shows it running at the
+    global no-dip constant TCP speed (Feature B).  All numbers come from
+    `result.time_optimal` / `result.constant_speed` — no solver math here.
+
+    When RobotStudio joint traces are supplied they are overlaid (vs arc
+    length, in deg / deg/s / deg/s²) so wrongly estimated joint signatures
+    can be spotted against the recorded run.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    cal = result.speed_profile.calibration if result.speed_profile else None
+    jd = getattr(cal, "joint_dynamics", None) if cal is not None else None
+    if jd is None:
+        return
+    q_dot_max = np.asarray(jd.q_dot_max, dtype=float)
+    q_ddot_min_sym = np.minimum(
+        np.asarray(jd.q_ddot_accel, dtype=float),
+        np.asarray(jd.q_ddot_decel, dtype=float),
+    )
+    q_dot_max_deg = np.rad2deg(q_dot_max)
+    q_ddot_min_sym_deg = np.rad2deg(q_ddot_min_sym)
+
+    solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
+    dense_arc = np.asarray(result.dense_path.arc_lengths, dtype=float)
+    blend_intervals = _blend_arc_intervals(result.dense_path)
+    corner_limits = getattr(result, "corner_speed_limits", None)
+    q_star_deg = (
+        np.rad2deg(np.asarray(result.q_star, dtype=float))
+        if result.q_star is not None else None
+    )
+    have_rs = (
+        rs_arc_mm is not None
+        and rs_q_deg is not None
+        and rs_qdot_deg_s is not None
+        and rs_qddot_deg_s2 is not None
+    )
+    rs_note = (
+        "RS = recorded RobotStudio run at the toolpath commanded speed "
+        "(not a TOPP / flat-speed re-run)"
+    )
+
+    # ── optimal/ — Feature A time-optimal execution ──
+    topp = getattr(result, "time_optimal", None)
+    if topp is not None and np.any(np.isfinite(topp.v_tcp_profile_mm_s)):
+        opt_dir = case_dir / "optimal"
+        opt_dir.mkdir(parents=True, exist_ok=True)
+        scale = float(getattr(topp, "q_ddot_scale", 1.0) or 1.0)
+        q_ddot_lim = scale * q_ddot_min_sym
+        q_ddot_lim_deg = np.rad2deg(q_ddot_lim)
+        v = np.asarray(topp.v_tcp_profile_mm_s, dtype=float)
+        t_s = _time_from_arc_speed(dense_arc, v)
+        _speed_chk, a_scalar = _speed_accel_from_xyz_time(solver_xyz_mm, t_s * 1000.0)
+        qd_rad = np.asarray(topp.q_dot_optimal, dtype=float)
+        qdd_rad = np.asarray(topp.q_ddot_optimal, dtype=float)
+        qd_deg = np.rad2deg(qd_rad)
+        qdd_deg = np.rad2deg(qdd_rad)
+
+        _plot_d2_tcp_panel(
+            opt_dir / "tcp_speed_and_accel.png", dense_arc, v, a_scalar,
+            f"Time-optimal execution (TOPP-RA) — {label}   "
+            f"duration={topp.duration_s:.3f}s",
+            plt, blend_intervals, corner_limits,
+            rs_arc_mm=rs_arc_mm,
+            rs_speed_mm_s=rs_speed_mm_s,
+            rs_accel_mm_s2=rs_accel_mm_s2,
+        )
+        _plot_d2_pose_tracking(
+            opt_dir / "pose_tracking.png", raw_waypoints_xyz_mm,
+            solver_xyz_mm, f"Pose tracking (path geometry) — {label}", plt,
+        )
+        if have_rs:
+            _emit_joint_vs_rs_compare(
+                opt_dir, label, "time-optimal (TOPP)",
+                dense_arc, q_star_deg, qd_deg, qdd_deg,
+                rs_arc_mm, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
+                q_dot_lim_deg_s=q_dot_max_deg,
+                q_ddot_lim_deg_s2=q_ddot_lim_deg,
+                q_ddot_lim_unscaled_deg_s2=q_ddot_min_sym_deg,
+                blend_intervals=blend_intervals,
+                rs_note=rs_note,
+            )
+
+        # Per-waypoint TCP speed at the optimal execution.
+        wp_idx = _nearest_dense_indices(raw_waypoints_xyz_mm, solver_xyz_mm)
+        v_at_wp = v[wp_idx]
+        vel_util = 100.0 * np.max(np.abs(qd_rad), axis=0) / q_dot_max
+        acc_util = 100.0 * np.max(np.abs(qdd_rad), axis=0) / q_ddot_lim
+        lines = [
+            f"F3 D2 — time-optimal execution summary — {label}",
+            "=" * 60,
+            f"minimum traversal time: {topp.duration_s:.3f} s",
+            f"TCP speed range: [{np.nanmin(v):.1f}, {np.nanmax(v):.1f}] mm/s",
+            f"joint accel limits scaled by {scale:.2f}x (Exp24 values are ESTIMATES)",
+            f"spline interp error: {topp.max_interp_error_rad:.5f} rad",
+            "",
+            "peak joint-velocity utilisation (% of q_dot_max):",
+            "  " + "  ".join(f"J{j+1}={vel_util[j]:.0f}%" for j in range(6)),
+            "peak joint-acceleration utilisation (% of scaled limit):",
+            "  " + "  ".join(f"J{j+1}={acc_util[j]:.0f}%" for j in range(6)),
+            "",
+            "per-waypoint TCP speed at time-optimal execution (mm/s):",
+        ]
+        for i, v_wp in enumerate(v_at_wp):
+            lines.append(f"  wp={i:4d}  arc={dense_arc[wp_idx[i]]:8.1f} mm  v={v_wp:8.1f}")
+        (opt_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Machine-readable per-waypoint speeds.
+        seg_speeds = _segment_max_speeds(v, wp_idx)
+        with open(opt_dir / "per_waypoint_speed.csv", "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "waypoint_idx", "arc_length_mm",
+                "v_tcp_optimal_mm_s", "segment_target_speed_mm_s",
+            ])
+            for i, v_wp in enumerate(v_at_wp):
+                w.writerow([
+                    i, f"{dense_arc[wp_idx[i]]:.2f}",
+                    f"{v_wp:.2f}", f"{seg_speeds[i]:.2f}",
+                ])
+        # Rewrite the toolpath CSV with the optimal per-waypoint target
+        # speed in the 8th (speed) column; everything else verbatim.
+        if toolpath_csv is not None:
+            _write_optimal_toolpath_csv(opt_dir, Path(toolpath_csv), seg_speeds)
+
+    # ── constant_velocity/ — Feature B global no-dip execution ──
+    cs = getattr(result, "constant_speed", None)
+    if cs is not None and np.isfinite(cs.v_flat_mm_s) and cs.v_flat_mm_s > 0:
+        cv_dir = case_dir / "constant_velocity"
+        cv_dir.mkdir(parents=True, exist_ok=True)
+        q_ddot_lim = float(cs.q_ddot_scale) * q_ddot_min_sym
+        q_ddot_lim_deg = np.rad2deg(q_ddot_lim)
+        cs_arc = np.asarray(cs.arc_lengths_mm, dtype=float)
+        v_const = np.full(len(dense_arc), cs.v_flat_mm_s)
+        t_s = _time_from_arc_speed(dense_arc, v_const)
+        _speed_chk, a_scalar = _speed_accel_from_xyz_time(solver_xyz_mm, t_s * 1000.0)
+        qd_rad = np.asarray(cs.q_dot_at_v_flat, dtype=float)
+        qdd_rad = np.asarray(cs.q_ddot_at_v_flat, dtype=float)
+        qd_deg = np.rad2deg(qd_rad)
+        qdd_deg = np.rad2deg(qdd_rad)
+        q_on_cs = q_star_deg
+        if q_star_deg is not None and len(cs_arc) != len(dense_arc):
+            q_on_cs = _interp_series_vs_arc(dense_arc, q_star_deg, cs_arc, unwrap_deg=True)
+
+        _plot_d2_tcp_panel(
+            cv_dir / "tcp_speed_and_accel.png", dense_arc, v_const, a_scalar,
+            f"Constant no-dip execution — {label}   "
+            f"v_flat={cs.v_flat_mm_s:.1f} mm/s "
+            f"(binding J{cs.binding_joint+1} {cs.binding_constraint})",
+            plt, blend_intervals, corner_limits,
+            rs_arc_mm=rs_arc_mm,
+            rs_speed_mm_s=rs_speed_mm_s,
+            rs_accel_mm_s2=rs_accel_mm_s2,
+        )
+        _plot_d2_pose_tracking(
+            cv_dir / "pose_tracking.png", raw_waypoints_xyz_mm,
+            solver_xyz_mm, f"Pose tracking (path geometry) — {label}", plt,
+        )
+        if have_rs:
+            _emit_joint_vs_rs_compare(
+                cv_dir, label, f"constant v_flat={cs.v_flat_mm_s:.1f} mm/s",
+                cs_arc, q_on_cs, qd_deg, qdd_deg,
+                rs_arc_mm, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
+                q_dot_lim_deg_s=q_dot_max_deg,
+                q_ddot_lim_deg_s2=q_ddot_lim_deg,
+                q_ddot_lim_unscaled_deg_s2=q_ddot_min_sym_deg,
+                blend_intervals=blend_intervals,
+                rs_note=rs_note,
+            )
+
+        vel_util = 100.0 * np.max(np.abs(qd_rad), axis=0) / q_dot_max
+        acc_util = 100.0 * np.max(np.abs(qdd_rad), axis=0) / q_ddot_lim
+        lines = [
+            f"F3 D2 — constant no-dip execution summary — {label}",
+            "=" * 60,
+            f"v_flat (max constant TCP speed, no corner dips): {cs.v_flat_mm_s:.2f} mm/s",
+            f"steady-state duration (L/v_flat): {cs.duration_s:.2f} s",
+            f"binding: J{cs.binding_joint+1} {cs.binding_constraint} "
+            f"at arc {cs.binding_arc_length_mm:.1f} mm",
+            f"velocity-only ceiling:     {cs.v_vel_limit_mm_s:.1f} mm/s",
+            f"acceleration-only ceiling: {cs.v_accel_limit_mm_s:.1f} mm/s",
+            f"joint accel limits scaled by {cs.q_ddot_scale:.2f}x "
+            "(Exp24 values are ESTIMATES — dynamics model pending)",
+            "",
+            "peak joint-velocity utilisation (% of q_dot_max):",
+            "  " + "  ".join(f"J{j+1}={vel_util[j]:.0f}%" for j in range(6)),
+            "peak joint-acceleration utilisation (% of scaled limit):",
+            "  " + "  ".join(f"J{j+1}={acc_util[j]:.0f}%" for j in range(6)),
+        ]
+        if corner_limits:
+            lines += ["", "per-corner no-dip ceilings (the global v_flat is bounded by the worst):"]
+            for c in corner_limits:
+                if np.isfinite(c.v_max_no_dip_mm_s):
+                    lines.append(
+                        f"  wp={c.waypoint_idx:4d}  v_flat={c.v_max_no_dip_mm_s:8.2f} mm/s  "
+                        f"binding=J{c.binding_joint+1} {c.binding_constraint:12s}  "
+                        f"arc={c.binding_arc_length_mm:.1f} mm"
+                    )
+        (cv_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run Experiment 24 validation utilities.")
     parser.add_argument(
         "--dataset",
-        choices=["v1", "v2", "v3", "v4", "v6", "v6_2"],
+        choices=["v1", "v2", "v3", "v4", "v6", "v6_2", "v8"],
         default="v6",
         help="Experiment 24 dataset to validate (default: v6).",
     )
     parser.add_argument("--run-dir", help="Optional output folder name under Experiment 24 Results.")
     parser.add_argument("--corner-debug", action="store_true", help="Emit v3 corner debug plots.")
     parser.add_argument("--max-debug-corners", type=int, default=8)
+    parser.add_argument(
+        "--time-optimal", action="store_true",
+        help=(
+            "Also compute F3 D2 Feature A (TOPP-RA time-optimal v_tcp) and "
+            "Feature B (per-corner constant-speed v_flat), overlay both on "
+            "the standard speed-comparison plots, and write "
+            "time_optimal_summary.txt.  Requires a dataset with a Feature 3 "
+            "toolpath convention (v3, v4, v6, v6_2, v8)."
+        ),
+    )
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -2717,6 +3165,12 @@ def main() -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
     else:
         out_dir = create_exp24_results_dir(f"exp24_{args.dataset}_validation", repo)
+
+    if args.time_optimal and args.dataset in ("v1", "v2"):
+        parser.error(
+            f"--time-optimal requires a Feature-3 dataset (v3/v4/v6/v6_2/v8); "
+            f"got --dataset {args.dataset!r}"
+        )
 
     if args.dataset == "v1":
         metrics = evaluate_exp24_dataset(out_dir, repo)
@@ -2728,18 +3182,32 @@ def main() -> None:
             repo,
             corner_debug=args.corner_debug,
             max_debug_corners=args.max_debug_corners,
+            include_d2=args.time_optimal,
         )
     elif args.dataset == "v4":
-        metrics = evaluate_exp24_v4_base_frame_dataset(out_dir, repo)
+        metrics = evaluate_exp24_v4_base_frame_dataset(
+            out_dir, repo, include_d2=args.time_optimal,
+        )
     elif args.dataset == "v6_2":
         metrics = evaluate_exp24_v6_constant_orientation_dataset(
             out_dir,
             repo,
             dataset_name="v6_2",
             output_group="v6_2_constant_orientation",
+            include_d2=args.time_optimal,
+        )
+    elif args.dataset == "v8":
+        metrics = evaluate_exp24_v6_constant_orientation_dataset(
+            out_dir,
+            repo,
+            dataset_name="v8_snake_toolpath_with_variable_wp_spacing",
+            output_group="v8_snake_variable_wp_spacing",
+            include_d2=args.time_optimal,
         )
     else:
-        metrics = evaluate_exp24_v6_constant_orientation_dataset(out_dir, repo)
+        metrics = evaluate_exp24_v6_constant_orientation_dataset(
+            out_dir, repo, include_d2=args.time_optimal,
+        )
 
     print(f"Experiment 24 {args.dataset} validation written to: {out_dir}")
     print(f"Evaluated {len(metrics)} trajectories")
