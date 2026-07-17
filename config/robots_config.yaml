@@ -20,7 +20,12 @@ robots:
     reach_m: 1.4
     payload_kg: 7
     velocity_limits_rad_s: [4.443, 3.142, 4.312, 8.727, 7.245, 12.566]
-    acceleration_limits_rad_s2: [10.0, 10.0, 10.0, 20.0, 20.0, 30.0] # just for testing not an actual limit (FIX ME)
+    # Per-joint acceleration limits — p99 of observed |q̈| from the Experiment 24
+    # v9 snake-orientation RobotStudio recordings (min of accel/decel p99).
+    # Replaces the old [10,10,10,20,20,30] placeholder that made TOPP-RA
+    # time-optimal crawl (esp. the broken v8 J4=144 deg/s² value).
+    # Source: Results - RobotStudio/v9_snake_toolpaths_orientation_test/*.csv
+    acceleration_limits_rad_s2: [22.39, 74.49, 92.59, 1004.25, 405.29, 982.93]
     # Calibration — from Experiment 23 RobotStudio data (tuned 2026-04-20)
     calibration:
       # [ESTIMATE — NEEDS FURTHER MODELING] the four scalar TCP accel
@@ -87,11 +92,14 @@ robots:
       #   peaks on that path (not a full dynamics model); F3 D2 may still
       #   scale them via feature3_d1.joint_accel_limit_scale.
       joint_dynamics:
-        source: Experiment_24_v8
+        source: Experiment_24_v9
         configuration: neutral
         q_dot_max_deg_s: [280.0, 180.0, 250.0, 500.0, 415.8, 720.0]
-        q_ddot_accel_deg_s2: [11102, 21533, 33677, 144, 10037, 11259]   # v8 RS peak accel
-        q_ddot_decel_deg_s2: [7275, 22498, 30712, 246, 11370, 7083]     # v8 RS peak |decel|
+        # p99 of observed per-joint |q̈| from Exp24 v9 snake-orientation RS runs.
+        # The old v8 values (esp. J4=144 deg/s²) were unreliable and made the
+        # F3 D2 time-optimal / no-dip speeds collapse.
+        q_ddot_accel_deg_s2: [1586, 4268, 5311, 67164, 23221, 60116]   # v9 RS p99 accel
+        q_ddot_decel_deg_s2: [1283, 4343, 5305, 57539, 23449, 56318]   # v9 RS p99 |decel|
       use_jacobian_dynamics: true
       T_settle_s: 0.2                  # [ESTIMATE — NEEDS FURTHER MODELING] fine-point settling time; never measured
       is_calibrated: true

@@ -92,6 +92,22 @@ def _slerp(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
     return result / np.linalg.norm(result)
 
 
+#: Maximum orientation change (degrees) allowed between consecutive dense
+#: samples.  The path sampler densifies by the *larger* of the position-based
+#: (``ds_mm``) and orientation-based (this) sample counts.  Without this,
+#: segments that reorient quickly while barely translating (e.g. the Exp24 v9
+#: n90 orientation-sweep rows: ~9°/waypoint over ~1 mm) get only one sample,
+#: producing large adjacent joint jumps near the wrist that break the TOPP-RA
+#: spline fit.  RobotStudio densifies by time and stays smooth; this mirrors it.
+_MAX_ORI_STEP_DEG = 1.5
+
+
+def _quat_angle_deg(q0: np.ndarray, q1: np.ndarray) -> float:
+    """Shortest-arc angular distance (degrees) between two unit quaternions."""
+    dot = float(np.clip(abs(np.dot(q0, q1)), -1.0, 1.0))
+    return float(np.degrees(2.0 * np.arccos(dot)))
+
+
 def _sample_straight_segment(
     p_start_mm: np.ndarray,
     p_end_mm: np.ndarray,
@@ -100,25 +116,46 @@ def _sample_straight_segment(
     ds_mm: float,
     include_start: bool = True,
     include_end: bool = False,
+    dtheta_deg: float = _MAX_ORI_STEP_DEG,
 ) -> tuple:
     """Sample a straight segment with SLERP orientation.
+
+    The sample count is the larger of the position-based (``ds_mm``) and
+    orientation-based (``dtheta_deg``) subdivisions so that fast reorientation
+    on a short translation is not under-sampled.
 
     Returns:
         (positions_mm (K,3), quats (K,4), arc_dists (K,))
     """
     seg_vec = p_end_mm - p_start_mm
     seg_len = np.linalg.norm(seg_vec)
+    ang_deg = _quat_angle_deg(q_start, q_end)
+    n_sub_ori = int(np.ceil(ang_deg / dtheta_deg)) if dtheta_deg > 0 else 0
 
     if seg_len < 1e-9:
-        if include_start:
-            return (
-                p_start_mm.reshape(1, 3),
-                q_start.reshape(1, 4),
-                np.array([0.0]),
-            )
-        return (np.empty((0, 3)), np.empty((0, 4)), np.empty(0))
+        # Pure (or near-pure) reorientation: no translation but the wrist still
+        # has to move.  Sample the orientation so joints stay continuous.
+        if n_sub_ori <= 1:
+            if include_start:
+                return (
+                    p_start_mm.reshape(1, 3),
+                    q_start.reshape(1, 4),
+                    np.array([0.0]),
+                )
+            return (np.empty((0, 3)), np.empty((0, 4)), np.empty(0))
+        t_vals = np.linspace(0.0, 1.0, n_sub_ori + 1)
+        if not include_start:
+            t_vals = t_vals[1:]
+        if not include_end:
+            t_vals = t_vals[:-1]
+        if len(t_vals) == 0:
+            return (np.empty((0, 3)), np.empty((0, 4)), np.empty(0))
+        positions = np.tile(p_start_mm, (len(t_vals), 1))
+        quats = np.array([_slerp(q_start, q_end, t) for t in t_vals])
+        dists = np.zeros(len(t_vals))
+        return positions, quats, dists
 
-    n_sub = max(1, int(np.ceil(seg_len / ds_mm)))
+    n_sub = max(1, int(np.ceil(seg_len / ds_mm)), n_sub_ori)
     t_vals = np.linspace(0.0, 1.0, n_sub + 1)
 
     if not include_start:
@@ -169,7 +206,9 @@ def _sample_bezier_arc(
     P3 = geom.exit_point_mm
 
     arc_len = geom.arc_length_mm
-    n_sub = max(_MIN_BLEND_SUBDIV, int(np.ceil(arc_len / ds_mm)))
+    ang_deg = _quat_angle_deg(q_in, q_out)
+    n_sub_ori = int(np.ceil(ang_deg / _MAX_ORI_STEP_DEG)) if _MAX_ORI_STEP_DEG > 0 else 0
+    n_sub = max(_MIN_BLEND_SUBDIV, int(np.ceil(arc_len / ds_mm)), n_sub_ori)
     if n_sub % 2 == 1:                 # ensure t = 0.5 is sampled
         n_sub += 1
     t_vals = np.linspace(0.0, 1.0, n_sub + 1)
@@ -328,6 +367,9 @@ def sample_blended_path(
     quat_array = np.array(all_quat)
 
     # Recompute cumulative arc length from the assembled samples.  The local
+    #
+    # (arc_array is finalised just below; the orientation-continuity pass that
+    #  follows depends on it, so it is applied after arc_array exists.)
     # arc offsets above exclude segment endpoints to avoid duplicate poses; for
     # dense back-to-back blends that can otherwise miss the final stride before
     # the next blend entry and under-report the physical TCP path length.
@@ -336,13 +378,47 @@ def sample_blended_path(
         step_lengths = np.linalg.norm(np.diff(pos_array, axis=0), axis=1)
         arc_array[1:] = np.cumsum(step_lengths)
 
-    # Convert positions from mm back to metres for SE(3) consistency
-    poses = np.column_stack([pos_array / 1000.0, quat_array])
-
     # Ensure monotonic arc lengths
     for i in range(1, len(arc_array)):
         if arc_array[i] < arc_array[i - 1]:
             arc_array[i] = arc_array[i - 1]
+
+    # ── Orientation-continuity pass ──────────────────────────────────────
+    # The straight part of a segment and its end-blend arc each independently
+    # SLERP the *full* quats[i]→quats[i+1] transition.  At the straight→blend
+    # boundary that resets the orientation backward (quats[i+1] → quats[i]),
+    # which for orientation-heavy paths (Exp24 v9 n90) shows up as large
+    # adjacent wrist-joint jumps (J4/J6 up to ~38°) that wreck the TOPP-RA
+    # spline fit.  Rebuild a single monotonic orientation sweep per waypoint
+    # interval, parameterised by cumulative arc length within that interval
+    # (index fraction when the interval has ~zero translation).
+    seg_arr = np.array(all_seg_id, dtype=int)
+    n_samp = len(quat_array)
+    if n_samp > 1:
+        i0 = 0
+        while i0 < n_samp:
+            s = int(seg_arr[i0])
+            i1 = i0
+            while i1 + 1 < n_samp and int(seg_arr[i1 + 1]) == s:
+                i1 += 1
+            q_a = quats[s]
+            q_b = quats[min(s + 1, n - 1)]
+            span = float(arc_array[i1] - arc_array[i0])
+            count = i1 - i0
+            for k in range(i0, i1 + 1):
+                if span > 1e-9:
+                    t = float((arc_array[k] - arc_array[i0]) / span)
+                elif count > 0:
+                    t = float((k - i0) / count)
+                else:
+                    t = 0.0
+                quat_array[k] = _slerp(q_a, q_b, min(1.0, max(0.0, t)))
+            i0 = i1 + 1
+    # Keep the final pose exactly at the last programmed orientation.
+    quat_array[-1] = quats[-1]
+
+    # Convert positions from mm back to metres for SE(3) consistency
+    poses = np.column_stack([pos_array / 1000.0, quat_array])
 
     logger.info(
         "Dense path: %d samples, total arc-length %.1f mm, ds=%.1f mm",

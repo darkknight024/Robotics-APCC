@@ -1626,11 +1626,21 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         rs_base = _rs_poses_tpk_to_base(rs_data, repo)
         rs_xyz_mm = rs_base[:, :3] * 1000.0
         rs_arc = _arc_length_mm(rs_xyz_mm)
-        rs_speed, rs_accel = _speed_accel_from_xyz_time(rs_xyz_mm, rs_data["time_ms"])
+        # RobotStudio's own logged tool-frame TCP speed/accel (the ground truth
+        # recorded at the tool tip; matches the toolpath commanded v_cmd).  Use
+        # this as the RS reference for all speed overlays, summaries, and error
+        # metrics so plots agree with the RS CSV (speed_mm_per_s ≤ v_cmd).
+        #
+        # NOTE: a base-frame (ee_link) finite-difference of the transformed TCP
+        # xyz would inflate far above v_cmd on the orientation-sweep rows —
+        # the ee_link swings with a lever arm while the tool tip stays at
+        # v_cmd — so it is deliberately NOT used as the RS TCP speed here.
         rs_orientation_speed = _orientation_speed_deg_s(rs_base[:, 3:7], rs_data["time_ms"])
         rs_logged_speed = np.asarray(rs_data["speed_mm_per_s"], dtype=float)
         rs_logged_accel = np.asarray(rs_data["linear_acceleration_mm_s_2"], dtype=float)
         rs_logged_orientation_speed = np.asarray(rs_data["orientation_speed_deg_per_s"], dtype=float)
+        rs_speed = rs_logged_speed
+        rs_accel = rs_logged_accel
 
         direct_speed, direct_accel, direct_orientation_speed, _fk_positions_m = _reconstruct_from_rs_joint_state(
             rs_csv, fk_solver,
@@ -2916,6 +2926,60 @@ def _write_optimal_toolpath_csv(
         )
 
 
+def _plot_topp_spline_diagnostics(
+    out_path: Path,
+    q_star_rad: np.ndarray,
+    arc_mm: np.ndarray,
+    title: str,
+    plt,
+    max_interp_error_rad: float = float("nan"),
+) -> None:
+    """Plot the path-parameter spline TOPP-RA operates on: q(s), dq/ds, d²q/ds².
+
+    ``s`` is the normalised task-space arc-length (0→1).  A natural cubic
+    spline is fit through ``q_star`` vs ``s`` (the same conditioning TOPP-RA
+    uses: unwrap 2π flips), and the spline plus its first/second path
+    derivatives are drawn per joint.  Large |dq/ds| or |d²q/ds²| spikes are
+    exactly what force TOPP-RA to collapse the speed near wrist reconfigurations.
+    """
+    from scipy.interpolate import CubicSpline
+
+    q = np.asarray(q_star_rad, dtype=float)
+    # Unwrap 2π artefacts so the spline is smooth on continuous-rotation joints.
+    q = np.unwrap(q, axis=0)
+    L = float(arc_mm[-1]) if len(arc_mm) and arc_mm[-1] > 0 else 1.0
+    s = np.clip(np.asarray(arc_mm, dtype=float) / L, 0.0, 1.0)
+    # De-duplicate non-increasing s (junction points repeat).
+    keep = np.concatenate([[True], np.diff(s) > 1e-12])
+    s_u, q_u = s[keep], q[keep]
+    if len(s_u) < 4:
+        return
+    s_dense = np.linspace(0.0, 1.0, min(4000, max(1000, len(s_u))))
+    cs = [CubicSpline(s_u, np.rad2deg(q_u[:, j])) for j in range(q_u.shape[1])]
+
+    fig, axes = plt.subplots(3, 1, figsize=(15, 11), sharex=True)
+    colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown"]
+    for j in range(q_u.shape[1]):
+        c = colors[j % len(colors)]
+        axes[0].plot(s_dense, cs[j](s_dense), color=c, lw=1.1, label=f"J{j+1}")
+        axes[1].plot(s_dense, cs[j](s_dense, 1), color=c, lw=1.1, label=f"J{j+1}")
+        axes[2].plot(s_dense, cs[j](s_dense, 2), color=c, lw=1.1, label=f"J{j+1}")
+    axes[0].set_ylabel("q(s)  [deg]")
+    axes[1].set_ylabel("dq/ds  [deg per unit s]")
+    axes[2].set_ylabel("d²q/ds²  [deg per unit s²]")
+    axes[2].set_xlabel("normalised task-space arc length  s = arc / L")
+    sub = title
+    if np.isfinite(max_interp_error_rad):
+        sub += f"    (TOPP knot interp error = {max_interp_error_rad:.4f} rad)"
+    axes[0].set_title(sub, fontsize=12)
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8, ncol=6)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _write_d2_case_outputs(
     case_dir: Path,
     label: str,
@@ -3057,6 +3121,17 @@ def _write_d2_case_outputs(
         # speed in the 8th (speed) column; everything else verbatim.
         if toolpath_csv is not None:
             _write_optimal_toolpath_csv(opt_dir, Path(toolpath_csv), seg_speeds)
+
+        # Spline diagnostics: the q(s), dq/ds, d²q/ds² that TOPP-RA fits.
+        if result.q_star is not None:
+            _plot_topp_spline_diagnostics(
+                opt_dir / "topp_spline_qs.png",
+                np.asarray(result.q_star, dtype=float),
+                dense_arc,
+                f"TOPP-RA path spline q(s), dq/ds, d²q/ds² — {label}",
+                plt,
+                max_interp_error_rad=float(getattr(topp, "max_interp_error_rad", float("nan"))),
+            )
 
     # ── constant_velocity/ — Feature B global no-dip execution ──
     cs = getattr(result, "constant_speed", None)
