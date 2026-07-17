@@ -830,7 +830,8 @@ def plot_c0_continuity_per_waypoint(
     cartesian_distances: np.ndarray,
     output_path: str,
     title: str = "C0 Continuity Analysis",
-    joint_jump_limit_rad: Optional[float] = None
+    joint_jump_limit_rad: Optional[float] = None,
+    rs_joint_space_distances: Optional[np.ndarray] = None,
 ) -> None:
     """
     Plot C0 (position-level) continuity analysis for a single trajectory.
@@ -846,6 +847,8 @@ def plot_c0_continuity_per_waypoint(
         output_path: Path to save the output image
         title: Plot title
         joint_jump_limit_rad: C0 threshold (None to disable)
+        rs_joint_space_distances: Optional RobotStudio ‖Δq‖ per segment (same length)
+            overlaid on panel 1 for solver-vs-RS C0 comparison.
     """
     n_segments = len(joint_space_distances)
     if n_segments == 0:
@@ -858,8 +861,16 @@ def plot_c0_continuity_per_waypoint(
     # --- Panel 1: aggregate joint-space distance ---
     colors_c0 = ['green' if d < (joint_jump_limit_rad or np.inf) else 'red'
                  for d in joint_space_distances]
-    ax1.bar(segments, joint_space_distances, color=colors_c0, alpha=0.7,
-            edgecolor='black', linewidth=0.5)
+    ax1.bar(segments, joint_space_distances, color=colors_c0, alpha=0.55,
+            edgecolor='black', linewidth=0.5, label='Solver ‖Δq‖')
+    if rs_joint_space_distances is not None and len(rs_joint_space_distances) > 0:
+        rs_d = np.asarray(rs_joint_space_distances, dtype=float).reshape(-1)
+        n_rs = min(len(rs_d), n_segments)
+        ax1.plot(
+            segments[:n_rs], rs_d[:n_rs],
+            color='#1565C0', linewidth=1.8, marker='o', markersize=2.5,
+            alpha=0.9, label='RobotStudio ‖Δq‖', zorder=5,
+        )
     if joint_jump_limit_rad is not None:
         ax1.axhline(y=joint_jump_limit_rad, color='red', linestyle='--',
                      linewidth=2, label=f'C0 Threshold ({joint_jump_limit_rad:.3f} rad)')
@@ -868,7 +879,11 @@ def plot_c0_continuity_per_waypoint(
     mean_jump = float(np.mean(joint_space_distances))
     violations = int(np.sum(np.array(joint_space_distances) >= (joint_jump_limit_rad or np.inf)))
     c0_pass = violations == 0
-    summary = f'Max: {max_jump:.4f} rad | Mean: {mean_jump:.4f} rad | Violations: {violations}'
+    summary = f'Solver Max: {max_jump:.4f} rad | Mean: {mean_jump:.4f} rad | Violations: {violations}'
+    if rs_joint_space_distances is not None and len(rs_joint_space_distances) > 0:
+        rs_arr = np.asarray(rs_joint_space_distances, dtype=float)
+        rs_viol = int(np.sum(rs_arr >= (joint_jump_limit_rad or np.inf))) if joint_jump_limit_rad else 0
+        summary += f'\nRS Max: {float(np.max(rs_arr)):.4f} rad | RS Violations: {rs_viol}'
     ax1.text(0.02, 0.95, summary, transform=ax1.transAxes, fontweight='bold',
              fontsize=9, va='top',
              bbox=dict(boxstyle='round',
@@ -4378,6 +4393,9 @@ def plot_3d_spline_trajectory(
 ) -> None:
     """3D path with waypoints visible; rotation shown as coloured XYZ axes.
 
+    Orientation triads (RGB = local X/Y/Z) are drawn at **every** waypoint
+    (reachable only when *show_reachability* is True).
+
     Args:
         positions: (n, 3) in metres.
         quaternions: (n, 4) [qw, qx, qy, qz].
@@ -4424,14 +4442,18 @@ def plot_3d_spline_trajectory(
         ax.scatter(x, y, z, c="#1976D2", s=18, alpha=0.85, label="Waypoints", depthshade=True)
 
     axis_colors = {"x": "red", "y": "green", "z": "blue"}
-    step = max(1, len(positions) // 30)
+    # Plot orientation triads at every waypoint (no subsampling).
+    step = 1
 
     # Scale orientation axis length relative to the current view scale so
     # arrows stay visually reasonable regardless of workspace size.
+    # Slightly shorten when many waypoints are drawn so the path stays readable.
     if axis_length <= 1.0:
         effective_axis_length = axis_length * max_range
     else:
         effective_axis_length = axis_length
+    if len(positions) > 80:
+        effective_axis_length *= 0.55
 
     for i in range(0, len(positions), step):
         if show_reachability and not reachable[i]:
@@ -4448,7 +4470,7 @@ def plot_3d_spline_trajectory(
             ax.quiver(
                 p[0], p[1], p[2],
                 direction[0], direction[1], direction[2],
-                color=color, arrow_length_ratio=0.2, linewidth=1.2,
+                color=color, arrow_length_ratio=0.2, linewidth=0.9,
             )
 
     ax.set_xlabel("X (m)")

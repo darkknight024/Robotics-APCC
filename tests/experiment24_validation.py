@@ -3140,7 +3140,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Experiment 24 validation utilities.")
     parser.add_argument(
         "--dataset",
-        choices=["v1", "v2", "v3", "v4", "v6", "v6_2", "v8"],
+        choices=["v1", "v2", "v3", "v4", "v6", "v6_2", "v8", "v9"],
         default="v6",
         help="Experiment 24 dataset to validate (default: v6).",
     )
@@ -3154,7 +3154,7 @@ def main() -> None:
             "Feature B (per-corner constant-speed v_flat), overlay both on "
             "the standard speed-comparison plots, and write "
             "time_optimal_summary.txt.  Requires a dataset with a Feature 3 "
-            "toolpath convention (v3, v4, v6, v6_2, v8)."
+            "toolpath convention (v3, v4, v6, v6_2, v8, v9)."
         ),
     )
     args = parser.parse_args()
@@ -3168,7 +3168,7 @@ def main() -> None:
 
     if args.time_optimal and args.dataset in ("v1", "v2"):
         parser.error(
-            f"--time-optimal requires a Feature-3 dataset (v3/v4/v6/v6_2/v8); "
+            f"--time-optimal requires a Feature-3 dataset (v3/v4/v6/v6_2/v8/v9); "
             f"got --dataset {args.dataset!r}"
         )
 
@@ -3202,6 +3202,14 @@ def main() -> None:
             repo,
             dataset_name="v8_snake_toolpath_with_variable_wp_spacing",
             output_group="v8_snake_variable_wp_spacing",
+            include_d2=args.time_optimal,
+        )
+    elif args.dataset == "v9":
+        metrics = evaluate_exp24_v6_constant_orientation_dataset(
+            out_dir,
+            repo,
+            dataset_name="v9_snake_toolpaths_orientation_test",
+            output_group="v9_snake_orientation_test",
             include_d2=args.time_optimal,
         )
     else:

@@ -148,6 +148,15 @@ def plot_single_trajectory_outputs(
                         c0_cart_dists[seg_idx] = float(
                             np.linalg.norm(positions[idx_b] - positions[idx_a])
                         )
+            rs_c0_dists = None
+            if rs_ref.joints_deg is not None and len(rs_ref.joints_deg) >= 2:
+                from utils.math import compute_joint_space_distance
+                q_rs = np.radians(np.asarray(rs_ref.joints_deg, dtype=float))
+                n_rs_seg = min(n_c0_segments, len(q_rs) - 1)
+                rs_c0_dists = np.array([
+                    compute_joint_space_distance(q_rs[i], q_rs[i + 1])
+                    for i in range(n_rs_seg)
+                ])
             plot_c0_continuity_per_waypoint(
                 joint_space_distances=c0_result.joint_space_distances,
                 per_joint_jumps=c0_result.per_joint_deltas,
@@ -155,6 +164,7 @@ def plot_single_trajectory_outputs(
                 output_path=str(traj_out / f"c0_continuity_{traj_name}.png"),
                 title=f"C0 Continuity — {toolpath_name} — {traj_name}",
                 joint_jump_limit_rad=final_joint_jump,
+                rs_joint_space_distances=rs_c0_dists,
             )
 
     if config.topp_ra.generate_graphs and topp_result_raw is not None:

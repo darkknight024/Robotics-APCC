@@ -11,7 +11,13 @@ from core.checks import check_c1_continuity, compute_task_space_velocity, check_
 from core.topp_check import parameterize_trajectory, ToppraResult
 from utils import load_toolpath_trajectories_ext, transform_trajectories_to_base_frame
 from utils.config_loader import FeasibilityConfig, get_robot_by_name, load_ik_config_as_object
-from utils.csv_loader_toolpath import _DEFAULT_SPEED_MM_S, load_robotstudio_reference
+from utils.csv_loader_toolpath import (
+    _DEFAULT_SPEED_MM_S,
+    load_robotstudio_reference,
+    load_robotstudio_result_csv,
+    match_robotstudio_reference_to_waypoints,
+    RobotStudioReference,
+)
 from utils.feasibility.pipeline_types import FeasibilityPipelineInputs, PipelineRuntimeContext
 from utils.feasibility.plotting_aggregated import plot_aggregated_outputs
 from utils.feasibility.plotting_trajectory import plot_single_trajectory_outputs
@@ -24,6 +30,7 @@ from utils.time_parameterization import (
     waypoint_times_ms_from_positions_and_speeds,
 )
 from utils.feasibility_plot import export_dense_ik_trajectory_csv
+from utils.transform_handler import transform_trajectory_to_base_frame
 
 
 def _resolve_output_path(
@@ -79,6 +86,8 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
         j5_threshold_deg=inputs.config.singularity.j5_threshold_deg,
     )
 
+    # Embedded-RS toolpaths (Exp 19–21). Standalone RS files are loaded later
+    # in run_feasibility_pipeline once the plate-frame toolpath is available.
     rs_ref = load_robotstudio_reference(inputs.toolpath_path)
 
     return PipelineRuntimeContext(
@@ -93,6 +102,50 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
         out_path=out_path,
         rs_ref=rs_ref,
     )
+
+
+def _load_standalone_robotstudio_reference(
+    inputs: FeasibilityPipelineInputs,
+    trajectories_t_p_k: list,
+    traj_id: Optional[int],
+) -> RobotStudioReference:
+    """Load a separate RS result CSV and align it to the programmed toolpath."""
+    if not inputs.robotstudio_csv_path:
+        return RobotStudioReference()
+
+    rs_dense = load_robotstudio_result_csv(inputs.robotstudio_csv_path)
+    if rs_dense.joints_deg is None and rs_dense.tcp_pos_mm is None:
+        return RobotStudioReference()
+
+    local_idx = (traj_id - 1) if traj_id is not None else 0
+    if local_idx < 0 or local_idx >= len(trajectories_t_p_k):
+        local_idx = 0
+    plate_traj = trajectories_t_p_k[local_idx]
+    rs_matched = match_robotstudio_reference_to_waypoints(
+        rs_dense, plate_traj[:, :3],
+    )
+
+    # Task-space overlays expect base-frame TCP when knife transform is used.
+    if (
+        not inputs.config.use_base_frame
+        and inputs.knife_translation_m is not None
+        and inputs.knife_quaternion is not None
+        and rs_matched.tcp_pos_mm is not None
+        and rs_matched.tcp_quat is not None
+    ):
+        pose7 = np.column_stack([
+            rs_matched.tcp_pos_mm / 1000.0,
+            rs_matched.tcp_quat,
+        ])
+        pose7_b = transform_trajectory_to_base_frame(
+            pose7, inputs.knife_translation_m, inputs.knife_quaternion,
+        )
+        rs_matched = RobotStudioReference(
+            joints_deg=rs_matched.joints_deg,
+            tcp_pos_mm=pose7_b[:, :3] * 1000.0,
+            tcp_quat=pose7_b[:, 3:7],
+        )
+    return rs_matched
 
 
 def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any]:
@@ -129,6 +182,21 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
     trajectories_t_p_k = load_result.trajectories
     trajectory_speeds = load_result.speeds
     speed_extracted = load_result.speed_extracted
+
+    # Standalone RS result CSV (matched in plate frame, TCP then → base if needed)
+    if inputs.robotstudio_csv_path:
+        rs_standalone = _load_standalone_robotstudio_reference(
+            inputs, trajectories_t_p_k, traj_id,
+        )
+        if rs_standalone.joints_deg is not None:
+            rs_ref = rs_standalone
+            if verbose:
+                print(
+                    f"  RobotStudio reference: {Path(inputs.robotstudio_csv_path).name} "
+                    f"→ {len(rs_ref.joints_deg)} waypoint-matched samples"
+                )
+        elif verbose:
+            print(f"  Warning: no usable RS data in {inputs.robotstudio_csv_path}")
 
     if config.use_base_frame:
         trajectories_t_b_p = trajectories_t_p_k

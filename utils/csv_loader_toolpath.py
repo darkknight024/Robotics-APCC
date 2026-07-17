@@ -852,3 +852,153 @@ def load_robotstudio_reference(csv_path: str) -> RobotStudioReference:
         tcp_pos_mm=np.array(tcp_pos_rows) if tcp_pos_rows else None,
         tcp_quat=np.array(tcp_quat_rows) if tcp_quat_rows else None,
     )
+
+
+def load_robotstudio_result_csv(csv_path: str) -> RobotStudioReference:
+    """Load a standalone RobotStudio *result* CSV (not embedded in a toolpath).
+
+    Used when RS recordings live in a separate folder from the programmed
+    toolpath (e.g. Experiment 24 ``Results - RobotStudio/v9_…``).
+
+    Expected header columns (same names as the embedded-RS toolpath format)::
+
+        rs_j1_deg … rs_j6_deg
+        rs_x_mm, rs_y_mm, rs_z_mm, rs_qw, rs_qx, rs_qy, rs_qz
+        optional: is_at_waypoint
+
+    Unlike :func:`load_robotstudio_reference`, this loader:
+      * requires a text header row (fails soft → empty reference otherwise)
+      * always keeps every numeric data row (``is_at_waypoint`` is ignored here;
+        use :func:`match_robotstudio_reference_to_waypoints` to align to a toolpath)
+
+    The old :func:`load_robotstudio_reference` is left unchanged for backward
+    compatibility with Experiment 19–21 style toolpaths that embed RS columns.
+    """
+    import csv as _csv
+
+    path = Path(csv_path)
+    if not path.exists():
+        logger.warning("RobotStudio result CSV not found: %s", csv_path)
+        return RobotStudioReference()
+
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = _csv.reader(f)
+        header_row = next(reader, None)
+        if header_row is None:
+            return RobotStudioReference()
+
+        cols = {token.strip().lower(): idx for idx, token in enumerate(header_row)}
+        # Must be a text header — reject headerless numeric files
+        try:
+            float(header_row[0].strip())
+            logger.warning(
+                "RobotStudio result CSV %s looks headerless; expected rs_* columns.",
+                csv_path,
+            )
+            return RobotStudioReference()
+        except ValueError:
+            pass
+
+        joint_indices = [cols.get(c) for c in _RS_JOINT_COLS]
+        tcp_indices = [cols.get(c) for c in _RS_TCP_COLS]
+        has_joints = all(i is not None for i in joint_indices)
+        has_tcp = all(i is not None for i in tcp_indices)
+        if not has_joints and not has_tcp:
+            logger.warning(
+                "RobotStudio result CSV %s missing rs_j*_deg / rs_* pose columns.",
+                csv_path,
+            )
+            return RobotStudioReference()
+
+        joints_rows: List[List[float]] = []
+        tcp_pos_rows: List[List[float]] = []
+        tcp_quat_rows: List[List[float]] = []
+
+        for row in reader:
+            if len(row) < 7:
+                continue
+            try:
+                float(row[0].strip())
+            except ValueError:
+                continue
+            if has_joints:
+                joints_rows.append([float(row[i].strip()) for i in joint_indices])  # type: ignore[index]
+            if has_tcp:
+                vals = [float(row[i].strip()) for i in tcp_indices]  # type: ignore[index]
+                tcp_pos_rows.append(vals[:3])
+                tcp_quat_rows.append(vals[3:])
+
+    return RobotStudioReference(
+        joints_deg=np.array(joints_rows, dtype=float) if joints_rows else None,
+        tcp_pos_mm=np.array(tcp_pos_rows, dtype=float) if tcp_pos_rows else None,
+        tcp_quat=np.array(tcp_quat_rows, dtype=float) if tcp_quat_rows else None,
+    )
+
+
+def match_robotstudio_reference_to_waypoints(
+    rs_ref: RobotStudioReference,
+    toolpath_positions_m: np.ndarray,
+    *,
+    max_match_dist_mm: float = 5.0,
+) -> RobotStudioReference:
+    """Nearest-neighbour align a dense RS recording to programmed toolpath waypoints.
+
+    Matching is done in millimetres on TCP XYZ.  ``toolpath_positions_m`` and
+    ``rs_ref.tcp_pos_mm`` must be in the **same** frame (typically plate / T_P_K
+    for Exp24 v9 recordings).
+
+    Returns a new :class:`RobotStudioReference` with one row per toolpath
+    waypoint.  Rows whose nearest RS sample exceeds *max_match_dist_mm* still
+    receive that nearest sample (with a warning count), so joint overlays stay
+    length-aligned with the toolpath.
+    """
+    if (
+        rs_ref.tcp_pos_mm is None
+        or len(rs_ref.tcp_pos_mm) == 0
+        or toolpath_positions_m is None
+        or len(toolpath_positions_m) == 0
+    ):
+        return RobotStudioReference()
+
+    tp_mm = np.asarray(toolpath_positions_m, dtype=float) * 1000.0
+    rs_tcp = np.asarray(rs_ref.tcp_pos_mm, dtype=float)
+    # Brute-force NN (N_tp ~ hundreds, N_rs ~ thousands) — no scipy dependency
+    d2 = (
+        (tp_mm[:, None, 0] - rs_tcp[None, :, 0]) ** 2
+        + (tp_mm[:, None, 1] - rs_tcp[None, :, 1]) ** 2
+        + (tp_mm[:, None, 2] - rs_tcp[None, :, 2]) ** 2
+    )
+    idx = np.argmin(d2, axis=1)
+    dist = np.sqrt(d2[np.arange(len(tp_mm)), idx])
+    n_far = int(np.sum(dist > max_match_dist_mm))
+    if n_far:
+        logger.warning(
+            "RS↔toolpath match: %d/%d waypoints farther than %.1f mm (max %.2f mm).",
+            n_far, len(tp_mm), max_match_dist_mm, float(np.max(dist)),
+        )
+    else:
+        logger.info(
+            "RS↔toolpath match: %d waypoints, max dist %.3f mm.",
+            len(tp_mm), float(np.max(dist)),
+        )
+
+    joints = rs_ref.joints_deg[idx] if rs_ref.joints_deg is not None else None
+    tcp_pos = rs_tcp[idx]
+    tcp_quat = rs_ref.tcp_quat[idx] if rs_ref.tcp_quat is not None else None
+    return RobotStudioReference(
+        joints_deg=joints,
+        tcp_pos_mm=tcp_pos,
+        tcp_quat=tcp_quat,
+    )
+
+
+def resolve_robotstudio_result_path(
+    toolpath_path: str,
+    robotstudio_folder: str,
+) -> Optional[str]:
+    """Map a toolpath CSV filename to a same-named file under *robotstudio_folder*."""
+    stem = Path(toolpath_path).stem
+    candidate = Path(robotstudio_folder) / f"{stem}.csv"
+    if candidate.exists():
+        return str(candidate)
+    return None

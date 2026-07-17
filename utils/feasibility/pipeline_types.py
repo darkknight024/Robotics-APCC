@@ -34,6 +34,11 @@ class FeasibilityPipelineInputs:
     verbose: bool = True
     traj_id: Optional[int] = None
     use_flat_output_structure: bool = False
+    # Optional standalone RobotStudio result CSV (separate from the toolpath).
+    # When set, loaded via load_robotstudio_result_csv and matched to toolpath
+    # waypoints by TCP nearest-neighbour (plate frame), then TCP optionally
+    # transformed to base with the knife pose for task-space overlays.
+    robotstudio_csv_path: Optional[str] = None
 
 
 @dataclass

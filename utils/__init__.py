@@ -30,6 +30,9 @@ from .csv_loader_toolpath import (
     validate_toolpath_csv,
     extract_toolpath_speed,
     load_robotstudio_reference,
+    load_robotstudio_result_csv,
+    match_robotstudio_reference_to_waypoints,
+    resolve_robotstudio_result_path,
     RobotStudioReference,
     # Feature 3 — M7
     ToolpathLoadResultF3,

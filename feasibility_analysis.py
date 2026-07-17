@@ -49,6 +49,7 @@ def process_toolpath(
     verbose: bool = True,
     traj_id: Optional[int] = None,
     use_flat_output_structure: bool = False,
+    robotstudio_csv_path: Optional[str] = None,
 ) -> dict:
     """Process a single toolpath through the Feature 2 feasibility pipeline.
 
@@ -71,6 +72,7 @@ def process_toolpath(
         verbose=verbose,
         traj_id=traj_id,
         use_flat_output_structure=use_flat_output_structure,
+        robotstudio_csv_path=robotstudio_csv_path,
     )
     return run_feasibility_pipeline(inputs)
 
@@ -119,6 +121,13 @@ def main():
                              "triplet instead of preset zone number")
     parser.add_argument("--no-f3-plots", action="store_true")
     parser.add_argument("--no-f3-report", action="store_true")
+    parser.add_argument(
+        "--robotstudio-csv",
+        default=None,
+        help="Standalone RobotStudio result CSV to overlay (matched to toolpath "
+             "waypoints by TCP). If a directory is given, the same filename as "
+             "the toolpath is resolved inside it.",
+    )
     args = parser.parse_args()
 
     cfg = load_batch_config(args.config)
@@ -183,6 +192,17 @@ def main():
             preloaded_load_result=lr_f3,
         )
     else:
+        rs_csv = args.robotstudio_csv
+        if rs_csv:
+            rs_path = Path(rs_csv)
+            if rs_path.is_dir():
+                from utils.csv_loader_toolpath import resolve_robotstudio_result_path
+                resolved = resolve_robotstudio_result_path(args.toolpath, str(rs_path))
+                if resolved is None:
+                    print(f"Error: no RS CSV matching toolpath stem in {rs_path}")
+                    sys.exit(1)
+                rs_csv = resolved
+                print(f"Resolved RobotStudio CSV: {rs_csv}")
         process_toolpath(
             args.toolpath, args.urdf, cfg,
             knife_translation_m=knife_translation_m,
@@ -193,6 +213,7 @@ def main():
             robot_reach_m=args.reach,
             velocity_limits_rad_s=velocity_limits,
             speed_mm_s=args.speed,
+            robotstudio_csv_path=rs_csv,
         )
 
     print("\nAnalysis complete!")
