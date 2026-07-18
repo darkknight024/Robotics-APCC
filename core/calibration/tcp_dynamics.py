@@ -53,8 +53,19 @@ def _solve_unit_joint_response(
     direction: np.ndarray,
     get_jacobian: JacobianFn,
     jacobian_convention: JacobianConvention,
+    omega_per_unit: Optional[np.ndarray] = None,
 ) -> Optional[np.ndarray]:
-    """Return joint rates for a unit translational TCP twist in ``direction``."""
+    """Return joint rates for a unit TCP twist.
+
+    The twist is ``[direction; omega_per_unit]`` where ``direction`` is the
+    unit **linear** velocity direction (1 m/s) and ``omega_per_unit`` is the
+    angular velocity (rad/s) accompanying that 1 m/s of linear motion — i.e.
+    the path's orientation-change rate per unit linear travel.  When
+    ``omega_per_unit`` is ``None`` the twist is pure translation (legacy
+    behaviour), which silently ignores any wrist reorientation the path
+    requires and therefore over-estimates the achievable TCP speed on
+    orientation-varying paths.
+    """
 
     unit_direction = _unit3(direction, "direction")
     J = _as_linear_angular(get_jacobian(np.asarray(q, dtype=float)), jacobian_convention)
@@ -70,7 +81,11 @@ def _solve_unit_joint_response(
         )
         return None
 
-    twist = np.concatenate([unit_direction, np.zeros(3)])
+    if omega_per_unit is None:
+        angular = np.zeros(3)
+    else:
+        angular = np.asarray(omega_per_unit, dtype=float).reshape(3)
+    twist = np.concatenate([unit_direction, angular])
     try:
         return np.linalg.solve(J, twist)
     except np.linalg.LinAlgError:
@@ -85,16 +100,20 @@ def compute_a_tcp_linear(
     get_jacobian: JacobianFn,
     jacobian_convention: JacobianConvention = "angular_linear",
     phase: Literal["accel", "decel", "conservative"] = "conservative",
+    omega_per_unit: Optional[np.ndarray] = None,
 ) -> float:
     """Effective TCP acceleration in ``direction`` in ``mm/s²``.
 
-    The unit twist is ``[direction; 0, 0, 0]``.  Solving ``J q_ddot = twist``
-    gives the joint acceleration required for 1 m/s² TCP acceleration; the
-    bottleneck joint sets the achievable scalar acceleration.
+    The unit twist is ``[direction; omega_per_unit]``.  Solving
+    ``J q_ddot = twist`` gives the joint acceleration required for 1 m/s² TCP
+    tangential acceleration (with the accompanying angular acceleration when
+    the path reorients); the bottleneck joint sets the achievable scalar
+    acceleration.  ``omega_per_unit`` defaults to zero (pure translation).
     """
 
     q_ddot_unit = _solve_unit_joint_response(
         q, direction, get_jacobian, jacobian_convention,
+        omega_per_unit=omega_per_unit,
     )
     if q_ddot_unit is None:
         return _LOWER_BOUND_A_TCP_MM_S2
@@ -122,8 +141,14 @@ def compute_a_tcp_tangential(
     get_jacobian: JacobianFn,
     jacobian_convention: JacobianConvention = "angular_linear",
     phase: Literal["accel", "decel", "conservative"] = "conservative",
+    omega_per_unit: Optional[np.ndarray] = None,
 ) -> float:
-    """Effective tangential TCP acceleration in ``mm/s²``."""
+    """Effective tangential TCP acceleration in ``mm/s²``.
+
+    ``omega_per_unit`` (rad/s per 1 m/s of linear travel) folds the path's
+    orientation-change rate into the twist so that wrist-limited corners are
+    not over-estimated.
+    """
 
     return compute_a_tcp_linear(
         q,
@@ -132,6 +157,7 @@ def compute_a_tcp_tangential(
         get_jacobian,
         jacobian_convention=jacobian_convention,
         phase=phase,
+        omega_per_unit=omega_per_unit,
     )
 
 
@@ -160,11 +186,21 @@ def compute_v_joint_max(
     joint_dynamics: JointDynamicsCalibration,
     get_jacobian: JacobianFn,
     jacobian_convention: JacobianConvention = "angular_linear",
+    omega_per_unit: Optional[np.ndarray] = None,
 ) -> float:
-    """Maximum TCP speed in ``mm/s`` before any joint velocity saturates."""
+    """Maximum TCP speed in ``mm/s`` before any joint velocity saturates.
+
+    ``omega_per_unit`` is the angular velocity (rad/s) that accompanies 1 m/s
+    of linear TCP travel along the path (i.e. ``dφ/ds`` scaled to 1 m/s).  It
+    MUST be supplied for orientation-varying paths — otherwise the wrist
+    reorientation is ignored and the ceiling is grossly over-estimated (the
+    robot appears able to fly through orientation sweeps that actually
+    saturate J4/J5/J6).
+    """
 
     q_dot_unit = _solve_unit_joint_response(
         q, tangent, get_jacobian, jacobian_convention,
+        omega_per_unit=omega_per_unit,
     )
     if q_dot_unit is None:
         return _LOWER_BOUND_V_TCP_MM_S

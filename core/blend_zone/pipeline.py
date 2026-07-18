@@ -87,6 +87,7 @@ class Feature3D1Result:
     time_optimal: Optional[Any] = None
     corner_speed_limits: Optional[list] = None
     constant_speed: Optional[Any] = None
+    commanded_topp: Optional[Any] = None
 
 
 def _zone_to_dict(z: ZoneParams) -> dict:
@@ -343,8 +344,18 @@ def run_feature3(
             if robot_config and robot_config.blend_shape_k > 0.0
             else DEFAULT_BLEND_SHAPE_K
         )
-        blend_geoms = compute_blend_geometries(waypoints, zone_params,
-                                               shape_k=shape_k)
+        # A waypoint counts as a real corner only if its POSITION deflection
+        # exceeds min_corner_deflection_deg.  On knife-transformed paths the
+        # Zund lever-arm turns small orientation steps into small base-frame
+        # position deflections; without this threshold those get flagged as
+        # (and shaded as) corners even though the toolpath is locally straight.
+        min_corner_rad = float(
+            np.deg2rad(max(0.0, float(getattr(f3_cfg, "min_corner_deflection_deg", 0.0))))
+        ) if getattr(f3_cfg, "enable_near_collinear_skip", True) else 1e-6
+        blend_geoms = compute_blend_geometries(
+            waypoints, zone_params, shape_k=shape_k,
+            min_corner_angle_rad=min_corner_rad,
+        )
         n_arcs = sum(1 for g in blend_geoms if g is not None)
         if verbose:
             print(f"    Blend arcs: {n_arcs}")
@@ -424,6 +435,7 @@ def run_feature3(
 
         # ── Step 7b: F3 D2 time-optimal profile (TOPP-RA on blended q*) ──
         topp_blended = None
+        commanded_topp = None
         want_topp = bool(getattr(f3_cfg, "compute_time_optimal", False))
         want_corner = bool(getattr(f3_cfg, "compute_corner_limits", False))
         want_apply_topp = bool(getattr(f3_cfg, "apply_topp_ceiling", False))
@@ -441,6 +453,8 @@ def run_feature3(
                 n_gridpoints=int(getattr(f3_cfg, "topp_n_gridpoints", 0)),
                 max_knots=int(getattr(f3_cfg, "topp_max_knots", 2000)),
                 q_ddot_scale=q_ddot_scale,
+                smoothing_mode=str(getattr(f3_cfg, "smoothing_mode", "jerk_limited")),
+                jerk_smooth_time_s=float(getattr(f3_cfg, "jerk_smooth_time_s", 0.05)),
             )
             n_fine = len(speed_result.fine_point_indices)
             m5_traversal = (
@@ -472,6 +486,34 @@ def run_feature3(
                     else "not feasible"
                 )
                 print(f"    TOPP-RA: {reason}")
+
+            # ── TOPP-based COMMANDED mode ──
+            # Re-solve TOPP-RA with the commanded TCP speed as an extra cap so
+            # the commanded profile is GUARANTEED joint-feasible (velocity AND
+            # acceleration, including the sharp wrist corners) — the M5
+            # forward/backward profiler could not bound the path-curvature
+            # joint-acceleration term.  Uses the same coupled solver as the
+            # time-optimal, with v_tcp ≤ v_cmd added via a virtual joint.
+            v_cmd_cap = float(np.nanmax(dense_path.v_cmd_at_s)) if len(dense_path.v_cmd_at_s) else 0.0
+            if v_cmd_cap > 0:
+                commanded_topp = compute_time_optimal_on_blended_path(
+                    q_star=joint_angles_rad,
+                    arc_lengths_mm=dense_path.arc_lengths,
+                    dense_path=dense_path,
+                    joint_dynamics=joint_dynamics,
+                    n_gridpoints=int(getattr(f3_cfg, "topp_n_gridpoints", 0)),
+                    max_knots=int(getattr(f3_cfg, "topp_max_knots", 2000)),
+                    q_ddot_scale=q_ddot_scale,
+                    smoothing_mode=str(getattr(f3_cfg, "smoothing_mode", "jerk_limited")),
+                    jerk_smooth_time_s=float(getattr(f3_cfg, "jerk_smooth_time_s", 0.05)),
+                    v_cap_mm_s=v_cmd_cap,
+                )
+                if verbose and commanded_topp.feasible:
+                    print(
+                        f"    TOPP commanded (v≤{v_cmd_cap:.0f} mm/s): "
+                        f"duration={commanded_topp.duration_s:.3f}s, "
+                        f"v_tcp max={np.nanmax(commanded_topp.v_tcp_profile_mm_s):.0f} mm/s"
+                    )
 
             # Optional: apply the TOPP TCP profile as v_topp_ceiling and re-run M5.
             if (
@@ -629,6 +671,7 @@ def run_feature3(
             time_optimal=topp_blended,
             corner_speed_limits=corner_speed_limits,
             constant_speed=constant_speed,
+            commanded_topp=commanded_topp,
         )
 
         # ── Step 10: Plots and reports ──

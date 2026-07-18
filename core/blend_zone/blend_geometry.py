@@ -220,11 +220,22 @@ def _compute_rho_min(r_tcp_mm: float, corner_angle_rad: float) -> float:
     return r_tcp_mm * cos_half ** 2 / sin_half
 
 
+#: Minimum position-deflection angle (rad) for a waypoint to be treated as a
+#: real corner (fly-by blend arc).  Below this it is treated as a straight
+#: pass-through — no blend arc, and it is NOT shaded as a corner in the plots.
+#: The default (~0.057°) essentially flags any non-collinearity; the pipeline
+#: overrides this with ``feature3_d1.min_corner_deflection_deg`` so that, e.g.,
+#: the sub-3° "corners" that the Zund lever-arm induces from small orientation
+#: steps are not mistaken for real position corners.
+_MIN_CORNER_ANGLE_RAD = 1e-6
+
+
 def compute_blend_geometry(
     waypoints_mm: np.ndarray,
     idx: int,
     zone: ZoneParams,
     shape_k: float = DEFAULT_BLEND_SHAPE_K,
+    min_corner_angle_rad: float = _MIN_CORNER_ANGLE_RAD,
 ) -> Optional[BlendArcGeometry]:
     """Compute the cubic-Bézier blend arc geometry for a single fly-by waypoint.
 
@@ -235,6 +246,10 @@ def compute_blend_geometry(
         shape_k:       Cubic-Bézier shape parameter (see module docstring).
                        ``2/3`` reproduces the classic quadratic blend;
                        ``≈ 0.55`` (default) best matches the IRC5 controller.
+        min_corner_angle_rad: Minimum position deflection to count as a corner.
+                       Waypoints below this are treated as straight (no blend),
+                       so tiny lever-arm/orientation-induced deflections are not
+                       flagged as corners.
 
     Returns:
         :class:`BlendArcGeometry`, or ``None`` if the waypoint is a fine point
@@ -272,7 +287,7 @@ def compute_blend_geometry(
     #   π = U-turn (ρ → 0)
     corner_angle = np.arccos(cos_angle)
 
-    if corner_angle < 1e-6:
+    if corner_angle < max(min_corner_angle_rad, 1e-9):
         return None
 
     entry_point = P_curr - dir_in * r_tcp
@@ -310,6 +325,7 @@ def compute_blend_geometries(
     waypoints_m: np.ndarray,
     zones: List[ZoneParams],
     shape_k: float = DEFAULT_BLEND_SHAPE_K,
+    min_corner_angle_rad: float = _MIN_CORNER_ANGLE_RAD,
 ) -> List[Optional[BlendArcGeometry]]:
     """Compute blend geometry for every waypoint.
 
@@ -317,6 +333,8 @@ def compute_blend_geometries(
         waypoints_m:  (N, 7) waypoint array [x_m, y_m, z_m, qw, qx, qy, qz].
         zones:        Per-waypoint :class:`ZoneParams` (overlap-reduced).
         shape_k:      Cubic-Bézier shape parameter (default 0.55).
+        min_corner_angle_rad: Minimum position deflection to count as a corner
+                      (see :func:`compute_blend_geometry`).
 
     Returns:
         List of length N.  Entry *i* is a :class:`BlendArcGeometry` for fly-by
@@ -327,10 +345,16 @@ def compute_blend_geometries(
     result: List[Optional[BlendArcGeometry]] = []
 
     for i in range(n):
-        geom = compute_blend_geometry(positions_mm, i, zones[i], shape_k=shape_k)
+        geom = compute_blend_geometry(
+            positions_mm, i, zones[i], shape_k=shape_k,
+            min_corner_angle_rad=min_corner_angle_rad,
+        )
         result.append(geom)
 
     n_arcs = sum(1 for g in result if g is not None)
-    logger.info("Computed blend geometry: %d arcs out of %d waypoints (shape_k=%.3f)",
-                n_arcs, n, shape_k)
+    logger.info(
+        "Computed blend geometry: %d arcs out of %d waypoints "
+        "(shape_k=%.3f, min_corner=%.3f°)",
+        n_arcs, n, shape_k, np.degrees(min_corner_angle_rad),
+    )
     return result

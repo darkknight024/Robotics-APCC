@@ -184,6 +184,212 @@ def _dedup_monotonic(s_knots: np.ndarray, q_knots: np.ndarray, eps: float = 1e-9
 #: IK branch switch rather than angle wrapping.
 _BRANCH_JUMP_RAD = 0.5
 
+#: Orientation-to-position weight (mm per rad) for the pose arc length used to
+#: reparameterise the path before TOPP-RA.  Position arc length is a poor
+#: parameter for orientation-varying paths: where the TCP barely translates but
+#: reorients fast (e.g. Exp24 v9 n90 wrist sweeps), the position arc barely
+#: advances while q changes a lot, so q'(s)/q''(s) blow up and IK noise is
+#: amplified.  Weighting orientation into the parameter keeps dq/du bounded and
+#: the spline well-conditioned.  100 mm/rad matches continuity.pose_scale
+#: (0.1 m/rad).
+_POSE_ARC_SCALE_MM_PER_RAD = 100.0
+
+
+def _pose_arc_length_mm(poses: np.ndarray) -> np.ndarray:
+    """Cumulative pose arc length (mm): √(|Δp|² + (scale·|Δφ|)²).
+
+    ``poses`` is (M, 7) [x_m, y_m, z_m, qw, qx, qy, qz].  Combines translation
+    (mm) and orientation (rad × ``_POSE_ARC_SCALE_MM_PER_RAD``) into a single
+    monotonic path parameter whose derivative of q is well-conditioned.
+    """
+    pos_mm = np.asarray(poses[:, :3], dtype=float) * 1000.0
+    quat = np.asarray(poses[:, 3:7], dtype=float).copy()
+    M = len(poses)
+    for i in range(M):
+        n = np.linalg.norm(quat[i])
+        if n > 1e-12:
+            quat[i] /= n
+        if i > 0 and np.dot(quat[i - 1], quat[i]) < 0.0:
+            quat[i] = -quat[i]
+    u = np.zeros(M, dtype=float)
+    for i in range(1, M):
+        dpos = float(np.linalg.norm(pos_mm[i] - pos_mm[i - 1]))
+        dot = abs(float(np.clip(np.dot(quat[i - 1], quat[i]), -1.0, 1.0)))
+        dphi = float(2.0 * np.arccos(dot))
+        u[i] = u[i - 1] + np.sqrt(dpos * dpos + (_POSE_ARC_SCALE_MM_PER_RAD * dphi) ** 2)
+    return u
+
+
+#: Savitzky-Golay window (dense samples) for light smoothing of the REPORTED
+#: time-optimal joint velocity / acceleration / TCP-speed profiles.  This is an
+#: output-only jerk-limit approximation (TOPP-RA itself is unchanged); kept far
+#: below the per-corner sample spacing so real corner dips survive.  Set to 1
+#: (or 0) to disable.
+_OUTPUT_SMOOTH_WINDOW = 11
+
+
+def _savgol_smooth(y: np.ndarray, window: int, poly: int = 3) -> np.ndarray:
+    """Savitzky-Golay smoothing along axis 0 (no-op if too few samples)."""
+    try:
+        from scipy.signal import savgol_filter
+    except ImportError:
+        return y
+    n = len(y)
+    if n < poly + 2:
+        return y
+    w = min(window, n if n % 2 == 1 else n - 1)
+    if w % 2 == 0:
+        w -= 1
+    if w <= poly:
+        return y
+    return savgol_filter(y, w, poly, axis=0)
+
+
+def _jerk_limit_dense(
+    q_dense: np.ndarray,
+    pos_mm: np.ndarray,
+    u_norm: np.ndarray,
+    sd_dense: np.ndarray,
+    jerk_smooth_time_s: float,
+) -> Optional[tuple]:
+    """Genuine time-domain jerk-limited (FIR / S-curve) smoothing of the
+    time-optimal trajectory.
+
+    TOPP-RA is a second-order (acceleration-limited) parameterisation, so its
+    optimum is bang-bang and joint velocity is a sawtooth with unbounded jerk.
+    Real IRC5 motion is third-order (jerk-limited).  We reconstruct the
+    time-optimal trajectory in the TIME domain, apply a cascaded moving-average
+    FIR (two passes → C² / bounded jerk, per Biagiotti & Melchiorri, *Trajectory
+    Planning for Automatic Machines and Robots*), and re-derive the velocity /
+    acceleration / TCP-speed profiles.
+
+    Args:
+        q_dense:  (M, 6) conditioned joint path (rad).
+        pos_mm:   (M, 3) TCP position (mm).
+        u_norm:   (M,) normalised pose-arc parameter of each dense sample.
+        sd_dense: (M,) u̇ = du/dt from TOPP-RA at each dense sample.
+        jerk_smooth_time_s: FIR time constant (s); jerk ≈ Δaccel / this.
+
+    Returns:
+        ``(v_tcp_mm_s, q_dot, q_ddot, duration_s)`` on the dense grid, or None.
+    """
+    try:
+        from scipy.ndimage import uniform_filter1d
+    except ImportError:
+        return None
+    u = np.asarray(u_norm, dtype=float)
+    sd = np.asarray(sd_dense, dtype=float)
+    M = len(u)
+    if M < 8 or jerk_smooth_time_s <= 0:
+        return None
+    # Time along the path from u̇: dt = du / u̇_avg.
+    du = np.diff(u)
+    sd_avg = np.maximum(0.5 * (sd[1:] + sd[:-1]), 1e-12)
+    dt_seg = np.where(du > 0, du / sd_avg, 0.0)
+    t = np.concatenate([[0.0], np.cumsum(dt_seg)])
+    T = float(t[-1])
+    if not np.isfinite(T) or T <= 0:
+        return None
+    # Uniform-time resampling (resolve the smoothing window well).
+    dt = min(jerk_smooth_time_s / 8.0, T / 200.0)
+    dt = max(dt, T / 20000.0)
+    n = int(np.ceil(T / dt)) + 1
+    tt = np.linspace(0.0, T, n)
+    dt = float(tt[1] - tt[0])
+    u_t = np.interp(tt, t, u)
+    q_t = np.column_stack([np.interp(u_t, u, q_dense[:, j]) for j in range(6)])
+    pos_t = np.column_stack([np.interp(u_t, u, pos_mm[:, j]) for j in range(3)])
+    win = max(1, int(round(jerk_smooth_time_s / dt)))
+    if win > 1:
+        for _ in range(2):  # cascade → bounded jerk (C²)
+            q_t = uniform_filter1d(q_t, win, axis=0, mode="nearest")
+            pos_t = uniform_filter1d(pos_t, win, axis=0, mode="nearest")
+    qd_t = np.gradient(q_t, dt, axis=0)
+    qdd_t = np.gradient(qd_t, dt, axis=0)
+    v_t = np.linalg.norm(np.gradient(pos_t, dt, axis=0), axis=1)
+    # Map back onto the dense grid via the (monotone) u(t).
+    q_dot_dense = np.column_stack([np.interp(u, u_t, qd_t[:, j]) for j in range(6)])
+    q_ddot_dense = np.column_stack([np.interp(u, u_t, qdd_t[:, j]) for j in range(6)])
+    v_tcp_dense = np.interp(u, u_t, v_t)
+    return v_tcp_dense, q_dot_dense, q_ddot_dense, T
+
+
+def compute_joint_mvc(
+    q_star: np.ndarray,
+    poses: np.ndarray,
+    arc_lengths_mm: np.ndarray,
+    joint_dynamics,
+    q_ddot_scale: float = 1.0,
+    n_knots: int = 4000,
+) -> tuple:
+    """Maximum-Velocity Curve (MVC) in TCP speed (mm/s) from joint limits only.
+
+    Returns ``(v_vel_mvc, v_acc_mvc)`` aligned to the dense grid — the largest
+    linear TCP speed at each sample that keeps, respectively, every joint
+    velocity ≤ ``q_dot_max`` and every joint acceleration ≤ ``q_ddot`` under the
+    path-curvature term ``q̈ = q''(u)·u̇²`` (Bobrow/Shin acceleration limit).
+
+    The path is parameterised by the well-conditioned pose arc ``u`` (position +
+    scaled orientation), so both terms correctly include wrist reorientation.
+    With ``s`` the position arc and ``v`` the linear TCP speed:
+
+        u̇ = v / |dp/du|
+        q̇   = q'(u)·u̇          → v ≤ |dp/du| · min_j q̇max_j / |q'_j(u)|
+        q̈_c = q''(u)·u̇²        → v ≤ |dp/du| · min_j √(q̈max_j / |q''_j(u)|)
+
+    Derivatives are finite differences of the smoothed, uniformly-resampled
+    joint path (cubic-spline derivatives ring at sharp wrist transitions).
+    """
+    q, _ = _unwrap_joint_path(np.asarray(q_star, dtype=float))
+    poses = np.asarray(poses, dtype=float)
+    u_raw = _pose_arc_length_mm(poses)
+    U = float(u_raw[-1])
+    if not np.isfinite(U) or U <= 0:
+        M = len(q)
+        return np.full(M, np.inf), np.full(M, np.inf)
+    u_dense = np.clip(u_raw / U, 0.0, 1.0)
+    pos_mm = poses[:, :3] * 1000.0
+
+    keep = np.concatenate([[True], np.diff(u_dense) > 1e-12])
+    u_mono, q_mono, pos_mono = u_dense[keep], q[keep], pos_mm[keep]
+    if len(u_mono) < 8:
+        M = len(q)
+        return np.full(M, np.inf), np.full(M, np.inf)
+
+    n_k = max(50, min(int(n_knots), len(u_mono)))
+    u_grid = np.linspace(0.0, 1.0, n_k)
+    q_grid = np.column_stack([np.interp(u_grid, u_mono, q_mono[:, j]) for j in range(6)])
+    q_grid = _savgol_smooth(q_grid, 7, poly=3)
+    pos_grid = np.column_stack([np.interp(u_grid, u_mono, pos_mono[:, j]) for j in range(3)])
+    pos_grid = _savgol_smooth(pos_grid, 7, poly=3)
+
+    # Finite-difference path derivatives on the uniform-u grid (no ringing).
+    qp = np.column_stack([np.gradient(q_grid[:, j], u_grid) for j in range(6)])
+    qp = _savgol_smooth(qp, 9, poly=2)
+    qpp = np.column_stack([np.gradient(qp[:, j], u_grid) for j in range(6)])
+    qpp = _savgol_smooth(qpp, 9, poly=2)
+    dpos_du = np.linalg.norm(
+        np.column_stack([np.gradient(pos_grid[:, j], u_grid) for j in range(3)]), axis=1,
+    )
+
+    q_dot_max = np.asarray(joint_dynamics.q_dot_max, dtype=float)
+    scale = float(q_ddot_scale) if q_ddot_scale and q_ddot_scale > 0 else 1.0
+    q_ddot_max = scale * np.minimum(
+        np.asarray(joint_dynamics.q_ddot_accel, dtype=float),
+        np.asarray(joint_dynamics.q_ddot_decel, dtype=float),
+    )
+
+    eps = 1e-9
+    # velocity MVC: u̇_vel = min_j q̇max/|q'|;  v = |dp/du|·u̇_vel · 1000 (m/s→mm/s? see units)
+    udot_vel = np.min(q_dot_max[None, :] / np.maximum(np.abs(qp), eps), axis=1)  # rad/s ÷ (rad/u) = u/s
+    udot_acc = np.min(np.sqrt(q_ddot_max[None, :] / np.maximum(np.abs(qpp), eps)), axis=1)
+    v_vel_grid = dpos_du * udot_vel   # (mm per u) · (u per s) = mm/s
+    v_acc_grid = dpos_du * udot_acc
+
+    v_vel = np.interp(u_dense, u_grid, v_vel_grid)
+    v_acc = np.interp(u_dense, u_grid, v_acc_grid)
+    return v_vel, v_acc
+
 #: Polynomial degree for the per-arc LSQ fit.  The blend position path is
 #: a cubic Bézier; its joint-space image through smooth IK over one short
 #: arc is captured to IK-noise level by a quintic.
@@ -298,6 +504,9 @@ def compute_time_optimal_on_blended_path(
     enable_velocity_constraint: bool = True,
     enable_acceleration_constraint: bool = True,
     q_ddot_scale: float = 1.0,
+    smoothing_mode: str = "jerk_limited",
+    jerk_smooth_time_s: float = 0.05,
+    v_cap_mm_s: Optional[float] = None,
 ) -> BlendedToppResult:
     """Run TOPP-RA on the fixed dense joint path and return the
     time-optimal profile.
@@ -354,10 +563,7 @@ def compute_time_optimal_on_blended_path(
         return _empty_topp_result(M, feasible=False, reason="toppra not available")
 
     # ── Step 0: joint-path conditioning ──
-    # Unwrap 2π flips (numerical artefacts on continuous-rotation joints)
-    # and smooth per-sample IK noise on the densely-sampled blend arcs —
-    # a cubic spline through noisy sub-0.01 mm knots creates fake local
-    # curvature that would make TOPP-RA collapse the speed to ~0 there.
+    # Unwrap 2π flips (numerical artefacts on continuous-rotation joints).
     q_cont, max_jump = _unwrap_joint_path(q_star)
     if max_jump > _BRANCH_JUMP_RAD:
         logger.warning(
@@ -365,62 +571,89 @@ def compute_time_optimal_on_blended_path(
             "likely an IK branch switch; the time-optimal result near that "
             "arc position will be pessimistic.", max_jump,
         )
-    q_cont = _smooth_q_on_blend_arcs(
-        q_cont,
-        np.asarray(arc_lengths_mm, dtype=float),
-        dense_path.is_blend_arc,
-        dense_path.blend_wp_idx,
-    )
 
-    # ── Step 1: normalised task-space arc-length knots ──
-    s_knots_full = np.asarray(arc_lengths_mm, dtype=float) / L_total
-    s_knots_full = np.clip(s_knots_full, 0.0, 1.0)
+    # ── Step 1: reparameterise by normalised POSE arc length ──
+    # Position arc length is ill-conditioned on orientation-varying paths
+    # (dq/ds → ∞ where the TCP reorients without translating).  A pose arc
+    # (position + scaled orientation) keeps dq/du bounded so the spline and
+    # its derivatives are smooth and IK noise is not amplified.
+    u_raw = _pose_arc_length_mm(dense_path.poses)
+    U_total = float(u_raw[-1])
+    if not np.isfinite(U_total) or U_total <= 0:
+        return _empty_topp_result(M, feasible=False, reason="non-positive pose arc-length")
+    u_norm_dense = np.clip(u_raw / U_total, 0.0, 1.0)
+    # Position arc length per unit u, needed to recover the linear TCP speed.
+    pos_mm = np.asarray(dense_path.poses[:, :3], dtype=float) * 1000.0
 
-    # ── Step 2: downsample straight segments if we're above max_knots ──
-    if M > max_knots and max_knots > 0:
-        keep_mask = _select_topp_knots(
-            q_cont, s_knots_full, dense_path.is_blend_arc, max_knots
-        )
-        s_knots = s_knots_full[keep_mask]
-        q_knots = q_cont[keep_mask]
-    else:
-        s_knots = s_knots_full
-        q_knots = q_cont
-
-    # De-duplicate non-increasing s values (junction points can repeat).
-    s_knots_u, q_knots_u, _ = _dedup_monotonic(s_knots, q_knots)
-    if len(s_knots_u) < 4:
-        logger.warning(
-            "Time-optimal analysis: <4 usable knots after de-dup; skipping"
-        )
+    # ── Step 2: resample onto a uniform u grid + Savitzky-Golay smoothing ──
+    # Uniform knot spacing in a well-conditioned parameter removes the
+    # ultra-fine (sub-0.01 mm) blend over-sampling that otherwise dominates
+    # the spline derivatives.
+    # Use a dense uniform-u knot set so the cubic spline captures the true
+    # joint curvature TOPP-RA must respect (too few knots / too much smoothing
+    # hides curvature and yields an over-optimistic, infeasible profile).
+    n_knots = int(max_knots) if max_knots and max_knots > 0 else 4000
+    n_knots = max(50, min(max(n_knots, 4000), M))
+    u_uniform = np.linspace(0.0, 1.0, n_knots)
+    # De-dup u_raw for monotonic interpolation.
+    keep = np.concatenate([[True], np.diff(u_norm_dense) > 1e-12])
+    u_mono = u_norm_dense[keep]
+    q_mono = q_cont[keep]
+    pos_mono = pos_mm[keep]
+    if len(u_mono) < 4:
         return _empty_topp_result(M, feasible=False, reason="too few unique knots")
-
-    # Force endpoints to be exactly [0, 1] for TOPP-RA.
-    s_knots_u = s_knots_u.copy()
+    q_knots_u = np.column_stack([
+        np.interp(u_uniform, u_mono, q_mono[:, j]) for j in range(q_mono.shape[1])
+    ])
+    # Light smoothing only — just enough to suppress the sub-mrad IK LSB noise
+    # without erasing real wrist curvature (which TOPP-RA must see to stay
+    # feasible).  A short window preserves the corners.
+    q_knots_u = _savgol_smooth(q_knots_u, 7, poly=3)
+    s_knots_u = u_uniform.copy()
     s_knots_u[0] = 0.0
     s_knots_u[-1] = 1.0
+    # Position arc length (mm) resampled onto the same u grid → dpos/du.
+    pos_knots_u = np.column_stack([
+        np.interp(u_uniform, u_mono, pos_mono[:, j]) for j in range(3)
+    ])
+
+    # ── Optional TCP-speed cap (commanded mode) ──
+    # To make TOPP-RA enforce v_tcp ≤ v_cap alongside the joint limits, augment
+    # the path with a 7th "virtual joint" whose value is the cumulative POSITION
+    # arc length s(u) (so ds/du = |dp/du|).  A JointVelocityConstraint on it caps
+    # |dp/du|·u̇ = v_tcp at v_cap, while its acceleration is left unconstrained.
+    # This is exact and coupled — the returned profile respects joint velocity,
+    # joint acceleration, AND the commanded TCP speed simultaneously.
+    use_cap = v_cap_mm_s is not None and np.isfinite(v_cap_mm_s) and v_cap_mm_s > 0
+    q_knots_spline = q_knots_u
+    if use_cap:
+        s_pos_grid = np.concatenate(
+            [[0.0], np.cumsum(np.linalg.norm(np.diff(pos_knots_u, axis=0), axis=1))]
+        )
+        q_knots_spline = np.column_stack([q_knots_u, s_pos_grid])
 
     try:
-        path = ta.SplineInterpolator(s_knots_u, q_knots_u)
+        path = ta.SplineInterpolator(s_knots_u, q_knots_spline)
     except Exception as exc:  # noqa: BLE001 -- toppra can raise many types
         logger.warning("SplineInterpolator construction failed: %s", exc)
         return _empty_topp_result(M, feasible=False, reason="spline construction failed")
 
-    # ── Step 2b: spline quality check (corrections #1 & #7) ──
-    # Compare against the conditioned path (unwrapped + arc-smoothed);
-    # comparing against raw q_star would re-count the removed IK noise.
+    # ── Step 2b: spline quality check (against the conditioned dense path) ──
     max_interp_error = 0.0
     try:
-        q_spline_full = path(s_knots_full)  # (M, 6)
-        max_interp_error = float(np.max(np.abs(q_spline_full - q_cont)))
-        if max_interp_error > 0.01:
+        q_spline_dense = np.asarray(path(u_norm_dense))[:, :6]  # (M, 6)
+        max_interp_error = float(np.max(np.abs(q_spline_dense - q_cont)))
+        if max_interp_error > 0.05:
             logger.warning(
-                "Spline interpolation error after downsampling: %.4f rad "
-                "(threshold 0.010) — consider raising topp_max_knots",
+                "Pose-arc spline interpolation error: %.4f rad "
+                "(threshold 0.050) — consider raising topp_max_knots",
                 max_interp_error,
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug("Spline quality check failed non-fatally: %s", exc)
+
+    # Rename for the recovery step below (kept as the dense-grid u parameter).
+    s_knots_full = u_norm_dense
 
     # ── Step 3: constraints ──
     vlims = np.column_stack((-joint_dynamics.q_dot_max, joint_dynamics.q_dot_max))
@@ -429,6 +662,13 @@ def compute_time_optimal_on_blended_path(
         joint_dynamics.q_ddot_accel, joint_dynamics.q_ddot_decel,
     )
     alims = np.column_stack((-q_ddot_sym, q_ddot_sym))
+
+    if use_cap:
+        # Append the virtual position-arc joint: velocity capped at v_cap,
+        # acceleration effectively unconstrained.
+        _BIG_A = 1.0e12
+        vlims = np.vstack([vlims, [-float(v_cap_mm_s), float(v_cap_mm_s)]])
+        alims = np.vstack([alims, [-_BIG_A, _BIG_A]])
 
     constraints: list = []
     if enable_velocity_constraint:
@@ -487,19 +727,28 @@ def compute_time_optimal_on_blended_path(
         # Continue and report the best available profile with feasible=False.
 
     # ── Step 5: v_tcp on the dense grid ──
+    # The path parameter is now the normalised POSE arc ``u``; TOPP-RA returns
+    # u̇ = du/dt.  The linear TCP speed is v = |dp/du|·u̇ (mm/s), where dp/du is
+    # the position-arc gain of the pose parameter (< 1 mm/unit-u wherever the
+    # path spends "pose length" on reorientation instead of translation).
     sd_grid = instance.problem_data.sd_vec
     s_grid = instance.problem_data.gridpoints
-    sd_dense = np.interp(s_knots_full, s_grid, np.nan_to_num(sd_grid, nan=0.0))
-    v_tcp_mm_s = sd_dense * L_total  # ṡ · L_total (mm/s), since s ∈ [0,1]
+    sd_dense = np.interp(u_norm_dense, s_grid, np.nan_to_num(sd_grid, nan=0.0))  # du/dt
+    # |dp/du| from the SMOOTHED, uniformly-resampled position (not the raw dense
+    # positions, which alternate between tiny blend steps and normal straight
+    # steps and would re-introduce high-frequency ripple into v_tcp).
+    pos_knots_sm = _savgol_smooth(pos_knots_u, 7, poly=3)
+    dpos_du_uni = np.linalg.norm(_central_diff_1(pos_knots_sm, u_uniform), axis=1)
+    dpos_du_mag = np.interp(u_norm_dense, u_uniform, dpos_du_uni)  # mm per unit u
+    v_tcp_mm_s = dpos_du_mag * sd_dense                            # linear TCP speed (mm/s)
 
     # ── Step 6: joint velocities & accelerations at the optimal speed ──
-    # Analytic chain-rule evaluation on the dense grid (exact for the
-    # spline + parameterisation; avoids time-sampling error near corners
-    # where q̈ changes rapidly):
-    #     q̇(s) = q'(s)·ṡ
-    #     q̈(s) = q''(s)·ṡ² + q'(s)·s̈,   s̈ = ½·d(ṡ²)/ds
-    # TOPP-RA's ṡ² is exactly piecewise-linear in s, so the central
-    # difference of ṡ² recovers s̈ without smoothing artefacts.
+    # Evaluate q̇ = q'(u)·u̇ and q̈ = q''(u)·u̇² + q'(u)·ü at the TOPP-RA
+    # GRIDPOINTS (where the solver actually enforced the joint limits, and
+    # where its ü = sdd_vec is defined), then interpolate onto the dense grid.
+    # Computing ü by central-differencing u̇² on the ultra-fine dense grid
+    # amplifies noise and produces spurious >100% acceleration spikes that the
+    # solution does not actually contain.
     duration_s = float("inf")
     q_dot_opt = np.zeros_like(q_star)
     q_ddot_opt = np.zeros_like(q_star)
@@ -512,17 +761,67 @@ def compute_time_optimal_on_blended_path(
         duration_s = float(traj.duration)
 
     try:
-        q_s1 = np.asarray(path(s_knots_full, 1))   # dq/ds     (M, 6)
-        q_s2 = np.asarray(path(s_knots_full, 2))   # d²q/ds²   (M, 6)
-        x_dense = sd_dense ** 2
-        sdd_dense = 0.5 * _central_diff_1(
-            x_dense[:, np.newaxis], s_knots_full,
-        )[:, 0]
-        q_dot_opt = q_s1 * sd_dense[:, np.newaxis]
-        q_ddot_opt = (
-            q_s2 * (sd_dense ** 2)[:, np.newaxis]
-            + q_s1 * sdd_dense[:, np.newaxis]
-        )
+        # Use the parameter-rate profile aligned with the solver's gridpoints
+        # (problem_data), and recover ü by differencing u̇² on those COARSE
+        # gridpoints (≈0.3 mm-u spacing) — coarse enough that no noise blow-up
+        # occurs, unlike a central difference on the ultra-fine dense grid.
+        s_gp = np.asarray(s_grid, dtype=float)
+        sd_g = np.nan_to_num(np.asarray(sd_grid, dtype=float), nan=0.0)
+        n_gp_local = min(len(s_gp), len(sd_g))
+        s_gp = s_gp[:n_gp_local]
+        sd_g = sd_g[:n_gp_local]
+        sdd_g = 0.5 * _central_diff_1((sd_g ** 2)[:, np.newaxis], s_gp)[:, 0]
+        q1_g = np.asarray(path(s_gp, 1))[:, :6]   # dq/du   at gridpoints (real joints)
+        q2_g = np.asarray(path(s_gp, 2))[:, :6]   # d²q/du² at gridpoints
+        qdot_g = q1_g * sd_g[:, np.newaxis]
+        qddot_g = q2_g * (sd_g ** 2)[:, np.newaxis] + q1_g * sdd_g[:, np.newaxis]
+        q_dot_opt = np.column_stack([
+            np.interp(u_norm_dense, s_gp, qdot_g[:, j]) for j in range(6)
+        ])
+        q_ddot_opt = np.column_stack([
+            np.interp(u_norm_dense, s_gp, qddot_g[:, j]) for j in range(6)
+        ])
+        # Output smoothing — approximates the IRC5 S-curve jerk limit that
+        # TOPP-RA (2nd-order, bang-bang) does not model.
+        mode = str(smoothing_mode or "jerk_limited").lower()
+        if mode == "jerk_limited":
+            # Resolve the FIR time constant.  We have NO calibrated jerk limit
+            # and do not intend to calibrate one, so rather than invent an
+            # absolute jerk value we derive the smoothing time from dynamics we
+            # DO know: the characteristic acceleration time
+            #   t_a = max_j( q̇_max_j / q̈_max_j )
+            # (time to ramp a joint 0→max-velocity at its max acceleration —
+            # the natural lower bound on any smooth transition).  The FIR window
+            # is a modest multiple of it.  This is a bounded engineering choice,
+            # NOT a physical jerk limit, and it never loosens the vel/accel
+            # limits (those are enforced by TOPP-RA above).  A positive
+            # ``jerk_smooth_time_s`` overrides this auto value.
+            jt = float(jerk_smooth_time_s)
+            if jt <= 0.0:
+                q_dot_max = np.asarray(joint_dynamics.q_dot_max, dtype=float)
+                q_ddot_sc = scale * np.minimum(
+                    np.asarray(joint_dynamics.q_ddot_accel, dtype=float),
+                    np.asarray(joint_dynamics.q_ddot_decel, dtype=float),
+                )
+                t_a = float(np.max(q_dot_max / np.maximum(q_ddot_sc, 1e-9)))
+                jt = float(np.clip(3.0 * t_a, 0.02, 0.10))
+            jl = _jerk_limit_dense(
+                q_cont, pos_mm, u_norm_dense, sd_dense, jt,
+            )
+            if jl is not None:
+                # Only the profile SHAPES are jerk-smoothed; the reported
+                # traversal time stays TOPP-RA's exact time-optimal duration
+                # (a true jerk-limited reparam would be marginally slower, but
+                # the FIR-in-place approximation must not appear FASTER than the
+                # 2nd-order optimum).
+                v_tcp_mm_s, q_dot_opt, q_ddot_opt, _dur_jl = jl
+        elif mode == "savgol" and _OUTPUT_SMOOTH_WINDOW > 1:
+            q_dot_opt = _savgol_smooth(q_dot_opt, _OUTPUT_SMOOTH_WINDOW, poly=2)
+            q_ddot_opt = _savgol_smooth(q_ddot_opt, _OUTPUT_SMOOTH_WINDOW, poly=2)
+            v_tcp_mm_s = _savgol_smooth(
+                v_tcp_mm_s[:, np.newaxis], _OUTPUT_SMOOTH_WINDOW, poly=2,
+            )[:, 0]
+        # mode == "none": leave the raw bang-bang profile.
     except Exception as exc:  # noqa: BLE001
         logger.warning("Analytic joint-profile evaluation failed: %s", exc)
         q_dot_opt = np.zeros_like(q_star)

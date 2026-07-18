@@ -378,6 +378,16 @@ class Feature3D1Config:
     enable_joint_acceleration_ceiling: bool = True
     generate_plots: bool = True
     generate_report: bool = True
+    # ── Output trajectory smoothing (approximates the IRC5 S-curve jerk limit) ──
+    # "jerk_limited": genuine time-domain jerk-bounded (FIR / S-curve) reparam
+    #                 of the time-optimal trajectory (default).
+    # "savgol":       light Savitzky-Golay output smoothing only (legacy).
+    # "none":         report the raw bang-bang TOPP-RA profile.
+    smoothing_mode: str = "jerk_limited"
+    # FIR time constant (s) for jerk-limited smoothing.  0 = AUTO (derived from
+    # robot dynamics: 3·max_j(q̇max/q̈max), clamped [0.02, 0.10] s).  We have no
+    # calibrated jerk limit; this is a bounded smoothing choice, not physics.
+    jerk_smooth_time_s: float = 0.0
     # ── F3 D2: time-optimal (TOPP-RA) + no-dip constant-speed limits ──
     compute_time_optimal: bool = False              # Feature A: TOPP-RA on blended q*
     compute_corner_limits: bool = False             # Feature B: per-corner + global no-dip TCP speed

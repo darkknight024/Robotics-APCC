@@ -336,6 +336,65 @@ def _path_tangents(dense_path: DensePath) -> np.ndarray:
     return tangents
 
 
+def _quat_angular_rate_per_arc(dense_path: DensePath) -> np.ndarray:
+    """Angular velocity (rad per **mm** of TCP travel) per dense sample.
+
+    Returns ``omega_per_mm`` (M, 3): the world-frame rotation-vector rate
+    ``dφ/ds`` where ``s`` is the position arc length in mm.  Multiplying by
+    the TCP linear speed (mm/s) gives the angular velocity (rad/s).  This is
+    the term the joint-velocity/acceleration ceilings need so that wrist
+    reorientation on orientation-varying paths is accounted for — without it
+    the ceilings assume pure translation and vastly over-estimate the speed.
+    """
+    from utils.transform_handler import quat_to_rotation_matrix
+
+    quats = np.asarray(dense_path.poses[:, 3:7], dtype=float).copy()
+    arc = np.asarray(dense_path.arc_lengths, dtype=float)
+    M = len(quats)
+    omega_per_mm = np.zeros((M, 3), dtype=float)
+    for i in range(M):
+        n = np.linalg.norm(quats[i])
+        if n > 1e-12:
+            quats[i] /= n
+        if i > 0 and np.dot(quats[i - 1], quats[i]) < 0.0:
+            quats[i] = -quats[i]
+
+    def _rotvec(qa: np.ndarray, qb: np.ndarray) -> np.ndarray:
+        """World-frame rotation vector taking qa → qb (rad)."""
+        Ra = quat_to_rotation_matrix(qa)
+        Rb = quat_to_rotation_matrix(qb)
+        Rrel = Rb @ Ra.T
+        cos_t = np.clip((np.trace(Rrel) - 1.0) * 0.5, -1.0, 1.0)
+        theta = float(np.arccos(cos_t))
+        if theta < 1e-9:
+            return np.zeros(3)
+        axis = np.array([
+            Rrel[2, 1] - Rrel[1, 2],
+            Rrel[0, 2] - Rrel[2, 0],
+            Rrel[1, 0] - Rrel[0, 1],
+        ])
+        an = np.linalg.norm(axis)
+        if an < 1e-12:
+            return np.zeros(3)
+        return axis / an * theta
+
+    for k in range(M):
+        if M < 2:
+            break
+        if k == 0:
+            a, b = 0, 1
+        elif k == M - 1:
+            a, b = M - 2, M - 1
+        else:
+            a, b = k - 1, k + 1
+        ds = float(arc[b] - arc[a])
+        if ds <= 1e-9:
+            omega_per_mm[k] = omega_per_mm[k - 1] if k > 0 else 0.0
+            continue
+        omega_per_mm[k] = _rotvec(quats[a], quats[b]) / ds
+    return omega_per_mm
+
+
 def _orientation_speed_ceiling(
     dense_path: DensePath,
     max_orientation_speed_deg_s: float,
@@ -596,9 +655,16 @@ def predict_speed_profile(
         )
 
         tangents = _path_tangents(dense_path)
+        # Angular velocity accompanying 1 m/s (1000 mm/s) of linear travel:
+        # ω = (dφ/ds)[rad/mm] · 1000 [mm/s].  Folding this into the twist makes
+        # the joint velocity/accel ceilings account for wrist reorientation on
+        # orientation-varying paths (without it they assume pure translation).
+        omega_per_mm = _quat_angular_rate_per_arc(dense_path)
+        omega_per_unit_all = omega_per_mm * 1000.0
         for k in range(M):
             if np.linalg.norm(tangents[k]) < 1e-12:
                 continue
+            omega_k = omega_per_unit_all[k]
 
             try:
                 if enable_v_joint:
@@ -607,6 +673,7 @@ def predict_speed_profile(
                         tangents[k],
                         calibration.joint_dynamics,
                         calibration.jacobian_eval,
+                        omega_per_unit=omega_k,
                     )
                 if enable_joint_accel:
                     a_accel_profile[k] = accel_scale * compute_a_tcp_tangential(
@@ -615,6 +682,7 @@ def predict_speed_profile(
                         calibration.joint_dynamics,
                         calibration.jacobian_eval,
                         phase="accel",
+                        omega_per_unit=omega_k,
                     )
                     a_decel_profile[k] = accel_scale * compute_a_tcp_tangential(
                         q_path[k],
@@ -622,6 +690,7 @@ def predict_speed_profile(
                         calibration.joint_dynamics,
                         calibration.jacobian_eval,
                         phase="decel",
+                        omega_per_unit=omega_k,
                     )
             except (ValueError, np.linalg.LinAlgError) as exc:
                 logger.warning("Jacobian tangential dynamics failed at sample %d: %s", k, exc)
@@ -667,10 +736,42 @@ def predict_speed_profile(
             "or q_path; falling back to scalar calibration"
         )
 
+    # ── Joint MVC (velocity + acceleration/curvature) from the pose-arc spline ──
+    # The forward/backward reachability passes below only bound the TANGENTIAL
+    # joint acceleration (q'·v̇).  The path-curvature term q̈ = q''(u)·v² is a
+    # *velocity* limit (Bobrow) that must be applied as a ceiling — without it,
+    # joint accelerations blow past their limits at every corner.  This is the
+    # ONLY place the joint acceleration limit enters as a speed cap.
+    v_accel_mvc = np.full(M, np.inf)
+    if (
+        use_jacobian
+        and calibration.joint_dynamics is not None
+        and q_path is not None
+        and len(q_path) == M
+    ):
+        try:
+            from .topp_on_blended_path import compute_joint_mvc
+            v_vel_mvc, v_acc_mvc = compute_joint_mvc(
+                np.asarray(q_path, dtype=float),
+                dense_path.poses,
+                arc_s,
+                calibration.joint_dynamics,
+                q_ddot_scale=accel_scale,
+            )
+            if enable_v_joint:
+                # Direct q'(u) velocity MVC (pose-arc) is more robust than the
+                # per-sample Jacobian twist solve; take the tighter of the two.
+                v_joint_ceil = np.minimum(v_joint_ceil, v_vel_mvc)
+            if enable_joint_accel:
+                v_accel_mvc = v_acc_mvc
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Joint MVC computation failed: %s", exc)
+
     # ── Base ceilings before reachability passes ──
     v_cmd_ceiling = np.where((v_cmd > 0.0) & np.isfinite(v_cmd), v_cmd, np.inf)
     v_ceiling = np.minimum(v_blend_ceil, v_joint_ceil)
     v_ceiling = np.minimum(v_ceiling, v_orientation_ceil)
+    v_ceiling = np.minimum(v_ceiling, v_accel_mvc)
     if v_topp_ceiling is not None and len(v_topp_ceiling) == M:
         v_ceiling = np.minimum(v_ceiling, v_topp_ceiling)
     v_limit_for_goal = np.minimum(v_cmd_ceiling, v_ceiling)

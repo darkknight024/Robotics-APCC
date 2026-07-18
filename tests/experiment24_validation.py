@@ -468,11 +468,13 @@ def _exp24_v6_toolpath_for_rs(
     rs_csv: Path,
     repo: Path,
     dataset_name: str = "v6_constant_tool_orientation_recordings",
+    toolpath_dataset_name: Optional[str] = None,
 ) -> Path:
+    tp_folder = toolpath_dataset_name or dataset_name
     toolpath = (
         experiment24_root(repo)
         / "Toolpaths"
-        / dataset_name
+        / tp_folder
         / rs_csv.name
     )
     if not toolpath.exists():
@@ -1299,6 +1301,171 @@ def _write_speed_profile_summary(
     (out_dir / "speed_profile_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _joint_limit_violation_summary(
+    sol: Optional[np.ndarray],
+    limits: Optional[np.ndarray],
+    unit: str,
+) -> tuple[bool, List[str]]:
+    """Return (any_violation, human-readable lines) for one joint-state trace."""
+    if sol is None or limits is None:
+        return False, ["  (trace or limits unavailable)"]
+    sol_a = np.asarray(sol, dtype=float)
+    lim_a = np.asarray(limits, dtype=float)
+    any_viol = False
+    rows: List[str] = []
+    for j in range(min(6, sol_a.shape[1], len(lim_a))):
+        peak = float(np.nanmax(np.abs(sol_a[:, j]))) if sol_a.shape[0] else 0.0
+        limit = float(abs(lim_a[j]))
+        util = 100.0 * peak / limit if limit > 0 else float("inf")
+        n_over = int(np.sum(np.abs(sol_a[:, j]) > limit * 1.001)) if limit > 0 else 0
+        mark = "  VIOLATION" if util > 100.5 else ""
+        if util > 100.5:
+            any_viol = True
+        rows.append(
+            f"  J{j+1}: peak={peak:.1f} {unit}  limit={limit:.1f}  "
+            f"util={util:.0f}%  n_over={n_over}{mark}"
+        )
+    return any_viol, rows
+
+
+def _write_case_validation_summary(
+    case_dir: Path,
+    label: str,
+    *,
+    result,
+    v_cmd_per_wp: np.ndarray,
+    wp_idx: np.ndarray,
+    v_topp_dense: Optional[np.ndarray],
+    rs_speed: Optional[np.ndarray],
+    rs_xyz_mm: Optional[np.ndarray],
+    raw_waypoints_xyz_mm: np.ndarray,
+    include_d2: bool,
+    solver_speed_median_rel_error: float,
+    n_corner_events: int,
+    n_near_collinear: int,
+) -> None:
+    """Write per-case ``summary.txt`` with an instant PASS/FAIL verdict."""
+    n_wp = len(v_cmd_per_wp)
+    infeasible_wps: List[int] = []
+    ramp_wps: List[int] = []
+    missing_max = 0
+    if rs_xyz_mm is not None and rs_speed is not None and len(rs_xyz_mm):
+        rs_idx = _nearest_dense_indices(raw_waypoints_xyz_mm, rs_xyz_mm)
+        rs_v_at_wp = np.array([float(rs_speed[rs_idx[i]]) for i in range(n_wp)], dtype=float)
+    else:
+        rs_v_at_wp = np.full(n_wp, np.nan)
+
+    if include_d2 and v_topp_dense is not None and len(v_topp_dense):
+        for i in range(n_wp):
+            v_max = float(v_topp_dense[wp_idx[i]])
+            if not np.isfinite(v_max):
+                missing_max += 1
+                continue
+            if float(v_cmd_per_wp[i]) > v_max + 1e-3:
+                infeasible_wps.append(i)
+                in_ramp = (
+                    i <= 2 or i >= n_wp - 3
+                    or (np.isfinite(rs_v_at_wp[i]) and rs_v_at_wp[i] < 0.95 * float(v_cmd_per_wp[i]))
+                )
+                if in_ramp:
+                    ramp_wps.append(i)
+
+    steady_infeasible = [i for i in infeasible_wps if i not in ramp_wps]
+
+    ct = getattr(result, "commanded_topp", None)
+    uses_topp_cmd = (
+        ct is not None and getattr(ct, "feasible", False)
+        and ct.q_dot_optimal is not None
+    )
+    _m5_arc, _m5_q, m5_qd, m5_qdd = _m5_solver_joint_states_deg(result)
+    cal = result.speed_profile.calibration if result.speed_profile else None
+    jd = getattr(cal, "joint_dynamics", None) if cal is not None else None
+    a_scale = float(getattr(cal, "joint_accel_limit_scale", 1.0) or 1.0) if cal is not None else 1.0
+    q_dot_lim = np.rad2deg(np.asarray(jd.q_dot_max, dtype=float)) if jd is not None else None
+    q_ddot_lim = (
+        a_scale * np.rad2deg(np.minimum(
+            np.asarray(jd.q_ddot_accel, dtype=float),
+            np.asarray(jd.q_ddot_decel, dtype=float),
+        )) if jd is not None else None
+    )
+    vel_viol, vel_rows = _joint_limit_violation_summary(m5_qd, q_dot_lim, "deg/s")
+    acc_viol, acc_rows = _joint_limit_violation_summary(m5_qdd, q_ddot_lim, "deg/s²")
+
+    topp = getattr(result, "time_optimal", None)
+    cs = getattr(result, "constant_speed", None)
+
+    path_ok = bool(getattr(result, "feasible", True))
+    cmd_speed_ok = (not include_d2) or (len(steady_infeasible) == 0 and missing_max == 0)
+    joint_ok = not vel_viol and not acc_viol
+    overall_ok = path_ok and cmd_speed_ok and joint_ok
+
+    lines = [
+        f"Experiment 24 validation summary — {label}",
+        "=" * 72,
+        f"OVERALL: {'PASS' if overall_ok else 'FAIL'}",
+        "",
+        "Verdict breakdown:",
+        f"  Feature 3 path/IK feasible:     {'PASS' if path_ok else 'FAIL'}",
+    ]
+    if not path_ok:
+        lines.append(f"    reason: {getattr(result, 'infeasible_reason', 'unknown')}")
+    if include_d2:
+        lines.append(
+            f"  Per-waypoint commanded speed:   {'PASS' if cmd_speed_ok else 'FAIL'}"
+        )
+        lines.append(
+            f"    infeasible waypoints (strict): {len(infeasible_wps)} / {n_wp}"
+            + (f"  (indices: {infeasible_wps[:20]}{'...' if len(infeasible_wps) > 20 else ''})"
+               if infeasible_wps else "")
+        )
+        lines.append(
+            f"    infeasible excluding ramp/end: {len(steady_infeasible)} / {n_wp}"
+            + (f"  (indices: {steady_infeasible[:20]}{'...' if len(steady_infeasible) > 20 else ''})"
+               if steady_infeasible else "")
+        )
+        if ramp_wps:
+            lines.append(
+                f"    ramp/end waypoints excluded: {len(ramp_wps)}"
+                f"  (indices: {ramp_wps})"
+            )
+        if missing_max:
+            lines.append(f"    missing TOPP max-speed samples: {missing_max}")
+    else:
+        lines.append("  Per-waypoint commanded speed:   SKIPPED (run with --time-optimal)")
+    lines.extend([
+        f"  Joint limits (commanded profile): {'PASS' if joint_ok else 'FAIL'}",
+        f"    profile: {'TOPP commanded (v≤v_cmd)' if uses_topp_cmd else 'M5 toolpath velocity'}",
+        "  Joint velocity:",
+    ])
+    lines.extend(vel_rows)
+    lines.append("  Joint acceleration:")
+    lines.extend(acc_rows)
+    lines.extend([
+        "",
+        "Supporting metrics:",
+        f"  solver vs RS median speed rel error: {solver_speed_median_rel_error * 100.0:.2f} %",
+        f"  corner events detected: {n_corner_events}",
+        f"  near-collinear waypoints skipped: {n_near_collinear}",
+    ])
+    if include_d2 and topp is not None:
+        lines.append(
+            f"  TOPP min traversal time: {topp.duration_s:.3f} s"
+            if np.isfinite(getattr(topp, "duration_s", float("nan")))
+            else "  TOPP min traversal time: N/A"
+        )
+    if include_d2 and cs is not None and np.isfinite(getattr(cs, "v_flat_mm_s", float("nan"))):
+        lines.append(f"  global no-dip v_flat: {cs.v_flat_mm_s:.1f} mm/s")
+    lines.extend([
+        "",
+        "Artifacts:",
+        "  speed_profile_summary.txt, joint_vs_rs_summary.txt, traversal_times.txt",
+        "  <toolpath>_per_waypoint_speeds.csv (per-waypoint commanded-feasible column)",
+    ])
+    if include_d2:
+        lines.append("  optimal/summary.txt, time_optimal_summary.txt (batch rollup)")
+    (case_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 
 def _write_waypoint_speed_diagnostics(
     out_dir: Path,
@@ -1581,6 +1748,7 @@ def evaluate_exp24_v6_constant_orientation_dataset(
     csv_paths: Optional[List[Path]] = None,
     dataset_name: str = "v6_constant_tool_orientation_recordings",
     output_group: str = "v6_constant_orientation",
+    toolpath_dataset_name: Optional[str] = None,
     include_d2: bool = False,
 ) -> List[Exp24V6TrajectoryMetrics]:
     """Validate v6 constant-orientation siping recordings in base frame.
@@ -1619,7 +1787,11 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         label = rs_csv.stem
         case_dir = out_dir / output_group / label
         case_dir.mkdir(parents=True, exist_ok=True)
-        toolpath = _exp24_v6_toolpath_for_rs(rs_csv, repo, dataset_name=dataset_name)
+        toolpath = _exp24_v6_toolpath_for_rs(
+            rs_csv, repo,
+            dataset_name=dataset_name,
+            toolpath_dataset_name=toolpath_dataset_name,
+        )
 
         rs_data = _load_csv(rs_csv)
         rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2 = _rs_joint_states_deg(rs_data)
@@ -1775,6 +1947,52 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             rs_arc,
             rs_speed,
             turn_threshold_deg,
+        )
+
+        # Per-waypoint speed table: input toolpath + all-mode speed estimates.
+        _to = getattr(result, "time_optimal", None)
+        _cs = getattr(result, "constant_speed", None)
+        _ct = getattr(result, "commanded_topp", None)
+        # Commanded actual speed: prefer the joint-feasible TOPP commanded
+        # profile (v≤v_cmd, respects joint vel+accel) over the M5 estimate.
+        _v_commanded = (
+            np.asarray(_ct.v_tcp_profile_mm_s, dtype=float)
+            if _ct is not None and getattr(_ct, "feasible", False)
+            and np.any(np.isfinite(_ct.v_tcp_profile_mm_s))
+            else np.asarray(result.speed_profile.v_actual, dtype=float)
+        )
+        _write_per_waypoint_speed_table(
+            case_dir,
+            toolpath,
+            raw_waypoints_xyz_mm,
+            solver_xyz_mm,
+            _v_commanded,
+            (np.asarray(_to.v_tcp_profile_mm_s, dtype=float)
+             if _to is not None and np.any(np.isfinite(_to.v_tcp_profile_mm_s)) else None),
+            (float(_cs.v_flat_mm_s) if _cs is not None and np.isfinite(_cs.v_flat_mm_s) else None),
+            rs_xyz_mm,
+            rs_speed,
+            result.blend_geoms,
+            lr.v_cmd[0],
+        )
+        _write_case_validation_summary(
+            case_dir,
+            label,
+            result=result,
+            v_cmd_per_wp=np.asarray(lr.v_cmd[0], dtype=float),
+            wp_idx=_nearest_dense_indices(raw_waypoints_xyz_mm, solver_xyz_mm),
+            v_topp_dense=(
+                np.asarray(_to.v_tcp_profile_mm_s, dtype=float)
+                if _to is not None and np.any(np.isfinite(_to.v_tcp_profile_mm_s))
+                else None
+            ),
+            rs_speed=rs_speed,
+            rs_xyz_mm=rs_xyz_mm,
+            raw_waypoints_xyz_mm=raw_waypoints_xyz_mm,
+            include_d2=include_d2,
+            solver_speed_median_rel_error=float(np.median(solver_speed_rel)),
+            n_corner_events=n_events,
+            n_near_collinear=n_near,
         )
 
         metrics.append(
@@ -2431,16 +2649,47 @@ def _write_time_optimal_summary(
     )
 
 
-def _blend_arc_intervals(dense_path) -> List[tuple]:
-    """Return [(arc_start_mm, arc_end_mm), ...] for each blend-arc run."""
-    intervals: List[tuple] = []
+#: Plot-only corner shading threshold (deg).  The blend GEOMETRY / straight-line
+#: (collinear) determination keeps its own ``min_corner_deflection_deg`` (3°);
+#: this LARGER threshold is used purely to decide which corners get shaded
+#: yellow in the diagnostic plots, so paths with many small-rotation /
+#: small-spacing deflections are not drowned in shading.  Only corners whose
+#: position deflection exceeds this are shaded.
+_CORNER_PLOT_MIN_DEG = 10.0
+
+
+def _blend_arc_intervals(
+    dense_path,
+    blend_geoms: Optional[list] = None,
+    min_corner_deg: float = 0.0,
+) -> List[tuple]:
+    """Return [(arc_start_mm, arc_end_mm), ...] for each blend-arc run.
+
+    When ``blend_geoms`` and ``min_corner_deg`` are given, only blend samples
+    whose waypoint's position deflection exceeds ``min_corner_deg`` are shaded
+    (plot-only loosening; the underlying blend geometry is unchanged).
+    """
     is_b = np.asarray(dense_path.is_blend_arc, dtype=bool)
     arc = np.asarray(dense_path.arc_lengths, dtype=float)
+
+    shade = is_b.copy()
+    if blend_geoms is not None and min_corner_deg > 0.0:
+        wp = np.asarray(getattr(dense_path, "blend_wp_idx", np.full(len(is_b), -1)), dtype=int)
+        min_rad = np.deg2rad(min_corner_deg)
+        big_corner = {
+            g.waypoint_idx for g in blend_geoms
+            if g is not None and float(g.corner_angle_rad) >= min_rad
+        }
+        for k in range(len(is_b)):
+            if is_b[k] and int(wp[k]) not in big_corner:
+                shade[k] = False
+
+    intervals: List[tuple] = []
     start = None
-    for k in range(len(is_b)):
-        if is_b[k] and start is None:
+    for k in range(len(shade)):
+        if shade[k] and start is None:
             start = arc[k]
-        elif not is_b[k] and start is not None:
+        elif not shade[k] and start is not None:
             intervals.append((start, arc[k]))
             start = None
     if start is not None:
@@ -2526,18 +2775,36 @@ def _m5_solver_joint_states_deg(
     obtained by differentiating M6 ``q_dot`` with respect to the M5 time
     parameterisation.
     """
-    if result.speed_profile is None or result.joint_velocity_result is None:
+    if result.speed_profile is None:
         return None, None, None, None
     arc = np.asarray(result.speed_profile.arc_lengths_mm, dtype=float)
+    q_deg = None
+    if result.q_star is not None and len(result.q_star) == len(arc):
+        q_deg = np.rad2deg(np.asarray(result.q_star, dtype=float))
+
+    # Prefer the TOPP-based commanded profile when available: it is guaranteed
+    # joint-feasible (velocity + acceleration, incl. sharp corners), whereas the
+    # M5 forward/backward profiler cannot bound the path-curvature joint accel.
+    ct = getattr(result, "commanded_topp", None)
+    if (
+        ct is not None and getattr(ct, "feasible", False)
+        and ct.q_dot_optimal is not None
+        and len(ct.q_dot_optimal) == len(arc)
+    ):
+        return (
+            arc, q_deg,
+            np.rad2deg(np.asarray(ct.q_dot_optimal, dtype=float)),
+            np.rad2deg(np.asarray(ct.q_ddot_optimal, dtype=float)),
+        )
+
+    if result.joint_velocity_result is None:
+        return arc, q_deg, None, None
     v_actual = np.asarray(result.speed_profile.v_actual, dtype=float)
     time_s = _time_from_arc_speed(arc, v_actual)
     qdot_rad = np.asarray(result.joint_velocity_result.q_dot, dtype=float)
     qddot_rad = np.column_stack([
         _derivative_wrt_time(qdot_rad[:, j], time_s) for j in range(qdot_rad.shape[1])
     ])
-    q_deg = None
-    if result.q_star is not None and len(result.q_star) == len(arc):
-        q_deg = np.rad2deg(np.asarray(result.q_star, dtype=float))
     return arc, q_deg, np.rad2deg(qdot_rad), np.rad2deg(qddot_rad)
 
 
@@ -2562,13 +2829,27 @@ def _emit_m5_joint_vs_rs(
     if m5_qd is not None:
         cal = result.speed_profile.calibration if result.speed_profile else None
         jd = getattr(cal, "joint_dynamics", None) if cal is not None else None
+        # Acceleration limit as actually enforced (scaled by joint_accel_limit_scale).
+        a_scale = float(getattr(cal, "joint_accel_limit_scale", 1.0) or 1.0) if cal is not None else 1.0
         q_dot_lim = np.rad2deg(np.asarray(jd.q_dot_max, dtype=float)) if jd is not None else None
         q_ddot_lim = (
-            np.rad2deg(np.asarray(jd.q_ddot_accel, dtype=float)) if jd is not None else None
+            a_scale * np.rad2deg(np.minimum(
+                np.asarray(jd.q_ddot_accel, dtype=float),
+                np.asarray(jd.q_ddot_decel, dtype=float),
+            )) if jd is not None else None
         )
-        blend = _blend_arc_intervals(result.dense_path) if result.dense_path is not None else None
+        ct = getattr(result, "commanded_topp", None)
+        mode_name = (
+            "TOPP commanded (v≤v_cmd, joint-feasible)"
+            if ct is not None and getattr(ct, "feasible", False)
+            else "toolpath / M5 target velocity"
+        )
+        blend = (
+            _blend_arc_intervals(result.dense_path, result.blend_geoms, _CORNER_PLOT_MIN_DEG)
+            if result.dense_path is not None else None
+        )
         _emit_joint_vs_rs_compare(
-            case_dir, label, "toolpath / M5 target velocity",
+            case_dir, label, mode_name,
             m5_arc, m5_q, m5_qd, m5_qdd,
             rs_arc_mm, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
             q_dot_lim_deg_s=q_dot_lim,
@@ -2734,6 +3015,42 @@ def _emit_joint_vs_rs_compare(
         "RS series resampled onto the solver arc-length axis.",
         "",
     ]
+
+    # ── Joint limit-violation flagging (do NOT silently accept overshoots) ──
+    def _flag(sol, lim, unit):
+        if sol is None or lim is None:
+            return
+        sol_a = np.asarray(sol, dtype=float)
+        lim_a = np.asarray(lim, dtype=float)
+        any_viol = False
+        rows = []
+        for j in range(min(6, sol_a.shape[1], len(lim_a))):
+            peak = float(np.nanmax(np.abs(sol_a[:, j]))) if sol_a.shape[0] else 0.0
+            limit = float(abs(lim_a[j]))
+            util = 100.0 * peak / limit if limit > 0 else float("inf")
+            n_over = int(np.sum(np.abs(sol_a[:, j]) > limit * 1.001)) if limit > 0 else 0
+            mark = "  <-- VIOLATION" if util > 100.5 else ""
+            if util > 100.5:
+                any_viol = True
+            rows.append(
+                f"    J{j+1}: peak={peak:.1f} {unit}  limit={limit:.1f}  "
+                f"util={util:.0f}%  n_over={n_over}{mark}"
+            )
+        head = f"  {'!! LIMIT EXCEEDED' if any_viol else 'within limits'}:"
+        lines.append(head)
+        lines.extend(rows)
+        if any_viol:
+            print(
+                f"  [LIMIT] {label} — {mode_name}: joint limit exceeded "
+                f"(see joint_vs_rs_summary.txt)"
+            )
+
+    lines.append("solver joint-velocity limit check:")
+    _flag(solver_qdot_deg_s, q_dot_lim_deg_s, "deg/s")
+    lines.append("solver joint-acceleration limit check:")
+    _flag(solver_qddot_deg_s2, q_ddot_lim_deg_s2, "deg/s²")
+    lines.append("")
+
     for name, sol, rs in (
         ("position (deg)", solver_q_deg, rs_q_on),
         ("velocity (deg/s)", solver_qdot_deg_s, rs_qd_on),
@@ -2926,6 +3243,101 @@ def _write_optimal_toolpath_csv(
         )
 
 
+def _write_per_waypoint_speed_table(
+    out_dir: Path,
+    toolpath_csv: Path,
+    raw_waypoints_xyz_mm: np.ndarray,
+    solver_xyz_mm: np.ndarray,
+    v_actual_dense: np.ndarray,
+    v_topp_dense: Optional[np.ndarray],
+    v_flat_global_mm_s: Optional[float],
+    rs_xyz_mm: Optional[np.ndarray],
+    rs_speed_mm_s: Optional[np.ndarray],
+    blend_geoms: Optional[list],
+    v_cmd_per_wp: np.ndarray,
+) -> None:
+    """Write ``<toolpath>_per_waypoint_speeds.csv``: the input toolpath rows plus
+    per-waypoint speed estimates from every mode.
+
+    Columns (headers added; the input toolpath is headerless):
+      * the original toolpath fields (x..qz, commanded speed, zone data)
+      * ``solver_actual_v_mm_s``  — commanded-mode (M5) actual speed
+      * ``solver_max_v_mm_s``     — time-optimal max speed  (N/A without --time-optimal)
+      * ``v_constant_mm_s``       — global no-dip constant speed (N/A without --time-optimal)
+      * ``robotstudio_v_mm_s``    — RS logged TCP speed at the nearest sample (N/A if absent)
+      * ``is_corner``             — True if this waypoint is a real corner (blend arc)
+      * ``commanded_feasible``    — True if commanded speed ≤ solver_max_v (N/A if max absent)
+    """
+    NA = "N/A"
+    wp_idx = _nearest_dense_indices(raw_waypoints_xyz_mm, solver_xyz_mm)
+    n_wp = len(raw_waypoints_xyz_mm)
+
+    v_act = [float(v_actual_dense[wp_idx[i]]) for i in range(n_wp)]
+    if v_topp_dense is not None and len(v_topp_dense):
+        v_max = [float(v_topp_dense[wp_idx[i]]) for i in range(n_wp)]
+    else:
+        v_max = [None] * n_wp
+    v_const = (
+        [float(v_flat_global_mm_s)] * n_wp
+        if v_flat_global_mm_s is not None and np.isfinite(v_flat_global_mm_s)
+        else [None] * n_wp
+    )
+    if rs_xyz_mm is not None and rs_speed_mm_s is not None and len(rs_xyz_mm):
+        rs_idx = _nearest_dense_indices(raw_waypoints_xyz_mm, rs_xyz_mm)
+        v_rs = [float(rs_speed_mm_s[rs_idx[i]]) for i in range(n_wp)]
+    else:
+        v_rs = [None] * n_wp
+    is_corner = [
+        bool(blend_geoms is not None and i < len(blend_geoms) and blend_geoms[i] is not None)
+        for i in range(n_wp)
+    ]
+
+    def _fmt(x):
+        return NA if x is None or not np.isfinite(x) else f"{x:.3f}"
+
+    # Parse the toolpath data rows and header their columns.
+    lines = Path(toolpath_csv).read_text(encoding="utf-8").splitlines()
+    data_rows: List[List[str]] = []
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 8:
+            continue
+        try:
+            for p in parts[:8]:
+                float(p)
+        except ValueError:
+            continue
+        data_rows.append(parts)
+
+    n_orig = max((len(r) for r in data_rows), default=8)
+    base_names = ["x_mm", "y_mm", "z_mm", "qw", "qx", "qy", "qz", "commanded_speed_mm_s"]
+    zone_names_14 = ["pzone_tcp_mm", "pzone_ori_mm", "pzone_eax_mm",
+                     "zone_ori_deg", "zone_leax_mm", "zone_reax_deg"]
+    headers = list(base_names)
+    for k in range(8, n_orig):
+        zi = k - 8
+        headers.append(zone_names_14[zi] if zi < len(zone_names_14) and n_orig >= 14 else f"zone_col_{k+1}")
+    headers += [
+        "solver_actual_v_mm_s", "solver_max_v_mm_s", "v_constant_mm_s",
+        "robotstudio_v_mm_s", "is_corner", "commanded_feasible",
+    ]
+
+    out_path = out_dir / f"{Path(toolpath_csv).stem}_per_waypoint_speeds.csv"
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(headers)
+        for i in range(min(n_wp, len(data_rows))):
+            row = list(data_rows[i])
+            feasible = NA
+            if v_max[i] is not None and np.isfinite(v_max[i]):
+                feasible = str(bool(float(v_cmd_per_wp[i]) <= v_max[i]))
+            row += [
+                _fmt(v_act[i]), _fmt(v_max[i]), _fmt(v_const[i]), _fmt(v_rs[i]),
+                str(is_corner[i]), feasible,
+            ]
+            w.writerow(row)
+
+
 def _plot_topp_spline_diagnostics(
     out_path: Path,
     q_star_rad: np.ndarray,
@@ -2933,41 +3345,67 @@ def _plot_topp_spline_diagnostics(
     title: str,
     plt,
     max_interp_error_rad: float = float("nan"),
+    poses: Optional[np.ndarray] = None,
 ) -> None:
-    """Plot the path-parameter spline TOPP-RA operates on: q(s), dq/ds, d²q/ds².
+    """Plot the path-parameter spline TOPP-RA actually operates on: q(u),
+    dq/du, d²q/du².
 
-    ``s`` is the normalised task-space arc-length (0→1).  A natural cubic
-    spline is fit through ``q_star`` vs ``s`` (the same conditioning TOPP-RA
-    uses: unwrap 2π flips), and the spline plus its first/second path
-    derivatives are drawn per joint.  Large |dq/ds| or |d²q/ds²| spikes are
-    exactly what force TOPP-RA to collapse the speed near wrist reconfigurations.
+    The parameter ``u`` is the normalised **pose arc length** (position +
+    scaled orientation) — the SAME well-conditioned parameter TOPP-RA now uses
+    (see ``topp_on_blended_path._pose_arc_length_mm``).  The spline is built the
+    SAME way as in the solver: unwrap 2π flips → resample onto a uniform ``u``
+    grid → light Savitzky-Golay → cubic spline.  This is important: plotting
+    dq/d(position-arc) instead (the previous behaviour) fits a cubic spline
+    through ~16k ultra-fine, IK-noisy knots whose Δs collapses to ~0 on
+    orientation sweeps, so the *plotted* derivative rings to ±10⁴ even though
+    the derivative the solver uses is ~50× smaller and smooth.
     """
-    from scipy.interpolate import CubicSpline
+    from core.blend_zone.topp_on_blended_path import (
+        _pose_arc_length_mm, _savgol_smooth, _unwrap_joint_path,
+    )
 
-    q = np.asarray(q_star_rad, dtype=float)
-    # Unwrap 2π artefacts so the spline is smooth on continuous-rotation joints.
-    q = np.unwrap(q, axis=0)
-    L = float(arc_mm[-1]) if len(arc_mm) and arc_mm[-1] > 0 else 1.0
-    s = np.clip(np.asarray(arc_mm, dtype=float) / L, 0.0, 1.0)
-    # De-duplicate non-increasing s (junction points repeat).
-    keep = np.concatenate([[True], np.diff(s) > 1e-12])
-    s_u, q_u = s[keep], q[keep]
-    if len(s_u) < 4:
+    q, _ = _unwrap_joint_path(np.asarray(q_star_rad, dtype=float))
+    if poses is not None:
+        u_raw = _pose_arc_length_mm(np.asarray(poses, dtype=float))
+        u_label = "normalised POSE arc length  u = (pos + scaled-orient) / U"
+    else:
+        u_raw = np.asarray(arc_mm, dtype=float)
+        u_label = "normalised task-space arc length  s = arc / L"
+    U = float(u_raw[-1]) if len(u_raw) and u_raw[-1] > 0 else 1.0
+    u = np.clip(u_raw / U, 0.0, 1.0)
+    keep = np.concatenate([[True], np.diff(u) > 1e-12])
+    u_mono, q_mono = u[keep], q[keep]
+    if len(u_mono) < 8:
         return
-    s_dense = np.linspace(0.0, 1.0, min(4000, max(1000, len(s_u))))
-    cs = [CubicSpline(s_u, np.rad2deg(q_u[:, j])) for j in range(q_u.shape[1])]
+    # Reproduce the solver conditioning: uniform-u resample + light smoothing.
+    n_knots = min(4000, len(u_mono))
+    u_grid = np.linspace(0.0, 1.0, n_knots)
+    q_grid = np.column_stack([
+        np.interp(u_grid, u_mono, q_mono[:, j]) for j in range(q_mono.shape[1])
+    ])
+    q_grid = _savgol_smooth(q_grid, 7, poly=3)
+    q_deg = np.rad2deg(q_grid)
+    # Use finite differences (not a cubic-spline analytic derivative) for the
+    # derivative panels: a global cubic spline through the sharp-but-continuous
+    # wrist transitions RINGS in its derivative (spurious ±10³–10⁴ oscillation)
+    # even though the underlying motion is smooth.  Finite differences of the
+    # smoothed q(u) show the true, non-ringing dq/du and d²q/du².
+    dqdu = np.column_stack([np.gradient(q_deg[:, j], u_grid) for j in range(6)])
+    dqdu = _savgol_smooth(dqdu, 9, poly=2)
+    d2qdu2 = np.column_stack([np.gradient(dqdu[:, j], u_grid) for j in range(6)])
+    d2qdu2 = _savgol_smooth(d2qdu2, 9, poly=2)
 
     fig, axes = plt.subplots(3, 1, figsize=(15, 11), sharex=True)
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown"]
-    for j in range(q_u.shape[1]):
+    for j in range(q_grid.shape[1]):
         c = colors[j % len(colors)]
-        axes[0].plot(s_dense, cs[j](s_dense), color=c, lw=1.1, label=f"J{j+1}")
-        axes[1].plot(s_dense, cs[j](s_dense, 1), color=c, lw=1.1, label=f"J{j+1}")
-        axes[2].plot(s_dense, cs[j](s_dense, 2), color=c, lw=1.1, label=f"J{j+1}")
-    axes[0].set_ylabel("q(s)  [deg]")
-    axes[1].set_ylabel("dq/ds  [deg per unit s]")
-    axes[2].set_ylabel("d²q/ds²  [deg per unit s²]")
-    axes[2].set_xlabel("normalised task-space arc length  s = arc / L")
+        axes[0].plot(u_grid, q_deg[:, j], color=c, lw=1.1, label=f"J{j+1}")
+        axes[1].plot(u_grid, dqdu[:, j], color=c, lw=1.1, label=f"J{j+1}")
+        axes[2].plot(u_grid, d2qdu2[:, j], color=c, lw=1.1, label=f"J{j+1}")
+    axes[0].set_ylabel("q(u)  [deg]")
+    axes[1].set_ylabel("dq/du  [deg per unit u]")
+    axes[2].set_ylabel("d²q/du²  [deg per unit u²]")
+    axes[2].set_xlabel(u_label)
     sub = title
     if np.isfinite(max_interp_error_rad):
         sub += f"    (TOPP knot interp error = {max_interp_error_rad:.4f} rad)"
@@ -3023,7 +3461,9 @@ def _write_d2_case_outputs(
 
     solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
     dense_arc = np.asarray(result.dense_path.arc_lengths, dtype=float)
-    blend_intervals = _blend_arc_intervals(result.dense_path)
+    blend_intervals = _blend_arc_intervals(
+        result.dense_path, result.blend_geoms, _CORNER_PLOT_MIN_DEG,
+    )
     corner_limits = getattr(result, "corner_speed_limits", None)
     q_star_deg = (
         np.rad2deg(np.asarray(result.q_star, dtype=float))
@@ -3122,15 +3562,17 @@ def _write_d2_case_outputs(
         if toolpath_csv is not None:
             _write_optimal_toolpath_csv(opt_dir, Path(toolpath_csv), seg_speeds)
 
-        # Spline diagnostics: the q(s), dq/ds, d²q/ds² that TOPP-RA fits.
+        # Spline diagnostics: the q(u), dq/du, d²q/du² that TOPP-RA fits
+        # (pose-arc parameter — the one the solver actually conditions on).
         if result.q_star is not None:
             _plot_topp_spline_diagnostics(
                 opt_dir / "topp_spline_qs.png",
                 np.asarray(result.q_star, dtype=float),
                 dense_arc,
-                f"TOPP-RA path spline q(s), dq/ds, d²q/ds² — {label}",
+                f"TOPP-RA path spline q(u), dq/du, d²q/du² — {label}",
                 plt,
                 max_interp_error_rad=float(getattr(topp, "max_interp_error_rad", float("nan"))),
+                poses=result.dense_path.poses if result.dense_path is not None else None,
             )
 
     # ── constant_velocity/ — Feature B global no-dip execution ──
@@ -3232,6 +3674,20 @@ def main() -> None:
             "toolpath convention (v3, v4, v6, v6_2, v8, v9)."
         ),
     )
+    parser.add_argument(
+        "--csv",
+        help=(
+            "Run only the matching RobotStudio CSV (basename or full path). "
+            "Resolved under Results - RobotStudio/<dataset>/ when relative."
+        ),
+    )
+    parser.add_argument(
+        "--toolpath-dataset",
+        help=(
+            "Override the Toolpaths/ subfolder used to locate input toolpaths "
+            "(defaults to the dataset folder, e.g. v9_snake_toolpaths_orientation_test_single)."
+        ),
+    )
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -3246,6 +3702,27 @@ def main() -> None:
             f"--time-optimal requires a Feature-3 dataset (v3/v4/v6/v6_2/v8/v9); "
             f"got --dataset {args.dataset!r}"
         )
+
+    csv_paths: Optional[List[Path]] = None
+    toolpath_dataset_name = args.toolpath_dataset
+    if args.csv:
+        csv_arg = Path(args.csv)
+        if csv_arg.is_file():
+            csv_paths = [csv_arg.resolve()]
+        else:
+            ds_map = {
+                "v6": "v6_constant_tool_orientation_recordings",
+                "v6_2": "v6_2",
+                "v8": "v8_snake_toolpath_with_variable_wp_spacing",
+                "v9": "v9_snake_toolpaths_orientation_test",
+            }
+            rs_root = experiment24_root(repo) / "Results - RobotStudio" / ds_map.get(
+                args.dataset, "v6_constant_tool_orientation_recordings"
+            )
+            candidate = rs_root / csv_arg.name
+            if not candidate.is_file():
+                parser.error(f"RobotStudio CSV not found: {candidate}")
+            csv_paths = [candidate]
 
     if args.dataset == "v1":
         metrics = evaluate_exp24_dataset(out_dir, repo)
@@ -3275,16 +3752,20 @@ def main() -> None:
         metrics = evaluate_exp24_v6_constant_orientation_dataset(
             out_dir,
             repo,
+            csv_paths=csv_paths,
             dataset_name="v8_snake_toolpath_with_variable_wp_spacing",
             output_group="v8_snake_variable_wp_spacing",
+            toolpath_dataset_name=toolpath_dataset_name,
             include_d2=args.time_optimal,
         )
     elif args.dataset == "v9":
         metrics = evaluate_exp24_v6_constant_orientation_dataset(
             out_dir,
             repo,
+            csv_paths=csv_paths,
             dataset_name="v9_snake_toolpaths_orientation_test",
             output_group="v9_snake_orientation_test",
+            toolpath_dataset_name=toolpath_dataset_name,
             include_d2=args.time_optimal,
         )
     else:

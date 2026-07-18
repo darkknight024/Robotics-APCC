@@ -156,20 +156,35 @@ feature3_d1:
   # Output toggles
   generate_plots: true         # Speed profile, joint utilisation, blend geometry PNGs
   generate_report: true        # JSON report with all scalar metrics
+  # Trajectory smoothing (approximates the IRC5 S-curve jerk limit that TOPP-RA,
+  # being 2nd-order/bang-bang, does not model):
+  #   jerk_limited → genuine time-domain jerk-bounded (FIR/S-curve) reparam (default)
+  #   savgol       → light Savitzky-Golay output smoothing only (legacy)
+  #   none         → raw bang-bang TOPP-RA profile
+  smoothing_mode: "jerk_limited"
+  # FIR time constant (s).  0 = AUTO: derived from the robot's own dynamics as
+  # 3 · max_j(q̇max/q̈max) (the characteristic accel ramp time), clamped to
+  # [0.02, 0.10] s.  We have no calibrated jerk limit and do not invent one —
+  # this is a bounded smoothing choice that never loosens the vel/accel limits.
+  # Set a positive value to override.
+  jerk_smooth_time_s: 0.0
   # ── F3 D2: TOPP-RA time-optimal + no-dip constant TCP speed limits ──
   # Both require use_jacobian_dynamics=true on the robot config so that
   # JointDynamicsCalibration (q_dot_max, q_ddot_accel/decel) is loaded.
   compute_time_optimal: false      # Feature A: TOPP-RA on the fixed blended q*
   compute_corner_limits: false     # Feature B: per-corner + global no-dip constant TCP speed
-  apply_topp_ceiling: false        # If true: re-run M5 with the TOPP v_tcp as v_topp_ceiling
+  apply_topp_ceiling: false        # Keep commanded (M5) independent of the time-optimal
+                                   # profile.  time-optimal ≤ commanded is a mathematical
+                                   # fact, but commanded vs RS is NOT forced either way.
   corner_analysis_ds_mm: 0.5       # Fine ds (mm) for local IK re-sample of tight/sub-mm arcs
   topp_n_gridpoints: 0             # 0 → min(len(knots), 1000); avoids 10k+ LP blowups
-  topp_max_knots: 2000             # Cap TOPP-RA spline knots (all blend samples kept)
-  # Multiplier on robots_config.yaml joint accel/decel limits for Features A/B
-  # and the M5 joint-accel ceiling.  Limits are now the observed peaks from
-  # Exp24 v8 RS (vel_test_100_50_50_z200_v6000); keep at 1.0 unless you want
-  # to deliberately over/under-bind relative to that recording.
-  joint_accel_limit_scale: 1.0
+  topp_max_knots: 4000             # TOPP-RA pose-arc spline knots (uniform, well-conditioned)
+  # Multiplier on robots_config.yaml joint accel/decel limits for Features A/B,
+  # the TOPP-based commanded/time-optimal modes, and the M5 joint-accel ceiling.
+  # The Exp24 accel limits are observed RS peaks (estimates); site guidance
+  # allows exceeding them.  Set to 1.5 (=+50%) headroom for now; only the
+  # ACCELERATION limit is scaled — velocity limits are never loosened.
+  joint_accel_limit_scale: 1.5
 
 # =============================================================================
 # Ranking (used by combinatorial search only)

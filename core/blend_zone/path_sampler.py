@@ -179,6 +179,12 @@ def _sample_straight_segment(
 #: systematically overshoots through tight corners.
 _MIN_BLEND_SUBDIV = 40
 
+#: Floor on blend-arc sample spacing (mm).  Caps ``_MIN_BLEND_SUBDIV`` for very
+#: small fly-by zones so a 0.3 mm blend is not sampled at ~0.008 mm (which
+#: produces ripple in every arc-length derivative).  Large blends are
+#: unaffected (they hit the ds_mm / apex requirement well before this cap).
+_MIN_BLEND_STEP_MM = 0.05
+
 
 def _sample_bezier_arc(
     geom: BlendArcGeometry,
@@ -209,6 +215,13 @@ def _sample_bezier_arc(
     ang_deg = _quat_angle_deg(q_in, q_out)
     n_sub_ori = int(np.ceil(ang_deg / _MAX_ORI_STEP_DEG)) if _MAX_ORI_STEP_DEG > 0 else 0
     n_sub = max(_MIN_BLEND_SUBDIV, int(np.ceil(arc_len / ds_mm)), n_sub_ori)
+    # Cap the subdivision so the per-sample spacing never falls below
+    # _MIN_BLEND_STEP_MM.  Without this, tiny fly-by blends (e.g. 0.3 mm zones)
+    # get _MIN_BLEND_SUBDIV=40 samples at ~0.008 mm spacing, whose position
+    # steps alternate wildly against the surrounding straights and inject
+    # high-frequency ripple into every arc-length derivative (v_tcp, dq/ds).
+    n_sub_cap = max(2, int(np.ceil(arc_len / _MIN_BLEND_STEP_MM)))
+    n_sub = min(n_sub, n_sub_cap)
     if n_sub % 2 == 1:                 # ensure t = 0.5 is sampled
         n_sub += 1
     t_vals = np.linspace(0.0, 1.0, n_sub + 1)
