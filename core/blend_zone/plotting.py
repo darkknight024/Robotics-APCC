@@ -76,7 +76,10 @@ def generate_all_f3_plots(
     }
 
     if "speed_profile" in selected:
-        _plot_speed_profile(output_dir, speed_result, traj_name, plt)
+        _plot_speed_profile(
+            output_dir, speed_result, traj_name, plt,
+            dense_path=dense_path,
+        )
     if "joint_utilisation" in selected:
         _plot_joint_utilisation(output_dir, speed_result, joint_vel_result, traj_name, plt)
     if "joint_velocity" in selected:
@@ -99,14 +102,20 @@ def generate_all_f3_plots(
         _plot_corner_limits(output_dir, speed_result, corner_limits, traj_name, plt)
 
 
-def _plot_speed_profile(out: Path, sr, name: str, plt) -> None:
-    """Speed profile: v_cmd vs v_actual, speed gap %, and blend ceiling."""
+def _plot_speed_profile(
+    out: Path,
+    sr,
+    name: str,
+    plt,
+    dense_path=None,
+) -> None:
+    """Speed profile: v_cmd vs v_actual (pure physics-based solver output)."""
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
     arc_s = sr.arc_lengths_mm
 
     ax = axes[0]
     ax.plot(arc_s, sr.v_cmd, "b--", alpha=0.6, linewidth=1.0, label="v_cmd")
-    ax.plot(arc_s, sr.v_actual, "r-", linewidth=1.2, label="v_actual")
+    ax.plot(arc_s, sr.v_actual, "r-", linewidth=1.2, label="v_actual (physics)")
     blend_mask = sr.is_blend_arc
     if np.any(blend_mask):
         ax.fill_between(

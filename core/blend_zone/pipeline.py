@@ -609,13 +609,18 @@ def run_feature3(
                 "skipping"
             )
 
+        # The solver's speed profile is purely physics-based (joint limits).
+        # IRC5 firmware speed capping is applied externally as post-processing
+        # in experiment24_validation.py when benchmarking against RobotStudio.
+        joint_speed_profile = speed_result.v_actual
+
         # ── Step 8: Joint velocities via Jacobian inversion ──
         joint_vel_result = None
         if np.all(np.isfinite(joint_angles_rad)):
             omega_e = compute_omega_e_from_dense_path(
                 dense_path.poses,
                 dense_path.arc_lengths,
-                speed_result.v_actual,
+                joint_speed_profile,
             )
 
             tangent_dirs = np.zeros((dense_path.n_samples, 3))
@@ -629,7 +634,7 @@ def run_feature3(
                 tangent_dirs[-1] = tangent_dirs[-2]
 
             v_linear_m_s = (
-                (speed_result.v_actual[:, np.newaxis] / 1000.0) * tangent_dirs
+                (joint_speed_profile[:, np.newaxis] / 1000.0) * tangent_dirs
             )
 
             joint_vel_result = compute_joint_velocities_from_twist(

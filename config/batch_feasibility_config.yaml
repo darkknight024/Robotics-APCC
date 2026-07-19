@@ -182,9 +182,13 @@ feature3_d1:
   # Multiplier on robots_config.yaml joint accel/decel limits for Features A/B,
   # the TOPP-based commanded/time-optimal modes, and the M5 joint-accel ceiling.
   # The Exp24 accel limits are observed RS peaks (estimates); site guidance
-  # allows exceeding them.  Set to 1.5 (=+50%) headroom for now; only the
-  # ACCELERATION limit is scaled — velocity limits are never loosened.
-  joint_accel_limit_scale: 1.5
+  # allows exceeding them by 20%.  Only the ACCELERATION limit is scaled —
+  # velocity limits are never loosened.
+  joint_accel_limit_scale: 1.2
+  # IRC5 firmware speed cap is NOT applied in the core pipeline.  It is a
+  # post-processing step in tests/experiment24_validation.py --rs-speed-cap on.
+  apply_rs_speed_cap: false
+  rs_speed_cap_path: "Robot_APCC/Experiments/Experiement_24/v_capped/analysis/rs_speed_cap_model.json"
 
 # =============================================================================
 # Ranking (used by combinatorial search only)

@@ -400,6 +400,10 @@ class Feature3D1Config:
     # per-payload robot dynamics model is not finished; site guidance
     # allows exceeding the measured estimates (e.g. 1.5 = +50%).
     joint_accel_limit_scale: float = 1.0
+    # IRC5 firmware speed cap is applied externally in experiment24_validation.py.
+    # These fields are kept for backward config-file compatibility only.
+    apply_rs_speed_cap: bool = False
+    rs_speed_cap_path: str = ""
 
 
 @dataclass

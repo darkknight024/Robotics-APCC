@@ -139,6 +139,29 @@ class Exp24V6TrajectoryMetrics:
     pose_p95_error_mm: float
     pose_max_error_mm: float
     tcp_frame: str = "ee_link"
+    # Straight-only (non-blend-arc) speed metrics — excludes corner regions.
+    solver_speed_straight_median_rel_error: float = float("nan")
+    solver_speed_straight_rms_mm_s: float = float("nan")
+    n_straight_samples: int = 0
+    n_blend_samples: int = 0
+    # v_cap metrics (when apply_rs_speed_cap is active)
+    solver_speed_capped_median_rel_error: float = float("nan")
+    solver_speed_capped_straight_median_rel_error: float = float("nan")
+    v_cap_binds: bool = False
+
+
+@dataclass
+class Exp24SpeedCapMetrics:
+    """Dual-mode solver vs RS metrics for the v_capped spacing×zone dataset."""
+
+    trajectory_label: str
+    spacing_mm: float
+    zone_label: str
+    rs_v_cap_measured_mm_s: float
+    model_v_cap_mm_s: float
+    solver_raw_median_rel_error: float
+    solver_capped_median_rel_error: float
+    controller_penalty_pct: float
 
 
 @dataclass
@@ -1228,6 +1251,8 @@ def _write_traversal_times(
     if rs_time_ms is not None and len(rs_time_ms) >= 2:
         rs_s = float((rs_time_ms[-1] - rs_time_ms[0]) / 1000.0)
 
+    capped_s = float("nan")
+
     lines = [
         "Path traversal times",
         "=" * 72,
@@ -1238,6 +1263,7 @@ def _write_traversal_times(
         "-" * 72,
         f"Commanded (toolpath v_cmd, integral ds/v)         {_fmt_duration_s(commanded_s)}",
         f"Solver M5 (estimated at toolpath command)         {_fmt_duration_s(m5_s)}",
+        f"Solver M5 + IRC5 v_cap                            {_fmt_duration_s(capped_s)}",
         f"TOPP-RA optimal (time-optimal on blended path)    {_fmt_duration_s(topp_s)}",
         f"Constant v_flat (no corner dips)                  {_fmt_duration_s(v_flat_s)}"
         + (f"  @ {v_flat:.1f} mm/s" if np.isfinite(v_flat) else ""),
@@ -1245,6 +1271,7 @@ def _write_traversal_times(
         "",
         "Notes:",
         "- Commanded / M5 times integrate along the solver dense arc.",
+        "- M5 + IRC5 v_cap applies the firmware speed ceiling after M5.",
         "- TOPP-RA and v_flat require --time-optimal (Feature A / B).",
         "- RobotStudio duration is (t_last - t_first) from the RS CSV.",
         "- RS was recorded at the toolpath commanded speed, not at TOPP/v_flat.",
@@ -1750,10 +1777,18 @@ def evaluate_exp24_v6_constant_orientation_dataset(
     output_group: str = "v6_constant_orientation",
     toolpath_dataset_name: Optional[str] = None,
     include_d2: bool = False,
+    apply_rs_speed_cap: Optional[bool] = None,
+    generate_f3_plots: bool = True,
 ) -> List[Exp24V6TrajectoryMetrics]:
     """Validate v6 constant-orientation siping recordings in base frame.
 
     See :func:`evaluate_exp24_v3_siping_dataset` for the ``include_d2`` flag.
+
+    Args:
+        apply_rs_speed_cap: Override config. ``True``/``False`` force on/off;
+            ``None`` keeps the value from ``batch_feasibility_config.yaml``.
+        generate_f3_plots: When True, also emit Feature 3 pipeline PNGs
+            (speed profile, blend geometry, joint util, v_cap overlay).
     """
 
     repo = repo or Path(__file__).resolve().parents[1]
@@ -1769,11 +1804,27 @@ def evaluate_exp24_v6_constant_orientation_dataset(
 
     cfg = load_batch_config(str(repo / "config" / "batch_feasibility_config.yaml"))
     cfg.feature3_d1.enabled = True
-    cfg.feature3_d1.generate_plots = False
+    cfg.feature3_d1.generate_plots = bool(generate_f3_plots)
     cfg.feature3_d1.generate_report = True
     cfg.feature3_d1.ds_mm = 1.0
     cfg.feature3_d1.compute_time_optimal = include_d2
     cfg.feature3_d1.compute_corner_limits = include_d2
+    # v_capped is applied as post-processing AFTER the solver runs (not in pipeline).
+    # Resolve the model path for local use only.
+    _do_v_cap = bool(apply_rs_speed_cap) if apply_rs_speed_cap is not None else False
+    _v_cap_model_path: Optional[Path] = None
+    if _do_v_cap:
+        _candidate = experiment24_root(repo) / "v_capped" / "analysis" / "rs_speed_cap_model.json"
+        cap_path_cfg = getattr(cfg.feature3_d1, "rs_speed_cap_path", "") or ""
+        if cap_path_cfg:
+            _resolved = Path(cap_path_cfg) if Path(cap_path_cfg).is_absolute() else (repo / cap_path_cfg).resolve()
+            if _resolved.exists():
+                _v_cap_model_path = _resolved
+        if _v_cap_model_path is None and _candidate.exists():
+            _v_cap_model_path = _candidate
+        if _v_cap_model_path is None:
+            logger.warning("RS speed-cap model not found — v_cap post-processing disabled.")
+            _do_v_cap = False
     cfg.use_base_frame = False
     cfg.solver = "pin"
     robot = get_robot_by_name(_ROBOT_NAME)
@@ -1838,7 +1889,7 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             accel_limits_rad_s2=np.array(robot.acceleration_limits_rad_s2) if robot.acceleration_limits_rad_s2 else None,
             verbose=False,
             custom_zone=True,
-            plots=False,
+            plots=bool(generate_f3_plots),
             reports=True,
             preloaded_load_result=lr,
             jacobian_dynamics_override=True,
@@ -1852,7 +1903,39 @@ def evaluate_exp24_v6_constant_orientation_dataset(
 
         solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
         solver_arc = result.speed_profile.arc_lengths_mm
-        solver_speed = result.speed_profile.v_actual
+
+        # When TOPP-RA commanded profile is available (joint-feasible at v≤v_cmd),
+        # use it as the solver speed prediction.  Raw M5 with corner ceilings
+        # disabled does NOT predict corner dips; the TOPP-commanded profile does.
+        _ct_result = getattr(result, "commanded_topp", None)
+        if (
+            _ct_result is not None
+            and getattr(_ct_result, "feasible", False)
+            and _ct_result.v_tcp_profile_mm_s is not None
+            and np.any(np.isfinite(_ct_result.v_tcp_profile_mm_s))
+        ):
+            solver_speed = np.asarray(_ct_result.v_tcp_profile_mm_s, dtype=float)
+        else:
+            solver_speed = np.asarray(result.speed_profile.v_actual, dtype=float)
+
+        # Enforce per-corner v_flat as a hard ceiling.  The TOPP-RA global spline
+        # can miss sub-mm arcs (z0/z1 zones), allowing speeds above the per-corner
+        # limit.  Apply each v_flat over its blend arc region.
+        _corner_lims = getattr(result, "corner_speed_limits", None)
+        if _corner_lims:
+            _is_blend = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
+            _blend_wp = np.asarray(
+                getattr(result.dense_path, "blend_wp_idx", np.full(len(solver_speed), -1)),
+                dtype=int,
+            )
+            for _cl in _corner_lims:
+                if not np.isfinite(_cl.v_max_no_dip_mm_s):
+                    continue
+                _mask = _is_blend & (_blend_wp == _cl.waypoint_idx)
+                solver_speed[_mask] = np.minimum(
+                    solver_speed[_mask], _cl.v_max_no_dip_mm_s,
+                )
+
         solver_time = _time_from_arc_speed(solver_arc, solver_speed)
         _solver_speed_xyz, solver_accel_xyz = _speed_accel_from_xyz_time(solver_xyz_mm, solver_time * 1000.0)
         solver_quat = _align_quaternion_series(result.dense_path.poses[:, 3:7])
@@ -1868,6 +1951,61 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         solver_speed_err = solver_speed - rs_speed_on_solver
         solver_speed_rel = np.abs(solver_speed_err) / np.maximum(rs_speed_on_solver, 1.0)
         solver_orientation_abs_err = np.abs(solver_orientation_speed - rs_orientation_on_solver)
+
+        # Straight-only mask: exclude blend-arc samples from speed metrics.
+        is_blend = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
+        straight_mask = ~is_blend & (rs_speed_on_solver > 1.0)
+        n_straight = int(np.sum(straight_mask))
+        n_blend = int(np.sum(is_blend))
+        if n_straight > 0:
+            straight_speed_err = solver_speed[straight_mask] - rs_speed_on_solver[straight_mask]
+            straight_speed_rel = np.abs(straight_speed_err) / np.maximum(rs_speed_on_solver[straight_mask], 1.0)
+            straight_median_rel = float(np.median(straight_speed_rel))
+            straight_rms = float(np.sqrt(np.mean(straight_speed_err ** 2)))
+        else:
+            straight_median_rel = float("nan")
+            straight_rms = float("nan")
+
+        # v_cap post-processing: apply IRC5 speed cap AFTER solver finishes.
+        v_capped: Optional[np.ndarray] = None
+        cap_binds = False
+        capped_median_rel = float("nan")
+        capped_straight_median_rel = float("nan")
+        if _do_v_cap and _v_cap_model_path is not None:
+            from core.blend_zone.rs_speed_cap import (
+                apply_v_cap_to_dense_path,
+                compute_per_segment_v_cap,
+                load_rs_speed_cap,
+            )
+            from core.blend_zone.zone_resolver import (
+                apply_overlap_reduction,
+                resolve_zone_list,
+            )
+            try:
+                _cap_table = load_rs_speed_cap(analysis_result_path=str(_v_cap_model_path))
+                _zone_params = apply_overlap_reduction(
+                    resolve_zone_list(lr.zone_specs[0]), lr.waypoints[0],
+                )
+                _v_cap_segs = compute_per_segment_v_cap(
+                    lr.waypoints[0], _zone_params, _cap_table,
+                )
+                v_capped = apply_v_cap_to_dense_path(
+                    _v_cap_segs, result.dense_path, solver_speed,
+                )
+            except Exception as _cap_exc:
+                print(f"    [WARN] v_cap post-processing failed: {_cap_exc}")
+                v_capped = None
+        if v_capped is not None:
+            cap_binds = bool(np.any(v_capped < solver_speed - 0.5))
+            capped_err_rel = (
+                np.abs(v_capped - rs_speed_on_solver)
+                / np.maximum(rs_speed_on_solver, 1.0)
+            )
+            active_solver = rs_speed_on_solver > 1.0
+            if np.any(active_solver):
+                capped_median_rel = float(np.median(capped_err_rel[active_solver]))
+            if n_straight > 0:
+                capped_straight_median_rel = float(np.median(capped_err_rel[straight_mask]))
 
         active = rs_speed > 1.0
         accel_mask = np.abs(rs_accel) > 100.0
@@ -1952,21 +2090,12 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         # Per-waypoint speed table: input toolpath + all-mode speed estimates.
         _to = getattr(result, "time_optimal", None)
         _cs = getattr(result, "constant_speed", None)
-        _ct = getattr(result, "commanded_topp", None)
-        # Commanded actual speed: prefer the joint-feasible TOPP commanded
-        # profile (v≤v_cmd, respects joint vel+accel) over the M5 estimate.
-        _v_commanded = (
-            np.asarray(_ct.v_tcp_profile_mm_s, dtype=float)
-            if _ct is not None and getattr(_ct, "feasible", False)
-            and np.any(np.isfinite(_ct.v_tcp_profile_mm_s))
-            else np.asarray(result.speed_profile.v_actual, dtype=float)
-        )
         _write_per_waypoint_speed_table(
             case_dir,
             toolpath,
             raw_waypoints_xyz_mm,
             solver_xyz_mm,
-            _v_commanded,
+            solver_speed,
             (np.asarray(_to.v_tcp_profile_mm_s, dtype=float)
              if _to is not None and np.any(np.isfinite(_to.v_tcp_profile_mm_s)) else None),
             (float(_cs.v_flat_mm_s) if _cs is not None and np.isfinite(_cs.v_flat_mm_s) else None),
@@ -1974,6 +2103,20 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             rs_speed,
             result.blend_geoms,
             lr.v_cmd[0],
+            v_capped_dense=v_capped,
+        )
+        _write_straight_speed_benchmark(
+            case_dir,
+            label,
+            raw_waypoints_xyz_mm,
+            solver_xyz_mm,
+            solver_speed,
+            v_capped,
+            rs_xyz_mm,
+            rs_speed,
+            result.blend_geoms,
+            lr.v_cmd[0],
+            turn_threshold_deg=turn_threshold_deg,
         )
         _write_case_validation_summary(
             case_dir,
@@ -2016,6 +2159,13 @@ def evaluate_exp24_v6_constant_orientation_dataset(
                 pose_mean_error_mm=float(np.mean(pose_dev)),
                 pose_p95_error_mm=float(np.percentile(pose_dev, 95)),
                 pose_max_error_mm=float(np.max(pose_dev)),
+                solver_speed_straight_median_rel_error=straight_median_rel,
+                solver_speed_straight_rms_mm_s=straight_rms,
+                n_straight_samples=n_straight,
+                n_blend_samples=n_blend,
+                solver_speed_capped_median_rel_error=capped_median_rel,
+                solver_speed_capped_straight_median_rel_error=capped_straight_median_rel,
+                v_cap_binds=cap_binds,
             )
         )
 
@@ -2293,6 +2443,14 @@ def _write_v6_constant_orientation_metrics(out_dir: Path, metrics: List[Exp24V6T
     events = np.array([m.n_corner_events for m in metrics], dtype=int)
     near = np.array([m.n_near_collinear_events for m in metrics], dtype=int)
 
+    solver_straight = np.array([m.solver_speed_straight_median_rel_error for m in metrics], dtype=float)
+    solver_straight_rms = np.array([m.solver_speed_straight_rms_mm_s for m in metrics], dtype=float)
+    solver_capped = np.array([m.solver_speed_capped_median_rel_error for m in metrics], dtype=float)
+    solver_capped_straight = np.array([m.solver_speed_capped_straight_median_rel_error for m in metrics], dtype=float)
+    n_straight_arr = np.array([m.n_straight_samples for m in metrics], dtype=int)
+    n_blend_arr = np.array([m.n_blend_samples for m in metrics], dtype=int)
+    any_cap_binds = any(m.v_cap_binds for m in metrics)
+
     lines = [
         "Experiment 24 v6 - Constant-Orientation D2 Validation",
         "=" * 80,
@@ -2311,9 +2469,25 @@ def _write_v6_constant_orientation_metrics(out_dir: Path, metrics: List[Exp24V6T
         f"  median orientation-speed relative error: {np.nanmedian(direct_ori) * 100.0:.2f} %",
         "",
         "Feature 3 D2 solver replay from raw base-frame toolpath:",
-        f"  median speed relative error: {np.nanmedian(solver_speed) * 100.0:.2f} %",
-        f"  median speed RMS error: {np.nanmedian(solver_rms):.3f} mm/s",
+        f"  median speed relative error (ALL samples): {np.nanmedian(solver_speed) * 100.0:.2f} %",
+        f"  median speed relative error (STRAIGHT only): {np.nanmedian(solver_straight) * 100.0:.2f} %",
+        f"  median speed RMS (STRAIGHT only): {np.nanmedian(solver_straight_rms):.3f} mm/s",
+        f"  median speed RMS (ALL): {np.nanmedian(solver_rms):.3f} mm/s",
         f"  median orientation-speed abs error: {np.nanmedian(solver_ori):.2f} deg/s",
+        f"  median straight samples / total: {np.median(n_straight_arr):.0f} / "
+        f"{np.median(n_straight_arr + n_blend_arr):.0f} "
+        f"(blend: {np.median(n_blend_arr):.0f})",
+    ]
+    if any_cap_binds or np.any(np.isfinite(solver_capped)):
+        lines += [
+            "",
+            "RS speed cap (v_capped) overlay:",
+            f"  median capped speed rel error (ALL): {np.nanmedian(solver_capped) * 100.0:.2f} %",
+            f"  median capped speed rel error (STRAIGHT): {np.nanmedian(solver_capped_straight) * 100.0:.2f} %",
+            f"  v_cap binds on at least one trajectory: {any_cap_binds}",
+        ]
+    lines += [
+        "",
         f"  median raw waypoint -> solver RMS: {np.nanmedian(raw_solver):.3f} mm",
         f"  median raw waypoint -> RobotStudio RMS: {np.nanmedian(raw_rs):.3f} mm",
         f"  median pose mean error: {np.nanmedian(pose_mean):.3f} mm",
@@ -2323,15 +2497,13 @@ def _write_v6_constant_orientation_metrics(out_dir: Path, metrics: List[Exp24V6T
     ]
     for m in metrics:
         lines.append(
-            f"  {m.file}: direct_v={m.direct_jac_speed_median_rel_error*100.0:.2f}% "
-            f"direct_a={m.direct_jac_accel_median_rel_error*100.0:.2f}% "
-            f"direct_ori={m.direct_jac_orientation_speed_median_rel_error*100.0:.2f}% "
-            f"solver_v={m.solver_speed_median_rel_error*100.0:.2f}% "
-            f"solver_rms={m.solver_speed_rms_mm_s:.3f}mm/s "
+            f"  {m.file}: "
+            f"solver_v_all={m.solver_speed_median_rel_error*100.0:.2f}% "
+            f"solver_v_straight={m.solver_speed_straight_median_rel_error*100.0:.2f}% "
+            f"capped_straight={m.solver_speed_capped_straight_median_rel_error*100.0:.2f}% "
             f"events={m.n_corner_events} near_collinear={m.n_near_collinear_events} "
-            f"raw2solver={m.raw_to_solver_rms_error_mm:.3f}mm "
-            f"raw2rs={m.raw_to_rs_rms_error_mm:.3f}mm "
-            f"pose_mean={m.pose_mean_error_mm:.3f}mm"
+            f"n_str={m.n_straight_samples} n_blend={m.n_blend_samples} "
+            f"cap_binds={m.v_cap_binds}"
         )
     (out_dir / "v6_constant_orientation_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -2769,41 +2941,68 @@ def _interp_series_vs_arc(
 def _m5_solver_joint_states_deg(
     result,
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    """Solver joint states for the toolpath/M5 speed profile, in degrees.
+    """Solver joint states for the best-available speed profile, in degrees.
 
-    Returns ``(arc_mm, q_deg, qdot_deg_s, qddot_deg_s2)``.  Acceleration is
-    obtained by differentiating M6 ``q_dot`` with respect to the M5 time
-    parameterisation.
+    Returns ``(arc_mm, q_deg, qdot_deg_s, qddot_deg_s2)``.  Joint velocity
+    is computed from ``dq/ds * v(s)`` using the v_flat-clamped speed, and
+    acceleration from its time-derivative.
     """
     if result.speed_profile is None:
         return None, None, None, None
     arc = np.asarray(result.speed_profile.arc_lengths_mm, dtype=float)
     q_deg = None
+    q_rad = None
     if result.q_star is not None and len(result.q_star) == len(arc):
-        q_deg = np.rad2deg(np.asarray(result.q_star, dtype=float))
+        q_rad = np.asarray(result.q_star, dtype=float)
+        q_deg = np.rad2deg(q_rad)
 
-    # Prefer the TOPP-based commanded profile when available: it is guaranteed
-    # joint-feasible (velocity + acceleration, incl. sharp corners), whereas the
-    # M5 forward/backward profiler cannot bound the path-curvature joint accel.
+    if q_rad is None:
+        # Fallback: no joint path available, return positions only.
+        return arc, q_deg, None, None
+
+    # Build the best speed profile: TOPP-commanded + v_flat ceiling.
     ct = getattr(result, "commanded_topp", None)
     if (
         ct is not None and getattr(ct, "feasible", False)
-        and ct.q_dot_optimal is not None
-        and len(ct.q_dot_optimal) == len(arc)
+        and ct.v_tcp_profile_mm_s is not None
+        and len(ct.v_tcp_profile_mm_s) == len(arc)
     ):
-        return (
-            arc, q_deg,
-            np.rad2deg(np.asarray(ct.q_dot_optimal, dtype=float)),
-            np.rad2deg(np.asarray(ct.q_ddot_optimal, dtype=float)),
-        )
+        v_profile = np.asarray(ct.v_tcp_profile_mm_s, dtype=float).copy()
+    else:
+        v_profile = np.asarray(result.speed_profile.v_actual, dtype=float).copy()
 
-    if result.joint_velocity_result is None:
-        return arc, q_deg, None, None
-    v_actual = np.asarray(result.speed_profile.v_actual, dtype=float)
-    time_s = _time_from_arc_speed(arc, v_actual)
-    qdot_rad = np.asarray(result.joint_velocity_result.q_dot, dtype=float)
+    # Apply per-corner v_flat ceiling (same as the TCP speed plot).
+    _corner_lims = getattr(result, "corner_speed_limits", None)
+    if _corner_lims and result.dense_path is not None:
+        _is_blend = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
+        _blend_wp = np.asarray(
+            getattr(result.dense_path, "blend_wp_idx", np.full(len(v_profile), -1)),
+            dtype=int,
+        )
+        for _cl in _corner_lims:
+            if not np.isfinite(_cl.v_max_no_dip_mm_s):
+                continue
+            _mask = _is_blend & (_blend_wp == _cl.waypoint_idx)
+            v_profile[_mask] = np.minimum(v_profile[_mask], _cl.v_max_no_dip_mm_s)
+
+    # Compute dq/ds from the joint path via finite differences on arc-length.
+    M = len(q_rad)
+    ds = np.diff(arc)
+    ds[ds < 1e-9] = 1e-9
+    dq_ds = np.zeros_like(q_rad)
+    for j in range(q_rad.shape[1]):
+        dq_ds[1:, j] = np.diff(q_rad[:, j]) / ds
+    dq_ds[0] = dq_ds[1]
+
+    # q̇ = (dq/ds) * v(s)
+    qdot_rad = dq_ds * v_profile[:, np.newaxis]
+
+    # Time from clamped speed profile.
+    time_s = _time_from_arc_speed(arc, v_profile)
+
+    # q̈ = dq̇/dt via finite differences on the clamped time axis.
     qddot_rad = np.column_stack([
-        _derivative_wrt_time(qdot_rad[:, j], time_s) for j in range(qdot_rad.shape[1])
+        _derivative_wrt_time(qdot_rad[:, j], time_s) for j in range(q_rad.shape[1])
     ])
     return arc, q_deg, np.rad2deg(qdot_rad), np.rad2deg(qddot_rad)
 
@@ -2861,17 +3060,46 @@ def _emit_m5_joint_vs_rs(
     if result.speed_profile is None or result.dense_path is None:
         return
     solver_arc = np.asarray(result.speed_profile.arc_lengths_mm, dtype=float)
-    solver_v = np.asarray(result.speed_profile.v_actual, dtype=float)
+    # Use TOPP-commanded profile (joint-feasible at v≤v_cmd) when available;
+    # raw M5 with corner ceilings disabled overpredicts at corners.
+    ct = getattr(result, "commanded_topp", None)
+    if (
+        ct is not None
+        and getattr(ct, "feasible", False)
+        and ct.v_tcp_profile_mm_s is not None
+        and np.any(np.isfinite(ct.v_tcp_profile_mm_s))
+    ):
+        solver_v = np.asarray(ct.v_tcp_profile_mm_s, dtype=float)
+        title_mode = "TOPP commanded (v≤v_cmd, joint-feasible)"
+    else:
+        solver_v = np.asarray(result.speed_profile.v_actual, dtype=float)
+        title_mode = "Toolpath / M5 execution"
+
+    # Enforce per-corner v_flat as hard ceiling (TOPP-RA spline smoothing can
+    # miss sub-mm arcs at tight zones like z0/z1).
+    _corner_lims = getattr(result, "corner_speed_limits", None)
+    if _corner_lims and result.dense_path is not None:
+        _is_blend = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
+        _blend_wp = np.asarray(
+            getattr(result.dense_path, "blend_wp_idx", np.full(len(solver_v), -1)),
+            dtype=int,
+        )
+        for _cl in _corner_lims:
+            if not np.isfinite(_cl.v_max_no_dip_mm_s):
+                continue
+            _mask = _is_blend & (_blend_wp == _cl.waypoint_idx)
+            solver_v[_mask] = np.minimum(solver_v[_mask], _cl.v_max_no_dip_mm_s)
+
     solver_xyz_mm = result.dense_path.poses[:, :3] * 1000.0
     t_s = _time_from_arc_speed(solver_arc, solver_v)
     _v_chk, solver_a = _speed_accel_from_xyz_time(solver_xyz_mm, t_s * 1000.0)
     _plot_d2_tcp_panel(
         case_dir / "tcp_speed_and_accel.png",
         solver_arc, solver_v, solver_a,
-        f"Toolpath / M5 execution — {label}",
+        f"{title_mode} — {label}",
         plt,
         blend_intervals=_blend_arc_intervals(result.dense_path),
-        corner_limits=getattr(result, "corner_speed_limits", None),
+        corner_limits=_corner_lims,
         rs_arc_mm=rs_arc_mm,
         rs_speed_mm_s=rs_speed_mm_s,
         rs_accel_mm_s2=rs_accel_mm_s2,
@@ -3255,6 +3483,7 @@ def _write_per_waypoint_speed_table(
     rs_speed_mm_s: Optional[np.ndarray],
     blend_geoms: Optional[list],
     v_cmd_per_wp: np.ndarray,
+    v_capped_dense: Optional[np.ndarray] = None,
 ) -> None:
     """Write ``<toolpath>_per_waypoint_speeds.csv``: the input toolpath rows plus
     per-waypoint speed estimates from every mode.
@@ -3264,6 +3493,7 @@ def _write_per_waypoint_speed_table(
       * ``solver_actual_v_mm_s``  — commanded-mode (M5) actual speed
       * ``solver_max_v_mm_s``     — time-optimal max speed  (N/A without --time-optimal)
       * ``v_constant_mm_s``       — global no-dip constant speed (N/A without --time-optimal)
+      * ``solver_capped_v_mm_s``  — M5 after IRC5 firmware v_cap (N/A if cap off)
       * ``robotstudio_v_mm_s``    — RS logged TCP speed at the nearest sample (N/A if absent)
       * ``is_corner``             — True if this waypoint is a real corner (blend arc)
       * ``commanded_feasible``    — True if commanded speed ≤ solver_max_v (N/A if max absent)
@@ -3282,6 +3512,10 @@ def _write_per_waypoint_speed_table(
         if v_flat_global_mm_s is not None and np.isfinite(v_flat_global_mm_s)
         else [None] * n_wp
     )
+    if v_capped_dense is not None and len(v_capped_dense):
+        v_cap = [float(v_capped_dense[wp_idx[i]]) for i in range(n_wp)]
+    else:
+        v_cap = [None] * n_wp
     if rs_xyz_mm is not None and rs_speed_mm_s is not None and len(rs_xyz_mm):
         rs_idx = _nearest_dense_indices(raw_waypoints_xyz_mm, rs_xyz_mm)
         v_rs = [float(rs_speed_mm_s[rs_idx[i]]) for i in range(n_wp)]
@@ -3319,7 +3553,7 @@ def _write_per_waypoint_speed_table(
         headers.append(zone_names_14[zi] if zi < len(zone_names_14) and n_orig >= 14 else f"zone_col_{k+1}")
     headers += [
         "solver_actual_v_mm_s", "solver_max_v_mm_s", "v_constant_mm_s",
-        "robotstudio_v_mm_s", "is_corner", "commanded_feasible",
+        "solver_capped_v_mm_s", "robotstudio_v_mm_s", "is_corner", "commanded_feasible",
     ]
 
     out_path = out_dir / f"{Path(toolpath_csv).stem}_per_waypoint_speeds.csv"
@@ -3332,10 +3566,151 @@ def _write_per_waypoint_speed_table(
             if v_max[i] is not None and np.isfinite(v_max[i]):
                 feasible = str(bool(float(v_cmd_per_wp[i]) <= v_max[i]))
             row += [
-                _fmt(v_act[i]), _fmt(v_max[i]), _fmt(v_const[i]), _fmt(v_rs[i]),
+                _fmt(v_act[i]), _fmt(v_max[i]), _fmt(v_const[i]),
+                _fmt(v_cap[i]), _fmt(v_rs[i]),
                 str(is_corner[i]), feasible,
             ]
             w.writerow(row)
+
+
+def _write_straight_speed_benchmark(
+    out_dir: Path,
+    label: str,
+    raw_waypoints_xyz_mm: np.ndarray,
+    solver_xyz_mm: np.ndarray,
+    solver_speed_dense: np.ndarray,
+    v_capped_dense: Optional[np.ndarray],
+    rs_xyz_mm: np.ndarray,
+    rs_speed_mm_s: np.ndarray,
+    blend_geoms: Optional[list],
+    v_cmd_per_wp: np.ndarray,
+    turn_threshold_deg: float = 3.0,
+) -> None:
+    """Per-waypoint TCP speed benchmark restricted to non-corner (straight) segments.
+
+    Writes:
+      * ``straight_speed_benchmark.csv`` — one row per non-corner waypoint
+      * ``straight_speed_benchmark.txt`` — rollup of median/P95/max relative error
+    """
+    n_wp = len(raw_waypoints_xyz_mm)
+    if n_wp < 2:
+        return
+
+    wp_idx_solver = _nearest_dense_indices(raw_waypoints_xyz_mm, solver_xyz_mm)
+    wp_idx_rs = _nearest_dense_indices(raw_waypoints_xyz_mm, rs_xyz_mm)
+
+    # A waypoint is a "corner" if it has an active blend geom with significant
+    # deflection — same yellow-band criterion used in the speed plots.
+    is_corner = np.zeros(n_wp, dtype=bool)
+    min_rad = np.deg2rad(turn_threshold_deg)
+    if blend_geoms is not None:
+        for i, g in enumerate(blend_geoms):
+            if g is None or i >= n_wp:
+                continue
+            if float(getattr(g, "corner_angle_rad", 0.0)) >= min_rad:
+                is_corner[i] = True
+
+    rows: List[dict] = []
+    for i in range(n_wp):
+        if is_corner[i]:
+            continue
+        v_cmd = float(v_cmd_per_wp[i]) if i < len(v_cmd_per_wp) else float("nan")
+        v_sol = float(solver_speed_dense[wp_idx_solver[i]])
+        v_rs = float(rs_speed_mm_s[wp_idx_rs[i]])
+        v_cap = (
+            float(v_capped_dense[wp_idx_solver[i]])
+            if v_capped_dense is not None and len(v_capped_dense)
+            else float("nan")
+        )
+        # Skip near-zero RS samples (ramps / dwells)
+        if not np.isfinite(v_rs) or v_rs < 1.0:
+            continue
+        err_raw = v_sol - v_rs
+        rel_raw = abs(err_raw) / max(v_rs, 1.0)
+        err_cap = v_cap - v_rs if np.isfinite(v_cap) else float("nan")
+        rel_cap = abs(err_cap) / max(v_rs, 1.0) if np.isfinite(err_cap) else float("nan")
+        rows.append({
+            "waypoint_idx": i,
+            "x_mm": float(raw_waypoints_xyz_mm[i, 0]),
+            "y_mm": float(raw_waypoints_xyz_mm[i, 1]),
+            "z_mm": float(raw_waypoints_xyz_mm[i, 2]),
+            "v_cmd_mm_s": v_cmd,
+            "solver_v_mm_s": v_sol,
+            "solver_capped_v_mm_s": v_cap,
+            "robotstudio_v_mm_s": v_rs,
+            "err_raw_mm_s": err_raw,
+            "rel_err_raw": rel_raw,
+            "err_capped_mm_s": err_cap,
+            "rel_err_capped": rel_cap,
+        })
+
+    out_csv = out_dir / "straight_speed_benchmark.csv"
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        fields = [
+            "waypoint_idx", "x_mm", "y_mm", "z_mm", "v_cmd_mm_s",
+            "solver_v_mm_s", "solver_capped_v_mm_s", "robotstudio_v_mm_s",
+            "err_raw_mm_s", "rel_err_raw", "err_capped_mm_s", "rel_err_capped",
+        ]
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: (f"{v:.6g}" if isinstance(v, float) else v) for k, v in r.items()})
+
+    if not rows:
+        summary = [
+            f"Straight-area TCP speed benchmark — {label}",
+            "=" * 72,
+            "No non-corner waypoints with RS speed > 1 mm/s.",
+        ]
+        (out_dir / "straight_speed_benchmark.txt").write_text(
+            "\n".join(summary) + "\n", encoding="utf-8",
+        )
+        return
+
+    rel_raw = np.array([r["rel_err_raw"] for r in rows], dtype=float)
+    rel_cap = np.array([r["rel_err_capped"] for r in rows], dtype=float)
+    abs_raw = np.array([abs(r["err_raw_mm_s"]) for r in rows], dtype=float)
+    abs_cap = np.array([abs(r["err_capped_mm_s"]) for r in rows if np.isfinite(r["err_capped_mm_s"])], dtype=float)
+
+    summary = [
+        f"Straight-area TCP speed benchmark — {label}",
+        "=" * 72,
+        "Compares solver TCP speed vs RobotStudio at programmed waypoints that",
+        "are NOT corners (no yellow blend-arc shading on speed plots).",
+        "",
+        f"Non-corner waypoints compared: {len(rows)} / {n_wp}",
+        f"Corner waypoints excluded:     {int(np.sum(is_corner))}",
+        "",
+        "MODE 1 — solver_raw (physics / M5, no IRC5 firmware cap):",
+        f"  median |err|:  {np.median(abs_raw):.3f} mm/s",
+        f"  P95 |err|:     {np.percentile(abs_raw, 95):.3f} mm/s",
+        f"  max |err|:     {np.max(abs_raw):.3f} mm/s",
+        f"  median rel:    {np.median(rel_raw) * 100.0:.2f} %",
+        f"  P95 rel:       {np.percentile(rel_raw, 95) * 100.0:.2f} %",
+    ]
+    if len(abs_cap):
+        finite_rel = rel_cap[np.isfinite(rel_cap)]
+        summary += [
+            "",
+            "MODE 2 — solver_capped (physics + IRC5 v_cap model):",
+            f"  median |err|:  {np.median(abs_cap):.3f} mm/s",
+            f"  P95 |err|:     {np.percentile(abs_cap, 95):.3f} mm/s",
+            f"  max |err|:     {np.max(abs_cap):.3f} mm/s",
+            f"  median rel:    {np.median(finite_rel) * 100.0:.2f} %",
+            f"  P95 rel:       {np.percentile(finite_rel, 95) * 100.0:.2f} %",
+        ]
+    else:
+        summary += [
+            "",
+            "MODE 2 — solver_capped: not available (apply_rs_speed_cap off or no model).",
+        ]
+    summary += [
+        "",
+        f"Detail CSV: {out_csv.name}",
+    ]
+    (out_dir / "straight_speed_benchmark.txt").write_text(
+        "\n".join(summary) + "\n", encoding="utf-8",
+    )
 
 
 def _plot_topp_spline_diagnostics(
@@ -3651,13 +4026,173 @@ def _write_d2_case_outputs(
         (cv_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _median_speed_rel_error(solver_speed: np.ndarray, rs_speed: np.ndarray) -> float:
+    active = rs_speed > 1.0
+    if not np.any(active):
+        return float("nan")
+    rel = np.abs(solver_speed[active] - rs_speed[active]) / np.maximum(rs_speed[active], 1.0)
+    return float(np.median(rel))
+
+
+def evaluate_exp24_v_capped_speed_cap(
+    out_dir: Path,
+    repo: Optional[Path] = None,
+    rs_csv: Optional[Path] = None,
+    toolpath_csv: Optional[Path] = None,
+    model_json: Optional[Path] = None,
+) -> List[Exp24SpeedCapMetrics]:
+    """Validate solver raw vs RS-capped modes on the v_capped spacing×zone dataset."""
+    repo = repo or Path(__file__).resolve().parents[1]
+    base = experiment24_root(repo) / "v_capped"
+    rs_csv = rs_csv or base / "vel_test_zones_and_sampling _150.csv"
+    toolpath_csv = toolpath_csv or base / "vel_test_zones_and_sampling _150_toolpath.csv"
+    model_json = model_json or base / "analysis" / "rs_speed_cap_model.json"
+
+    from core.blend_zone import run_feature3
+    from core.blend_zone.rs_speed_cap import load_rs_speed_cap, query_v_cap
+    from tests.rs_speed_cap_analysis import extract_cruise_speeds
+
+    from utils.config_loader import get_robot_by_name, load_batch_config, load_knife_config
+    from utils.csv_loader_toolpath import prepare_toolpath_load_result_for_feature3
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cfg = load_batch_config(str(repo / "config" / "batch_feasibility_config.yaml"))
+    cfg.feature3_d1.enabled = True
+    cfg.feature3_d1.generate_plots = True
+    cfg.feature3_d1.generate_report = True
+    cfg.use_base_frame = True
+    robot = get_robot_by_name(_ROBOT_NAME)
+    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
+
+    extracted = extract_cruise_speeds(str(rs_csv), str(toolpath_csv))
+    cap_table = load_rs_speed_cap(analysis_result_path=str(model_json))
+
+    lr = prepare_toolpath_load_result_for_feature3(
+        str(toolpath_csv),
+        custom_zone=True,
+        default_zone="z0",
+        default_v_cmd=6000.0,
+        use_base_frame=True,
+        knife_translation_m=knife.translation_m,
+        knife_quaternion=knife.quaternion,
+    )
+    case_dir = out_dir / "v_capped"
+    result = run_feature3(
+        toolpath_csv=str(toolpath_csv),
+        urdf_path=str(repo / robot.urdf_path),
+        config=cfg,
+        output_dir=str(case_dir / "solver"),
+        robot_model_name=_ROBOT_NAME,
+        robot_reach_m=robot.reach_m,
+        velocity_limits_rad_s=np.array(robot.velocity_limits_rad_s),
+        accel_limits_rad_s2=(
+            np.array(robot.acceleration_limits_rad_s2)
+            if robot.acceleration_limits_rad_s2 else None
+        ),
+        verbose=True,
+        custom_zone=True,
+        plots=True,
+        reports=True,
+        preloaded_load_result=lr,
+        jacobian_dynamics_override=True,
+    )
+    if result.speed_profile is None:
+        raise RuntimeError(
+            "Feature 3 run did not produce a speed profile: "
+            f"{result.infeasible_reason or 'unknown'}"
+        )
+
+    # Post-processing: apply v_cap to the solver's physics-only speed profile.
+    from core.blend_zone.rs_speed_cap import (
+        apply_v_cap_to_dense_path,
+        compute_per_segment_v_cap,
+    )
+    v_cap_segs = compute_per_segment_v_cap(
+        lr.waypoints[0], lr.zone_params[0], cap_table,
+    )
+    v_raw = np.asarray(result.speed_profile.v_actual, dtype=float)
+    v_capped_profile = apply_v_cap_to_dense_path(
+        v_cap_segs, result.dense_path, v_raw,
+    )
+
+    rs_data = _load_csv(rs_csv)
+    rs_base = _rs_poses_tpk_to_base(rs_data, repo)
+    rs_xyz_base_mm = rs_base[:, :3] * 1000.0
+    rs_arc_base = _arc_length_mm(rs_xyz_base_mm)
+    rs_speed_base, _ = _speed_accel_from_xyz_time(rs_xyz_base_mm, rs_data["time_ms"])
+    rs_speed_on_solver = np.interp(
+        result.speed_profile.arc_lengths_mm, rs_arc_base, rs_speed_base,
+    )
+
+    raw_rel = _median_speed_rel_error(v_raw, rs_speed_on_solver)
+    capped_rel = _median_speed_rel_error(v_capped_profile, rs_speed_on_solver)
+    penalty = (
+        100.0 * (raw_rel - capped_rel) / raw_rel if np.isfinite(raw_rel) and raw_rel > 1e-9
+        else float("nan")
+    )
+
+    metrics: List[Exp24SpeedCapMetrics] = []
+    for _, row in extracted.iterrows():
+        if not np.isfinite(row.get("v_cap_measured", np.nan)):
+            continue
+        model_v = query_v_cap(
+            cap_table,
+            float(row["spacing_mm"]),
+            float(row["zone_radius_mm"]),
+        )
+        metrics.append(
+            Exp24SpeedCapMetrics(
+                trajectory_label=str(row["trajectory_label"]),
+                spacing_mm=float(row["spacing_mm"]),
+                zone_label=str(row["zone_label"]),
+                rs_v_cap_measured_mm_s=float(row["v_cap_measured"]),
+                model_v_cap_mm_s=float(model_v),
+                solver_raw_median_rel_error=raw_rel,
+                solver_capped_median_rel_error=capped_rel,
+                controller_penalty_pct=penalty,
+            )
+        )
+
+    summary_lines = [
+        "Experiment 24 v_capped — RS firmware speed-cap validation",
+        "=" * 60,
+        f"RS CSV: {rs_csv.name}",
+        f"Model:  {model_json.name}",
+        "",
+        "MODE 1 — solver_raw (physics only, cap OFF equivalent):",
+        f"  median speed rel error vs RS: {raw_rel * 100.0:.2f} %",
+        "",
+        "MODE 2 — solver_capped (physics + IRC5 cap model):",
+        f"  median speed rel error vs RS: {capped_rel * 100.0:.2f} %",
+        "",
+        f"Controller penalty (raw−capped gap): {penalty:.1f} % of raw error",
+        "",
+        "Per-block RS cruise vs model v_cap:",
+    ]
+    for m in metrics:
+        model_err = abs(m.model_v_cap_mm_s - m.rs_v_cap_measured_mm_s)
+        model_err_pct = 100.0 * model_err / max(m.rs_v_cap_measured_mm_s, 1.0)
+        summary_lines.append(
+            f"  {m.trajectory_label:12s}  RS={m.rs_v_cap_measured_mm_s:8.1f}  "
+            f"model={m.model_v_cap_mm_s:8.1f}  model err={model_err_pct:.1f}%"
+        )
+    (out_dir / "v_capped_speed_cap_summary.txt").write_text(
+        "\n".join(summary_lines) + "\n", encoding="utf-8",
+    )
+
+    with open(out_dir / "v_capped_speed_cap_metrics.json", "w", encoding="utf-8") as f:
+        json.dump([m.__dict__ for m in metrics], f, indent=2)
+
+    return metrics
+
+
 def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run Experiment 24 validation utilities.")
     parser.add_argument(
         "--dataset",
-        choices=["v1", "v2", "v3", "v4", "v6", "v6_2", "v8", "v9"],
+        choices=["v1", "v2", "v3", "v4", "v6", "v6_2", "v8", "v9", "v_capped"],
         default="v6",
         help="Experiment 24 dataset to validate (default: v6).",
     )
@@ -3688,6 +4223,20 @@ def main() -> None:
             "(defaults to the dataset folder, e.g. v9_snake_toolpaths_orientation_test_single)."
         ),
     )
+    parser.add_argument(
+        "--rs-speed-cap",
+        choices=["on", "off", "config"],
+        default="config",
+        help=(
+            "IRC5 firmware v_cap overlay: 'on' force apply, 'off' physics-only, "
+            "'config' use batch_feasibility_config.yaml (default)."
+        ),
+    )
+    parser.add_argument(
+        "--no-f3-plots",
+        action="store_true",
+        help="Skip Feature 3 pipeline PNGs (speed/blend/joint). D2 comparison plots still emit.",
+    )
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -3702,6 +4251,15 @@ def main() -> None:
             f"--time-optimal requires a Feature-3 dataset (v3/v4/v6/v6_2/v8/v9); "
             f"got --dataset {args.dataset!r}"
         )
+
+    apply_rs_speed_cap: Optional[bool]
+    if args.rs_speed_cap == "on":
+        apply_rs_speed_cap = True
+    elif args.rs_speed_cap == "off":
+        apply_rs_speed_cap = False
+    else:
+        apply_rs_speed_cap = None
+    generate_f3_plots = not args.no_f3_plots
 
     csv_paths: Optional[List[Path]] = None
     toolpath_dataset_name = args.toolpath_dataset
@@ -3747,6 +4305,8 @@ def main() -> None:
             dataset_name="v6_2",
             output_group="v6_2_constant_orientation",
             include_d2=args.time_optimal,
+            apply_rs_speed_cap=apply_rs_speed_cap,
+            generate_f3_plots=generate_f3_plots,
         )
     elif args.dataset == "v8":
         metrics = evaluate_exp24_v6_constant_orientation_dataset(
@@ -3757,6 +4317,8 @@ def main() -> None:
             output_group="v8_snake_variable_wp_spacing",
             toolpath_dataset_name=toolpath_dataset_name,
             include_d2=args.time_optimal,
+            apply_rs_speed_cap=apply_rs_speed_cap,
+            generate_f3_plots=generate_f3_plots,
         )
     elif args.dataset == "v9":
         metrics = evaluate_exp24_v6_constant_orientation_dataset(
@@ -3767,10 +4329,17 @@ def main() -> None:
             output_group="v9_snake_orientation_test",
             toolpath_dataset_name=toolpath_dataset_name,
             include_d2=args.time_optimal,
+            apply_rs_speed_cap=apply_rs_speed_cap,
+            generate_f3_plots=generate_f3_plots,
         )
+    elif args.dataset == "v_capped":
+        metrics = evaluate_exp24_v_capped_speed_cap(out_dir, repo)
     else:
         metrics = evaluate_exp24_v6_constant_orientation_dataset(
-            out_dir, repo, include_d2=args.time_optimal,
+            out_dir, repo,
+            include_d2=args.time_optimal,
+            apply_rs_speed_cap=apply_rs_speed_cap,
+            generate_f3_plots=generate_f3_plots,
         )
 
     print(f"Experiment 24 {args.dataset} validation written to: {out_dir}")
