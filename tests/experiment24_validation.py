@@ -2088,9 +2088,8 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             _dense_xyz_mm = _dense_poses[:, :3] * 1000.0
             _dense_quat = _dense_poses[:, 3:7]
             _wp_xyz_mm = lr.waypoints[0][:, :3] * 1000.0
-            _wp_arc = _arc_length_mm(_wp_xyz_mm)
             _wp_is_corner = map_corners_to_waypoints(
-                js_corner_result.is_corner, solver_arc, _wp_arc,
+                js_corner_result.is_corner, _dense_xyz_mm, _wp_xyz_mm,
             )
             plot_3d_toolpath_with_corners(
                 case_dir / "3d_toolpath_base_frame_corners.png",

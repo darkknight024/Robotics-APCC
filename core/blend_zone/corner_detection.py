@@ -578,67 +578,121 @@ def plot_3d_toolpath_with_corners(
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
     from scipy.spatial.transform import Rotation
 
-    fig = plt.figure(figsize=(14, 11))
-    ax = fig.add_subplot(111, projection="3d")
-
     xyz = np.asarray(positions_mm, dtype=float)
     quat = np.asarray(quaternions, dtype=float)
     mask = np.asarray(is_corner, dtype=bool)
 
-    # Path line coloured by corner/straight
-    straight_idx = np.where(~mask)[0]
-    corner_idx = np.where(mask)[0]
+    z_range = float(np.ptp(xyz[:, 2])) if len(xyz) > 1 else 0.0
+    xy_range = max(float(np.ptp(xyz[:, 0])), float(np.ptp(xyz[:, 1])), 1.0)
+    is_flat = z_range < 0.05 * xy_range  # Z variation < 5% of XY span
 
-    ax.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2],
-            color="steelblue", lw=0.8, alpha=0.6, label="straight")
-    if len(corner_idx) > 0:
-        ax.scatter(xyz[corner_idx, 0], xyz[corner_idx, 1], xyz[corner_idx, 2],
-                   c="red", s=6, alpha=0.7, label="corner region", zorder=5)
+    if is_flat:
+        fig, ax = plt.subplots(figsize=(14, 11))
+        corner_idx = np.where(mask)[0]
 
-    # Orientation arrows (subsample for readability)
-    n_arrows = min(60, len(xyz))
-    step = max(1, len(xyz) // n_arrows)
-    arrow_len = float(np.ptp(xyz[:, :3].ravel())) * 0.03
-    if arrow_len < 1.0:
-        arrow_len = 1.0
+        ax.plot(xyz[:, 0], xyz[:, 1],
+                color="steelblue", lw=1.0, alpha=0.6, label="straight")
+        if len(corner_idx) > 0:
+            ax.scatter(xyz[corner_idx, 0], xyz[corner_idx, 1],
+                       c="red", s=8, alpha=0.7, label="corner region", zorder=5)
 
-    for i in range(0, len(xyz), step):
-        q_wxyz = quat[i]
-        q_xyzw = np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
-        rot = Rotation.from_quat(q_xyzw)
-        z_axis = rot.apply([0, 0, 1])
-        color = "red" if mask[i] else "dodgerblue"
-        ax.quiver(
-            xyz[i, 0], xyz[i, 1], xyz[i, 2],
-            z_axis[0], z_axis[1], z_axis[2],
-            length=arrow_len, color=color, alpha=0.6, linewidth=0.8,
-        )
+        # Orientation arrows
+        n_arrows = min(60, len(xyz))
+        step = max(1, len(xyz) // n_arrows)
+        arrow_len = xy_range * 0.025
+        for i in range(0, len(xyz), step):
+            q_wxyz = quat[i]
+            q_xyzw = np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
+            rot = Rotation.from_quat(q_xyzw)
+            z_axis = rot.apply([0, 0, 1])
+            color = "red" if mask[i] else "dodgerblue"
+            ax.annotate("", xy=(xyz[i, 0] + z_axis[0] * arrow_len,
+                                xyz[i, 1] + z_axis[1] * arrow_len),
+                        xytext=(xyz[i, 0], xyz[i, 1]),
+                        arrowprops=dict(arrowstyle="->", color=color,
+                                        lw=0.8, alpha=0.5))
 
-    # Waypoint markers
-    if waypoint_positions_mm is not None:
-        wp = np.asarray(waypoint_positions_mm, dtype=float)
-        if waypoint_is_corner is not None:
-            wp_mask = np.asarray(waypoint_is_corner, dtype=bool)
-            wp_straight = wp[~wp_mask]
-            wp_corner = wp[wp_mask]
-            if len(wp_straight) > 0:
-                ax.scatter(wp_straight[:, 0], wp_straight[:, 1], wp_straight[:, 2],
-                           marker="o", c="green", s=25, alpha=0.8, edgecolors="black",
-                           linewidths=0.5, label="WP (straight)", zorder=6)
-            if len(wp_corner) > 0:
-                ax.scatter(wp_corner[:, 0], wp_corner[:, 1], wp_corner[:, 2],
-                           marker="^", c="orangered", s=50, alpha=0.9, edgecolors="black",
-                           linewidths=0.5, label="WP (corner)", zorder=7)
-        else:
-            ax.scatter(wp[:, 0], wp[:, 1], wp[:, 2],
-                       marker="o", c="green", s=25, alpha=0.8, edgecolors="black",
-                       linewidths=0.5, label="waypoints", zorder=6)
+        if waypoint_positions_mm is not None:
+            wp = np.asarray(waypoint_positions_mm, dtype=float)
+            if waypoint_is_corner is not None:
+                wp_mask = np.asarray(waypoint_is_corner, dtype=bool)
+                wp_s = wp[~wp_mask]
+                wp_c = wp[wp_mask]
+                if len(wp_s) > 0:
+                    ax.scatter(wp_s[:, 0], wp_s[:, 1], marker="o", c="green",
+                               s=30, alpha=0.8, edgecolors="black", linewidths=0.5,
+                               label="WP (straight)", zorder=6)
+                if len(wp_c) > 0:
+                    ax.scatter(wp_c[:, 0], wp_c[:, 1], marker="^", c="orangered",
+                               s=60, alpha=0.9, edgecolors="black", linewidths=0.5,
+                               label="WP (corner)", zorder=7)
+            else:
+                ax.scatter(wp[:, 0], wp[:, 1], marker="o", c="green",
+                           s=30, alpha=0.8, edgecolors="black", linewidths=0.5,
+                           label="waypoints", zorder=6)
 
-    ax.set_xlabel("X [mm]")
-    ax.set_ylabel("Y [mm]")
-    ax.set_zlabel("Z [mm]")
-    ax.set_title(title or "3D toolpath with corner highlighting", fontsize=12)
-    ax.legend(loc="upper left", fontsize=8)
+        ax.set_xlabel("X [mm]")
+        ax.set_ylabel("Y [mm]")
+        ax.set_aspect("equal")
+        ax.set_title(title or "2D toolpath with corner highlighting", fontsize=12)
+        ax.legend(loc="best", fontsize=8)
+        ax.grid(True, alpha=0.2)
+    else:
+        fig = plt.figure(figsize=(14, 11))
+        ax = fig.add_subplot(111, projection="3d")
+        corner_idx = np.where(mask)[0]
+
+        ax.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2],
+                color="steelblue", lw=0.8, alpha=0.6, label="straight")
+        if len(corner_idx) > 0:
+            ax.scatter(xyz[corner_idx, 0], xyz[corner_idx, 1], xyz[corner_idx, 2],
+                       c="red", s=6, alpha=0.7, label="corner region", zorder=5)
+
+        n_arrows = min(60, len(xyz))
+        step = max(1, len(xyz) // n_arrows)
+        arrow_len = xy_range * 0.03
+        if arrow_len < 1.0:
+            arrow_len = 1.0
+
+        for i in range(0, len(xyz), step):
+            q_wxyz = quat[i]
+            q_xyzw = np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
+            rot = Rotation.from_quat(q_xyzw)
+            z_axis = rot.apply([0, 0, 1])
+            color = "red" if mask[i] else "dodgerblue"
+            ax.quiver(
+                xyz[i, 0], xyz[i, 1], xyz[i, 2],
+                z_axis[0], z_axis[1], z_axis[2],
+                length=arrow_len, color=color, alpha=0.6, linewidth=0.8,
+            )
+
+        if waypoint_positions_mm is not None:
+            wp = np.asarray(waypoint_positions_mm, dtype=float)
+            if waypoint_is_corner is not None:
+                wp_mask = np.asarray(waypoint_is_corner, dtype=bool)
+                wp_s = wp[~wp_mask]
+                wp_c = wp[wp_mask]
+                if len(wp_s) > 0:
+                    ax.scatter(wp_s[:, 0], wp_s[:, 1], wp_s[:, 2],
+                               marker="o", c="green", s=25, alpha=0.8,
+                               edgecolors="black", linewidths=0.5,
+                               label="WP (straight)", zorder=6)
+                if len(wp_c) > 0:
+                    ax.scatter(wp_c[:, 0], wp_c[:, 1], wp_c[:, 2],
+                               marker="^", c="orangered", s=50, alpha=0.9,
+                               edgecolors="black", linewidths=0.5,
+                               label="WP (corner)", zorder=7)
+            else:
+                ax.scatter(wp[:, 0], wp[:, 1], wp[:, 2],
+                           marker="o", c="green", s=25, alpha=0.8,
+                           edgecolors="black", linewidths=0.5,
+                           label="waypoints", zorder=6)
+
+        ax.set_xlabel("X [mm]")
+        ax.set_ylabel("Y [mm]")
+        ax.set_zlabel("Z [mm]")
+        ax.set_title(title or "3D toolpath with corner highlighting", fontsize=12)
+        ax.legend(loc="upper left", fontsize=8)
 
     fig.tight_layout()
     fig.savefig(str(out_path), dpi=150, bbox_inches="tight")
@@ -647,21 +701,23 @@ def plot_3d_toolpath_with_corners(
 
 def map_corners_to_waypoints(
     is_corner_dense: np.ndarray,
-    dense_arc_mm: np.ndarray,
-    waypoint_arc_mm: np.ndarray,
-    radius_mm: float = 3.0,
+    dense_xyz_mm: np.ndarray,
+    waypoint_xyz_mm: np.ndarray,
 ) -> np.ndarray:
     """Map dense-sample corner mask to per-waypoint boolean.
 
-    A waypoint is marked as a corner if any dense sample within
-    ``radius_mm`` of its arc position is a corner.
+    Each waypoint is mapped to its nearest dense-path sample by Euclidean
+    XYZ distance.  A waypoint is a corner if that nearest dense sample is
+    flagged as a corner.
+
+    Uses spatial proximity rather than arc-length matching because the
+    blended dense path has different cumulative arc lengths than the
+    straight-line waypoint chain.
     """
-    M = len(waypoint_arc_mm)
+    M = len(waypoint_xyz_mm)
     wp_corner = np.zeros(M, dtype=bool)
     for i in range(M):
-        lo = waypoint_arc_mm[i] - radius_mm
-        hi = waypoint_arc_mm[i] + radius_mm
-        in_range = (dense_arc_mm >= lo) & (dense_arc_mm <= hi)
-        if np.any(is_corner_dense[in_range]):
-            wp_corner[i] = True
+        dists = np.linalg.norm(dense_xyz_mm - waypoint_xyz_mm[i], axis=1)
+        nearest = int(np.argmin(dists))
+        wp_corner[i] = bool(is_corner_dense[nearest])
     return wp_corner
