@@ -400,6 +400,11 @@ class Feature3D1Config:
     # per-payload robot dynamics model is not finished; site guidance
     # allows exceeding the measured estimates (e.g. 1.5 = +50%).
     joint_accel_limit_scale: float = 1.0
+    # ── Joint-space curvature corner detection ──
+    # Replaces position-deflection heuristic with MVC-based classification.
+    # See core/blend_zone/corner_detection.py for algorithm details.
+    js_corner_detection: bool = True
+    js_corner_speed_ratio: float = 0.4
     # IRC5 firmware speed cap is applied externally in experiment24_validation.py.
     # These fields are kept for backward config-file compatibility only.
     apply_rs_speed_cap: bool = False

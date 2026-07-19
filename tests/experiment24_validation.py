@@ -2054,6 +2054,81 @@ def evaluate_exp24_v6_constant_orientation_dataset(
                 ]) + "\n",
                 encoding="utf-8",
             )
+        # ── Joint-space curvature corner detection ──
+        _js_corner = getattr(cfg.feature3_d1, "js_corner_detection", True)
+        if _js_corner and result.q_star is not None and len(result.q_star) == len(solver_arc):
+            from core.blend_zone.corner_detection import (
+                detect_corners_joint_space,
+                map_corners_to_waypoints,
+                plot_3d_toolpath_with_corners,
+                plot_corner_detection_diagnostic,
+            )
+            _accel_scale = float(getattr(cfg.feature3_d1, "joint_accel_limit_scale", 1.0) or 1.0)
+            _alim = (
+                _accel_scale * np.array(robot.acceleration_limits_rad_s2, dtype=float)
+                if robot.acceleration_limits_rad_s2 else np.full(6, 1000.0)
+            )
+            js_corner_result = detect_corners_joint_space(
+                np.asarray(result.q_star, dtype=float),
+                np.array(robot.velocity_limits_rad_s, dtype=float),
+                _alim,
+                np.asarray(solver_arc, dtype=float),
+                corner_speed_ratio=float(getattr(cfg.feature3_d1, "js_corner_speed_ratio", 0.4)),
+            )
+            plot_corner_detection_diagnostic(
+                case_dir / "joint_space_corner_detection.png",
+                np.asarray(result.q_star, dtype=float),
+                result.dense_path.poses,
+                np.asarray(solver_arc, dtype=float),
+                js_corner_result,
+                title=label,
+            )
+            # ── 3D plots with corner waypoints highlighted ──
+            _dense_poses = result.dense_path.poses
+            _dense_xyz_mm = _dense_poses[:, :3] * 1000.0
+            _dense_quat = _dense_poses[:, 3:7]
+            _wp_xyz_mm = lr.waypoints[0][:, :3] * 1000.0
+            _wp_arc = _arc_length_mm(_wp_xyz_mm)
+            _wp_is_corner = map_corners_to_waypoints(
+                js_corner_result.is_corner, solver_arc, _wp_arc,
+            )
+            plot_3d_toolpath_with_corners(
+                case_dir / "3d_toolpath_base_frame_corners.png",
+                _dense_xyz_mm, _dense_quat,
+                js_corner_result.is_corner,
+                title=f"Base frame — {label}",
+                waypoint_positions_mm=_wp_xyz_mm,
+                waypoint_is_corner=_wp_is_corner,
+            )
+            # Raw input toolpath in plate frame (reload from CSV)
+            try:
+                _raw_lr = prepare_toolpath_load_result_for_feature3(
+                    str(toolpath), custom_zone=True, default_zone="z5",
+                    default_v_cmd=20.0, use_base_frame=True,
+                )
+                _raw_xyz_mm = _raw_lr.waypoints[0][:, :3] * 1000.0
+                _raw_quat = _raw_lr.waypoints[0][:, 3:7]
+                plot_3d_toolpath_with_corners(
+                    case_dir / "3d_toolpath_raw_input_corners.png",
+                    _raw_xyz_mm, _raw_quat,
+                    _wp_is_corner,
+                    title=f"Raw input (plate frame) — {label}",
+                    waypoint_positions_mm=_raw_xyz_mm,
+                    waypoint_is_corner=_wp_is_corner,
+                )
+            except Exception as _e:
+                logger.warning("Could not generate raw input 3D plot: %s", _e)
+            _n_js_corners = int(np.sum(js_corner_result.is_corner))
+            _n_js_regions = len(js_corner_result.corner_intervals_idx)
+            print(
+                f"    JS corner detection: {_n_js_corners}/{len(solver_arc)} samples "
+                f"in {_n_js_regions} regions "
+                f"(ratio={js_corner_result.corner_speed_ratio:.2f}, "
+                f"v_ref={js_corner_result.v_ref:.1f})"
+            )
+        else:
+            js_corner_result = None
+
         if include_d2:
             d2_row = _reduce_time_optimal_metrics(
                 rs_csv.name, result,

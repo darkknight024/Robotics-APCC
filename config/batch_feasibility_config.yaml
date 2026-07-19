@@ -185,6 +185,14 @@ feature3_d1:
   # allows exceeding them by 20%.  Only the ACCELERATION limit is scaled —
   # velocity limits are never loosened.
   joint_accel_limit_scale: 1.2
+  # ── Joint-space curvature corner detection ──
+  # Classifies corners from the MVC (Maximum Velocity Curve) of the dense IK
+  # joint path q*(σ), parameterised by joint-space arc length.  See
+  # core/blend_zone/corner_detection.py for the full algorithm and references.
+  js_corner_detection: true
+  js_corner_speed_ratio: 0.4       # MVC < ratio × v_ref → corner; lower = sharper only
+  # All other corner-detection internals (smoothing, merge gap, grid size,
+  # v_ref percentile) are auto-derived from data — no manual tuning needed.
   # IRC5 firmware speed cap is NOT applied in the core pipeline.  It is a
   # post-processing step in tests/experiment24_validation.py --rs-speed-cap on.
   apply_rs_speed_cap: false
