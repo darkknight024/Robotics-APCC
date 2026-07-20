@@ -1823,7 +1823,7 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         if _v_cap_model_path is None and _candidate.exists():
             _v_cap_model_path = _candidate
         if _v_cap_model_path is None:
-            logger.warning("RS speed-cap model not found — v_cap post-processing disabled.")
+            print("    [WARN] RS speed-cap model not found — v_cap post-processing disabled.")
             _do_v_cap = False
     cfg.use_base_frame = False
     cfg.solver = "pin"
@@ -1952,11 +1952,42 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         solver_speed_rel = np.abs(solver_speed_err) / np.maximum(rs_speed_on_solver, 1.0)
         solver_orientation_abs_err = np.abs(solver_orientation_speed - rs_orientation_on_solver)
 
-        # Straight-only mask: exclude blend-arc samples from speed metrics.
-        is_blend = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
-        straight_mask = ~is_blend & (rs_speed_on_solver > 1.0)
+        # Joint-space MVC corner detection (Layer B) — the correct dynamics-based
+        # classifier for "where must the robot slow down?"  Used to exclude corner
+        # regions from RS speed benchmarking.
+        js_corner_result = None
+        _js_corner_enabled = getattr(cfg.feature3_d1, "js_corner_detection", True)
+        if (
+            _js_corner_enabled
+            and result.q_star is not None
+            and len(result.q_star) == len(solver_arc)
+        ):
+            from core.blend_zone.corner_detection import (
+                detect_corners_joint_space,
+                map_corners_to_waypoints,
+            )
+            _accel_scale = float(getattr(cfg.feature3_d1, "joint_accel_limit_scale", 1.0) or 1.0)
+            _alim = (
+                _accel_scale * np.array(robot.acceleration_limits_rad_s2, dtype=float)
+                if robot.acceleration_limits_rad_s2 else np.full(6, 1000.0)
+            )
+            js_corner_result = detect_corners_joint_space(
+                np.asarray(result.q_star, dtype=float),
+                np.array(robot.velocity_limits_rad_s, dtype=float),
+                _alim,
+                np.asarray(solver_arc, dtype=float),
+                corner_speed_ratio=float(getattr(cfg.feature3_d1, "js_corner_speed_ratio", 0.4)),
+            )
+
+        # Straight-only mask: exclude JS-detected corner regions from speed metrics.
+        # Falls back to blend-arc mask (Layer A) when JS detection unavailable.
+        if js_corner_result is not None:
+            is_corner_dense = np.asarray(js_corner_result.is_corner, dtype=bool)
+        else:
+            is_corner_dense = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
+        straight_mask = ~is_corner_dense & (rs_speed_on_solver > 1.0)
         n_straight = int(np.sum(straight_mask))
-        n_blend = int(np.sum(is_blend))
+        n_blend = int(np.sum(is_corner_dense))
         if n_straight > 0:
             straight_speed_err = solver_speed[straight_mask] - rs_speed_on_solver[straight_mask]
             straight_speed_rel = np.abs(straight_speed_err) / np.maximum(rs_speed_on_solver[straight_mask], 1.0)
@@ -2054,26 +2085,12 @@ def evaluate_exp24_v6_constant_orientation_dataset(
                 ]) + "\n",
                 encoding="utf-8",
             )
-        # ── Joint-space curvature corner detection ──
-        _js_corner = getattr(cfg.feature3_d1, "js_corner_detection", True)
-        if _js_corner and result.q_star is not None and len(result.q_star) == len(solver_arc):
+        # ── Joint-space corner diagnostic plots (detection already ran above) ──
+        if js_corner_result is not None:
             from core.blend_zone.corner_detection import (
-                detect_corners_joint_space,
                 map_corners_to_waypoints,
                 plot_3d_toolpath_with_corners,
                 plot_corner_detection_diagnostic,
-            )
-            _accel_scale = float(getattr(cfg.feature3_d1, "joint_accel_limit_scale", 1.0) or 1.0)
-            _alim = (
-                _accel_scale * np.array(robot.acceleration_limits_rad_s2, dtype=float)
-                if robot.acceleration_limits_rad_s2 else np.full(6, 1000.0)
-            )
-            js_corner_result = detect_corners_joint_space(
-                np.asarray(result.q_star, dtype=float),
-                np.array(robot.velocity_limits_rad_s, dtype=float),
-                _alim,
-                np.asarray(solver_arc, dtype=float),
-                corner_speed_ratio=float(getattr(cfg.feature3_d1, "js_corner_speed_ratio", 0.4)),
             )
             plot_corner_detection_diagnostic(
                 case_dir / "joint_space_corner_detection.png",
@@ -2116,7 +2133,7 @@ def evaluate_exp24_v6_constant_orientation_dataset(
                     waypoint_is_corner=_wp_is_corner,
                 )
             except Exception as _e:
-                logger.warning("Could not generate raw input 3D plot: %s", _e)
+                print(f"    [WARN] Could not generate raw input 3D plot: {_e}")
             _n_js_corners = int(np.sum(js_corner_result.is_corner))
             _n_js_regions = len(js_corner_result.corner_intervals_idx)
             print(
@@ -2125,8 +2142,6 @@ def evaluate_exp24_v6_constant_orientation_dataset(
                 f"(ratio={js_corner_result.corner_speed_ratio:.2f}, "
                 f"v_ref={js_corner_result.v_ref:.1f})"
             )
-        else:
-            js_corner_result = None
 
         if include_d2:
             d2_row = _reduce_time_optimal_metrics(
@@ -2164,6 +2179,27 @@ def evaluate_exp24_v6_constant_orientation_dataset(
         # Per-waypoint speed table: input toolpath + all-mode speed estimates.
         _to = getattr(result, "time_optimal", None)
         _cs = getattr(result, "constant_speed", None)
+        # Build per-waypoint JS corner flag (Layer B); fallback to Layer A.
+        if js_corner_result is not None:
+            from core.blend_zone.corner_detection import map_corners_to_waypoints as _map_c
+            _wp_is_corner_arr = _map_c(
+                js_corner_result.is_corner,
+                solver_xyz_mm,
+                raw_waypoints_xyz_mm,
+            )
+        else:
+            _bg = result.blend_geoms or []
+            _wp_is_corner_arr = np.array([
+                _bg[i] is not None if i < len(_bg) else False
+                for i in range(len(raw_waypoints_xyz_mm))
+            ], dtype=bool)
+        # Per-corner v_flat (max velocity at each waypoint's corner)
+        _corner_lims = getattr(result, "corner_speed_limits", None)
+        _v_flat_per_wp = np.full(len(raw_waypoints_xyz_mm), np.inf)
+        if _corner_lims:
+            for _cl in _corner_lims:
+                if np.isfinite(_cl.v_max_no_dip_mm_s) and _cl.waypoint_idx < len(_v_flat_per_wp):
+                    _v_flat_per_wp[_cl.waypoint_idx] = _cl.v_max_no_dip_mm_s
         _write_per_waypoint_speed_table(
             case_dir,
             toolpath,
@@ -2178,6 +2214,8 @@ def evaluate_exp24_v6_constant_orientation_dataset(
             result.blend_geoms,
             lr.v_cmd[0],
             v_capped_dense=v_capped,
+            wp_is_corner=_wp_is_corner_arr,
+            v_flat_per_wp=_v_flat_per_wp,
         )
         _write_straight_speed_benchmark(
             case_dir,
@@ -2945,7 +2983,7 @@ def _blend_arc_intervals(
 
 def _shade_blend_arcs(ax, intervals: List[tuple]) -> None:
     for a0, a1 in intervals:
-        ax.axvspan(a0, a1, color="orange", alpha=0.08, lw=0)
+        ax.axvspan(a0, a1, color="orange", alpha=0.22, lw=0)
 
 
 def _rs_joint_states_deg(rs_data) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -3017,66 +3055,49 @@ def _m5_solver_joint_states_deg(
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     """Solver joint states for the best-available speed profile, in degrees.
 
-    Returns ``(arc_mm, q_deg, qdot_deg_s, qddot_deg_s2)``.  Joint velocity
-    is computed from ``dq/ds * v(s)`` using the v_flat-clamped speed, and
-    acceleration from its time-derivative.
+    Returns ``(arc_mm, q_deg, qdot_deg_s, qddot_deg_s2)``.  Uses the smooth
+    Jacobian-based joint velocities from M6, scaled by the v_flat-clamped
+    speed ratio, then differentiates for acceleration.
     """
     if result.speed_profile is None:
         return None, None, None, None
     arc = np.asarray(result.speed_profile.arc_lengths_mm, dtype=float)
     q_deg = None
-    q_rad = None
     if result.q_star is not None and len(result.q_star) == len(arc):
-        q_rad = np.asarray(result.q_star, dtype=float)
-        q_deg = np.rad2deg(q_rad)
+        q_deg = np.rad2deg(np.asarray(result.q_star, dtype=float))
 
-    if q_rad is None:
-        # Fallback: no joint path available, return positions only.
+    if result.joint_velocity_result is None:
         return arc, q_deg, None, None
 
-    # Build the best speed profile: TOPP-commanded + v_flat ceiling.
-    ct = getattr(result, "commanded_topp", None)
-    if (
-        ct is not None and getattr(ct, "feasible", False)
-        and ct.v_tcp_profile_mm_s is not None
-        and len(ct.v_tcp_profile_mm_s) == len(arc)
-    ):
-        v_profile = np.asarray(ct.v_tcp_profile_mm_s, dtype=float).copy()
-    else:
-        v_profile = np.asarray(result.speed_profile.v_actual, dtype=float).copy()
+    # M6 Jacobian-based q̇ (smooth, computed at M5's v_actual).
+    qdot_m5_rad = np.asarray(result.joint_velocity_result.q_dot, dtype=float)
+    if len(qdot_m5_rad) != len(arc):
+        return arc, q_deg, None, None
+    v_m5 = np.asarray(result.speed_profile.v_actual, dtype=float)
 
-    # Apply per-corner v_flat ceiling (same as the TCP speed plot).
+    # Build v_flat-clamped speed profile for time parameterization.
+    v_clamped = v_m5.copy()
     _corner_lims = getattr(result, "corner_speed_limits", None)
     if _corner_lims and result.dense_path is not None:
         _is_blend = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
         _blend_wp = np.asarray(
-            getattr(result.dense_path, "blend_wp_idx", np.full(len(v_profile), -1)),
+            getattr(result.dense_path, "blend_wp_idx", np.full(len(v_clamped), -1)),
             dtype=int,
         )
         for _cl in _corner_lims:
             if not np.isfinite(_cl.v_max_no_dip_mm_s):
                 continue
             _mask = _is_blend & (_blend_wp == _cl.waypoint_idx)
-            v_profile[_mask] = np.minimum(v_profile[_mask], _cl.v_max_no_dip_mm_s)
+            v_clamped[_mask] = np.minimum(v_clamped[_mask], _cl.v_max_no_dip_mm_s)
 
-    # Compute dq/ds from the joint path via finite differences on arc-length.
-    M = len(q_rad)
-    ds = np.diff(arc)
-    ds[ds < 1e-9] = 1e-9
-    dq_ds = np.zeros_like(q_rad)
-    for j in range(q_rad.shape[1]):
-        dq_ds[1:, j] = np.diff(q_rad[:, j]) / ds
-    dq_ds[0] = dq_ds[1]
+    # Scale q̇ by speed ratio: q̇_clamped = q̇_M5 * (v_clamped / v_M5).
+    speed_ratio = np.where(v_m5 > 1e-6, v_clamped / v_m5, 1.0)
+    qdot_rad = qdot_m5_rad * speed_ratio[:, np.newaxis]
 
-    # q̇ = (dq/ds) * v(s)
-    qdot_rad = dq_ds * v_profile[:, np.newaxis]
-
-    # Time from clamped speed profile.
-    time_s = _time_from_arc_speed(arc, v_profile)
-
-    # q̈ = dq̇/dt via finite differences on the clamped time axis.
+    # Time from clamped speed, then q̈ = dq̇/dt.
+    time_s = _time_from_arc_speed(arc, v_clamped)
     qddot_rad = np.column_stack([
-        _derivative_wrt_time(qdot_rad[:, j], time_s) for j in range(q_rad.shape[1])
+        _derivative_wrt_time(qdot_rad[:, j], time_s) for j in range(qdot_rad.shape[1])
     ])
     return arc, q_deg, np.rad2deg(qdot_rad), np.rad2deg(qddot_rad)
 
@@ -3558,19 +3579,22 @@ def _write_per_waypoint_speed_table(
     blend_geoms: Optional[list],
     v_cmd_per_wp: np.ndarray,
     v_capped_dense: Optional[np.ndarray] = None,
+    wp_is_corner: Optional[np.ndarray] = None,
+    v_flat_per_wp: Optional[np.ndarray] = None,
 ) -> None:
     """Write ``<toolpath>_per_waypoint_speeds.csv``: the input toolpath rows plus
     per-waypoint speed estimates from every mode.
 
     Columns (headers added; the input toolpath is headerless):
       * the original toolpath fields (x..qz, commanded speed, zone data)
-      * ``solver_actual_v_mm_s``  — commanded-mode (M5) actual speed
+      * ``solver_actual_v_mm_s``  — commanded-mode actual speed (v_flat clamped)
       * ``solver_max_v_mm_s``     — time-optimal max speed  (N/A without --time-optimal)
       * ``v_constant_mm_s``       — global no-dip constant speed (N/A without --time-optimal)
-      * ``solver_capped_v_mm_s``  — M5 after IRC5 firmware v_cap (N/A if cap off)
-      * ``robotstudio_v_mm_s``    — RS logged TCP speed at the nearest sample (N/A if absent)
-      * ``is_corner``             — True if this waypoint is a real corner (blend arc)
-      * ``commanded_feasible``    — True if commanded speed ≤ solver_max_v (N/A if max absent)
+      * ``v_flat_corner_mm_s``    — per-corner max speed (joint dynamics ceiling)
+      * ``solver_capped_v_mm_s``  — after IRC5 firmware v_cap (N/A if cap off)
+      * ``robotstudio_v_mm_s``    — RS logged TCP speed at the nearest sample
+      * ``is_corner``             — True if waypoint is a dynamics corner (JS MVC)
+      * ``commanded_feasible``    — True if commanded speed ≤ v_flat_corner
     """
     NA = "N/A"
     wp_idx = _nearest_dense_indices(raw_waypoints_xyz_mm, solver_xyz_mm)
@@ -3595,10 +3619,20 @@ def _write_per_waypoint_speed_table(
         v_rs = [float(rs_speed_mm_s[rs_idx[i]]) for i in range(n_wp)]
     else:
         v_rs = [None] * n_wp
-    is_corner = [
-        bool(blend_geoms is not None and i < len(blend_geoms) and blend_geoms[i] is not None)
-        for i in range(n_wp)
-    ]
+    # JS MVC corner detection (Layer B) for is_corner; fallback to Layer A.
+    if wp_is_corner is not None:
+        is_corner = [bool(wp_is_corner[i]) for i in range(n_wp)]
+    else:
+        is_corner = [
+            bool(blend_geoms is not None and i < len(blend_geoms) and blend_geoms[i] is not None)
+            for i in range(n_wp)
+        ]
+    # Per-corner v_flat (max corner velocity from joint dynamics).
+    v_flat_corner = (
+        [float(v_flat_per_wp[i]) if np.isfinite(v_flat_per_wp[i]) else None for i in range(n_wp)]
+        if v_flat_per_wp is not None
+        else [None] * n_wp
+    )
 
     def _fmt(x):
         return NA if x is None or not np.isfinite(x) else f"{x:.3f}"
@@ -3627,7 +3661,8 @@ def _write_per_waypoint_speed_table(
         headers.append(zone_names_14[zi] if zi < len(zone_names_14) and n_orig >= 14 else f"zone_col_{k+1}")
     headers += [
         "solver_actual_v_mm_s", "solver_max_v_mm_s", "v_constant_mm_s",
-        "solver_capped_v_mm_s", "robotstudio_v_mm_s", "is_corner", "commanded_feasible",
+        "v_flat_corner_mm_s", "solver_capped_v_mm_s", "robotstudio_v_mm_s",
+        "is_corner", "commanded_feasible",
     ]
 
     out_path = out_dir / f"{Path(toolpath_csv).stem}_per_waypoint_speeds.csv"
@@ -3636,12 +3671,16 @@ def _write_per_waypoint_speed_table(
         w.writerow(headers)
         for i in range(min(n_wp, len(data_rows))):
             row = list(data_rows[i])
+            # Feasibility: commanded speed must not exceed the per-corner v_flat
+            # (joint dynamics ceiling).  On straights v_flat=inf → always feasible.
             feasible = NA
-            if v_max[i] is not None and np.isfinite(v_max[i]):
+            if v_flat_corner[i] is not None:
+                feasible = str(bool(float(v_cmd_per_wp[i]) <= v_flat_corner[i]))
+            elif v_max[i] is not None and np.isfinite(v_max[i]):
                 feasible = str(bool(float(v_cmd_per_wp[i]) <= v_max[i]))
             row += [
                 _fmt(v_act[i]), _fmt(v_max[i]), _fmt(v_const[i]),
-                _fmt(v_cap[i]), _fmt(v_rs[i]),
+                _fmt(v_flat_corner[i]), _fmt(v_cap[i]), _fmt(v_rs[i]),
                 str(is_corner[i]), feasible,
             ]
             w.writerow(row)
@@ -3937,18 +3976,34 @@ def _write_d2_case_outputs(
         scale = float(getattr(topp, "q_ddot_scale", 1.0) or 1.0)
         q_ddot_lim = scale * q_ddot_min_sym
         q_ddot_lim_deg = np.rad2deg(q_ddot_lim)
-        v = np.asarray(topp.v_tcp_profile_mm_s, dtype=float)
+        v = np.asarray(topp.v_tcp_profile_mm_s, dtype=float).copy()
+        # Enforce per-corner v_flat ceiling (TOPP-RA spline misses sub-mm arcs).
+        if corner_limits and result.dense_path is not None:
+            _is_blend = np.asarray(result.dense_path.is_blend_arc, dtype=bool)
+            _blend_wp = np.asarray(
+                getattr(result.dense_path, "blend_wp_idx", np.full(len(v), -1)),
+                dtype=int,
+            )
+            for _cl in corner_limits:
+                if not np.isfinite(_cl.v_max_no_dip_mm_s):
+                    continue
+                _mask = _is_blend & (_blend_wp == _cl.waypoint_idx)
+                v[_mask] = np.minimum(v[_mask], _cl.v_max_no_dip_mm_s)
+        v_raw = np.asarray(topp.v_tcp_profile_mm_s, dtype=float)
         t_s = _time_from_arc_speed(dense_arc, v)
         _speed_chk, a_scalar = _speed_accel_from_xyz_time(solver_xyz_mm, t_s * 1000.0)
-        qd_rad = np.asarray(topp.q_dot_optimal, dtype=float)
-        qdd_rad = np.asarray(topp.q_ddot_optimal, dtype=float)
+        # Scale TOPP-RA joint states by the speed ratio where v was clamped.
+        # q̇ ∝ v, q̈ ∝ v² (constant-speed approximation at each sample).
+        _v_ratio = np.where(v_raw > 1e-6, v / v_raw, 1.0)
+        qd_rad = np.asarray(topp.q_dot_optimal, dtype=float) * _v_ratio[:, np.newaxis]
+        qdd_rad = np.asarray(topp.q_ddot_optimal, dtype=float) * (_v_ratio ** 2)[:, np.newaxis]
         qd_deg = np.rad2deg(qd_rad)
         qdd_deg = np.rad2deg(qdd_rad)
 
         _plot_d2_tcp_panel(
             opt_dir / "tcp_speed_and_accel.png", dense_arc, v, a_scalar,
-            f"Time-optimal execution (TOPP-RA) — {label}   "
-            f"duration={topp.duration_s:.3f}s",
+            f"Time-optimal execution (TOPP-RA, v_flat-clamped) — {label}   "
+            f"duration={t_s[-1]:.3f}s",
             plt, blend_intervals, corner_limits,
             rs_arc_mm=rs_arc_mm,
             rs_speed_mm_s=rs_speed_mm_s,
@@ -4032,11 +4087,26 @@ def _write_d2_case_outputs(
         q_ddot_lim = float(cs.q_ddot_scale) * q_ddot_min_sym
         q_ddot_lim_deg = np.rad2deg(q_ddot_lim)
         cs_arc = np.asarray(cs.arc_lengths_mm, dtype=float)
-        v_const = np.full(len(dense_arc), cs.v_flat_mm_s)
+        # v_flat = min(global_analysis, min(per-corner)) to guarantee
+        # the green line never exceeds any per-corner marker.
+        v_flat_display = float(cs.v_flat_mm_s)
+        _binding_note = f"binding J{cs.binding_joint+1} {cs.binding_constraint}"
+        if corner_limits:
+            _min_corner = min(
+                (c.v_max_no_dip_mm_s for c in corner_limits
+                 if np.isfinite(c.v_max_no_dip_mm_s)),
+                default=float("inf"),
+            )
+            if _min_corner < v_flat_display:
+                v_flat_display = _min_corner
+                _binding_note = "binding per-corner v_flat"
+        v_const = np.full(len(dense_arc), v_flat_display)
         t_s = _time_from_arc_speed(dense_arc, v_const)
         _speed_chk, a_scalar = _speed_accel_from_xyz_time(solver_xyz_mm, t_s * 1000.0)
-        qd_rad = np.asarray(cs.q_dot_at_v_flat, dtype=float)
-        qdd_rad = np.asarray(cs.q_ddot_at_v_flat, dtype=float)
+        # Scale joint states from original v_flat to displayed v_flat.
+        _cs_ratio = v_flat_display / cs.v_flat_mm_s if cs.v_flat_mm_s > 1e-6 else 1.0
+        qd_rad = np.asarray(cs.q_dot_at_v_flat, dtype=float) * _cs_ratio
+        qdd_rad = np.asarray(cs.q_ddot_at_v_flat, dtype=float) * (_cs_ratio ** 2)
         qd_deg = np.rad2deg(qd_rad)
         qdd_deg = np.rad2deg(qdd_rad)
         q_on_cs = q_star_deg
@@ -4046,8 +4116,7 @@ def _write_d2_case_outputs(
         _plot_d2_tcp_panel(
             cv_dir / "tcp_speed_and_accel.png", dense_arc, v_const, a_scalar,
             f"Constant no-dip execution — {label}   "
-            f"v_flat={cs.v_flat_mm_s:.1f} mm/s "
-            f"(binding J{cs.binding_joint+1} {cs.binding_constraint})",
+            f"v_flat={v_flat_display:.1f} mm/s ({_binding_note})",
             plt, blend_intervals, corner_limits,
             rs_arc_mm=rs_arc_mm,
             rs_speed_mm_s=rs_speed_mm_s,
@@ -4059,7 +4128,7 @@ def _write_d2_case_outputs(
         )
         if have_rs:
             _emit_joint_vs_rs_compare(
-                cv_dir, label, f"constant v_flat={cs.v_flat_mm_s:.1f} mm/s",
+                cv_dir, label, f"constant v_flat={v_flat_display:.1f} mm/s",
                 cs_arc, q_on_cs, qd_deg, qdd_deg,
                 rs_arc_mm, rs_q_deg, rs_qdot_deg_s, rs_qddot_deg_s2,
                 q_dot_lim_deg_s=q_dot_max_deg,
@@ -4074,9 +4143,10 @@ def _write_d2_case_outputs(
         lines = [
             f"F3 D2 — constant no-dip execution summary — {label}",
             "=" * 60,
-            f"v_flat (max constant TCP speed, no corner dips): {cs.v_flat_mm_s:.2f} mm/s",
-            f"steady-state duration (L/v_flat): {cs.duration_s:.2f} s",
-            f"binding: J{cs.binding_joint+1} {cs.binding_constraint} "
+            f"v_flat (max constant TCP speed, no corner dips): {v_flat_display:.2f} mm/s",
+            f"  global-analysis ceiling: {cs.v_flat_mm_s:.2f} mm/s",
+            f"steady-state duration (L/v_flat): {dense_arc[-1] / v_flat_display:.2f} s",
+            f"binding: {_binding_note} "
             f"at arc {cs.binding_arc_length_mm:.1f} mm",
             f"velocity-only ceiling:     {cs.v_vel_limit_mm_s:.1f} mm/s",
             f"acceleration-only ceiling: {cs.v_accel_limit_mm_s:.1f} mm/s",

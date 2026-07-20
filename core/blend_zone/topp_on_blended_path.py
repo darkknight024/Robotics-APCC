@@ -1026,8 +1026,14 @@ def _arc_derivatives(q_arc: np.ndarray, s_arc_mm: np.ndarray) -> tuple:
     applicable (too few samples) or does not track the samples (residual
     above tolerance, e.g. an IK branch switch mid-arc — real structure
     that must not be smoothed).
+
+    For short arcs (< 12 samples), a cubic (degree 3) fit is used instead
+    of quintic to avoid overfitting with limited data.
     """
-    fit = _fit_arc_derivatives(q_arc, s_arc_mm)
+    K = len(q_arc)
+    # Use lower degree for short arcs to avoid overfitting noise.
+    degree = 3 if K < 12 else _ARC_FIT_DEGREE
+    fit = _fit_arc_derivatives(q_arc, s_arc_mm, degree=degree)
     if fit is not None:
         dq_ds, d2q_ds2, residual = fit
         if residual <= _ARC_FIT_RESIDUAL_TOL:
@@ -1100,6 +1106,59 @@ def _speed_limits_from_derivatives(
     return v_joint_limit, j_v, idx_v, v_accel_limit, j_a, idx_a
 
 
+def _geometric_corner_speed_estimate(
+    geom: BlendArcGeometry,
+    q_cont: np.ndarray,
+    arc_indices: np.ndarray,
+    joint_dynamics,
+    q_ddot_scale: float = 1.0,
+) -> float:
+    """Geometric fallback v_flat for corners with too few dense samples.
+
+    Uses the known blend geometry (corner angle, minimum radius, arc length)
+    combined with the IK boundary values to estimate the per-joint dq/ds
+    and d²q/ds² without needing many interior samples.
+
+    For a circular-arc approximation of the blend:
+      - dq/ds ≈ Δq / L  (average joint displacement per mm of arc)
+      - d²q/ds² ≈ |dq/ds| / ρ_min  (centripetal joint-space curvature)
+
+    Returns the estimated maximum constant TCP speed (mm/s), or inf if the
+    geometry is degenerate.
+    """
+    L = float(geom.arc_length_mm)
+    rho = float(geom.rho_min_mm)
+    if L <= 1e-9 or rho <= 1e-9 or len(arc_indices) < 1:
+        return float("inf")
+
+    # Estimate |dq/ds| from the joint change across the arc boundary.
+    # Use a wider window if possible (1 sample before + 1 after).
+    i_start = max(0, int(arc_indices[0]) - 1)
+    i_end = min(len(q_cont) - 1, int(arc_indices[-1]) + 1)
+    delta_q = q_cont[i_end] - q_cont[i_start]
+    ds_total = max(L, 1e-9)
+    dq_ds_approx = np.abs(delta_q) / ds_total  # (6,) rad/mm
+
+    # Estimate d²q/ds² from circular-arc curvature: the direction of
+    # joint velocity rotates over the arc, so d²q/ds² ≈ |dq/ds| · (1/ρ).
+    d2q_ds2_approx = dq_ds_approx / rho  # (6,) rad/mm²
+
+    q_dot_max = np.asarray(joint_dynamics.q_dot_max, dtype=float)
+    scale = float(q_ddot_scale) if q_ddot_scale and q_ddot_scale > 0 else 1.0
+    q_ddot_max = scale * np.minimum(
+        np.asarray(joint_dynamics.q_ddot_accel, dtype=float),
+        np.asarray(joint_dynamics.q_ddot_decel, dtype=float),
+    )
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        v_vel = np.where(dq_ds_approx > 1e-12, q_dot_max / dq_ds_approx, np.inf)
+        v2_acc = np.where(d2q_ds2_approx > 1e-12, q_ddot_max / d2q_ds2_approx, np.inf)
+    v_acc = np.sqrt(np.maximum(v2_acc, 0.0))
+
+    v_max = float(min(np.min(v_vel), np.min(v_acc)))
+    return v_max if np.isfinite(v_max) and v_max > 0 else float("inf")
+
+
 def _compute_single_corner_limit(
     q_arc: np.ndarray,
     s_arc_mm: np.ndarray,
@@ -1111,14 +1170,44 @@ def _compute_single_corner_limit(
 
     All inputs already sliced/resampled/unwrapped; caller aligns to the
     true global arc-length reference.
+
+    Robustness measures:
+      - For short arcs (< 2mm), boundary samples are included in the
+        acceleration check (the curvature peak can occur at transitions).
+      - The result is cross-checked against finite-difference estimates;
+        the more conservative (lower) of the two is used.
     """
     K = len(q_arc)
+    arc_length = float(s_arc_mm[-1] - s_arc_mm[0]) if K > 1 else 0.0
+    # For short arcs, include boundary samples in acceleration check.
+    short_arc = arc_length < 2.0
     dq_ds, d2q_ds2, _fitted = _arc_derivatives(q_arc, s_arc_mm)
     (
         v_joint_limit, j_v, idx_v, v_accel_limit, j_a, idx_a,
     ) = _speed_limits_from_derivatives(
         dq_ds, d2q_ds2, joint_dynamics, q_ddot_scale=q_ddot_scale,
+        interior_only_accel=(not short_arc),
     )
+
+    # Cross-check: finite-difference derivatives as a safety floor.
+    # The polynomial can underestimate curvature for ill-conditioned arcs.
+    if _fitted and K >= 5:
+        dq_ds_fd = _central_diff_1(q_arc, s_arc_mm)
+        d2q_ds2_fd = _central_diff_2(q_arc, s_arc_mm)
+        (
+            v_vel_fd, _, _, v_acc_fd, _, _,
+        ) = _speed_limits_from_derivatives(
+            dq_ds_fd, d2q_ds2_fd, joint_dynamics, q_ddot_scale=q_ddot_scale,
+            interior_only_accel=True,
+        )
+        # Only tighten (never loosen) using the FD estimate. The FD method
+        # on well-sampled arcs captures real peaks the polynomial may smooth.
+        # Ignore FD if it gives implausibly low values (noise-dominated).
+        _fd_floor = 1.0  # mm/s — below this the FD is likely pure noise
+        if v_vel_fd > _fd_floor:
+            v_joint_limit = min(v_joint_limit, v_vel_fd)
+        if v_acc_fd > _fd_floor:
+            v_accel_limit = min(v_accel_limit, v_acc_fd)
 
     if v_joint_limit <= v_accel_limit:
         v_max = v_joint_limit
@@ -1226,30 +1315,43 @@ def compute_corner_no_dip_speeds(
         resampled = False
 
         if n_samples < 3:
+            # Geometric fallback: use blend geometry (corner angle, min
+            # radius, arc length) + boundary IK to estimate a conservative
+            # v_flat even when the dense path has too few samples.
+            v_geom = _geometric_corner_speed_estimate(
+                geom, q_cont, arc_indices, joint_dynamics, q_ddot_scale,
+            )
             results.append(
                 CornerSpeedLimit(
                     waypoint_idx=w_idx,
-                    v_max_no_dip_mm_s=float("inf"),
+                    v_max_no_dip_mm_s=v_geom,
                     binding_joint=-1,
-                    binding_constraint="none",
+                    binding_constraint="geometric_estimate",
                     binding_arc_length_mm=float(
                         arc_s_all[arc_indices[0]] if n_samples > 0 else 0.0
                     ),
                     v_joint_limit_mm_s=float("inf"),
-                    v_accel_limit_mm_s=float("inf"),
+                    v_accel_limit_mm_s=v_geom,
                     n_arc_samples=n_samples,
                     resampled=False,
                     rho_min_mm=float(geom.rho_min_mm),
                     arc_length_mm=float(geom.arc_length_mm),
                     corner_angle_rad=float(geom.corner_angle_rad),
-                    notes=f"arc has only {n_samples} samples; skipped",
+                    notes=f"arc has only {n_samples} samples; geometric estimate",
                 )
             )
             continue
 
-        arc_offset_mm = float(arc_s_all[arc_indices[0]])
-        q_arc = q_cont[arc_indices]
-        s_arc_local_mm = arc_s_all[arc_indices] - arc_offset_mm
+        # Extend the analysis window by N_MARGIN samples on each side of
+        # the blend arc.  The curvature peak often occurs at the straight→arc
+        # transition which is right at the boundary of the is_blend mask.
+        _N_MARGIN = 3
+        _idx_lo = max(0, int(arc_indices[0]) - _N_MARGIN)
+        _idx_hi = min(len(q_cont), int(arc_indices[-1]) + 1 + _N_MARGIN)
+        ext_indices = np.arange(_idx_lo, _idx_hi)
+        arc_offset_mm = float(arc_s_all[ext_indices[0]])
+        q_arc = q_cont[ext_indices]
+        s_arc_local_mm = arc_s_all[ext_indices] - arc_offset_mm
 
         # Drop repeated arc-length samples inside the slice — zero-ds
         # pairs make finite-difference denominators explode.
@@ -1292,15 +1394,18 @@ def compute_corner_no_dip_speeds(
                 notes = "re-sample or IK failed; using q_star slice"
 
         if len(q_arc) < 3:
+            v_geom2 = _geometric_corner_speed_estimate(
+                geom, q_cont, arc_indices, joint_dynamics, q_ddot_scale,
+            )
             results.append(
                 CornerSpeedLimit(
                     waypoint_idx=w_idx,
-                    v_max_no_dip_mm_s=float("inf"),
+                    v_max_no_dip_mm_s=v_geom2,
                     binding_joint=-1,
-                    binding_constraint="none",
+                    binding_constraint="geometric_estimate",
                     binding_arc_length_mm=arc_offset_mm,
                     v_joint_limit_mm_s=float("inf"),
-                    v_accel_limit_mm_s=float("inf"),
+                    v_accel_limit_mm_s=v_geom2,
                     n_arc_samples=len(q_arc),
                     resampled=resampled,
                     rho_min_mm=float(geom.rho_min_mm),
