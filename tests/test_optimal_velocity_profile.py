@@ -477,6 +477,11 @@ def _arc_measure(s: np.ndarray) -> np.ndarray:
     return np.maximum(m, 1e-12)
 
 
+# Max |spline - raw| tolerance per joint [deg].  Placeholder until it is
+# derived from a task-space (FK) tolerance budget.
+_RESID_TOL_DEG = 1.0
+
+
 def _fit_lsq_quintic(
     s: np.ndarray, y: np.ndarray, spacing_mm: float,
     w: np.ndarray, meas: np.ndarray,
@@ -492,6 +497,87 @@ def _fit_lsq_quintic(
     return spl, rms
 
 
+def _refine_knots_locally(
+    spl: LSQUnivariateSpline,
+    s: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    tol_rad: float,
+    max_iter: int = 25,
+    min_halfwidth_mm: float = 0.1,
+    min_samples_per_span: int = 2,
+) -> Tuple[LSQUnivariateSpline, int, int]:
+    """Residual-driven LOCAL knot insertion (max-residual criterion).
+
+    A single global knot spacing cannot serve both the long flats (which want
+    coarse knots => smooth derivatives) and a sharp feature like a 90-degree
+    wrist flip over ~15 mm (which needs fine knots => low residual).  The
+    weighted-RMS knee criterion is additionally blind to a large error over a
+    short span (a 10-degree miss over 20 mm of a 1400 mm path barely moves the
+    RMS).
+
+    So after the uniform-knot knee fit we iterate:
+
+      1. find all samples where |spline - raw| > ``tol_rad``,
+      2. bisect ONLY the knot intervals containing them (plus a one-interval
+         margin so the shoulder of the feature is refined too),
+      3. refit and repeat,
+
+    until every sample is within tolerance or refinement is no longer possible
+    (a new sub-interval would hold < ``min_samples_per_span`` samples, i.e. a
+    Schoenberg-Whitney risk, or be narrower than ``min_halfwidth_mm``).  Flats
+    keep their coarse knots — derivative smoothness is preserved everywhere the
+    data allows it.
+
+    The split point is the MEDIAN of the sample locations inside the interval,
+    not the geometric midpoint: sampling is heavily non-uniform (0.05 mm on
+    blend arcs vs ~1 mm on straights), so a midpoint split can land in a
+    sparse half and fail the sample-count guard even when the interval as a
+    whole is data-rich.  A median split always balances the samples, letting
+    knots cluster tightly exactly where dense data supports them (the flip
+    shoulders).  Returns ``(spline, n_knots_inserted, n_iterations)``.
+    """
+    n_inserted = 0
+    n_iter = 0
+    for _ in range(max_iter):
+        resid = spl(s) - y
+        bad = np.abs(resid) > tol_rad
+        if not bad.any():
+            break
+        n_iter += 1
+        t_int = np.asarray(spl.get_knots()[1:-1], dtype=float)
+        edges = np.concatenate([[s[0]], t_int, [s[-1]]])
+        n_iv = len(edges) - 1
+        iv = np.clip(np.searchsorted(edges, s[bad], side="right") - 1, 0, n_iv - 1)
+        mark = np.zeros(n_iv, dtype=bool)
+        mark[iv] = True
+        grown = mark.copy()                 # + one-interval margin each side
+        grown[:-1] |= mark[1:]
+        grown[1:] |= mark[:-1]
+
+        new_knots = []
+        for i in np.where(grown)[0]:
+            lo, hi = edges[i], edges[i + 1]
+            i0 = int(np.searchsorted(s, lo))
+            i1 = int(np.searchsorted(s, hi))
+            if (i1 - i0) < 2 * min_samples_per_span:
+                continue                    # too few samples to support a split
+            split = float(np.median(s[i0:i1]))
+            if (split - lo) < min_halfwidth_mm or (hi - split) < min_halfwidth_mm:
+                continue                    # sub-interval would be degenerate
+            new_knots.append(split)
+        if not new_knots:
+            break                           # cannot refine further
+        t_try = np.sort(np.concatenate([t_int, new_knots]))
+        try:
+            spl_try = LSQUnivariateSpline(s, y, t_try, w=w, k=5)
+        except Exception:                   # Schoenberg-Whitney violation
+            break
+        spl = spl_try
+        n_inserted += len(new_knots)
+    return spl, n_inserted, n_iter
+
+
 def _tune_lsq_spline(
     s: np.ndarray,
     y: np.ndarray,
@@ -500,6 +586,7 @@ def _tune_lsq_spline(
     stall_ratio: float = 0.75,
     refine_factor: float = 1.5,
     osc_factor: float = 1.5,
+    resid_tol_rad: Optional[float] = None,
 ) -> Tuple[LSQUnivariateSpline, Dict]:
     """Pick the knot spacing per joint by the residual-knee criterion.
 
@@ -517,7 +604,14 @@ def _tune_lsq_spline(
     percentile, x ``osc_factor``) — Gibbs ringing around a sharp feature —
     back off to the next-coarser candidate.  The raw finite difference is used
     ONLY as a reference here, never as the reported derivative.
+
+    Finally, ``_refine_knots_locally`` bisects knot intervals ONLY where
+    |spline - raw| still exceeds ``resid_tol_rad`` (default ``_RESID_TOL_DEG``)
+    so short sharp features (wrist flips) are tracked to within tolerance
+    without giving up derivative smoothness on the flats.
     """
+    if resid_tol_rad is None:
+        resid_tol_rad = float(np.deg2rad(_RESID_TOL_DEG))
     L = float(s[-1] - s[0])
     meas = _arc_measure(s)
     w = np.sqrt(meas)
@@ -562,14 +656,26 @@ def _tune_lsq_spline(
         n_backoff += 1
 
     spacing, rms, spl = history[pick]
+
+    # --- local knot insertion where |resid| > resid_tol_rad ---------------
+    spl, n_inserted, n_ref_iters = _refine_knots_locally(
+        spl, s, y, w, resid_tol_rad
+    )
     resid = spl(s) - y
+    rms = float(np.sqrt(np.sum(meas * resid * resid) / np.sum(meas)))
+    max_resid = float(np.max(np.abs(resid)))
     info = {
-        "knot_spacing_mm": float(spacing),
+        "base_knot_spacing_mm": float(spacing),
         "n_interior_knots": int(len(spl.get_knots()) - 2),
         "rms_residual_rad": float(rms),
-        "max_residual_rad": float(np.max(np.abs(resid))),
+        "max_residual_rad": max_resid,
+        "max_residual_deg": float(np.rad2deg(max_resid)),
         "spacings_tried": len(history),
         "overshoot_backoffs": n_backoff,
+        "local_knots_inserted": n_inserted,
+        "local_refine_iters": n_ref_iters,
+        "resid_tol_deg": float(np.rad2deg(resid_tol_rad)),
+        "resid_tol_met": bool(max_resid <= resid_tol_rad),
     }
     return spl, info
 
@@ -578,6 +684,7 @@ def fit_joint_splines(
     s_mm: np.ndarray,
     q_kept: np.ndarray,
     ik_tol_rad: float = 1e-4,
+    resid_tol_rad: Optional[float] = None,
 ) -> Tuple[List[LSQUnivariateSpline], Dict]:
     """Fit the 6 knee-tuned least-squares quintic splines (grid-independent).
 
@@ -588,10 +695,19 @@ def fit_joint_splines(
     splines: List[LSQUnivariateSpline] = []
     report = {"per_joint": []}
     for j in range(6):
-        spl, info = _tune_lsq_spline(s_mm, q_kept[:, j], ik_tol_rad)
+        spl, info = _tune_lsq_spline(
+            s_mm, q_kept[:, j], ik_tol_rad, resid_tol_rad=resid_tol_rad
+        )
         info["joint"] = j + 1
         splines.append(spl)
         report["per_joint"].append(info)
+        if not info["resid_tol_met"]:
+            print(
+                f"  [WARN] J{j + 1}: max spline residual "
+                f"{info['max_residual_deg']:.2f} deg exceeds the "
+                f"{info['resid_tol_deg']:.2f} deg tolerance "
+                "(local refinement hit the sample-density floor)."
+            )
     return splines, report
 
 
@@ -615,6 +731,7 @@ def step1_differentiate(
     q_kept: np.ndarray,
     ik_tol_rad: float = 1e-4,
     n_eval: Optional[int] = None,
+    resid_tol_rad: Optional[float] = None,
 ) -> Tuple[np.ndarray, Dict, Dict, List[LSQUnivariateSpline]]:
     """Fit per-joint quintic smoothing splines, evaluate q & derivatives.
 
@@ -626,7 +743,9 @@ def step1_differentiate(
         n_eval = max(2000, 2 * M)
     s_eval = np.linspace(s_mm[0], s_mm[-1], int(n_eval))
 
-    splines, report = fit_joint_splines(s_mm, q_kept, ik_tol_rad)
+    splines, report = fit_joint_splines(
+        s_mm, q_kept, ik_tol_rad, resid_tol_rad=resid_tol_rad
+    )
     arrays = eval_splines(splines, s_eval)
     dqds = arrays["dqds"]
 
@@ -1444,18 +1563,27 @@ def _make_plots(
         res, out_dir / "A_geometry_spline_validation.png",
         regions=regions, rs_s_mm=rs_s_mm, rs_q_deg=rs_q_deg,
     ))
-    tol_deg = float(np.rad2deg(1e-4))
+    tol_deg = _RESID_TOL_DEG
     figR, axR = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
     for j, ax in enumerate(axR):
         _shade_regions(ax, s, regions)
         _mark_bottleneck(ax, s, res.bottleneck_idx, res)
         q_at_raw = np.interp(res.s_raw, s, res.q[:, j])
-        ax.plot(res.s_raw, r2d(q_at_raw - res.q_raw[:, j]), "-", lw=0.9,
-                color=_JOINT_COLORS[j])
+        resid_deg = r2d(q_at_raw - res.q_raw[:, j])
+        ax.plot(res.s_raw, resid_deg, "-", lw=0.9, color=_JOINT_COLORS[j])
+        viol = np.abs(resid_deg) > tol_deg
+        if np.any(viol):
+            ax.plot(res.s_raw[viol], resid_deg[viol], ".", ms=3.5,
+                    color="red", zorder=5,
+                    label=f"> {tol_deg:g} deg tol ({int(viol.sum())} samples)")
+            ax.legend(loc="upper right", fontsize=7)
         ax.axhspan(-tol_deg, tol_deg, color="grey", alpha=0.2)
         ax.set_ylabel(f"{_JOINT_LABELS[j]}\nresidual [deg]", fontsize=8)
         ax.grid(alpha=0.25)
-    axR[0].set_title("A2  spline − raw residual per joint (band = ±IK tol)")
+    axR[0].set_title(
+        f"A2  spline − raw residual per joint "
+        f"(band = ±{tol_deg:g} deg tolerance; red = violations)"
+    )
     axR[-1].set_xlabel("arc-length s [mm]")
     figR.tight_layout()
     pR = out_dir / "A_residual_per_joint.png"
@@ -1634,6 +1762,7 @@ def _grid_independence(
     limits: JointLimits,
     ik_tol_rad: float,
     base_n: int,
+    resid_tol_rad: Optional[float] = None,
 ) -> Dict:
     """Recompute dq/ds, d2q/ds2, v_lim, and duration at 0.5x and 2x N_eval.
 
@@ -1644,7 +1773,9 @@ def _grid_independence(
     forward/backward integration); its convergence with N_eval is the real
     validation that finite differences failed.
     """
-    splines, _ = fit_joint_splines(s_mm, q_kept, ik_tol_rad)
+    splines, _ = fit_joint_splines(
+        s_mm, q_kept, ik_tol_rad, resid_tol_rad=resid_tol_rad
+    )
     mvc_s = np.linspace(s_mm[0], s_mm[-1], max(20000, 4 * base_n))
     mvc_arr = eval_splines(splines, mvc_s)
     mvc_v_lim = step2_velocity_limit(mvc_arr["dqds"], mvc_arr["d2qds2"], limits)["v_lim"]
@@ -1756,6 +1887,7 @@ def run_diagnostics(
     out_dir: Optional[Path] = None,
     v_cmd: Optional[float] = None,
     ik_tol_rad: float = 1e-4,
+    resid_tol_rad: Optional[float] = None,
     n_eval: Optional[int] = None,
     make_plots: bool = True,
     do_grid_check: bool = True,
@@ -1774,7 +1906,7 @@ def run_diagnostics(
 
     # Step 1
     s_eval, arr, smoothing, _splines = step1_differentiate(
-        s_mm, q_kept, ik_tol_rad, n_eval
+        s_mm, q_kept, ik_tol_rad, n_eval, resid_tol_rad=resid_tol_rad
     )
     res.s_eval = s_eval
     # TCP xyz on the uniform eval grid (plotting only; linear in s).
@@ -1825,7 +1957,10 @@ def run_diagnostics(
 
     # Step 5: grid independence + metrics
     grid_check = (
-        _grid_independence(s_mm, q_kept, limits, ik_tol_rad, len(s_eval))
+        _grid_independence(
+            s_mm, q_kept, limits, ik_tol_rad, len(s_eval),
+            resid_tol_rad=resid_tol_rad,
+        )
         if do_grid_check else {"skipped": True}
     )
     res.metrics.update(_compute_metrics(res, limits, grid_check, v_cmd))
@@ -1913,6 +2048,11 @@ def main() -> None:
         help="Explicit RobotStudio CSV (overrides --rs-dir basename match).",
     )
     parser.add_argument("--ik-tol-rad", type=float, default=1e-4)
+    parser.add_argument(
+        "--resid-tol-deg", type=float, default=_RESID_TOL_DEG,
+        help="Max |spline - raw| joint residual [deg]; knot intervals are "
+             "bisected locally until every sample is within this tolerance.",
+    )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
@@ -1939,6 +2079,7 @@ def main() -> None:
         ctx.q_raw, ctx.poses, ctx.limits,
         out_dir=out_dir, v_cmd=ctx.v_cmd,
         ik_tol_rad=args.ik_tol_rad,
+        resid_tol_rad=float(np.deg2rad(args.resid_tol_deg)),
         make_plots=not args.no_plots,
         waypoints_plate=ctx.waypoints_plate,
         waypoints_base=ctx.waypoints_base,
