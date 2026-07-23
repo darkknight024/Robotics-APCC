@@ -157,10 +157,15 @@ class ProfileResult:
     cruise_mask: np.ndarray = None
     transient_mask: np.ndarray = None
     boundary_mask: np.ndarray = None
-    # |s_ddot| threshold mask: True where acceleration transients occur
-    # (excluded from RS benchmarking; drawn red on F1/F2).
+    # Mode-agnostic accel-transient mask derived from the *time-optimal
+    # reference* profile on the same q(s) (excluded from RS benchmarking;
+    # drawn red on F1/F2).
     accel_transient_mask: np.ndarray = None
     bottleneck_idx: int = -1
+
+    # TCP rotation (from the dense pose quaternions, on s_eval)
+    ori_theta: np.ndarray = None        # (N,) cumulative reorientation [rad]
+    ori_dtheta_ds: np.ndarray = None    # (N,) geometric rotation rate [rad/mm]
 
     metrics: Dict = field(default_factory=dict)
     figures: List[str] = field(default_factory=list)
@@ -403,12 +408,13 @@ def step0_validate(
     ds_min_mm: float = 1e-6,
     jump_tol_rad: float = 0.3,
     jump_spacing_mm: float = 5.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict]:
     """Validate + condition the input joint path. Fails loudly.
 
-    Returns ``(s_mm, q_kept, pos_kept, report)`` where ``s_mm`` is the
-    strictly increasing arc-length of the retained samples, ``q_kept`` the
-    retained joint samples, and ``pos_kept`` the retained TCP xyz [mm].
+    Returns ``(s_mm, q_kept, pos_kept, quat_kept, report)`` where ``s_mm``
+    is the strictly increasing arc-length of the retained samples,
+    ``q_kept`` the retained joint samples, ``pos_kept`` the retained TCP
+    xyz [mm], and ``quat_kept`` the retained TCP quaternions [wxyz].
     """
     report: Dict = {"checks": {}}
     q = np.asarray(q_raw, dtype=float)
@@ -470,6 +476,7 @@ def step0_validate(
     s_mm = s_full[keep]
     q_kept = q[keep]
     pos_kept = pos_mm[keep]
+    quat_kept = quat[keep]
     # Rebuild strictly-increasing arc-length from retained points.
     if not np.all(np.diff(s_mm) > 0):
         # Any residual ties (shouldn't happen after de-dup) get nudged.
@@ -506,7 +513,7 @@ def step0_validate(
         print(f"  [{'PASS' if ok else 'FAIL'}] {name:22s} {msg}")
     print("=" * 64)
 
-    return s_mm, q_kept, pos_kept, report
+    return s_mm, q_kept, pos_kept, quat_kept, report
 
 
 # =====================================================================
@@ -1083,6 +1090,45 @@ def compute_regions(v_star: np.ndarray, v_lim: np.ndarray,
     return {"cruise": cruise, "transient": transient, "boundary": boundary}
 
 
+# Plot output layout under each velocity-mode folder:
+#   A_geometry_spline/  B_velocity_limits/  C_path_dynamics/
+#   D_optimal_profile/  E_constraint_utilization/  F_path_visualization/
+#   G_robotstudio_compare/  H_tcp_rotation/
+# F1/F2 (toolpath-common) live one level up, in the toolpath folder.
+_PLOT_GROUPS = {
+    "A": "A_geometry_spline",
+    "B": "B_velocity_limits",
+    "C": "C_path_dynamics",
+    "D": "D_optimal_profile",
+    "E": "E_constraint_utilization",
+    "F": "F_path_visualization",
+    "G": "G_robotstudio_compare",
+    "H": "H_tcp_rotation",
+}
+
+
+def _group_dir(out_dir: Path, letter: str) -> Path:
+    d = Path(out_dir) / _PLOT_GROUPS[letter]
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _region_legend_handles():
+    """Shared legend patches for cruise / transient / boundary bands."""
+    from matplotlib.patches import Patch
+    return [
+        Patch(facecolor="green", alpha=0.12, label="cruise (v*≈v_lim)"),
+        Patch(facecolor="red", alpha=0.10, label="transient (v*<v_lim)"),
+        Patch(facecolor="red", alpha=0.22, label="boundary (start/stop)"),
+    ]
+
+
+def _accel_transient_legend_handle():
+    from matplotlib.patches import Patch
+    return Patch(facecolor="red", alpha=0.08,
+                 label="accel-transient (excluded from RS bench)")
+
+
 def _shade_regions(ax, s, regions):
     """Draw cruise (green) / transient (red) / boundary (darker red) bands."""
     def _spans(mask):
@@ -1311,8 +1357,7 @@ def _plot_per_joint_vs_s(
     from matplotlib.patches import Patch
     axes[0].legend(
         handles=[
-            Patch(facecolor="green", alpha=0.12, label="cruise"),
-            Patch(facecolor="red", alpha=0.10, label="transient"),
+            *_region_legend_handles(),
             Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
             Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
         ],
@@ -1340,24 +1385,57 @@ def _mask_spans(mask: np.ndarray) -> List[Tuple[int, int]]:
 
 def identify_transient_mask(
     s_eval: np.ndarray,
-    s_ddot: np.ndarray,
-    accel_thresh_mm_s2: float = 25.0,
-    pad_mm: float = 10.0,
+    v_ref: np.ndarray,
+    v_lim_ref: np.ndarray,
+    touch_frac: float = 0.90,
+    merge_gap_mm: float = 15.0,
+    buffer_mm: float = 10.0,
 ) -> np.ndarray:
-    """True where the TCP tangential acceleration |s_ddot| is significant.
+    """Transient segments = bang phases of the **time-optimal reference**.
 
-    Simple and reliable: a sample is transient when ``|s_ddot|`` exceeds
-    ``accel_thresh_mm_s2``; the mask is then widened by ``pad_mm`` of
-    arc-length on each side so samples adjacent to an accel burst are also
-    excluded from steady-state benchmarking.
+    ``v_ref`` / ``v_lim_ref`` must come from the uncapped
+    (joint-limits-only) TOPP run on the same ``q(s)``, so the mask depends
+    only on the input toolpath + joint limits — never on the velocity mode
+    being analysed (commanded / constant / optimal all share it).
+
+    Rationale (TOPP structure): the time-optimal profile either *rides*
+    the joint velocity ceiling (cruise arcs — quasi-static, acceleration
+    dynamics irrelevant) or sits *below* it (bang phases — joint accel
+    saturated while braking into / accelerating out of every MVC notch:
+    corners, orientation flips, start/stop ramps).  Those bang phases are
+    exactly where RobotStudio's unmodelled higher-order joint dynamics
+    (accel/jerk shaping) make its TCP speed deviate from any quasi-static
+    estimate.  A sample is transient when ``v_ref < touch_frac ·
+    v_lim_ref`` — a dimensionless criterion with no absolute thresholds,
+    agnostic to toolpath shape, waypoint spacing, and zone data.
+
+    Post-processing: regions separated by less than ``merge_gap_mm`` are
+    merged (a corner's decel + accel pair straddles the notch bottom), then
+    every region is widened by ``buffer_mm`` on each side.
     """
-    mask = np.abs(np.asarray(s_ddot, dtype=float)) > float(accel_thresh_mm_s2)
+    v_ref = np.asarray(v_ref, dtype=float)
+    vl = np.asarray(v_lim_ref, dtype=float)
+    vl = np.where(np.isfinite(vl), vl, np.inf)
+    mask = v_ref < float(touch_frac) * vl
+    if not mask.any():
+        return mask
     ds = float(s_eval[1] - s_eval[0]) if len(s_eval) > 1 else 1.0
-    n_pad = int(round(pad_mm / max(ds, 1e-9)))
-    if n_pad > 0 and mask.any():
-        mask = np.convolve(mask.astype(float),
-                           np.ones(2 * n_pad + 1), mode="same") > 0
-    return mask
+
+    # Merge regions separated by small gaps.
+    spans = _mask_spans(mask)
+    merged: List[List[int]] = []
+    for lo, hi in spans:
+        if merged and (s_eval[lo] - s_eval[merged[-1][1]]) <= merge_gap_mm:
+            merged[-1][1] = hi
+        else:
+            merged.append([lo, hi])
+
+    # Buffer each region on both sides.
+    n_buf = int(round(buffer_mm / max(ds, 1e-9)))
+    out = np.zeros(len(v_ref), dtype=bool)
+    for lo, hi in merged:
+        out[max(0, lo - n_buf):min(len(out), hi + n_buf + 1)] = True
+    return out
 
 
 def _plot_waypoints_3d(
@@ -1398,15 +1476,21 @@ def _plot_waypoints_3d(
 
     def _draw(ax, coords):
         """Polyline (red where transient) + WP markers, no end marker."""
+        labeled_steady = labeled_trans = False
         for a, b in _mask_spans(~seg_transient):
             ax.plot(*[coords[a:b + 2, k] for k in range(coords.shape[1])],
-                    "-", color="steelblue", lw=1.2, alpha=0.7)
+                    "-", color="steelblue", lw=1.2, alpha=0.7,
+                    label=None if labeled_steady else "steady path")
+            labeled_steady = True
         for a, b in _mask_spans(seg_transient):
             ax.plot(*[coords[a:b + 2, k] for k in range(coords.shape[1])],
-                    "-", color="red", lw=2.0, alpha=0.85)
-        ax.scatter(*[coords[steady, k] for k in range(coords.shape[1])],
-                   c="green", s=28, edgecolors="k", linewidths=0.4,
-                   zorder=5, label="waypoints")
+                    "-", color="red", lw=2.0, alpha=0.85,
+                    label=None if labeled_trans else "accel-transient path")
+            labeled_trans = True
+        if steady.any():
+            ax.scatter(*[coords[steady, k] for k in range(coords.shape[1])],
+                       c="green", s=28, edgecolors="k", linewidths=0.4,
+                       zorder=5, label="steady waypoints")
         if wp_transient.any():
             ax.scatter(*[coords[wp_transient, k] for k in range(coords.shape[1])],
                        c="red", s=55, marker="^", edgecolors="k",
@@ -1415,6 +1499,7 @@ def _plot_waypoints_3d(
                    c="lime", s=80, marker="o", edgecolors="k", zorder=7,
                    label="start")
 
+    from matplotlib.lines import Line2D
     if is_flat:
         fig, ax = plt.subplots(figsize=(12, 10))
         _draw(ax, xyz[:, :2])
@@ -1463,7 +1548,11 @@ def _plot_waypoints_3d(
             pass
 
     ax.set_title(title, fontsize=12)
-    ax.legend(loc="best", fontsize=8)
+    handles, labels = ax.get_legend_handles_labels()
+    handles.append(Line2D([0], [0], color="dodgerblue", lw=1.2,
+                          label="tool orientation (Z/X)"))
+    labels.append("tool orientation (Z/X)")
+    ax.legend(handles, labels, loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
@@ -1540,10 +1629,69 @@ def _plot_tcp_velocity_on_path(
 
     cb.set_label("v* [mm/s]")
     ax.set_title(title, fontsize=12)
-    if waypoints_base is not None:
-        ax.legend(loc="best", fontsize=8)
+    handles, labels = ax.get_legend_handles_labels()
+    from matplotlib.lines import Line2D
+    handles = [Line2D([0], [0], color=cmap(0.7), lw=3.0, label="TCP path (colored by v*)")] + list(handles)
+    labels = ["TCP path (colored by v*)"] + list(labels)
+    ax.legend(handles, labels, loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    return str(out_path)
+
+
+def _plot_tcp_rotation(
+    out_path: Path,
+    res: ProfileResult,
+    mode_name: str,
+) -> str:
+    """TCP rotation: θ(s), geometric rate dθ/ds, and realized ω / α.
+
+    θ is the cumulative geodesic reorientation angle of the dense pose
+    quaternions.  ω = dθ/ds · v*(s) is the TCP angular speed realized by
+    this mode's speed profile; α = dω/dt.  Red bands = accel transients.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    s = res.s_eval
+    r2d = np.rad2deg
+    omega = res.ori_dtheta_ds * res.v_star          # rad/s
+    with np.errstate(divide="ignore", invalid="ignore"):
+        alpha = np.gradient(omega, res.t)           # rad/s²
+
+    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
+    panels = (
+        (r2d(res.ori_theta), "θ [deg]",
+         "H1  cumulative TCP reorientation θ(s)"),
+        (r2d(res.ori_dtheta_ds), "dθ/ds [deg/mm]",
+         "H2  geometric rotation rate (property of the toolpath)"),
+        (r2d(omega), "ω [deg/s]",
+         f"H3  TCP angular speed ω = dθ/ds · v*  — {mode_name}"),
+        (r2d(alpha), "α [deg/s²]",
+         "H4  TCP angular acceleration α = dω/dt"),
+    )
+    for ax, (y, ylabel, title) in zip(axes, panels):
+        ax.plot(s, y, lw=1.2, color="#4C78A8", label=ylabel.split(" [")[0])
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=10)
+        ax.grid(True, alpha=0.3)
+        if res.accel_transient_mask is not None:
+            for a, b in _mask_spans(res.accel_transient_mask):
+                ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+        ax.legend(
+            handles=[
+                Line2D([0], [0], color="#4C78A8", lw=1.2, label=ylabel),
+                _accel_transient_legend_handle(),
+            ],
+            fontsize=7, loc="upper right",
+        )
+    axes[-1].set_xlabel("arc-length s [mm]")
+    fig.suptitle(f"H  TCP rotation dynamics — {mode_name}", fontsize=12, y=1.01)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     return str(out_path)
 
@@ -1596,8 +1744,7 @@ def _plot_A_geometry_with_rs(
         title += "  |  RobotStudio joints (gray)"
     axes[0].set_title(title, fontsize=11)
     handles = [
-        Patch(facecolor="green", alpha=0.12, label="cruise"),
-        Patch(facecolor="red", alpha=0.10, label="transient"),
+        *_region_legend_handles(),
         Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
         Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
         Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.4, label="IK spline"),
@@ -1670,9 +1817,13 @@ def _plot_tcp_vs_rs(
                     zorder=5, label=f">10% vs RS (n={int(flag.sum())})")
         for a, b in _mask_spans(trans):
             ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+    h, lab = ax.get_legend_handles_labels()
+    if trans is not None and np.any(trans):
+        h = list(h) + [_accel_transient_legend_handle()]
+        lab = list(lab) + ["accel-transient (excluded from RS bench)"]
     ax.set_ylabel("TCP speed [mm/s]")
     ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=8)
+    ax.legend(h, lab, loc="best", fontsize=8)
     ax.set_title(f"G1  TCP speed & accel — {mode_name}\n"
                  "RS = recorded RobotStudio run at toolpath commanded speed")
 
@@ -1681,10 +1832,17 @@ def _plot_tcp_vs_rs(
              alpha=0.9, label="RobotStudio |TCP accel|")
     ax2.plot(s, np.abs(res.s_ddot), lw=1.2, color="#d62728",
              label="solver |s_ddot| (TCP tangential accel)")
+    if trans is not None and np.any(trans):
+        for a, b in _mask_spans(trans):
+            ax2.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
     ax2.set_ylabel("|TCP accel| [mm/s²]")
     ax2.set_xlabel("arc-length s [mm]")
     ax2.grid(True, alpha=0.3)
-    ax2.legend(loc="best", fontsize=8)
+    h2, lab2 = ax2.get_legend_handles_labels()
+    if trans is not None and np.any(trans):
+        h2 = list(h2) + [_accel_transient_legend_handle()]
+        lab2 = list(lab2) + ["accel-transient (excluded from RS bench)"]
+    ax2.legend(h2, lab2, loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
@@ -1706,6 +1864,7 @@ def _plot_joint_series_vs_rs(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     rs_on = _interp_rs_to_solver(rs_s, rs_vals, s_eval, unwrap_deg=unwrap_deg)
     fig, axes = plt.subplots(2, 3, figsize=(16, 8), sharex=True)
@@ -1717,13 +1876,20 @@ def _plot_joint_series_vs_rs(
                 label="solver")
         if limits is not None:
             lim = float(abs(limits[j]))
-            ax.axhline(lim, ls="--", color="0.4", lw=0.9)
+            ax.axhline(lim, ls="--", color="0.4", lw=0.9, label="± joint limit")
             ax.axhline(-lim, ls="--", color="0.4", lw=0.9)
         ax.set_title(_JOINT_LABELS[j], fontsize=10)
         ax.set_ylabel(ylabel, fontsize=8)
         ax.grid(True, alpha=0.3)
         if j == 0:
-            ax.legend(fontsize=7, loc="best")
+            handles = [
+                Line2D([0], [0], color="#1f77b4", lw=1.2, label="RobotStudio"),
+                Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.3, label="solver"),
+            ]
+            if limits is not None:
+                handles.append(Line2D([0], [0], color="0.4", ls="--",
+                                      label="± joint limit"))
+            ax.legend(handles=handles, fontsize=7, loc="best")
     for ax in axes[1]:
         ax.set_xlabel("arc-length s [mm]")
     fig.suptitle(title, fontsize=12)
@@ -1816,12 +1982,28 @@ def _make_plots(
     rs_s_mm: Optional[np.ndarray] = None,
     rs_q_deg: Optional[np.ndarray] = None,
     rs_rec: Optional[RSRecording] = None,
+    common_dir: Optional[Path] = None,
 ) -> List[str]:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
 
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    dir_a = _group_dir(out_dir, "A")
+    dir_b = _group_dir(out_dir, "B")
+    dir_c = _group_dir(out_dir, "C")
+    dir_d = _group_dir(out_dir, "D")
+    dir_e = _group_dir(out_dir, "E")
+    dir_f = _group_dir(out_dir, "F")
+    dir_g = _group_dir(out_dir, "G")
+    dir_h = _group_dir(out_dir, "H")
+    # F1/F2 are toolpath-common (same for all modes) → toolpath folder.
+    common = Path(common_dir) if common_dir is not None else out_dir
+    common.mkdir(parents=True, exist_ok=True)
+
     paths: List[str] = []
     s = res.s_eval
     regions = {"cruise": res.cruise_mask,
@@ -1847,36 +2029,42 @@ def _make_plots(
               for p in wp_xyz]
         wp_flags = res.accel_transient_mask[nn]
 
-    # ---- Context: programmed waypoints (plate) + base-frame after Zund ----
-    if waypoints_plate is not None:
+    # ---- F1/F2: toolpath-common (write once into the toolpath folder) ----
+    f1 = common / "F1_input_toolpath_plate_frame.png"
+    if waypoints_plate is not None and not f1.exists():
         paths.append(_plot_waypoints_3d(
-            out_dir / "F1_input_toolpath_plate_frame.png",
-            waypoints_plate,
+            f1, waypoints_plate,
             title="F1  Input toolpath waypoints (plate / knife frame)\n"
                   "red = accel-transient segments, ▲ = transient WPs",
             wp_transient=wp_flags,
         ))
-    if waypoints_base is not None:
+    f2 = common / "F2_waypoints_robot_base_frame.png"
+    if waypoints_base is not None and not f2.exists():
         paths.append(_plot_waypoints_3d(
-            out_dir / "F2_waypoints_robot_base_frame.png",
-            waypoints_base,
+            f2, waypoints_base,
             title="F2  Waypoints after Zund knife → robot-base transform\n"
                   "red = accel-transient segments, ▲ = transient WPs",
             wp_transient=wp_flags,
         ))
 
-    # ---- TCP velocity heatmap on the path ----
+    # ---- F3: mode-specific TCP speed heatmap ----
     paths.append(_plot_tcp_velocity_on_path(
-        out_dir / "F3_tcp_velocity_on_path.png",
+        dir_f / "F3_tcp_velocity_on_path.png",
         res.tcp_xyz,
         res.v_star,
         title=f"F3  Solver TCP speed v*(s) on path — {mode_name}",
         waypoints_base=waypoints_base,
     ))
 
+    # ---- H: TCP rotation ----
+    if res.ori_theta is not None:
+        paths.append(_plot_tcp_rotation(
+            dir_h / "H_tcp_rotation.png", res, mode_name,
+        ))
+
     # ---- PANEL GROUP A: per-joint geometry (+ optional RS overlay) ------
     paths.append(_plot_A_geometry_with_rs(
-        res, out_dir / "A_geometry_spline_validation.png",
+        res, dir_a / "A1_geometry_spline_validation.png",
         regions=regions, rs_s_mm=rs_s_mm, rs_q_deg=rs_q_deg,
     ))
     tol_deg = _RESID_TOL_DEG
@@ -1886,29 +2074,39 @@ def _make_plots(
         _mark_bottleneck(ax, s, res.bottleneck_idx, res)
         q_at_raw = np.interp(res.s_raw, s, res.q[:, j])
         resid_deg = r2d(q_at_raw - res.q_raw[:, j])
-        ax.plot(res.s_raw, resid_deg, "-", lw=0.9, color=_JOINT_COLORS[j])
+        ax.plot(res.s_raw, resid_deg, "-", lw=0.9, color=_JOINT_COLORS[j],
+                label="spline − raw")
         viol = np.abs(resid_deg) > tol_deg
         if np.any(viol):
             ax.plot(res.s_raw[viol], resid_deg[viol], ".", ms=3.5,
                     color="red", zorder=5,
                     label=f"> {tol_deg:g} deg tol ({int(viol.sum())} samples)")
-            ax.legend(loc="upper right", fontsize=7)
-        ax.axhspan(-tol_deg, tol_deg, color="grey", alpha=0.2)
+        ax.axhspan(-tol_deg, tol_deg, color="grey", alpha=0.2,
+                   label=f"±{tol_deg:g} deg tolerance")
         ax.set_ylabel(f"{_JOINT_LABELS[j]}\nresidual [deg]", fontsize=8)
         ax.grid(alpha=0.25)
     axR[0].set_title(
         f"A2  spline − raw residual per joint "
         f"(band = ±{tol_deg:g} deg tolerance; red = violations)"
     )
+    axR[0].legend(
+        handles=[
+            *_region_legend_handles(),
+            Patch(facecolor="grey", alpha=0.2, label=f"±{tol_deg:g} deg tolerance"),
+            Line2D([0], [0], color=_JOINT_COLORS[0], lw=0.9, label="spline − raw"),
+            Line2D([0], [0], color="red", marker=".", ls="none", label="tolerance violation"),
+        ],
+        fontsize=7, loc="upper right", ncol=3,
+    )
     axR[-1].set_xlabel("arc-length s [mm]")
     figR.tight_layout()
-    pR = out_dir / "A_residual_per_joint.png"
+    pR = dir_a / "A2_residual_per_joint.png"
     figR.savefig(pR, dpi=130)
     plt.close(figR)
     paths.append(str(pR))
 
     paths.append(_plot_per_joint_vs_s(
-        res, out_dir / "A_dqds_per_joint.png",
+        res, dir_a / "A3_dqds_per_joint.png",
         y_raw_fn=lambda j: None,
         y_eval_fn=lambda j: r2d(res.dqds[:, j]),
         ylabel="dq/ds [deg/mm]",
@@ -1917,7 +2115,7 @@ def _make_plots(
         hline=0.0,
     ))
     paths.append(_plot_per_joint_vs_s(
-        res, out_dir / "A_d2qds2_per_joint.png",
+        res, dir_a / "A4_d2qds2_per_joint.png",
         y_raw_fn=lambda j: None,
         y_eval_fn=lambda j: r2d(res.d2qds2[:, j]),
         ylabel="d²q/ds² [deg/mm²]",
@@ -1951,7 +2149,10 @@ def _make_plots(
         f"B1  what caps TCP speed?  mode={res.mode}  "
         "blue=joint vel | orange=joint accel"
     )
-    axB[0].legend(fontsize=7, ncol=2)
+    h0, lab0 = axB[0].get_legend_handles_labels()
+    axB[0].legend(list(h0) + _region_legend_handles(),
+                  list(lab0) + [h.get_label() for h in _region_legend_handles()],
+                  fontsize=7, ncol=2)
 
     for j in range(6):
         axB[1].plot(s, np.clip(res.vel_ceilings[:, j], 0, vmax_disp), "-",
@@ -1978,13 +2179,20 @@ def _make_plots(
         "B3  active constraint along the path — "
         "read KIND first, then which JOINT"
     )
+    axB[2].legend(
+        handles=[
+            Patch(facecolor="#3b4cc0", alpha=0.8, label="kind: velocity"),
+            Patch(facecolor="#b40426", alpha=0.8, label="kind: acceleration"),
+        ],
+        fontsize=7, loc="upper right",
+    )
     for ax in axB[:2]:
         _shade_regions(ax, s, regions)
         _mark_bottleneck(ax, s, res.bottleneck_idx, res)
         ax.grid(alpha=0.25)
     axB[2].set_xlabel("arc-length s [mm]")
     figB.tight_layout()
-    pB = out_dir / "B_velocity_limit_curve.png"
+    pB = dir_b / "B_velocity_limit_curve.png"
     figB.savefig(pB, dpi=130)
     plt.close(figB)
     paths.append(str(pB))
@@ -1995,7 +2203,10 @@ def _make_plots(
     axC[0].plot(s, res.v_lim, "--", lw=1.0, color="k", alpha=0.7, label="v_lim")
     axC[0].set_ylabel("s_dot = v* [mm/s]")
     axC[0].set_title("C1  path speed s_dot(s) = TCP linear speed")
-    axC[0].legend(fontsize=7)
+    h, lab = axC[0].get_legend_handles_labels()
+    axC[0].legend(list(h) + _region_legend_handles(),
+                  list(lab) + [p.get_label() for p in _region_legend_handles()],
+                  fontsize=7)
 
     axC[1].plot(s, res.u, "-", lw=1.6, color="tab:green", label="u = s_dot²")
     axC[1].plot(s, np.clip(res.v_lim, 0, vmax_disp) ** 2, "--", lw=1.2,
@@ -2005,17 +2216,21 @@ def _make_plots(
     axC[1].set_title("C2  phase plane: u vs v_lim² (touch=cruise, below=transient)")
     axC[1].legend(fontsize=7)
 
-    axC[2].plot(s, res.s_ddot, "-", lw=1.2, color="tab:red")
-    axC[2].axhline(0.0, color="grey", lw=0.6)
+    axC[2].plot(s, res.s_ddot, "-", lw=1.2, color="tab:red", label="s_ddot")
+    axC[2].axhline(0.0, color="grey", lw=0.6, label="zero")
     axC[2].set_ylabel("s_ddot [mm/s²]")
     axC[2].set_title("C3  tangential accel s_ddot (≈0 on cruise, saturated on ramps)")
+    h2, lab2 = axC[2].get_legend_handles_labels()
+    axC[2].legend(list(h2) + _region_legend_handles(),
+                  list(lab2) + [p.get_label() for p in _region_legend_handles()],
+                  fontsize=7)
     for ax in axC:
         _shade_regions(ax, s, regions)
         _mark_bottleneck(ax, s, res.bottleneck_idx, res)
         ax.grid(alpha=0.25)
     axC[-1].set_xlabel("arc-length s [mm]")
     figC.tight_layout()
-    pC = out_dir / "C_path_parameter_dynamics.png"
+    pC = dir_c / "C_path_parameter_dynamics.png"
     figC.savefig(pC, dpi=130)
     plt.close(figC)
     paths.append(str(pC))
@@ -2034,24 +2249,23 @@ def _make_plots(
     _mark_bottleneck(axD1, s, res.bottleneck_idx, res)
     axD1.grid(alpha=0.25)
     axD1.set_xlabel("arc-length s [mm]")
-    axD1.legend(fontsize=7)
+    h, lab = axD1.get_legend_handles_labels()
+    axD1.legend(list(h) + _region_legend_handles(),
+                list(lab) + [p.get_label() for p in _region_legend_handles()],
+                fontsize=7)
     figD1.tight_layout()
-    pD1 = out_dir / "D1_optimal_vs_ceiling.png"
+    pD1 = dir_d / "D1_optimal_vs_ceiling.png"
     figD1.savefig(pD1, dpi=130)
     plt.close(figD1)
     paths.append(str(pD1))
 
     # ---- PANEL GROUP D2 / D3: separate velocity & acceleration figures --
     paths.append(_plot_joint_realization_time_figure(
-        res, out_dir / "D2_joint_velocity_time.png", quantity="velocity",
+        res, dir_d / "D2_joint_velocity_time.png", quantity="velocity",
     ))
     paths.append(_plot_joint_realization_time_figure(
-        res, out_dir / "D3_joint_acceleration_time.png", quantity="acceleration",
+        res, dir_d / "D3_joint_acceleration_time.png", quantity="acceleration",
     ))
-    # Remove legacy combined filename if present from older runs.
-    legacy = out_dir / "D2_D3_joint_realization_time.png"
-    if legacy.exists():
-        legacy.unlink()
 
     # ---- PANEL GROUP E: constraint utilization heatmap ------------------
     figE, axE = plt.subplots(1, 1, figsize=(11, 4.5))
@@ -2064,14 +2278,22 @@ def _make_plots(
     axE.set_yticks(range(1, 7))
     axE.set_yticklabels(_JOINT_LABELS)
     axE.set_xlabel("arc-length s [mm]")
+    axE.set_ylabel("joint")
     axE.set_title("E1  constraint utilization max(|q̇|/q̇max, |q̈|/q̈max)")
     figE.colorbar(im, ax=axE, label="utilization [0,1]")
     trans = res.transient_mask.astype(int)
     edges = np.where(np.diff(trans) != 0)[0]
     for e in edges:
         axE.axvline(s[e], color="cyan", lw=0.5, alpha=0.5)
+    axE.legend(
+        handles=[
+            Line2D([0], [0], color="cyan", lw=1.0,
+                   label="cruise↔transient boundary"),
+        ],
+        fontsize=7, loc="upper right",
+    )
     figE.tight_layout()
-    pE = out_dir / "E_constraint_utilization_heatmap.png"
+    pE = dir_e / "E_constraint_utilization_heatmap.png"
     figE.savefig(pE, dpi=130)
     plt.close(figE)
     paths.append(str(pE))
@@ -2079,12 +2301,12 @@ def _make_plots(
     # ---- PANEL GROUP G: RobotStudio benchmark overlays ------------------
     if rs_rec is not None:
         paths.append(_plot_tcp_vs_rs(
-            out_dir / "G1_tcp_speed_accel_vs_rs.png", res, rs_rec, mode_name,
+            dir_g / "G1_tcp_speed_accel_vs_rs.png", res, rs_rec, mode_name,
         ))
         qd_lim = r2d(res.metrics["_qd_max"])
         qdd_lim = r2d(res.metrics["_qdd_max"])
         paths.append(_plot_joint_series_vs_rs(
-            out_dir / "G2_joint_position_vs_rs.png",
+            dir_g / "G2_joint_position_vs_rs.png",
             s, r2d(res.q), rs_rec.s_mm, rs_rec.q_deg,
             "q [deg]",
             f"G2  Joint position — {mode_name}\n"
@@ -2092,7 +2314,7 @@ def _make_plots(
             unwrap_deg=True,
         ))
         paths.append(_plot_joint_series_vs_rs(
-            out_dir / "G3_joint_velocity_vs_rs.png",
+            dir_g / "G3_joint_velocity_vs_rs.png",
             s, r2d(res.q_dot), rs_rec.s_mm, rs_rec.qdot_deg_s,
             "q̇ [deg/s]",
             f"G3  Joint velocity — {mode_name}\n"
@@ -2100,14 +2322,14 @@ def _make_plots(
             limits=qd_lim,
         ))
         paths.append(_plot_joint_series_vs_rs(
-            out_dir / "G4_joint_acceleration_vs_rs.png",
+            dir_g / "G4_joint_acceleration_vs_rs.png",
             s, r2d(res.q_ddot), rs_rec.s_mm, rs_rec.qddot_deg_s2,
             "q̈ [deg/s²]",
             f"G4  Joint acceleration — {mode_name}\n"
             "dashed = joint acceleration limits",
             limits=qdd_lim,
         ))
-        summary = _write_rs_compare_summary(out_dir, res, rs_rec, mode_name)
+        summary = _write_rs_compare_summary(dir_g, res, rs_rec, mode_name)
         paths.append(str(summary))
 
     return paths
@@ -2264,6 +2486,7 @@ def run_diagnostics(
     rs_s_mm: Optional[np.ndarray] = None,
     rs_q_deg: Optional[np.ndarray] = None,
     rs_rec: Optional[RSRecording] = None,
+    common_dir: Optional[Path] = None,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -2284,7 +2507,7 @@ def run_diagnostics(
         res.mode = "time_optimal" if time_optimal else "commanded"
 
     # Step 0
-    s_mm, q_kept, pos_kept, step0 = step0_validate(q_raw, poses)
+    s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(q_raw, poses)
     res.s_raw, res.q_raw, res.tcp_xyz_raw, res.step0 = s_mm, q_kept, pos_kept, step0
 
     # Step 1
@@ -2336,16 +2559,28 @@ def run_diagnostics(
     res.cruise_mask, res.transient_mask, res.boundary_mask = (
         reg["cruise"], reg["transient"], reg["boundary"]
     )
-    # Accel transients: solver |s_ddot| threshold, OR'd (when an RS recording
-    # exists) with RS tangential accel v·dv/ds so RobotStudio's own
-    # corner decel/accel notches are also excluded from benchmarking.
-    res.accel_transient_mask = identify_transient_mask(res.s_eval, res.s_ddot)
-    if rs_rec is not None:
-        rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, res.s_eval)
-        rs_a_tan = rs_v * np.gradient(rs_v, res.s_eval)
-        res.accel_transient_mask |= identify_transient_mask(
-            res.s_eval, rs_a_tan, accel_thresh_mm_s2=250.0,
+
+    # Accel transients from the TIME-OPTIMAL REFERENCE profile: depends only
+    # on q(s) + joint limits — identical for commanded/constant/optimal.
+    if res.mode == "time_optimal":
+        ref_v_star = res.v_star
+    else:
+        ref = step3_time_optimal(
+            res.s_eval, res.dqds, res.d2qds2, res.v_lim_joint, limits,
+            mvc_s=_mvc_s, mvc_v_lim=_mvc_v_lim_joint,
         )
+        ref_v_star = ref["v_star"]
+    res.accel_transient_mask = identify_transient_mask(
+        res.s_eval, ref_v_star, res.v_lim_joint,
+    )
+
+    # TCP rotation from the dense pose quaternions: cumulative geodesic
+    # reorientation angle θ(s) and its geometric rate dθ/ds.
+    dots = np.abs(np.sum(quat_kept[:-1] * quat_kept[1:], axis=1))
+    dtheta = 2.0 * np.arccos(np.clip(dots, -1.0, 1.0))
+    theta_raw = np.concatenate([[0.0], np.cumsum(dtheta)])
+    res.ori_theta = np.interp(s_eval, s_mm, theta_raw)
+    res.ori_dtheta_ds = np.gradient(res.ori_theta, s_eval)
 
     # limits for plotting/metrics
     res.metrics["_qd_max"] = limits.q_dot_max
@@ -2353,6 +2588,13 @@ def run_diagnostics(
     res.metrics["mode"] = res.mode
     if res.v_const is not None:
         res.metrics["v_const_mm_s"] = float(res.v_const)
+    omega = res.ori_dtheta_ds * res.v_star   # rad/s
+    res.metrics["rotation"] = {
+        "theta_total_deg": float(np.rad2deg(res.ori_theta[-1])),
+        "dtheta_ds_max_deg_mm": float(np.rad2deg(np.max(np.abs(res.ori_dtheta_ds)))),
+        "omega_max_deg_s": float(np.rad2deg(np.max(np.abs(omega)))),
+        "n_transient_regions": len(_mask_spans(res.accel_transient_mask)),
+    }
 
     # Step 5: grid independence + metrics
     grid_check = (
@@ -2379,6 +2621,7 @@ def run_diagnostics(
             rs_s_mm=rs_s_mm,
             rs_q_deg=rs_q_deg,
             rs_rec=rs_rec,
+            common_dir=common_dir,
         )
 
     return res
@@ -2404,6 +2647,11 @@ def _print_metrics(res: ProfileResult) -> None:
     b = m["bottleneck"]
     print(f"  bottleneck:          v_lim_min={b['v_lim_min_mm_s']:.1f} mm/s @ "
           f"s={b['arc_length_mm']:.1f} mm, J{b['binding_joint']} ({b['binding_kind']})")
+    rot = m.get("rotation", {})
+    if rot:
+        print(f"  rotation:            θ_total={rot['theta_total_deg']:.1f}°  "
+              f"ω_max={rot['omega_max_deg_s']:.1f}°/s  "
+              f"transient regions={rot['n_transient_regions']}")
     print(f"  grid independence:   max rel change = "
           f"{m['grid_independence'].get('max_relative_change', float('nan')):.3e}")
     print("=" * 64)
@@ -2426,6 +2674,71 @@ def _write_report(res: ProfileResult, out_dir: Path) -> Path:
 # =====================================================================
 # main() — real toolpath diagnostic
 # =====================================================================
+# Short --dataset keys → Toolpaths/ and Results - RobotStudio/ folder names
+# (mirrors tests/experiment24_validation.py).
+_DATASET_FOLDERS = {
+    "v6": "v6_constant_tool_orientation_recordings",
+    "v6_2": "v6_2",
+    "v8": "v8_snake_toolpath_with_variable_wp_spacing",
+    "v9": "v9_snake_toolpaths_orientation_test",
+}
+
+
+def _exp24_root() -> Path:
+    return _REPO / "Robot_APCC" / "Experiments" / "Experiement_24"
+
+
+def _resolve_cases(
+    dataset: Optional[str],
+    toolpath: Optional[str],
+    rs_dir: Optional[str],
+    rs_csv: Optional[str],
+) -> List[Tuple[Path, Optional[Path]]]:
+    """Return ``[(toolpath_csv, rs_csv_or_None), ...]``.
+
+    * ``--dataset`` → every CSV under Toolpaths/<folder>/, each matched to
+      Results - RobotStudio/<folder>/<same basename>.
+    * ``--toolpath`` → one toolpath; RS from ``--rs-csv``, else basename
+      match under ``--rs-dir`` (default = v9 RS folder).
+    """
+    if dataset and toolpath:
+        raise SystemExit("Pass either --dataset or --toolpath, not both.")
+    if not dataset and not toolpath:
+        raise SystemExit("Provide --dataset <v6|v6_2|v8|v9> or --toolpath <csv>.")
+
+    if dataset:
+        if dataset not in _DATASET_FOLDERS:
+            raise SystemExit(
+                f"Unknown --dataset {dataset!r}; "
+                f"choices: {sorted(_DATASET_FOLDERS)}"
+            )
+        folder = _DATASET_FOLDERS[dataset]
+        tp_dir = _exp24_root() / "Toolpaths" / folder
+        rs_root = _exp24_root() / "Results - RobotStudio" / folder
+        if not tp_dir.is_dir():
+            raise SystemExit(f"Toolpath folder not found: {tp_dir}")
+        cases = []
+        for tp in sorted(tp_dir.glob("*.csv")):
+            rs = rs_root / tp.name
+            cases.append((tp, rs if rs.is_file() else None))
+        if not cases:
+            raise SystemExit(f"No CSV toolpaths in {tp_dir}")
+        return cases
+
+    tp = Path(toolpath)
+    if not tp.is_file():
+        raise SystemExit(f"Toolpath not found: {tp}")
+    if rs_csv:
+        rs = Path(rs_csv)
+        if not rs.is_file():
+            raise SystemExit(f"RobotStudio CSV not found: {rs}")
+        return [(tp, rs)]
+    matched = find_matching_rs_csv(
+        tp, rs_dir=Path(rs_dir) if rs_dir else _DEFAULT_RS_DIR,
+    )
+    return [(tp, matched)]
+
+
 def _write_benchmark_summary(
     out_path: Path,
     toolpath: str,
@@ -2493,6 +2806,99 @@ def _write_benchmark_summary(
     return out_path
 
 
+def _process_one_toolpath(
+    toolpath: Path,
+    case_dir: Path,
+    *,
+    rs_path: Optional[Path],
+    time_optimal: bool,
+    ik_tol_rad: float,
+    resid_tol_rad: float,
+    make_plots: bool,
+) -> Dict:
+    """Load one toolpath, run commanded (and optionally all 3 modes)."""
+    print("\n" + "#" * 72)
+    print(f"# Toolpath: {toolpath.name}")
+    print("#" * 72)
+    ctx = load_joint_path_from_toolpath(str(toolpath))
+    print(
+        f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
+        f"WPs={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s"
+    )
+
+    rs_rec = None
+    if rs_path is not None and rs_path.is_file():
+        rs_rec = load_rs_recording(rs_path)
+        print(
+            f"  RobotStudio: {rs_path.name}  samples={len(rs_rec.s_mm)}  "
+            f"dur={rs_rec.t_s[-1]:.3f}s  "
+            f"vmax={float(np.nanmax(rs_rec.tcp_speed_mm_s)):.1f} mm/s"
+        )
+    else:
+        print(f"  [WARN] No matching RobotStudio CSV for {toolpath.name}")
+
+    case_dir.mkdir(parents=True, exist_ok=True)
+    common = dict(
+        v_cmd=ctx.v_cmd,
+        ik_tol_rad=ik_tol_rad,
+        resid_tol_rad=resid_tol_rad,
+        make_plots=make_plots,
+        waypoints_plate=ctx.waypoints_plate,
+        waypoints_base=ctx.waypoints_base,
+        rs_rec=rs_rec,
+        common_dir=case_dir,
+    )
+
+    def _run(mode_dir: Path, **kw) -> ProfileResult:
+        r = run_diagnostics(ctx.q_raw, ctx.poses, ctx.limits,
+                            out_dir=mode_dir, **common, **kw)
+        _print_metrics(r)
+        _write_report(r, mode_dir)
+        return r
+
+    res_cmd = res_const = res_opt = None
+    if time_optimal:
+        print("\n--- mode: optimal ---")
+        res_opt = _run(case_dir / "optimal", time_optimal=True)
+        keep = ~res_opt.boundary_mask
+        v_const = float(np.min(res_opt.v_star[keep])) if keep.any() else float(
+            np.median(res_opt.v_star))
+        print(f"  derived v_const = {v_const:.2f} mm/s "
+              "(min time-optimal v*, start/stop ramps excluded)")
+
+        print("\n--- mode: commanded ---")
+        res_cmd = _run(case_dir / "commanded")
+
+        print("\n--- mode: constant ---")
+        res_const = _run(case_dir / "constant", v_const=v_const)
+
+        summary = _write_benchmark_summary(
+            case_dir / "summary.txt", str(toolpath), ctx.v_cmd, rs_rec,
+            res_cmd, res_const, res_opt,
+        )
+    else:
+        print("\n--- mode: commanded ---")
+        res_cmd = _run(case_dir / "commanded")
+        summary = _write_benchmark_summary(
+            case_dir / "summary.txt", str(toolpath), ctx.v_cmd, rs_rec, res_cmd,
+        )
+    print(f"Benchmark summary: {summary}")
+    return {
+        "toolpath": str(toolpath),
+        "v_cmd": ctx.v_cmd,
+        "rs_duration_s": float(rs_rec.t_s[-1]) if rs_rec is not None else None,
+        "commanded_s": float(res_cmd.metrics_duration),
+        "constant_s": (
+            float(res_const.metrics_duration) if res_const is not None else None
+        ),
+        "optimal_s": (
+            float(res_opt.metrics_duration) if res_opt is not None else None
+        ),
+        "v_const": res_const.v_const if res_const is not None else None,
+        "summary": str(summary),
+    }
+
+
 def main() -> None:
     import argparse
     import datetime
@@ -2502,13 +2908,17 @@ def main() -> None:
                     "modes: commanded / constant / optimal)."
     )
     parser.add_argument(
+        "--dataset",
+        choices=sorted(_DATASET_FOLDERS),
+        default=None,
+        help="Experiment 24 dataset key (e.g. v9). Loads all CSVs from "
+             "Toolpaths/<folder>/ and matches RobotStudio results by "
+             "basename under Results - RobotStudio/<folder>/.",
+    )
+    parser.add_argument(
         "--toolpath",
-        default=str(
-            _REPO / "Robot_APCC" / "Experiments" / "Experiement_24" / "Toolpaths"
-            / "v9_snake_toolpaths_orientation_test_single"
-            / "vel_test_x100_y50_v100_z0_n90.csv"
-        ),
-        help="Toolpath CSV to blend + IK + analyse.",
+        default=None,
+        help="Single toolpath CSV (mutually exclusive with --dataset).",
     )
     parser.add_argument(
         "--out",
@@ -2518,12 +2928,13 @@ def main() -> None:
     parser.add_argument(
         "--rs-dir",
         default=str(_DEFAULT_RS_DIR),
-        help="Folder of RobotStudio CSVs; matched by basename to --toolpath.",
+        help="RS folder for --toolpath basename matching "
+             "(ignored when --dataset is set).",
     )
     parser.add_argument(
         "--rs-csv",
         default=None,
-        help="Explicit RobotStudio CSV (overrides --rs-dir basename match).",
+        help="Explicit RobotStudio CSV for a single --toolpath run.",
     )
     parser.add_argument("--ik-tol-rad", type=float, default=1e-4)
     parser.add_argument(
@@ -2539,84 +2950,54 @@ def main() -> None:
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
+    cases = _resolve_cases(args.dataset, args.toolpath, args.rs_dir, args.rs_csv)
+
     if args.out:
-        out_dir = Path(args.out)
+        out_root = Path(args.out)
+        out_root.mkdir(parents=True, exist_ok=True)
     else:
         stamp = datetime.datetime.now().strftime("%m_%d_%y_%H_%M_%S")
-        out_dir = (_REPO / "Robot_APCC" / "Experiments" / "Experiement_24"
-                   / "Results" / stamp)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output: {out_dir}")
+        out_root = _exp24_root() / "Results" / stamp
+        out_root.mkdir(parents=True, exist_ok=True)
+    print(f"Output: {out_root}")
+    print(f"Cases:  {len(cases)}"
+          + (f"  (--dataset {args.dataset})" if args.dataset else ""))
 
-    print(f"Loading joint path from toolpath:\n  {args.toolpath}")
-    ctx = load_joint_path_from_toolpath(args.toolpath)
-    print(
-        f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
-        f"WPs plate/base={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s"
-    )
-
-    rs_rec = None
-    rs_path = Path(args.rs_csv) if args.rs_csv else find_matching_rs_csv(
-        args.toolpath, rs_dir=Path(args.rs_dir),
-    )
-    if rs_path is not None and rs_path.is_file():
-        rs_rec = load_rs_recording(rs_path)
-        print(
-            f"  RobotStudio match: {rs_path}\n"
-            f"  RS samples={len(rs_rec.s_mm)}, arc={rs_rec.s_mm[-1]:.1f} mm, "
-            f"duration={rs_rec.t_s[-1]:.3f} s, "
-            f"TCP speed max={float(np.nanmax(rs_rec.tcp_speed_mm_s)):.1f} mm/s"
+    batch_rows = []
+    for tp, rs in cases:
+        case_dir = out_root / tp.stem if len(cases) > 1 else out_root
+        row = _process_one_toolpath(
+            tp, case_dir,
+            rs_path=rs,
+            time_optimal=args.time_optimal,
+            ik_tol_rad=args.ik_tol_rad,
+            resid_tol_rad=float(np.deg2rad(args.resid_tol_deg)),
+            make_plots=not args.no_plots,
         )
-    else:
-        print(f"  [WARN] No matching RobotStudio CSV for {Path(args.toolpath).name}")
+        batch_rows.append(row)
 
-    common = dict(
-        v_cmd=ctx.v_cmd,
-        ik_tol_rad=args.ik_tol_rad,
-        resid_tol_rad=float(np.deg2rad(args.resid_tol_deg)),
-        make_plots=not args.no_plots,
-        waypoints_plate=ctx.waypoints_plate,
-        waypoints_base=ctx.waypoints_base,
-        rs_rec=rs_rec,
-    )
+    if len(batch_rows) > 1:
+        lines = [
+            "Batch velocity-profile benchmarking",
+            "=" * 64,
+            f"output: {out_root}",
+            f"n toolpaths: {len(batch_rows)}",
+            "",
+        ]
+        for r in batch_rows:
+            lines.append(Path(r["toolpath"]).name)
+            lines.append(
+                f"  v_cmd={r['v_cmd']:.1f}  RS={r['rs_duration_s']}  "
+                f"cmd={r['commanded_s']}  const={r['constant_s']}  "
+                f"opt={r['optimal_s']}"
+            )
+            lines.append(f"  summary: {r['summary']}")
+            lines.append("")
+        batch_path = out_root / "batch_summary.txt"
+        batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"\nBatch summary: {batch_path}")
 
-    def _run(mode_dir: Path, **kw) -> ProfileResult:
-        r = run_diagnostics(ctx.q_raw, ctx.poses, ctx.limits,
-                            out_dir=mode_dir, **common, **kw)
-        _print_metrics(r)
-        _write_report(r, mode_dir)
-        return r
-
-    if args.time_optimal:
-        print("\n--- mode: optimal (time-optimal, joint limits only) ---")
-        res_opt = _run(out_dir / "optimal", time_optimal=True)
-
-        # v_const = lowest time-optimal v*, excluding only the start/stop
-        # ramps (boundary_mask = transient runs touching s=0 / s=end).
-        keep = ~res_opt.boundary_mask
-        v_const = float(np.min(res_opt.v_star[keep])) if keep.any() else float(
-            np.median(res_opt.v_star))
-        print(f"\n  derived v_const = {v_const:.2f} mm/s "
-              "(min time-optimal v*, start/stop ramps excluded)")
-
-        print("\n--- mode: commanded ---")
-        res_cmd = _run(out_dir / "commanded")
-
-        print("\n--- mode: constant ---")
-        res_const = _run(out_dir / "constant", v_const=v_const)
-
-        summary = _write_benchmark_summary(
-            out_dir / "summary.txt", args.toolpath, ctx.v_cmd, rs_rec,
-            res_cmd, res_const, res_opt,
-        )
-    else:
-        print("\n--- mode: commanded ---")
-        res_cmd = _run(out_dir / "commanded")
-        summary = _write_benchmark_summary(
-            out_dir / "summary.txt", args.toolpath, ctx.v_cmd, rs_rec, res_cmd,
-        )
-    print(f"\nBenchmark summary: {summary}")
-    print(f"Results under: {out_dir}")
+    print(f"\nDone. Results under: {out_root}")
 
 
 # =====================================================================
