@@ -157,12 +157,17 @@ class ProfileResult:
     cruise_mask: np.ndarray = None
     transient_mask: np.ndarray = None
     boundary_mask: np.ndarray = None
+    # |s_ddot| threshold mask: True where acceleration transients occur
+    # (excluded from RS benchmarking; drawn red on F1/F2).
+    accel_transient_mask: np.ndarray = None
     bottleneck_idx: int = -1
 
     metrics: Dict = field(default_factory=dict)
     figures: List[str] = field(default_factory=list)
     v_cmd: Optional[float] = None
-    # "commanded" = joint limits ∧ v ≤ v_cmd; "time_optimal" = joint limits only
+    v_const: Optional[float] = None     # constant-mode ceiling [mm/s]
+    # "commanded" = joint limits ∧ v ≤ v_cmd; "time_optimal" = joint limits
+    # only; "constant" = joint limits ∧ v ≤ v_const
     mode: str = "commanded"
 
 
@@ -1333,14 +1338,40 @@ def _mask_spans(mask: np.ndarray) -> List[Tuple[int, int]]:
     return spans
 
 
+def identify_transient_mask(
+    s_eval: np.ndarray,
+    s_ddot: np.ndarray,
+    accel_thresh_mm_s2: float = 25.0,
+    pad_mm: float = 10.0,
+) -> np.ndarray:
+    """True where the TCP tangential acceleration |s_ddot| is significant.
+
+    Simple and reliable: a sample is transient when ``|s_ddot|`` exceeds
+    ``accel_thresh_mm_s2``; the mask is then widened by ``pad_mm`` of
+    arc-length on each side so samples adjacent to an accel burst are also
+    excluded from steady-state benchmarking.
+    """
+    mask = np.abs(np.asarray(s_ddot, dtype=float)) > float(accel_thresh_mm_s2)
+    ds = float(s_eval[1] - s_eval[0]) if len(s_eval) > 1 else 1.0
+    n_pad = int(round(pad_mm / max(ds, 1e-9)))
+    if n_pad > 0 and mask.any():
+        mask = np.convolve(mask.astype(float),
+                           np.ones(2 * n_pad + 1), mode="same") > 0
+    return mask
+
+
 def _plot_waypoints_3d(
     out_path: Path,
     poses_mm7: np.ndarray,
     title: str,
+    wp_transient: Optional[np.ndarray] = None,
 ) -> str:
     """Programmed waypoints as 3D (or flat 2D) points with orientation markers.
 
     Orientation arrows show the local tool Z-axis (from the quaternion).
+    ``wp_transient`` (bool per waypoint) draws accel-transient waypoints as
+    red triangles and the polyline segments touching them in red.  The end
+    marker is omitted (start + polyline direction defines it).
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -1358,16 +1389,35 @@ def _plot_waypoints_3d(
     n_arrows = min(80, len(xyz))
     step = max(1, len(xyz) // n_arrows)
 
+    if wp_transient is None:
+        wp_transient = np.zeros(len(xyz), dtype=bool)
+    wp_transient = np.asarray(wp_transient, dtype=bool)
+    # Segment i (WP i -> i+1) is transient if either endpoint is.
+    seg_transient = wp_transient[:-1] | wp_transient[1:]
+    steady = ~wp_transient
+
+    def _draw(ax, coords):
+        """Polyline (red where transient) + WP markers, no end marker."""
+        for a, b in _mask_spans(~seg_transient):
+            ax.plot(*[coords[a:b + 2, k] for k in range(coords.shape[1])],
+                    "-", color="steelblue", lw=1.2, alpha=0.7)
+        for a, b in _mask_spans(seg_transient):
+            ax.plot(*[coords[a:b + 2, k] for k in range(coords.shape[1])],
+                    "-", color="red", lw=2.0, alpha=0.85)
+        ax.scatter(*[coords[steady, k] for k in range(coords.shape[1])],
+                   c="green", s=28, edgecolors="k", linewidths=0.4,
+                   zorder=5, label="waypoints")
+        if wp_transient.any():
+            ax.scatter(*[coords[wp_transient, k] for k in range(coords.shape[1])],
+                       c="red", s=55, marker="^", edgecolors="k",
+                       linewidths=0.5, zorder=6, label="transient WPs")
+        ax.scatter(*[[coords[0, k]] for k in range(coords.shape[1])],
+                   c="lime", s=80, marker="o", edgecolors="k", zorder=7,
+                   label="start")
+
     if is_flat:
         fig, ax = plt.subplots(figsize=(12, 10))
-        ax.plot(xyz[:, 0], xyz[:, 1], "-", color="steelblue", lw=1.2, alpha=0.7,
-                label="waypoint polyline")
-        ax.scatter(xyz[:, 0], xyz[:, 1], c="green", s=28, edgecolors="k",
-                   linewidths=0.4, zorder=5, label="waypoints")
-        ax.scatter(xyz[0, 0], xyz[0, 1], c="lime", s=80, marker="o",
-                   edgecolors="k", zorder=6, label="start")
-        ax.scatter(xyz[-1, 0], xyz[-1, 1], c="red", s=80, marker="s",
-                   edgecolors="k", zorder=6, label="end")
+        _draw(ax, xyz[:, :2])
         for i in range(0, len(xyz), step):
             q_xyzw = np.array([quat[i, 1], quat[i, 2], quat[i, 3], quat[i, 0]])
             rot = Rotation.from_quat(q_xyzw)
@@ -1395,14 +1445,7 @@ def _plot_waypoints_3d(
     else:
         fig = plt.figure(figsize=(12, 10))
         ax = fig.add_subplot(111, projection="3d")
-        ax.plot(xyz[:, 0], xyz[:, 1], xyz[:, 2], "-", color="steelblue",
-                lw=1.0, alpha=0.7, label="waypoint polyline")
-        ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c="green", s=22,
-                   edgecolors="k", linewidths=0.3, label="waypoints")
-        ax.scatter([xyz[0, 0]], [xyz[0, 1]], [xyz[0, 2]], c="lime", s=70,
-                   marker="o", edgecolors="k", label="start")
-        ax.scatter([xyz[-1, 0]], [xyz[-1, 1]], [xyz[-1, 2]], c="red", s=70,
-                   marker="s", edgecolors="k", label="end")
+        _draw(ax, xyz)
         for i in range(0, len(xyz), step):
             q_xyzw = np.array([quat[i, 1], quat[i, 2], quat[i, 3], quat[i, 0]])
             z_axis = Rotation.from_quat(q_xyzw).apply([0, 0, 1])
@@ -1595,7 +1638,11 @@ def _plot_tcp_vs_rs(
     rs: RSRecording,
     mode_name: str,
 ) -> str:
-    """TCP speed + |TCP accel| vs arc-length: solver vs RobotStudio."""
+    """TCP speed + |TCP accel| vs arc-length: solver vs RobotStudio.
+
+    In commanded mode, steady-state samples (outside the accel-transient
+    mask) deviating from RS by more than 10% are marked red.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1612,6 +1659,17 @@ def _plot_tcp_vs_rs(
     if res.v_cmd and res.mode == "commanded":
         ax.axhline(res.v_cmd, ls=":", color="purple", lw=1.2,
                    label=f"v_cmd = {res.v_cmd:.0f} mm/s")
+
+    trans = res.accel_transient_mask
+    if res.mode == "commanded" and trans is not None:
+        rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
+        dev = np.abs(res.v_star - rs_v) > 0.10 * np.maximum(rs_v, 1e-9)
+        flag = dev & ~trans & (rs_v > 1.0)
+        if flag.any():
+            ax.plot(s[flag], res.v_star[flag], "o", ms=4, color="red",
+                    zorder=5, label=f">10% vs RS (n={int(flag.sum())})")
+        for a, b in _mask_spans(trans):
+            ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
     ax.set_ylabel("TCP speed [mm/s]")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", fontsize=8)
@@ -1770,12 +1828,24 @@ def _make_plots(
                "transient": res.transient_mask,
                "boundary": res.boundary_mask}
     r2d = np.rad2deg
-    mode_name = (
-        "time-optimal (joint limits only)"
-        if res.mode == "time_optimal"
-        else f"commanded (v ≤ v_cmd={v_cmd:g} mm/s, joint-feasible)"
-        if v_cmd else "commanded (no v_cmd supplied)"
-    )
+    if res.mode == "time_optimal":
+        mode_name = "time-optimal (joint limits only)"
+    elif res.mode == "constant":
+        mode_name = f"constant (v ≤ v_const={res.v_const:g} mm/s, joint-feasible)"
+    elif v_cmd:
+        mode_name = f"commanded (v ≤ v_cmd={v_cmd:g} mm/s, joint-feasible)"
+    else:
+        mode_name = "commanded (no v_cmd supplied)"
+
+    # Per-waypoint accel-transient flags: nearest dense-path sample per WP
+    # (base-frame WPs map onto the base-frame dense path; the same flags
+    # apply to the plate-frame plot since WP i is the same physical point).
+    wp_flags = None
+    if waypoints_base is not None and res.accel_transient_mask is not None:
+        wp_xyz = np.asarray(waypoints_base, dtype=float)[:, :3]
+        nn = [int(np.argmin(((res.tcp_xyz - p) ** 2).sum(axis=1)))
+              for p in wp_xyz]
+        wp_flags = res.accel_transient_mask[nn]
 
     # ---- Context: programmed waypoints (plate) + base-frame after Zund ----
     if waypoints_plate is not None:
@@ -1783,14 +1853,16 @@ def _make_plots(
             out_dir / "F1_input_toolpath_plate_frame.png",
             waypoints_plate,
             title="F1  Input toolpath waypoints (plate / knife frame)\n"
-                  "markers = WPs, arrows = tool Z orientation",
+                  "red = accel-transient segments, ▲ = transient WPs",
+            wp_transient=wp_flags,
         ))
     if waypoints_base is not None:
         paths.append(_plot_waypoints_3d(
             out_dir / "F2_waypoints_robot_base_frame.png",
             waypoints_base,
             title="F2  Waypoints after Zund knife → robot-base transform\n"
-                  "markers = WPs, arrows = tool Z orientation",
+                  "red = accel-transient segments, ▲ = transient WPs",
+            wp_transient=wp_flags,
         ))
 
     # ---- TCP velocity heatmap on the path ----
@@ -2186,6 +2258,7 @@ def run_diagnostics(
     make_plots: bool = True,
     do_grid_check: bool = True,
     time_optimal: bool = False,
+    v_const: Optional[float] = None,
     waypoints_plate: Optional[np.ndarray] = None,
     waypoints_base: Optional[np.ndarray] = None,
     rs_s_mm: Optional[np.ndarray] = None,
@@ -2194,14 +2267,21 @@ def run_diagnostics(
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
-    Default ``time_optimal=False`` produces a **commanded** profile:
-    joint-feasible TOPP with TCP speed capped at ``v_cmd`` (matches
-    RobotStudio recordings taken at the toolpath commanded speed).  Pass
-    ``time_optimal=True`` to drop the ``v_cmd`` ceiling.
+    Mode selection:
+      * ``v_const`` given        → **constant**: TOPP capped at ``v_const``
+      * ``time_optimal=True``    → **time_optimal**: joint limits only
+      * otherwise                → **commanded**: TOPP capped at ``v_cmd``
+        (matches RobotStudio recordings taken at the commanded speed)
     """
     res = ProfileResult()
     res.v_cmd = v_cmd
-    res.mode = "time_optimal" if time_optimal else "commanded"
+    res.v_const = v_const
+    if v_const is not None:
+        res.mode = "constant"
+        v_cmd = float(v_const)          # same capping machinery as commanded
+        time_optimal = False
+    else:
+        res.mode = "time_optimal" if time_optimal else "commanded"
 
     # Step 0
     s_mm, q_kept, pos_kept, step0 = step0_validate(q_raw, poses)
@@ -2256,11 +2336,23 @@ def run_diagnostics(
     res.cruise_mask, res.transient_mask, res.boundary_mask = (
         reg["cruise"], reg["transient"], reg["boundary"]
     )
+    # Accel transients: solver |s_ddot| threshold, OR'd (when an RS recording
+    # exists) with RS tangential accel v·dv/ds so RobotStudio's own
+    # corner decel/accel notches are also excluded from benchmarking.
+    res.accel_transient_mask = identify_transient_mask(res.s_eval, res.s_ddot)
+    if rs_rec is not None:
+        rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, res.s_eval)
+        rs_a_tan = rs_v * np.gradient(rs_v, res.s_eval)
+        res.accel_transient_mask |= identify_transient_mask(
+            res.s_eval, rs_a_tan, accel_thresh_mm_s2=250.0,
+        )
 
     # limits for plotting/metrics
     res.metrics["_qd_max"] = limits.q_dot_max
     res.metrics["_qdd_max"] = limits.q_ddot_max
     res.metrics["mode"] = res.mode
+    if res.v_const is not None:
+        res.metrics["v_const_mm_s"] = float(res.v_const)
 
     # Step 5: grid independence + metrics
     grid_check = (
@@ -2334,11 +2426,80 @@ def _write_report(res: ProfileResult, out_dir: Path) -> Path:
 # =====================================================================
 # main() — real toolpath diagnostic
 # =====================================================================
+def _write_benchmark_summary(
+    out_path: Path,
+    toolpath: str,
+    v_cmd: float,
+    rs_rec: Optional[RSRecording],
+    res_cmd: ProfileResult,
+    res_const: Optional[ProfileResult] = None,
+    res_opt: Optional[ProfileResult] = None,
+) -> Path:
+    """Case-level summary: traversal times per mode + commanded-vs-RS eval."""
+    lines = [
+        "Velocity-profile benchmarking summary",
+        "=" * 64,
+        f"toolpath: {toolpath}",
+        f"v_cmd:    {v_cmd:.1f} mm/s",
+        "",
+        "Traversal times",
+        "-" * 40,
+    ]
+    if rs_rec is not None:
+        lines.append(f"  RobotStudio:  {float(rs_rec.t_s[-1]):.4f} s")
+    else:
+        lines.append("  RobotStudio:  (no matching RS CSV)")
+    lines.append(f"  v_commanded:  {res_cmd.metrics_duration:.4f} s")
+    if res_const is not None:
+        lines.append(f"  v_const:      {res_const.metrics_duration:.4f} s"
+                     f"  (v_const={res_const.v_const:.1f} mm/s)")
+    if res_opt is not None:
+        lines.append(f"  v_optimal:    {res_opt.metrics_duration:.4f} s")
+
+    lines += ["", "TCP velocity evaluation (commanded vs RobotStudio, "
+                  "transients excluded)", "-" * 40]
+    if rs_rec is None:
+        lines.append("  (skipped — no RS recording)")
+    else:
+        s = res_cmd.s_eval
+        rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, s)
+        trans = res_cmd.accel_transient_mask
+        steady = ~trans & (rs_v > 1.0)
+        err = np.abs(res_cmd.v_star - rs_v)
+        flag10 = steady & (err > 0.10 * rs_v)
+        n_steady = int(steady.sum())
+        lines.append(f"  transient fraction:   {float(np.mean(trans)):.3f}")
+        lines.append(f"  steady-state samples: {n_steady}")
+        if n_steady:
+            e = err[steady]
+            frac = 100.0 * flag10.sum() / n_steady
+            lines.append(f"  |err| med/p95/max:    {np.median(e):.2f} / "
+                         f"{np.percentile(e, 95):.2f} / {np.max(e):.2f} mm/s")
+            lines.append(f"  >10% of RS:           {int(flag10.sum())} / "
+                         f"{n_steady} ({frac:.1f}%)")
+            if frac > 25.0:
+                lines.append(f"  [ABNORMAL] {frac:.1f}% of steady samples "
+                             "deviate by >10% from RS")
+
+    lines += ["", "Speed stats by mode [mm/s]", "-" * 40]
+    for label, r in (("commanded", res_cmd), ("constant", res_const),
+                     ("optimal", res_opt)):
+        if r is not None:
+            lines.append(f"  {label:10s} min={float(np.min(r.v_star)):.1f}  "
+                         f"mean={float(np.mean(r.v_star)):.1f}  "
+                         f"max={float(np.max(r.v_star)):.1f}")
+
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out_path
+
+
 def main() -> None:
     import argparse
+    import datetime
     parser = argparse.ArgumentParser(
         description="TCP speed-profile diagnostic pipeline "
-                    "(default = commanded v≤v_cmd; --time-optimal = uncapped)."
+                    "(default = commanded v≤v_cmd; --time-optimal = all 3 "
+                    "modes: commanded / constant / optimal)."
     )
     parser.add_argument(
         "--toolpath",
@@ -2351,8 +2512,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--out",
-        default=str(_REPO / "output" / "optimal_velocity_profile"),
-        help="Output directory for PNGs and the JSON report.",
+        default=None,
+        help="Output directory. Default: Experiement_24/Results/MM_DD_YY_HH_MM_SS",
     )
     parser.add_argument(
         "--rs-dir",
@@ -2372,58 +2533,90 @@ def main() -> None:
     )
     parser.add_argument(
         "--time-optimal", action="store_true",
-        help="Ignore toolpath v_cmd and compute the fastest joint-feasible "
-             "TCP speed profile. Default is commanded mode (v ≤ v_cmd).",
+        help="Compute all 3 velocity modes (commanded, constant, optimal) "
+             "into per-mode subfolders. Default is commanded mode only.",
     )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
-    out_dir = Path(args.out)
+    if args.out:
+        out_dir = Path(args.out)
+    else:
+        stamp = datetime.datetime.now().strftime("%m_%d_%y_%H_%M_%S")
+        out_dir = (_REPO / "Robot_APCC" / "Experiments" / "Experiement_24"
+                   / "Results" / stamp)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output: {out_dir}")
+
     print(f"Loading joint path from toolpath:\n  {args.toolpath}")
     ctx = load_joint_path_from_toolpath(args.toolpath)
-    mode = "time_optimal" if args.time_optimal else "commanded"
     print(
         f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
         f"WPs plate/base={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s"
     )
-    print(f"  mode: {mode}"
-          + ("" if args.time_optimal else f" (cap TCP speed at v_cmd={ctx.v_cmd:.1f} mm/s)"))
 
     rs_rec = None
-    rs_s_mm = rs_q_deg = None
     rs_path = Path(args.rs_csv) if args.rs_csv else find_matching_rs_csv(
         args.toolpath, rs_dir=Path(args.rs_dir),
     )
     if rs_path is not None and rs_path.is_file():
-        print(f"  RobotStudio match: {rs_path}")
         rs_rec = load_rs_recording(rs_path)
-        rs_s_mm, rs_q_deg = rs_rec.s_mm, rs_rec.q_deg
         print(
-            f"  RS samples={len(rs_s_mm)}, arc={rs_s_mm[-1]:.1f} mm, "
+            f"  RobotStudio match: {rs_path}\n"
+            f"  RS samples={len(rs_rec.s_mm)}, arc={rs_rec.s_mm[-1]:.1f} mm, "
             f"duration={rs_rec.t_s[-1]:.3f} s, "
             f"TCP speed max={float(np.nanmax(rs_rec.tcp_speed_mm_s)):.1f} mm/s"
         )
     else:
         print(f"  [WARN] No matching RobotStudio CSV for {Path(args.toolpath).name}")
 
-    res = run_diagnostics(
-        ctx.q_raw, ctx.poses, ctx.limits,
-        out_dir=out_dir, v_cmd=ctx.v_cmd,
+    common = dict(
+        v_cmd=ctx.v_cmd,
         ik_tol_rad=args.ik_tol_rad,
         resid_tol_rad=float(np.deg2rad(args.resid_tol_deg)),
-        time_optimal=args.time_optimal,
         make_plots=not args.no_plots,
         waypoints_plate=ctx.waypoints_plate,
         waypoints_base=ctx.waypoints_base,
-        rs_s_mm=rs_s_mm,
-        rs_q_deg=rs_q_deg,
         rs_rec=rs_rec,
     )
-    _print_metrics(res)
-    report_path = _write_report(res, out_dir)
-    print(f"\nReport: {report_path}")
-    for f in res.figures:
-        print(f"  figure: {f}")
+
+    def _run(mode_dir: Path, **kw) -> ProfileResult:
+        r = run_diagnostics(ctx.q_raw, ctx.poses, ctx.limits,
+                            out_dir=mode_dir, **common, **kw)
+        _print_metrics(r)
+        _write_report(r, mode_dir)
+        return r
+
+    if args.time_optimal:
+        print("\n--- mode: optimal (time-optimal, joint limits only) ---")
+        res_opt = _run(out_dir / "optimal", time_optimal=True)
+
+        # v_const = lowest time-optimal v*, excluding only the start/stop
+        # ramps (boundary_mask = transient runs touching s=0 / s=end).
+        keep = ~res_opt.boundary_mask
+        v_const = float(np.min(res_opt.v_star[keep])) if keep.any() else float(
+            np.median(res_opt.v_star))
+        print(f"\n  derived v_const = {v_const:.2f} mm/s "
+              "(min time-optimal v*, start/stop ramps excluded)")
+
+        print("\n--- mode: commanded ---")
+        res_cmd = _run(out_dir / "commanded")
+
+        print("\n--- mode: constant ---")
+        res_const = _run(out_dir / "constant", v_const=v_const)
+
+        summary = _write_benchmark_summary(
+            out_dir / "summary.txt", args.toolpath, ctx.v_cmd, rs_rec,
+            res_cmd, res_const, res_opt,
+        )
+    else:
+        print("\n--- mode: commanded ---")
+        res_cmd = _run(out_dir / "commanded")
+        summary = _write_benchmark_summary(
+            out_dir / "summary.txt", args.toolpath, ctx.v_cmd, rs_rec, res_cmd,
+        )
+    print(f"\nBenchmark summary: {summary}")
+    print(f"Results under: {out_dir}")
 
 
 # =====================================================================
