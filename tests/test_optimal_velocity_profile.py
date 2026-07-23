@@ -3,10 +3,18 @@
 Time-optimal TCP linear-speed profile — diagnostic plotting pipeline
 ====================================================================
 
-Estimate and VISUALLY VERIFY the time-optimal TCP linear speed profile
-``v*(s)`` (``s`` = arc-length along the path) from a joint-space path
-``q_raw(s)`` produced by inverse kinematics on a dense, blended, full-6-DOF
-pose trajectory.
+Estimate and VISUALLY VERIFY the TCP linear speed profile ``v*(s)``
+(``s`` = arc-length along the path) from a joint-space path ``q_raw(s)``
+produced by inverse kinematics on a dense, blended, full-6-DOF pose
+trajectory.
+
+**Default mode (commanded):** TOPP under joint velocity/acceleration limits
+**and** the toolpath commanded TCP speed ``v_cmd`` — same intent as
+``tests/experiment24_validation.py`` running against a RobotStudio recording
+taken at commanded speed.
+
+**``--time-optimal`` mode:** drop the ``v_cmd`` ceiling and find the fastest
+joint-feasible TCP speed along the whole path.
 
 The core mathematical identity connecting geometric derivatives (w.r.t.
 arc-length ``s``) to time derivatives (w.r.t. time ``t``) is::
@@ -131,7 +139,8 @@ class ProfileResult:
     # Step 2
     v_vel: np.ndarray = None            # (N,) [mm/s]
     v_accel: np.ndarray = None          # (N,) [mm/s] (may contain inf)
-    v_lim: np.ndarray = None            # (N,) [mm/s]
+    v_lim_joint: np.ndarray = None      # (N,) joint-only ceiling before v_cmd [mm/s]
+    v_lim: np.ndarray = None            # (N,) ceiling used for TOPP [mm/s]
     vel_ceilings: np.ndarray = None     # (N, 6) per-joint velocity ceilings [mm/s]
     binding_joint: np.ndarray = None    # (N,) int in 0..5
     binding_kind: np.ndarray = None     # (N,) 0=velocity, 1=acceleration
@@ -153,6 +162,8 @@ class ProfileResult:
     metrics: Dict = field(default_factory=dict)
     figures: List[str] = field(default_factory=list)
     v_cmd: Optional[float] = None
+    # "commanded" = joint limits ∧ v ≤ v_cmd; "time_optimal" = joint limits only
+    mode: str = "commanded"
 
 
 # =====================================================================
@@ -282,6 +293,21 @@ def load_joint_path_from_toolpath(
     )
 
 
+@dataclass
+class RSRecording:
+    """RobotStudio trajectory recording aligned to robot-base arc-length."""
+
+    s_mm: np.ndarray                  # (K,) arc-length in robot base [mm]
+    t_s: np.ndarray                   # (K,) time from CSV [s] (t0 = 0)
+    q_deg: np.ndarray                 # (K, 6) joint position [deg]
+    qdot_deg_s: np.ndarray            # (K, 6) joint velocity [deg/s]
+    qddot_deg_s2: np.ndarray          # (K, 6) joint acceleration [deg/s²]
+    tcp_speed_mm_s: np.ndarray        # (K,) logged TCP linear speed [mm/s]
+    tcp_accel_mm_s2: np.ndarray       # (K,) logged TCP linear accel [mm/s²]
+    xyz_mm: np.ndarray                # (K, 3) TCP xyz in robot base [mm]
+    path: Path = field(default_factory=Path)
+
+
 def find_matching_rs_csv(
     toolpath_csv: str | Path,
     rs_dir: Optional[Path] = None,
@@ -293,20 +319,19 @@ def find_matching_rs_csv(
     return candidate if candidate.is_file() else None
 
 
-def load_rs_joint_vs_arc(
+def load_rs_recording(
     rs_csv: Path,
     repo: Optional[Path] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Load RS joint angles and arc-length from a RobotStudio recording.
+) -> RSRecording:
+    """Load a full RobotStudio recording for solver benchmarking.
 
     Positions in the RS CSV are in the tool/plate frame; they are transformed
     to robot base with the Zund knife pose (same as experiment24_validation)
     before arc-length is computed, so the x-axis is comparable to our solver ``s``.
 
-    Returns
-    -------
-    s_mm : (K,) arc-length [mm]
-    q_deg : (K, 6) joint angles [deg]
+    TCP speed / accel and joint vel / accel are taken from the CSV columns
+    logged by RobotStudio (``speed_mm_per_s``, ``linear_acceleration_mm_s_2``,
+    ``rs_j*_speed_deg_s``, ``rs_j*_accel_deg_s2``).
     """
     repo = repo or _REPO
     from utils.config_loader import load_knife_config
@@ -314,6 +339,13 @@ def load_rs_joint_vs_arc(
 
     data = np.genfromtxt(rs_csv, delimiter=",", names=True, dtype=float)
     q_deg = np.column_stack([data[f"rs_j{i}_deg"] for i in range(1, 7)])
+    qdot = np.column_stack([data[f"rs_j{i}_speed_deg_s"] for i in range(1, 7)])
+    qddot = np.column_stack([data[f"rs_j{i}_accel_deg_s2"] for i in range(1, 7)])
+    tcp_speed = np.asarray(data["speed_mm_per_s"], dtype=float)
+    tcp_accel = np.asarray(data["linear_acceleration_mm_s_2"], dtype=float)
+    t_s = np.asarray(data["time_ms"], dtype=float) / 1000.0
+    t_s = t_s - t_s[0]
+
     poses_tpk = np.column_stack([
         data["rs_x_mm"] / 1000.0,
         data["rs_y_mm"] / 1000.0,
@@ -327,7 +359,34 @@ def load_rs_joint_vs_arc(
     xyz_mm = poses_base[:, :3] * 1000.0
     ds = np.linalg.norm(np.diff(xyz_mm, axis=0), axis=1)
     s_mm = np.concatenate([[0.0], np.cumsum(ds)])
-    return s_mm, q_deg
+    return RSRecording(
+        s_mm=s_mm, t_s=t_s, q_deg=q_deg, qdot_deg_s=qdot, qddot_deg_s2=qddot,
+        tcp_speed_mm_s=tcp_speed, tcp_accel_mm_s2=tcp_accel, xyz_mm=xyz_mm,
+        path=Path(rs_csv),
+    )
+
+
+def load_rs_joint_vs_arc(
+    rs_csv: Path,
+    repo: Optional[Path] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Backward-compatible wrapper: return ``(s_mm, q_deg)`` only."""
+    rec = load_rs_recording(rs_csv, repo=repo)
+    return rec.s_mm, rec.q_deg
+
+
+def _apply_v_cmd_cap(
+    v_lim: np.ndarray, v_cmd: Optional[float], time_optimal: bool,
+) -> np.ndarray:
+    """Cap a joint-limit ceiling by commanded TCP speed (commanded mode).
+
+    In ``--time-optimal`` mode the command ceiling is ignored.  With no
+    ``v_cmd`` the joint-only ceiling is returned unchanged.
+    """
+    out = np.asarray(v_lim, dtype=float).copy()
+    if time_optimal or v_cmd is None or not np.isfinite(v_cmd) or v_cmd <= 0:
+        return out
+    return np.minimum(out, float(v_cmd))
 
 
 # =====================================================================
@@ -1512,6 +1571,184 @@ def _plot_A_geometry_with_rs(
     return str(out_path)
 
 
+def _interp_rs_to_solver(
+    rs_s: np.ndarray, rs_y: np.ndarray, s_eval: np.ndarray,
+    unwrap_deg: bool = False,
+) -> np.ndarray:
+    """Resample an RS series onto the solver arc-length axis."""
+    rs_s = np.asarray(rs_s, dtype=float)
+    rs_y = np.asarray(rs_y, dtype=float)
+    if rs_y.ndim == 1:
+        return np.interp(s_eval, rs_s, rs_y)
+    out = np.empty((len(s_eval), rs_y.shape[1]), dtype=float)
+    for j in range(rs_y.shape[1]):
+        col = rs_y[:, j]
+        if unwrap_deg:
+            col = np.rad2deg(np.unwrap(np.deg2rad(col)))
+        out[:, j] = np.interp(s_eval, rs_s, col)
+    return out
+
+
+def _plot_tcp_vs_rs(
+    out_path: Path,
+    res: ProfileResult,
+    rs: RSRecording,
+    mode_name: str,
+) -> str:
+    """TCP speed + |TCP accel| vs arc-length: solver vs RobotStudio."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    s = res.s_eval
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    ax = axes[0]
+    ax.plot(rs.s_mm, rs.tcp_speed_mm_s, lw=1.3, color="#1f77b4", alpha=0.9,
+            label="RobotStudio TCP speed")
+    ax.plot(s, res.v_star, lw=1.4, color="#2ca02c", label="solver TCP speed")
+    if res.v_lim is not None:
+        ax.plot(s, res.v_lim, "--", lw=1.0, color="0.35", alpha=0.7,
+                label="solver v_lim ceiling")
+    if res.v_cmd and res.mode == "commanded":
+        ax.axhline(res.v_cmd, ls=":", color="purple", lw=1.2,
+                   label=f"v_cmd = {res.v_cmd:.0f} mm/s")
+    ax.set_ylabel("TCP speed [mm/s]")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=8)
+    ax.set_title(f"G1  TCP speed & accel — {mode_name}\n"
+                 "RS = recorded RobotStudio run at toolpath commanded speed")
+
+    ax2 = axes[1]
+    ax2.plot(rs.s_mm, np.abs(rs.tcp_accel_mm_s2), lw=1.1, color="#1f77b4",
+             alpha=0.9, label="RobotStudio |TCP accel|")
+    ax2.plot(s, np.abs(res.s_ddot), lw=1.2, color="#d62728",
+             label="solver |s_ddot| (TCP tangential accel)")
+    ax2.set_ylabel("|TCP accel| [mm/s²]")
+    ax2.set_xlabel("arc-length s [mm]")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path)
+
+
+def _plot_joint_series_vs_rs(
+    out_path: Path,
+    s_eval: np.ndarray,
+    solver_vals: np.ndarray,
+    rs_s: np.ndarray,
+    rs_vals: np.ndarray,
+    ylabel: str,
+    title: str,
+    limits: Optional[np.ndarray] = None,
+    unwrap_deg: bool = False,
+) -> str:
+    """2×3 per-joint overlay: solver vs RobotStudio vs arc-length."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    rs_on = _interp_rs_to_solver(rs_s, rs_vals, s_eval, unwrap_deg=unwrap_deg)
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8), sharex=True)
+    for j in range(6):
+        ax = axes[j // 3][j % 3]
+        ax.plot(rs_s, rs_vals[:, j], lw=1.2, color="#1f77b4", alpha=0.85,
+                label="RobotStudio")
+        ax.plot(s_eval, solver_vals[:, j], lw=1.3, color=_JOINT_COLORS[j],
+                label="solver")
+        if limits is not None:
+            lim = float(abs(limits[j]))
+            ax.axhline(lim, ls="--", color="0.4", lw=0.9)
+            ax.axhline(-lim, ls="--", color="0.4", lw=0.9)
+        ax.set_title(_JOINT_LABELS[j], fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=8)
+        ax.grid(True, alpha=0.3)
+        if j == 0:
+            ax.legend(fontsize=7, loc="best")
+    for ax in axes[1]:
+        ax.set_xlabel("arc-length s [mm]")
+    fig.suptitle(title, fontsize=12)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path)
+
+
+def _write_rs_compare_summary(
+    out_dir: Path,
+    res: ProfileResult,
+    rs: RSRecording,
+    mode_name: str,
+) -> Path:
+    """Write scalar error stats solver vs RS (TCP + joints) to a text file."""
+    s = res.s_eval
+    rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
+    rs_a = _interp_rs_to_solver(rs.s_mm, np.abs(rs.tcp_accel_mm_s2), s)
+    active = rs_v > 1.0
+    lines = [
+        f"Solver vs RobotStudio — {mode_name}",
+        "=" * 60,
+        f"RS file: {rs.path}",
+        "RS = recorded run at the toolpath commanded speed.",
+        "RS series resampled onto the solver arc-length axis.",
+        f"solver duration = {res.metrics_duration:.4f} s",
+        f"RS duration     = {float(rs.t_s[-1]):.4f} s",
+        "",
+        "TCP speed [mm/s] (samples with RS speed > 1 mm/s):",
+    ]
+    if np.any(active):
+        err = res.v_star[active] - rs_v[active]
+        lines.append(
+            f"  |err| med={np.median(np.abs(err)):.2f}  "
+            f"p95={np.percentile(np.abs(err), 95):.2f}  "
+            f"max={np.max(np.abs(err)):.2f}  "
+            f"signed med={np.median(err):+.2f}"
+        )
+    else:
+        lines.append("  (no active RS samples)")
+
+    lines.append("TCP |accel| [mm/s²]:")
+    a_err = np.abs(res.s_ddot) - rs_a
+    lines.append(
+        f"  |err| med={np.median(np.abs(a_err)):.1f}  "
+        f"p95={np.percentile(np.abs(a_err), 95):.1f}  "
+        f"max={np.max(np.abs(a_err)):.1f}"
+    )
+    lines.append("")
+
+    qd_lim = np.rad2deg(res.metrics.get("_qd_max", np.full(6, np.nan)))
+    qdd_lim = np.rad2deg(res.metrics.get("_qdd_max", np.full(6, np.nan)))
+    for name, sol, rs_y, unwrap, lim in (
+        ("position [deg]", np.rad2deg(res.q), rs.q_deg, True, None),
+        ("velocity [deg/s]", np.rad2deg(res.q_dot), rs.qdot_deg_s, False, qd_lim),
+        ("acceleration [deg/s²]", np.rad2deg(res.q_ddot), rs.qddot_deg_s2, False, qdd_lim),
+    ):
+        lines.append(f"{name}:")
+        rs_on = _interp_rs_to_solver(rs.s_mm, rs_y, s, unwrap_deg=unwrap)
+        for j in range(6):
+            both = np.isfinite(sol[:, j]) & np.isfinite(rs_on[:, j])
+            if not np.any(both):
+                lines.append(f"  J{j+1}: n/a")
+                continue
+            err = np.abs(sol[both, j] - rs_on[both, j])
+            peak = float(np.nanmax(np.abs(sol[:, j])))
+            lim_str = ""
+            if lim is not None and np.isfinite(lim[j]) and lim[j] > 0:
+                util = 100.0 * peak / float(lim[j])
+                lim_str = f"  peak_util={util:.0f}%"
+            lines.append(
+                f"  J{j+1}: |err| med={np.median(err):.3f}  "
+                f"p95={np.percentile(err, 95):.3f}  max={np.max(err):.3f}"
+                f"{lim_str}"
+            )
+        lines.append("")
+
+    path = out_dir / "G_rs_compare_summary.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def _make_plots(
     res: ProfileResult,
     out_dir: Path,
@@ -1520,6 +1757,7 @@ def _make_plots(
     waypoints_base: Optional[np.ndarray] = None,
     rs_s_mm: Optional[np.ndarray] = None,
     rs_q_deg: Optional[np.ndarray] = None,
+    rs_rec: Optional[RSRecording] = None,
 ) -> List[str]:
     import matplotlib
     matplotlib.use("Agg")
@@ -1532,6 +1770,12 @@ def _make_plots(
                "transient": res.transient_mask,
                "boundary": res.boundary_mask}
     r2d = np.rad2deg
+    mode_name = (
+        "time-optimal (joint limits only)"
+        if res.mode == "time_optimal"
+        else f"commanded (v ≤ v_cmd={v_cmd:g} mm/s, joint-feasible)"
+        if v_cmd else "commanded (no v_cmd supplied)"
+    )
 
     # ---- Context: programmed waypoints (plate) + base-frame after Zund ----
     if waypoints_plate is not None:
@@ -1554,7 +1798,7 @@ def _make_plots(
         out_dir / "F3_tcp_velocity_on_path.png",
         res.tcp_xyz,
         res.v_star,
-        title="F3  Optimal TCP speed v*(s) colored on the path (robot base frame)",
+        title=f"F3  Solver TCP speed v*(s) on path — {mode_name}",
         waypoints_base=waypoints_base,
     ))
 
@@ -1613,8 +1857,17 @@ def _make_plots(
     # ---- PANEL GROUP B: velocity limit curve ----------------------------
     figB, axB = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
     vmax_disp = np.nanpercentile(res.v_lim[np.isfinite(res.v_lim)], 99) * 1.5
+    if res.v_lim_joint is not None:
+        vmax_disp = max(
+            vmax_disp,
+            float(np.nanpercentile(res.v_lim_joint[np.isfinite(res.v_lim_joint)], 99) * 1.2),
+        )
     v_acc_disp = np.clip(res.v_accel, 0, vmax_disp)
-    axB[0].plot(s, res.v_lim, "-", lw=2.2, color="k", label="v_lim = min(v_vel, v_accel)")
+    axB[0].plot(s, res.v_lim, "-", lw=2.2, color="k",
+                label="v_lim used for TOPP")
+    if res.v_lim_joint is not None and res.mode == "commanded":
+        axB[0].plot(s, res.v_lim_joint, "--", lw=1.0, color="0.45",
+                    label="joint-only ceiling (before v_cmd)")
     axB[0].plot(s, res.v_vel, "-", lw=0.9, color="#4C78A8", label="v_vel (joint-velocity ceiling)")
     axB[0].plot(s, v_acc_disp, "-", lw=0.9, color="#F58518",
                 label="v_accel (joint-accel ceiling, clipped)")
@@ -1623,7 +1876,8 @@ def _make_plots(
     axB[0].set_ylabel("speed [mm/s]")
     axB[0].set_ylim(0, vmax_disp)
     axB[0].set_title(
-        "B1  what caps TCP speed?  blue=joint velocity  |  orange=joint acceleration"
+        f"B1  what caps TCP speed?  mode={res.mode}  "
+        "blue=joint vel | orange=joint accel"
     )
     axB[0].legend(fontsize=7, ncol=2)
 
@@ -1703,7 +1957,7 @@ def _make_plots(
         axD1.plot(s[viol], res.v_star[viol], "r.", ms=4, label="v*>v_lim (!)")
     axD1.set_ylabel("speed [mm/s]")
     axD1.set_ylim(0, vmax_disp)
-    axD1.set_title("D1  optimal v*(s) riding the ceiling v_lim(s)")
+    axD1.set_title(f"D1  v*(s) riding the ceiling v_lim(s) — {mode_name}")
     _shade_regions(axD1, s, regions)
     _mark_bottleneck(axD1, s, res.bottleneck_idx, res)
     axD1.grid(alpha=0.25)
@@ -1750,6 +2004,40 @@ def _make_plots(
     plt.close(figE)
     paths.append(str(pE))
 
+    # ---- PANEL GROUP G: RobotStudio benchmark overlays ------------------
+    if rs_rec is not None:
+        paths.append(_plot_tcp_vs_rs(
+            out_dir / "G1_tcp_speed_accel_vs_rs.png", res, rs_rec, mode_name,
+        ))
+        qd_lim = r2d(res.metrics["_qd_max"])
+        qdd_lim = r2d(res.metrics["_qdd_max"])
+        paths.append(_plot_joint_series_vs_rs(
+            out_dir / "G2_joint_position_vs_rs.png",
+            s, r2d(res.q), rs_rec.s_mm, rs_rec.q_deg,
+            "q [deg]",
+            f"G2  Joint position — {mode_name}\n"
+            "RS = recorded RobotStudio run at toolpath commanded speed",
+            unwrap_deg=True,
+        ))
+        paths.append(_plot_joint_series_vs_rs(
+            out_dir / "G3_joint_velocity_vs_rs.png",
+            s, r2d(res.q_dot), rs_rec.s_mm, rs_rec.qdot_deg_s,
+            "q̇ [deg/s]",
+            f"G3  Joint velocity — {mode_name}\n"
+            "dashed = joint velocity limits",
+            limits=qd_lim,
+        ))
+        paths.append(_plot_joint_series_vs_rs(
+            out_dir / "G4_joint_acceleration_vs_rs.png",
+            s, r2d(res.q_ddot), rs_rec.s_mm, rs_rec.qddot_deg_s2,
+            "q̈ [deg/s²]",
+            f"G4  Joint acceleration — {mode_name}\n"
+            "dashed = joint acceleration limits",
+            limits=qdd_lim,
+        ))
+        summary = _write_rs_compare_summary(out_dir, res, rs_rec, mode_name)
+        paths.append(str(summary))
+
     return paths
 
 
@@ -1763,6 +2051,8 @@ def _grid_independence(
     ik_tol_rad: float,
     base_n: int,
     resid_tol_rad: Optional[float] = None,
+    v_cmd: Optional[float] = None,
+    time_optimal: bool = False,
 ) -> Dict:
     """Recompute dq/ds, d2q/ds2, v_lim, and duration at 0.5x and 2x N_eval.
 
@@ -1778,14 +2068,18 @@ def _grid_independence(
     )
     mvc_s = np.linspace(s_mm[0], s_mm[-1], max(20000, 4 * base_n))
     mvc_arr = eval_splines(splines, mvc_s)
-    mvc_v_lim = step2_velocity_limit(mvc_arr["dqds"], mvc_arr["d2qds2"], limits)["v_lim"]
+    mvc_v_lim = _apply_v_cmd_cap(
+        step2_velocity_limit(mvc_arr["dqds"], mvc_arr["d2qds2"], limits)["v_lim"],
+        v_cmd, time_optimal,
+    )
 
     def _duration(n_eval):
         s_e = np.linspace(s_mm[0], s_mm[-1], int(n_eval))
         a = eval_splines(splines, s_e)
         vl = step2_velocity_limit(a["dqds"], a["d2qds2"], limits)
+        v_lim = _apply_v_cmd_cap(vl["v_lim"], v_cmd, time_optimal)
         topt = step3_time_optimal(
-            s_e, a["dqds"], a["d2qds2"], vl["v_lim"], limits,
+            s_e, a["dqds"], a["d2qds2"], v_lim, limits,
             mvc_s=mvc_s, mvc_v_lim=mvc_v_lim,
         )
         return topt["duration_s"]
@@ -1891,14 +2185,23 @@ def run_diagnostics(
     n_eval: Optional[int] = None,
     make_plots: bool = True,
     do_grid_check: bool = True,
+    time_optimal: bool = False,
     waypoints_plate: Optional[np.ndarray] = None,
     waypoints_base: Optional[np.ndarray] = None,
     rs_s_mm: Optional[np.ndarray] = None,
     rs_q_deg: Optional[np.ndarray] = None,
+    rs_rec: Optional[RSRecording] = None,
 ) -> ProfileResult:
-    """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`."""
+    """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
+
+    Default ``time_optimal=False`` produces a **commanded** profile:
+    joint-feasible TOPP with TCP speed capped at ``v_cmd`` (matches
+    RobotStudio recordings taken at the toolpath commanded speed).  Pass
+    ``time_optimal=True`` to drop the ``v_cmd`` ceiling.
+    """
     res = ProfileResult()
     res.v_cmd = v_cmd
+    res.mode = "time_optimal" if time_optimal else "commanded"
 
     # Step 0
     s_mm, q_kept, pos_kept, step0 = step0_validate(q_raw, poses)
@@ -1916,17 +2219,20 @@ def run_diagnostics(
     # Dense MVC (independent of the integration grid) for a grid-stable TOPP.
     _mvc_s = np.linspace(s_mm[0], s_mm[-1], max(20000, 4 * len(s_eval)))
     _mvc_arr = eval_splines(_splines, _mvc_s)
-    _mvc_v_lim = step2_velocity_limit(
+    _mvc_v_lim_joint = step2_velocity_limit(
         _mvc_arr["dqds"], _mvc_arr["d2qds2"], limits
     )["v_lim"]
+    _mvc_v_lim = _apply_v_cmd_cap(_mvc_v_lim_joint, v_cmd, time_optimal)
     res.q, res.dqds, res.d2qds2, res.d3qds3 = (
         arr["q"], arr["dqds"], arr["d2qds2"], arr["d3qds3"]
     )
     res.smoothing = smoothing
 
-    # Step 2
+    # Step 2 — joint ceiling, then optional v_cmd cap for commanded mode
     vl = step2_velocity_limit(res.dqds, res.d2qds2, limits)
-    res.v_vel, res.v_accel, res.v_lim = vl["v_vel"], vl["v_accel"], vl["v_lim"]
+    res.v_vel, res.v_accel = vl["v_vel"], vl["v_accel"]
+    res.v_lim_joint = vl["v_lim"]
+    res.v_lim = _apply_v_cmd_cap(res.v_lim_joint, v_cmd, time_optimal)
     res.vel_ceilings = vl["vel_ceilings"]
     res.binding_joint, res.binding_kind = vl["binding_joint"], vl["binding_kind"]
     finite_vlim = np.where(np.isfinite(res.v_lim), res.v_lim, np.inf)
@@ -1945,7 +2251,7 @@ def run_diagnostics(
     res.metrics_roundtrip = topt["roundtrip_ds_over_v"]
     res.metrics_roundtrip_trapz = topt["roundtrip_trapz"]
 
-    # regions
+    # regions (vs the ceiling actually used for TOPP)
     reg = compute_regions(res.v_star, res.v_lim)
     res.cruise_mask, res.transient_mask, res.boundary_mask = (
         reg["cruise"], reg["transient"], reg["boundary"]
@@ -1954,16 +2260,23 @@ def run_diagnostics(
     # limits for plotting/metrics
     res.metrics["_qd_max"] = limits.q_dot_max
     res.metrics["_qdd_max"] = limits.q_ddot_max
+    res.metrics["mode"] = res.mode
 
     # Step 5: grid independence + metrics
     grid_check = (
         _grid_independence(
             s_mm, q_kept, limits, ik_tol_rad, len(s_eval),
             resid_tol_rad=resid_tol_rad,
+            v_cmd=v_cmd, time_optimal=time_optimal,
         )
         if do_grid_check else {"skipped": True}
     )
     res.metrics.update(_compute_metrics(res, limits, grid_check, v_cmd))
+
+    # Prefer a full RS recording when provided; fall back to (s, q) only.
+    if rs_rec is not None:
+        rs_s_mm = rs_rec.s_mm
+        rs_q_deg = rs_rec.q_deg
 
     # Step 4: plots
     if make_plots and out_dir is not None:
@@ -1973,6 +2286,7 @@ def run_diagnostics(
             waypoints_base=waypoints_base,
             rs_s_mm=rs_s_mm,
             rs_q_deg=rs_q_deg,
+            rs_rec=rs_rec,
         )
 
     return res
@@ -1983,6 +2297,8 @@ def _print_metrics(res: ProfileResult) -> None:
     print("\n" + "=" * 64)
     print("STEP 5 — scalar metrics")
     print("=" * 64)
+    print(f"  mode:                {res.mode}"
+          + (f"  (v_cmd={res.v_cmd:.1f} mm/s)" if res.v_cmd else ""))
     print(f"  feasible:            {m['feasibility']['feasible']}")
     print(f"  duration:            {m['timing']['duration_s']:.4f} s")
     print(f"  round-trip ∫ds/v*:   {m['timing']['roundtrip_ds_over_v_s']:.4f} s "
@@ -2021,7 +2337,8 @@ def _write_report(res: ProfileResult, out_dir: Path) -> Path:
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(
-        description="Time-optimal TCP speed-profile diagnostic pipeline."
+        description="TCP speed-profile diagnostic pipeline "
+                    "(default = commanded v≤v_cmd; --time-optimal = uncapped)."
     )
     parser.add_argument(
         "--toolpath",
@@ -2053,25 +2370,39 @@ def main() -> None:
         help="Max |spline - raw| joint residual [deg]; knot intervals are "
              "bisected locally until every sample is within this tolerance.",
     )
+    parser.add_argument(
+        "--time-optimal", action="store_true",
+        help="Ignore toolpath v_cmd and compute the fastest joint-feasible "
+             "TCP speed profile. Default is commanded mode (v ≤ v_cmd).",
+    )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
     print(f"Loading joint path from toolpath:\n  {args.toolpath}")
     ctx = load_joint_path_from_toolpath(args.toolpath)
+    mode = "time_optimal" if args.time_optimal else "commanded"
     print(
         f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
         f"WPs plate/base={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s"
     )
+    print(f"  mode: {mode}"
+          + ("" if args.time_optimal else f" (cap TCP speed at v_cmd={ctx.v_cmd:.1f} mm/s)"))
 
+    rs_rec = None
     rs_s_mm = rs_q_deg = None
     rs_path = Path(args.rs_csv) if args.rs_csv else find_matching_rs_csv(
         args.toolpath, rs_dir=Path(args.rs_dir),
     )
     if rs_path is not None and rs_path.is_file():
         print(f"  RobotStudio match: {rs_path}")
-        rs_s_mm, rs_q_deg = load_rs_joint_vs_arc(rs_path)
-        print(f"  RS samples={len(rs_s_mm)}, arc={rs_s_mm[-1]:.1f} mm")
+        rs_rec = load_rs_recording(rs_path)
+        rs_s_mm, rs_q_deg = rs_rec.s_mm, rs_rec.q_deg
+        print(
+            f"  RS samples={len(rs_s_mm)}, arc={rs_s_mm[-1]:.1f} mm, "
+            f"duration={rs_rec.t_s[-1]:.3f} s, "
+            f"TCP speed max={float(np.nanmax(rs_rec.tcp_speed_mm_s)):.1f} mm/s"
+        )
     else:
         print(f"  [WARN] No matching RobotStudio CSV for {Path(args.toolpath).name}")
 
@@ -2080,11 +2411,13 @@ def main() -> None:
         out_dir=out_dir, v_cmd=ctx.v_cmd,
         ik_tol_rad=args.ik_tol_rad,
         resid_tol_rad=float(np.deg2rad(args.resid_tol_deg)),
+        time_optimal=args.time_optimal,
         make_plots=not args.no_plots,
         waypoints_plate=ctx.waypoints_plate,
         waypoints_base=ctx.waypoints_base,
         rs_s_mm=rs_s_mm,
         rs_q_deg=rs_q_deg,
+        rs_rec=rs_rec,
     )
     _print_metrics(res)
     report_path = _write_report(res, out_dir)
