@@ -187,6 +187,9 @@ class ProfileResult:
     figures: List[str] = field(default_factory=list)
     v_cmd: Optional[float] = None
     v_const: Optional[float] = None     # constant-mode ceiling [mm/s]
+    # RobotStudio IRC5 spacing×zone cruising cap (on s_eval), or None
+    v_capped: np.ndarray = None
+    v_capped_waypoint: np.ndarray = None
     # "commanded" = joint limits ∧ v ≤ v_cmd; "time_optimal" = joint limits
     # only; "constant" = joint limits ∧ v ≤ v_const
     mode: str = "commanded"
@@ -2850,6 +2853,8 @@ def run_diagnostics(
     common_dir: Optional[Path] = None,
     secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
     transient_pad_mm: float = 5.0,
+    toolpath_csv: Optional[str | Path] = None,
+    apply_rs_velocity_cap: bool = True,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -2862,6 +2867,11 @@ def run_diagnostics(
     ``secant_window_mm > 0`` additionally caps the velocity ceiling with the
     raw-joint-path secant acceleration bound (resolves sub-knot corner
     blends the smoothing spline cannot see); ``<= 0`` disables it.
+
+    When ``toolpath_csv`` is supplied and ``apply_rs_velocity_cap`` is True,
+    the RobotStudio spacing×zone cruising cap from
+    :func:`utils.velocity_zone_lookup.build_v_capped_on_eval_grid` is applied
+    to the TOPP ceiling and realized TCP speed (``v_star``).
     """
     res = ProfileResult()
     res.v_cmd = v_cmd
@@ -2923,6 +2933,21 @@ def run_diagnostics(
 
     _mvc_v_lim = _apply_v_cmd_cap(_mvc_v_lim_joint, v_cmd, time_optimal)
     res.v_lim = _apply_v_cmd_cap(res.v_lim_joint, v_cmd, time_optimal)
+
+    if toolpath_csv is not None and apply_rs_velocity_cap:
+        from utils.velocity_zone_lookup import build_v_capped_on_eval_grid
+
+        wp_for_cap = waypoints_plate if waypoints_plate is not None else waypoints_base
+        res.v_capped, res.v_capped_waypoint = build_v_capped_on_eval_grid(
+            toolpath_csv,
+            s_eval,
+            waypoints=wp_for_cap,
+            custom_zone=True,
+            default_zone="z5",
+        )
+        res.v_lim = np.minimum(res.v_lim, res.v_capped)
+        _mvc_v_lim = np.minimum(_mvc_v_lim, res.v_capped)
+
     finite_vlim = np.where(np.isfinite(res.v_lim), res.v_lim, np.inf)
     res.bottleneck_idx = int(np.argmin(finite_vlim))
 
@@ -2934,6 +2959,9 @@ def run_diagnostics(
     res.v_star, res.u, res.s_ddot, res.t = (
         topt["v_star"], topt["u"], topt["s_ddot"], topt["t"]
     )
+    if res.v_capped is not None:
+        res.v_star = np.minimum(res.v_star, res.v_capped)
+        res.u = res.v_star ** 2
     res.q_dot, res.q_ddot = topt["q_dot"], topt["q_ddot"]
     res.metrics_duration = topt["duration_s"]
     res.metrics_roundtrip = topt["roundtrip_ds_over_v"]
@@ -3034,6 +3062,12 @@ def run_diagnostics(
     }
     # transient metrics already stored under res.metrics["transient"]
 
+    if res.v_capped is not None:
+        res.metrics["rs_velocity_cap"] = {
+            "v_cap_min_mm_s": float(np.min(res.v_capped)),
+            "v_cap_max_mm_s": float(np.max(res.v_capped)),
+            "n_waypoints": int(len(res.v_capped_waypoint)),
+        }
     # Joint-limit compliance: the realized profile must respect BOTH joint
     # velocity and acceleration limits for all joints at every sample.
     qd_util = np.max(np.abs(res.q_dot) / limits.q_dot_max[None, :])
@@ -3527,8 +3561,29 @@ def _process_one_toolpath(
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
-        r = run_diagnostics(ctx.q_raw, ctx.poses, ctx.limits,
-                            out_dir=mode_dir, **common, **kw)
+        run_kw = dict(
+            toolpath_csv=toolpath,
+            apply_rs_velocity_cap=True,
+            **common,
+            **kw,
+        )
+        try:
+            r = run_diagnostics(
+                ctx.q_raw, ctx.poses, ctx.limits,
+                out_dir=mode_dir,
+                **run_kw,
+            )
+        except Exception as exc:
+            from utils.velocity_zone_lookup import VelocityZoneLookupError
+            if not isinstance(exc, VelocityZoneLookupError):
+                raise
+            print(f"  [WARN] RS velocity cap disabled: {exc}")
+            run_kw["apply_rs_velocity_cap"] = False
+            r = run_diagnostics(
+                ctx.q_raw, ctx.poses, ctx.limits,
+                out_dir=mode_dir,
+                **run_kw,
+            )
         _print_metrics(r)
         _write_report(r, mode_dir)
         _write_mode_summary(mode_dir, r, rs_rec)
@@ -3851,6 +3906,54 @@ def _serpentine(M=800, L=1200.0, n_wiggle=6):
 # =====================================================================
 def _limits():
     return JointLimits.exp24_neutral()
+
+
+def test_velocity_zone_lookup_example_toolpath():
+    """Lookup table: 1 mm + z0 → 75 mm/s; out-of-table spacing raises."""
+    from utils.velocity_zone_lookup import (
+        VelocityZoneLookupError,
+        compute_v_capped_per_waypoint,
+        load_velocity_zone_lookup_table,
+        snap_spacing_mm,
+    )
+
+    table = load_velocity_zone_lookup_table()
+    assert snap_spacing_mm(0.8, table) == 1.0
+    assert table.lookup(1.0, "z0") == 75.0
+
+    tp = (
+        _REPO
+        / "Robot_APCC"
+        / "Experiments"
+        / "Experiement_24"
+        / "Toolpaths"
+        / "v9_snake_toolpaths_orientation_test_single"
+        / "vel_test_x100_y50_v100_z0_n90.csv"
+    )
+    if not tp.is_file():
+        import pytest
+        pytest.skip(f"Example toolpath not present: {tp}")
+
+    # Straight segments along the snake use 1 mm spacing → 75 mm/s (z0).
+    from utils.csv_loader_toolpath import load_toolpath_f3
+    import numpy as np
+
+    lr = load_toolpath_f3(str(tp), custom_zone=True)
+    pos_mm = lr.waypoints[0][:, :3] * 1000.0
+    ds = np.linalg.norm(np.diff(pos_mm, axis=0), axis=1)
+    one_mm_idx = np.where(np.abs(ds - 1.0) < 0.01)[0]
+    for i in one_mm_idx[:5]:
+        spacing = snap_spacing_mm(float(ds[i]), table)
+        assert spacing == 1.0
+        assert table.lookup(spacing, "z0") == 75.0
+
+    # Row-to-row jumps (50 mm) are outside the table → error at that waypoint.
+    jump_idx = int(np.where(np.abs(ds - 50.0) < 0.01)[0][0])
+    try:
+        compute_v_capped_per_waypoint(tp, lookup_table=table)
+        raise AssertionError("expected VelocityZoneLookupError for 50 mm spacing")
+    except VelocityZoneLookupError as exc:
+        assert f"waypoint {jump_idx}" in str(exc)
 
 
 def test_T1_straight_constant_orientation():
