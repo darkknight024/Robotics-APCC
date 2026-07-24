@@ -42,6 +42,11 @@ from .path_sampler import (
     DensePath,
     sample_blended_path,
 )
+from .orientation_smooth import (
+    OrientationSmoothResult,
+    smooth_orientation_along_s,
+    smooth_dense_path_orientation,
+)
 from .speed_profile import (
     SpeedCalibration,
     SpeedProfileResult,
@@ -99,6 +104,9 @@ __all__ = [
     "populate_orientation_zones",
     # M4
     "DensePath", "sample_blended_path",
+    # Orientation smooth (post-M4, pre-IK)
+    "OrientationSmoothResult", "smooth_orientation_along_s",
+    "smooth_dense_path_orientation",
     # M5
     "SpeedCalibration", "SpeedProfileResult", "predict_speed_profile",
     # F3 D2 — time-optimal + no-dip constant-speed limits

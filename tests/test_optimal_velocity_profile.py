@@ -32,9 +32,11 @@ explicitly controlled knot spacing).  There are NO central differences anywhere
 in this pipeline — that is the whole point: finite differences of an IK joint
 path over a de-duplicated, non-uniform arc-length grid produce the "flat q but
 spiking derivative" artifact (tiny ``ds`` in the denominator).  The IK path
-also carries real per-waypoint SLERP/blend kinks every ~1-2 mm; a knee-tuned
-knot spacing keeps the spline from chasing those, so dq/ds and d²q/ds² stay
-smooth by construction (few quintic pieces).
+also carries real per-waypoint SLERP/blend kinks every ~1-2 mm unless
+upstream orientation smoothing is enabled (default in
+``load_joint_path_from_toolpath``): a knee-tuned knot spacing keeps the
+joint spline from chasing residual micro-structure, so dq/ds and d²q/ds²
+stay smooth by construction (few quintic pieces).
 
 How to get ``q_raw`` from a toolpath
 ------------------------------------
@@ -219,6 +221,9 @@ class ToolpathContext:
     waypoints_plate: np.ndarray       # (N, 7) programmed WPs in plate/knife frame [mm+quat]
     waypoints_base: np.ndarray        # (N, 7) same WPs after Zund → robot-base transform
     toolpath_csv: Path
+    orientation_smooth: Optional[Dict] = None  # Feature-3 Step 5b diagnostics
+    # Piecewise-SLERP quats before smoothing (wxyz); None if smoothing off.
+    quat_slerp_raw: Optional[np.ndarray] = None
 
 
 _DEFAULT_RS_DIR = (
@@ -231,6 +236,8 @@ def load_joint_path_from_toolpath(
     toolpath_csv: str,
     repo: Optional[Path] = None,
     ds_mm: float = _DEFAULT_DS_MM,
+    smooth_orientation: bool = True,
+    ori_smooth_resid_ceiling_deg: float = 2.0,
 ) -> ToolpathContext:
     """Blend a toolpath, run IK, and return the joint path that traces it.
 
@@ -240,6 +247,10 @@ def load_joint_path_from_toolpath(
 
     Also returns the programmed waypoints in plate frame and after the Zund
     knife → robot-base transform (for context plots).
+
+    When ``smooth_orientation`` is True (default for this diagnostic),
+    Feature-3 replaces piecewise-SLERP orientation with a globally smooth
+    ``R(s)`` *before* IK.  XYZ blend geometry is unchanged.
     """
     repo = repo or _REPO
     from core.blend_zone import run_feature3
@@ -257,6 +268,8 @@ def load_joint_path_from_toolpath(
     cfg.feature3_d1.ds_mm = float(ds_mm)
     cfg.feature3_d1.compute_time_optimal = False
     cfg.feature3_d1.compute_corner_limits = False
+    cfg.feature3_d1.smooth_orientation = bool(smooth_orientation)
+    cfg.feature3_d1.ori_smooth_resid_ceiling_deg = float(ori_smooth_resid_ceiling_deg)
     cfg.use_base_frame = False
     cfg.solver = "pin"
 
@@ -338,6 +351,8 @@ def load_joint_path_from_toolpath(
         waypoints_plate=wp_plate,
         waypoints_base=wp_base,
         toolpath_csv=toolpath_csv,
+        orientation_smooth=getattr(result, "orientation_smooth", None),
+        quat_slerp_raw=getattr(result, "orientation_quats_raw", None),
     )
 
 
@@ -1760,6 +1775,89 @@ def identify_transient_mask(*args, **kwargs):
 def write_transient_diagnostics(*args, **kwargs):
     from transient_classification import write_transient_diagnostics as _impl
     return _impl(*args, **kwargs)
+
+
+def _plot_orientation_smooth_compare(
+    out_path: Path,
+    *,
+    s_mm: np.ndarray,
+    quats_smooth: np.ndarray,
+    quats_raw: Optional[np.ndarray],
+) -> str:
+    """Plot raw piecewise-SLERP vs smoothed orientation rates along s."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from core.blend_zone.orientation_smooth import (
+        geodesic_angle_rad,
+        orientation_rate_spectrum,
+    )
+
+    s = np.asarray(s_mm, dtype=float).ravel()
+    q_s = np.asarray(quats_smooth, dtype=float)
+    if quats_raw is None or len(quats_raw) != len(s):
+        # Fallback: only show smooth spectrum.
+        sm = orientation_rate_spectrum(s, q_s)
+        fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+        axes[0].plot(s, np.rad2deg(sm["theta_cum"]), lw=1.2, color="#2ca02c")
+        axes[0].set_ylabel("θ_cum [deg]")
+        axes[0].set_title("Orientation smooth (raw SLERP unavailable)")
+        axes[1].plot(s, np.rad2deg(sm["dtheta_ds"]), lw=1.0, color="#2ca02c")
+        axes[1].set_ylabel("dθ/ds [deg/mm]")
+        axes[2].plot(s, np.rad2deg(sm["d2theta_ds2"]), lw=1.0, color="#2ca02c")
+        axes[2].set_ylabel("d²θ/ds² [deg/mm²]")
+        axes[2].set_xlabel("arc-length s [mm]")
+        for ax in axes:
+            ax.grid(alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=130)
+        plt.close(fig)
+        return str(out_path)
+
+    q_r = np.asarray(quats_raw, dtype=float)
+    raw = orientation_rate_spectrum(s, q_r)
+    sm = orientation_rate_spectrum(s, q_s)
+    resid = geodesic_angle_rad(q_r, q_s)
+
+    fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
+    axes[0].plot(s, np.rad2deg(raw["theta_cum"]), lw=1.1, color="0.45",
+                 label="raw piecewise-SLERP")
+    axes[0].plot(s, np.rad2deg(sm["theta_cum"]), lw=1.2, color="#2ca02c",
+                 label="smooth R(s)")
+    axes[0].set_ylabel("θ_cum [deg]")
+    axes[0].set_title(
+        "Orientation smooth vs piecewise-SLERP "
+        f"(max |Δθ|={np.rad2deg(np.max(resid)):.3f}°)"
+    )
+    axes[0].legend(fontsize=8, loc="best")
+
+    axes[1].plot(s, np.rad2deg(raw["dtheta_ds"]), lw=1.0, color="0.45",
+                 label="raw")
+    axes[1].plot(s, np.rad2deg(sm["dtheta_ds"]), lw=1.1, color="#2ca02c",
+                 label="smooth")
+    axes[1].set_ylabel("dθ/ds [deg/mm]")
+    axes[1].legend(fontsize=8, loc="best")
+
+    axes[2].plot(s, np.rad2deg(raw["d2theta_ds2"]), lw=0.9, color="0.45",
+                 label="raw (WP-rate kinks)")
+    axes[2].plot(s, np.rad2deg(sm["d2theta_ds2"]), lw=1.1, color="#2ca02c",
+                 label="smooth")
+    axes[2].set_ylabel("d²θ/ds² [deg/mm²]")
+    axes[2].legend(fontsize=8, loc="best")
+
+    axes[3].plot(s, np.rad2deg(resid), lw=1.0, color="crimson")
+    axes[3].set_ylabel("|Δθ| [deg]")
+    axes[3].set_xlabel("arc-length s [mm]")
+    axes[3].set_title("Geodesic residual: smooth vs raw SLERP samples")
+
+    for ax in axes:
+        ax.grid(alpha=0.25)
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    return str(out_path)
 
 
 def _plot_waypoints_3d(
@@ -4214,18 +4312,29 @@ def _process_one_toolpath(
     transient_pad_mm: float = 5.0,
     ds_mm: float = _DEFAULT_DS_MM,
     apply_rs_velocity_cap: bool = True,
+    smooth_orientation: bool = True,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
     print(f"# Toolpath: {toolpath.name}")
     print("#" * 72)
-    ctx = load_joint_path_from_toolpath(str(toolpath), ds_mm=ds_mm)
+    ctx = load_joint_path_from_toolpath(
+        str(toolpath), ds_mm=ds_mm, smooth_orientation=smooth_orientation,
+    )
+    ori = ctx.orientation_smooth
+    ori_msg = "off"
+    if ori and not ori.get("skipped", False):
+        ori_msg = (
+            f"on |Δθ|_max={ori.get('geodesic_resid_max_deg', float('nan')):.3f}° "
+            f"mean={ori.get('geodesic_resid_mean_deg', float('nan')):.3f}°"
+        )
     print(
         f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
         f"WPs={ctx.waypoints_plate.shape[0]}, "
         f"v_cmd(s)={float(np.nanmin(ctx.v_cmd_at_s)):.1f}–"
         f"{float(np.nanmax(ctx.v_cmd_at_s)):.1f} mm/s (col-8), "
-        f"ds_mm={ds_mm:g}, rs_vcap={'on' if apply_rs_velocity_cap else 'off'}"
+        f"ds_mm={ds_mm:g}, rs_vcap={'on' if apply_rs_velocity_cap else 'off'}, "
+        f"ori_smooth={ori_msg}"
     )
 
     rs_rec = None
@@ -4240,6 +4349,21 @@ def _process_one_toolpath(
         print(f"  [WARN] No matching RobotStudio CSV for {toolpath.name}")
 
     case_dir.mkdir(parents=True, exist_ok=True)
+    if ctx.orientation_smooth is not None:
+        (case_dir / "orientation_smooth.json").write_text(
+            json.dumps(ctx.orientation_smooth, indent=2) + "\n", encoding="utf-8",
+        )
+        if make_plots:
+            try:
+                _plot_orientation_smooth_compare(
+                    case_dir / "orientation_smooth_compare.png",
+                    s_mm=np.asarray(ctx.s_cmd_mm, dtype=float),
+                    quats_smooth=np.asarray(ctx.poses[:, 3:7], dtype=float),
+                    quats_raw=ctx.quat_slerp_raw,
+                )
+            except Exception as exc:
+                print(f"  [WARN] orientation_smooth plot failed: {exc}")
+
     common = dict(
         v_cmd=ctx.v_cmd,
         v_cmd_s_mm=ctx.s_cmd_mm,
@@ -4446,6 +4570,11 @@ def main() -> None:
         help="Disable RobotStudio spacing×zone cruising-speed cap from "
              "velocity_zone_lookup_table.csv (default: cap enabled).",
     )
+    parser.add_argument(
+        "--no-smooth-orientation", action="store_true",
+        help="Keep Feature-3 piecewise-SLERP orientation (default: replace "
+             "with a globally smooth R(s) before IK; XYZ blends unchanged).",
+    )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
@@ -4476,6 +4605,7 @@ def main() -> None:
             transient_pad_mm=args.transient_pad_mm,
             ds_mm=args.ds_mm,
             apply_rs_velocity_cap=not args.no_vcap,
+            smooth_orientation=not args.no_smooth_orientation,
         )
         batch_rows.append(row)
 

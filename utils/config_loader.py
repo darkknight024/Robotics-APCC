@@ -366,6 +366,12 @@ class Feature3D1Config:
     ds_mm: float = 1.0
     default_zone: str = "fine"
     default_v_cmd_mm_s: float = 300.0
+    # Replace piecewise-SLERP orientation on the dense path with a globally
+    # smooth R(s) (cumulative-rotvec LSQ) before IK.  XYZ blends / zones are
+    # unchanged.  Default False for general Feature-3; velocity-profile
+    # diagnostics enable it explicitly.
+    smooth_orientation: bool = False
+    ori_smooth_resid_ceiling_deg: float = 2.0
     enable_near_collinear_skip: bool = True
     min_corner_deflection_deg: float = 3.0
     # Per-ceiling toggles for M5 speed composition (True = include in min).

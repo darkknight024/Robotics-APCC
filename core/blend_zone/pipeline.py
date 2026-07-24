@@ -88,6 +88,10 @@ class Feature3D1Result:
     corner_speed_limits: Optional[list] = None
     constant_speed: Optional[Any] = None
     commanded_topp: Optional[Any] = None
+    # Diagnostics from Step 5b (None when smooth_orientation is disabled).
+    orientation_smooth: Optional[dict] = None
+    # Piecewise-SLERP quats before Step 5b (wxyz); None if smoothing off.
+    orientation_quats_raw: Optional[np.ndarray] = None
 
 
 def _zone_to_dict(z: ZoneParams) -> dict:
@@ -373,6 +377,30 @@ def run_feature3(
                 f"{dense_path.total_arc_length_mm:.1f} mm total arc-length"
             )
 
+        # ── Step 5b: Optional global orientation smooth R(s) ──
+        # XYZ (zones / Bézier blends) stays bit-identical; only quats change.
+        # Must run BEFORE IK so q* traces the smoothed SE(3) path.
+        ori_smooth_info = None
+        ori_quats_raw = None
+        if bool(getattr(f3_cfg, "smooth_orientation", False)):
+            from .orientation_smooth import smooth_dense_path_orientation
+            resid_ceil = float(
+                getattr(f3_cfg, "ori_smooth_resid_ceiling_deg", 2.0)
+            )
+            dense_path, ori_res = smooth_dense_path_orientation(
+                dense_path, resid_ceiling_deg=resid_ceil,
+            )
+            ori_smooth_info = dict(ori_res.info)
+            ori_quats_raw = np.asarray(ori_res.quats_raw_wxyz, dtype=float)
+            if verbose:
+                print(
+                    f"    Orientation smooth: "
+                    f"|Δθ|_max={ori_smooth_info.get('geodesic_resid_max_deg', float('nan')):.3f}°  "
+                    f"mean={ori_smooth_info.get('geodesic_resid_mean_deg', float('nan')):.3f}°  "
+                    f"knots={ori_smooth_info.get('n_interior_knots')}  "
+                    f"spacing={ori_smooth_info.get('base_knot_spacing_mm'):.2f} mm"
+                )
+
         # ── Step 6: Feature 2 IK on the dense blended path ──
         positions = dense_path.poses[:, :3]
         quaternions = dense_path.poses[:, 3:7]
@@ -413,6 +441,8 @@ def run_feature3(
                 dense_path=dense_path,
                 blend_geoms=blend_geoms,
                 waypoints_m=waypoints,
+                orientation_smooth=ori_smooth_info,
+                orientation_quats_raw=ori_quats_raw,
             )
             all_results.append(result)
             if verbose:
@@ -677,6 +707,8 @@ def run_feature3(
             corner_speed_limits=corner_speed_limits,
             constant_speed=constant_speed,
             commanded_topp=commanded_topp,
+            orientation_smooth=ori_smooth_info,
+            orientation_quats_raw=ori_quats_raw,
         )
 
         # ── Step 10: Plots and reports ──
