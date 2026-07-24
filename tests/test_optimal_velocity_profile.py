@@ -180,6 +180,9 @@ class ProfileResult:
     # Secant acceleration ceiling (raw joint path, spline-independent) or None
     v_secant: np.ndarray = None
 
+    # Fitted LSQ quintics (one per joint) — reused by I_spline_fk_check
+    splines: List = field(default_factory=list)
+
     metrics: Dict = field(default_factory=dict)
     figures: List[str] = field(default_factory=list)
     v_cmd: Optional[float] = None
@@ -187,6 +190,9 @@ class ProfileResult:
     # "commanded" = joint limits ∧ v ≤ v_cmd; "time_optimal" = joint limits
     # only; "constant" = joint limits ∧ v ≤ v_const
     mode: str = "commanded"
+
+    # Dense TCP quaternions retained with q_raw (for FK residual checks)
+    quat_raw: np.ndarray = None         # (M, 4) wxyz
 
 
 # =====================================================================
@@ -570,6 +576,11 @@ _RESID_TOL_DEG = 0.2
 
 # FK position residual budget for the task-space knot pass [mm].
 _TASK_POS_TOL_MM = 1.0
+
+# I_spline_fk_check budgets (FK(spline) vs Feature-3 blended poses).
+_FK_CHECK_POS_TOL_MM = 1.0
+_FK_CHECK_ROT_TOL_RAD = 0.1
+_FK_CHECK_SEGMENT_MM = 50.0  # arc-length bins for per-segment max-error report
 
 
 def _fit_lsq_quintic(
@@ -1386,7 +1397,8 @@ def compute_regions(v_star: np.ndarray, v_lim: np.ndarray,
 #   A_geometry_spline/  B_velocity_limits/  C_path_dynamics/
 #   D_optimal_profile/  E_constraint_utilization/  F_path_visualization/
 #   G_robotstudio_compare/  H_tcp_rotation/
-# F1/F2 (toolpath-common) live one level up, in the toolpath folder.
+# F1/F2 (toolpath-common) and I_spline_fk_check live one level up, in the
+# toolpath folder (same spline / same FK residual for all modes).
 _PLOT_GROUPS = {
     "A": "A_geometry_spline",
     "B": "B_velocity_limits",
@@ -1396,6 +1408,7 @@ _PLOT_GROUPS = {
     "F": "F_path_visualization",
     "G": "G_robotstudio_compare",
     "H": "H_tcp_rotation",
+    "I": "I_spline_fk_check",
 }
 
 
@@ -2863,12 +2876,14 @@ def run_diagnostics(
     # Step 0
     s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(q_raw, poses)
     res.s_raw, res.q_raw, res.tcp_xyz_raw, res.step0 = s_mm, q_kept, pos_kept, step0
+    res.quat_raw = quat_kept
 
     # Step 1
     s_eval, arr, smoothing, _splines = step1_differentiate(
         s_mm, q_kept, ik_tol_rad, n_eval, resid_tol_rad=resid_tol_rad,
         pos_mm=pos_kept,
     )
+    res.splines = list(_splines)
     res.s_eval = s_eval
     # TCP xyz on the uniform eval grid (plotting only; linear in s).
     res.tcp_xyz = np.column_stack([
@@ -3190,6 +3205,211 @@ def _resolve_cases(
     return [(tp, matched)]
 
 
+def write_spline_fk_check(
+    out_dir: Path,
+    res: ProfileResult,
+    toolpath: Optional[Path] = None,
+    pos_tol_mm: float = _FK_CHECK_POS_TOL_MM,
+    rot_tol_rad: float = _FK_CHECK_ROT_TOL_RAD,
+    segment_mm: float = _FK_CHECK_SEGMENT_MM,
+    solver: str = "eaik",
+) -> Dict:
+    """FK(spline) vs Feature-3 blended poses → ``I_spline_fk_check/``.
+
+    Reuses the already-fitted quintics on ``res`` (no re-fit).  Writes:
+      * ``spline_fk_vs_blend_residual.csv`` — per-sample 6-DoF residual
+      * ``segment_max_error.csv`` — max |Δp|/|Δθ| per arc-length segment
+      * ``blend_vs_spline_6dof.png``, ``blend_vs_spline_3d.html``
+      * ``summary.txt``, ``fk_check_flag.txt`` (PASS/FAIL)
+    """
+    from compare_spline_fk_and_blended_arc import (
+        compute_6dof_residual,
+        plot_3d_comparison_html,
+        plot_6dof_residual_png,
+        residual_on_samples,
+    )
+    from core import create_solvers
+    from utils.config_loader import get_robot_by_name
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not res.splines or res.q is None or res.s_eval is None:
+        flag = {
+            "pass": False, "skipped": True,
+            "reason": "missing splines/q on ProfileResult",
+        }
+        (out_dir / "fk_check_flag.txt").write_text(
+            "FAIL\nskipped: missing splines/q\n", encoding="utf-8",
+        )
+        return flag
+
+    s_eval = np.asarray(res.s_eval, dtype=float)
+    q_spline = np.asarray(res.q, dtype=float)
+    s_mm = np.asarray(res.s_raw, dtype=float)
+    q_kept = np.asarray(res.q_raw, dtype=float)
+    pos_kept = np.asarray(res.tcp_xyz_raw, dtype=float)
+    quat_kept = np.asarray(res.quat_raw, dtype=float)
+
+    robot = get_robot_by_name(_ROBOT_NAME)
+    fk_solver, _, _ = create_solvers(str(_REPO / robot.urdf_path), solver=solver)
+    positions_m, quaternions = fk_solver.solve_batch(q_spline)
+    positions_mm = positions_m * 1000.0
+
+    primary = compute_6dof_residual(
+        s_eval, positions_mm, quaternions, s_mm, pos_kept, quat_kept,
+    )
+    on_samp = residual_on_samples(
+        res.splines, s_mm, q_kept, pos_kept, quat_kept, fk_solver,
+    )
+
+    pos_err = primary["pos_err_mm"]
+    rot_err = primary["rot_err_rad"]
+    pos_ok = primary["pos_max_mm"] <= float(pos_tol_mm)
+    rot_ok = primary["rot_max_rad"] <= float(rot_tol_rad)
+    overall_pass = bool(pos_ok and rot_ok)
+
+    # ---- per-sample CSV -------------------------------------------------
+    csv_path = out_dir / "spline_fk_vs_blend_residual.csv"
+    header = (
+        "s_mm,"
+        "q1_rad,q2_rad,q3_rad,q4_rad,q5_rad,q6_rad,"
+        "fk_x_mm,fk_y_mm,fk_z_mm,fk_qw,fk_qx,fk_qy,fk_qz,"
+        "gt_x_mm,gt_y_mm,gt_z_mm,gt_qw,gt_qx,gt_qy,gt_qz,"
+        "pos_err_mm,rot_err_rad,"
+        "pos_exceeds_tol,rot_exceeds_tol"
+    )
+    data = np.column_stack([
+        s_eval, q_spline, positions_mm, quaternions,
+        primary["gt_xyz_mm"], primary["gt_quat"],
+        pos_err, rot_err,
+        (pos_err > pos_tol_mm).astype(float),
+        (rot_err > rot_tol_rad).astype(float),
+    ])
+    np.savetxt(csv_path, data, delimiter=",", header=header, comments="", fmt="%.8g")
+
+    # ---- per-segment max-error report -----------------------------------
+    L = float(s_eval[-1] - s_eval[0]) if len(s_eval) > 1 else 0.0
+    seg_w = max(float(segment_mm), 1e-6)
+    n_seg = max(1, int(np.ceil(L / seg_w)))
+    seg_rows = []
+    any_seg_fail = False
+    for k in range(n_seg):
+        lo = s_eval[0] + k * seg_w
+        hi = min(s_eval[0] + (k + 1) * seg_w, s_eval[-1])
+        m = (s_eval >= lo) & (s_eval <= hi + 1e-9)
+        if not m.any():
+            continue
+        pmax = float(np.max(pos_err[m]))
+        rmax = float(np.max(rot_err[m]))
+        p_fail = pmax > pos_tol_mm
+        r_fail = rmax > rot_tol_rad
+        any_seg_fail = any_seg_fail or p_fail or r_fail
+        i_p = int(np.argmax(pos_err[m]))
+        i_r = int(np.argmax(rot_err[m]))
+        s_local = s_eval[m]
+        seg_rows.append({
+            "segment_id": k,
+            "s_lo_mm": lo,
+            "s_hi_mm": hi,
+            "n_samples": int(m.sum()),
+            "pos_max_mm": pmax,
+            "pos_max_at_s_mm": float(s_local[i_p]),
+            "rot_max_rad": rmax,
+            "rot_max_deg": float(np.rad2deg(rmax)),
+            "rot_max_at_s_mm": float(s_local[i_r]),
+            "pos_fail": int(p_fail),
+            "rot_fail": int(r_fail),
+            "segment_fail": int(p_fail or r_fail),
+        })
+
+    seg_csv = out_dir / "segment_max_error.csv"
+    if seg_rows:
+        keys = list(seg_rows[0].keys())
+        with open(seg_csv, "w", encoding="utf-8") as f:
+            f.write(",".join(keys) + "\n")
+            for row in seg_rows:
+                f.write(",".join(f"{row[k]:.8g}" if isinstance(row[k], float)
+                                 else str(row[k]) for k in keys) + "\n")
+
+    # ---- plots ----------------------------------------------------------
+    try:
+        plot_6dof_residual_png(
+            s_eval, positions_mm, primary,
+            out_dir / "blend_vs_spline_6dof.png",
+            pos_tol_mm, rot_tol_rad,
+            title_suffix=f" — {Path(toolpath).name}" if toolpath else "",
+        )
+    except Exception as exc:
+        print(f"  [WARN] I_spline_fk_check PNG failed: {exc}")
+    try:
+        plot_3d_comparison_html(
+            s_eval, positions_mm, primary,
+            out_dir / "blend_vs_spline_3d.html",
+            pos_tol_mm,
+        )
+    except Exception as exc:
+        print(f"  [WARN] I_spline_fk_check HTML failed: {exc}")
+
+    # ---- summary + flag -------------------------------------------------
+    n_fail_seg = sum(int(r["segment_fail"]) for r in seg_rows)
+    lines = [
+        "I_spline_fk_check — FK(spline) vs Feature-3 blended poses",
+        "=" * 64,
+        f"toolpath:           {toolpath or '(n/a)'}",
+        f"arc_mm:             {L:.3f}",
+        f"n_eval:             {len(s_eval)}",
+        f"n_ik_samples:       {len(s_mm)}",
+        f"pos_tol_mm:         {pos_tol_mm:g}",
+        f"rot_tol_rad:        {rot_tol_rad:g}",
+        f"segment_mm:         {segment_mm:g}",
+        "",
+        "On eval grid",
+        f"  |Δp| max/mean/p95 [mm]:  {primary['pos_max_mm']:.4f} / "
+        f"{primary['pos_mean_mm']:.4f} / {primary['pos_p95_mm']:.4f}",
+        f"  |Δθ| max/mean/p95 [rad]: {primary['rot_max_rad']:.5f} / "
+        f"{primary['rot_mean_rad']:.5f} / {primary['rot_p95_rad']:.5f}"
+        f"  (max {primary['rot_max_deg']:.3f}°)",
+        "",
+        "On IK sample sites",
+        f"  |Δp| max/mean [mm]: {on_samp['pos_max_mm']:.4f} / "
+        f"{on_samp['pos_mean_mm']:.4f}",
+        f"  |Δθ| max [rad]:     {on_samp['rot_max_rad']:.5f}",
+        f"  joint max |Δq| [deg]: "
+        f"{np.round(on_samp['joint_max_err_deg'], 3).tolist()}",
+        "",
+        f"Budget |Δp| < {pos_tol_mm:g} mm:  {'PASS' if pos_ok else 'FAIL'}",
+        f"Budget |Δθ| < {rot_tol_rad:g} rad: {'PASS' if rot_ok else 'FAIL'}",
+        f"Segments exceeding budget: {n_fail_seg} / {len(seg_rows)}",
+        f"OVERALL: {'PASS' if overall_pass else 'FAIL'}",
+    ]
+    (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out_dir / "fk_check_flag.txt").write_text(
+        ("PASS\n" if overall_pass else "FAIL\n")
+        + f"pos_ok={pos_ok} rot_ok={rot_ok}\n"
+        + f"pos_max_mm={primary['pos_max_mm']:.6g}\n"
+        + f"rot_max_rad={primary['rot_max_rad']:.6g}\n"
+        + f"n_fail_segments={n_fail_seg}\n",
+        encoding="utf-8",
+    )
+    print(
+        f"  I_spline_fk_check: {'PASS' if overall_pass else 'FAIL'}  "
+        f"|Δp|_max={primary['pos_max_mm']:.4f} mm  "
+        f"|Δθ|_max={primary['rot_max_rad']:.5f} rad  "
+        f"fail_segs={n_fail_seg}/{len(seg_rows)}  → {out_dir}"
+    )
+    return {
+        "pass": overall_pass,
+        "pos_ok": pos_ok,
+        "rot_ok": rot_ok,
+        "pos_max_mm": primary["pos_max_mm"],
+        "rot_max_rad": primary["rot_max_rad"],
+        "n_segments": len(seg_rows),
+        "n_fail_segments": n_fail_seg,
+        "out_dir": str(out_dir),
+        "any_segment_fail": any_seg_fail,
+    }
+
+
 def _write_benchmark_summary(
     out_path: Path,
     toolpath: str,
@@ -3347,6 +3567,37 @@ def _process_one_toolpath(
         summary = _write_benchmark_summary(
             case_dir / "summary.txt", str(toolpath), ctx.v_cmd, rs_rec, res_cmd,
         )
+
+    # Toolpath-common FK(spline) vs blended-arc check (same q(s) for all modes).
+    fk_ref = res_cmd or res_opt or res_const
+    fk_check = None
+    if make_plots and fk_ref is not None:
+        print("\n--- I_spline_fk_check ---")
+        try:
+            fk_check = write_spline_fk_check(
+                case_dir / _PLOT_GROUPS["I"],
+                fk_ref,
+                toolpath=toolpath,
+            )
+        except Exception as exc:
+            print(f"  [WARN] I_spline_fk_check failed: {exc}")
+            fk_check = {"pass": False, "error": str(exc)}
+        # Append FK flag to the case-level summary.
+        if summary is not None and Path(summary).is_file() and fk_check is not None:
+            with open(summary, "a", encoding="utf-8") as f:
+                f.write("\nI_spline_fk_check\n")
+                if "error" in fk_check:
+                    f.write(f"  ERROR: {fk_check['error']}\n")
+                else:
+                    f.write(
+                        f"  OVERALL: {'PASS' if fk_check.get('pass') else 'FAIL'}\n"
+                        f"  |Δp|_max [mm]:  {fk_check.get('pos_max_mm')}\n"
+                        f"  |Δθ|_max [rad]: {fk_check.get('rot_max_rad')}\n"
+                        f"  fail_segments:  {fk_check.get('n_fail_segments')}"
+                        f" / {fk_check.get('n_segments')}\n"
+                        f"  details: {case_dir / _PLOT_GROUPS['I']}\n"
+                    )
+
     print(f"Benchmark summary: {summary}")
     return {
         "toolpath": str(toolpath),
@@ -3361,6 +3612,12 @@ def _process_one_toolpath(
         ),
         "v_const": res_const.v_const if res_const is not None else None,
         "summary": str(summary),
+        "fk_check_pass": None if fk_check is None else bool(fk_check.get("pass")),
+        "fk_pos_max_mm": None if fk_check is None else fk_check.get("pos_max_mm"),
+        "fk_rot_max_rad": None if fk_check is None else fk_check.get("rot_max_rad"),
+        "fk_n_fail_segments": (
+            None if fk_check is None else fk_check.get("n_fail_segments")
+        ),
     }
 
 
@@ -3466,11 +3723,17 @@ def main() -> None:
         batch_rows.append(row)
 
     if len(batch_rows) > 1:
+        n_fk = sum(1 for r in batch_rows if r.get("fk_check_pass") is not None)
+        n_fk_pass = sum(1 for r in batch_rows if r.get("fk_check_pass") is True)
+        n_fk_fail = sum(1 for r in batch_rows if r.get("fk_check_pass") is False)
         lines = [
             "Batch velocity-profile benchmarking",
             "=" * 64,
             f"output: {out_root}",
             f"n toolpaths: {len(batch_rows)}",
+            f"I_spline_fk_check: {n_fk_pass} PASS / {n_fk_fail} FAIL "
+            f"(of {n_fk} checked; tol |Δp|<{_FK_CHECK_POS_TOL_MM:g} mm, "
+            f"|Δθ|<{_FK_CHECK_ROT_TOL_RAD:g} rad)",
             "",
         ]
         for r in batch_rows:
@@ -3480,11 +3743,45 @@ def main() -> None:
                 f"cmd={r['commanded_s']}  const={r['constant_s']}  "
                 f"opt={r['optimal_s']}"
             )
+            fk = r.get("fk_check_pass")
+            if fk is None:
+                lines.append("  I_spline_fk_check: (skipped)")
+            else:
+                lines.append(
+                    f"  I_spline_fk_check: {'PASS' if fk else 'FAIL'}  "
+                    f"|Δp|_max={r.get('fk_pos_max_mm')} mm  "
+                    f"|Δθ|_max={r.get('fk_rot_max_rad')} rad  "
+                    f"fail_segs={r.get('fk_n_fail_segments')}"
+                )
             lines.append(f"  summary: {r['summary']}")
             lines.append("")
         batch_path = out_root / "batch_summary.txt"
         batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Compact CSV for the FK check across the batch
+        fk_csv = out_root / "batch_fk_check.csv"
+        with open(fk_csv, "w", encoding="utf-8") as f:
+            f.write(
+                "toolpath,fk_pass,pos_max_mm,rot_max_rad,n_fail_segments,"
+                "commanded_s,constant_s,optimal_s,rs_duration_s\n"
+            )
+            for r in batch_rows:
+                f.write(
+                    f"{Path(r['toolpath']).name},"
+                    f"{'' if r.get('fk_check_pass') is None else int(bool(r['fk_check_pass']))},"
+                    f"{r.get('fk_pos_max_mm')},"
+                    f"{r.get('fk_rot_max_rad')},"
+                    f"{r.get('fk_n_fail_segments')},"
+                    f"{r.get('commanded_s')},"
+                    f"{r.get('constant_s')},"
+                    f"{r.get('optimal_s')},"
+                    f"{r.get('rs_duration_s')}\n"
+                )
         print(f"\nBatch summary: {batch_path}")
+        print(f"Batch FK CSV:  {fk_csv}")
+        print(
+            f"I_spline_fk_check batch: {n_fk_pass} PASS / {n_fk_fail} FAIL "
+            f"(of {n_fk})"
+        )
 
     print(f"\nDone. Results under: {out_root}")
 
