@@ -3523,6 +3523,7 @@ def _process_one_toolpath(
     secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
     transient_pad_mm: float = 5.0,
     ds_mm: float = _DEFAULT_DS_MM,
+    apply_rs_velocity_cap: bool = True,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -3532,7 +3533,7 @@ def _process_one_toolpath(
     print(
         f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
         f"WPs={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s, "
-        f"ds_mm={ds_mm:g}"
+        f"ds_mm={ds_mm:g}, rs_vcap={'on' if apply_rs_velocity_cap else 'off'}"
     )
 
     rs_rec = None
@@ -3562,8 +3563,8 @@ def _process_one_toolpath(
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
         run_kw = dict(
-            toolpath_csv=toolpath,
-            apply_rs_velocity_cap=True,
+            toolpath_csv=toolpath if apply_rs_velocity_cap else None,
+            apply_rs_velocity_cap=apply_rs_velocity_cap,
             **common,
             **kw,
         )
@@ -3575,9 +3576,10 @@ def _process_one_toolpath(
             )
         except Exception as exc:
             from utils.velocity_zone_lookup import VelocityZoneLookupError
-            if not isinstance(exc, VelocityZoneLookupError):
+            if not apply_rs_velocity_cap or not isinstance(exc, VelocityZoneLookupError):
                 raise
             print(f"  [WARN] RS velocity cap disabled: {exc}")
+            run_kw["toolpath_csv"] = None
             run_kw["apply_rs_velocity_cap"] = False
             r = run_diagnostics(
                 ctx.q_raw, ctx.poses, ctx.limits,
@@ -3745,6 +3747,11 @@ def main() -> None:
         help="Extra padding [mm] added on each side of every detected "
              "accel-transient segment.",
     )
+    parser.add_argument(
+        "--no_vcap", action="store_true",
+        help="Disable RobotStudio spacing×zone cruising-speed cap from "
+             "velocity_zone_lookup_table.csv (default: cap enabled).",
+    )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
@@ -3774,6 +3781,7 @@ def main() -> None:
             secant_window_mm=0.0 if args.no_secant_cap else args.secant_window_mm,
             transient_pad_mm=args.transient_pad_mm,
             ds_mm=args.ds_mm,
+            apply_rs_velocity_cap=not args.no_vcap,
         )
         batch_rows.append(row)
 
