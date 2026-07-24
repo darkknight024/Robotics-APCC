@@ -92,11 +92,16 @@ def compute_transient_signals(
         v_env = np.maximum(v_env, np.r_[v_env[1:], v_env[-1]])
     v_depth = np.maximum(v_env - v, 0.0)
 
-    cruise_ref = (
-        float(v_cmd)
-        if (v_cmd is not None and np.isfinite(v_cmd) and v_cmd > 0)
-        else float(np.nanpercentile(v, 90))
-    )
+    cruise_ref = float(np.nanpercentile(v, 90))
+    if v_cmd is not None:
+        vc = np.asarray(v_cmd, dtype=float)
+        if vc.ndim == 0:
+            if np.isfinite(vc) and float(vc) > 0:
+                cruise_ref = float(vc)
+        else:
+            ok = np.isfinite(vc) & (vc > 0)
+            if ok.any():
+                cruise_ref = float(np.nanmean(vc[ok]))
     return {
         "s_mm": s_eval,
         "v_star_mm_s": v,
@@ -165,7 +170,7 @@ def identify_transient_mask(
     merge_gap_mm: float = 4.0,
     buffer_mm: float = 2.0,
     s_ddot: Optional[np.ndarray] = None,
-    v_cmd: Optional[float] = None,
+    v_cmd: Optional[float | np.ndarray] = None,
     dqds: Optional[np.ndarray] = None,
     d2qds2: Optional[np.ndarray] = None,
     q_ddot: Optional[np.ndarray] = None,
@@ -268,8 +273,14 @@ def identify_transient_mask(
             apex_raw[max(0, i - n_hw): min(n, i + n_hw + 1)] = True
 
         ramp = np.zeros(n, dtype=bool)
-        if v_cmd is not None and np.isfinite(v_cmd) and v_cmd > 0:
-            ramp = v_ref < float(ramp_v_frac) * float(v_cmd)
+        if v_cmd is not None:
+            vc = np.asarray(v_cmd, dtype=float)
+            if vc.ndim == 0:
+                if np.isfinite(vc) and float(vc) > 0:
+                    ramp = v_ref < float(ramp_v_frac) * float(vc)
+            elif vc.shape == v_ref.shape:
+                ok = np.isfinite(vc) & (vc > 0)
+                ramp = ok & (v_ref < float(ramp_v_frac) * vc)
 
         raw = apex_raw | ramp
         method = "apex_window_kappa+util_geom+util_tang"
@@ -304,8 +315,14 @@ def identify_transient_mask(
         vl = np.asarray(v_lim_ref, dtype=float)
         vl = np.where(np.isfinite(vl), vl, np.inf)
         raw = v_ref < float(touch_frac) * vl
-        if v_cmd is not None and np.isfinite(v_cmd) and v_cmd > 0:
-            raw |= v_ref < float(ramp_v_frac) * float(v_cmd)
+        if v_cmd is not None:
+            vc = np.asarray(v_cmd, dtype=float)
+            if vc.ndim == 0:
+                if np.isfinite(vc) and float(vc) > 0:
+                    raw |= v_ref < float(ramp_v_frac) * float(vc)
+            elif vc.shape == v_ref.shape:
+                ok = np.isfinite(vc) & (vc > 0)
+                raw |= ok & (v_ref < float(ramp_v_frac) * vc)
         sig = {
             "s_mm": s_eval,
             "v_star_mm_s": v_ref,

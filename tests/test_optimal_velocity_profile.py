@@ -9,11 +9,11 @@ produced by inverse kinematics on a dense, blended, full-6-DOF pose
 trajectory.
 
 **Default mode (commanded):** TOPP under joint velocity/acceleration limits
-**and** the toolpath commanded TCP speed ``v_cmd`` — same intent as
-``tests/experiment24_validation.py`` running against a RobotStudio recording
-taken at commanded speed.
+**and** the pathwise toolpath commanded TCP speed ``v_cmd(s)`` from CSV
+column 8 (Feature-3 ``v_cmd_at_s``) — same intent as a RobotStudio run that
+follows the programmed speed schedule.
 
-**``--time-optimal`` mode:** drop the ``v_cmd`` ceiling and find the fastest
+**``--time-optimal`` mode:** drop the ``v_cmd(s)`` ceiling and find the fastest
 joint-feasible TCP speed along the whole path.
 
 The core mathematical identity connecting geometric derivatives (w.r.t.
@@ -185,12 +185,16 @@ class ProfileResult:
 
     metrics: Dict = field(default_factory=dict)
     figures: List[str] = field(default_factory=list)
+    # Commanded TCP speed used for TOPP capping (commanded mode).
+    # Scalar ``v_cmd`` is retained for labels / legacy callers (= max of path).
+    # Pathwise ``v_cmd_path`` is the toolpath column-8 schedule on ``s_eval``.
     v_cmd: Optional[float] = None
+    v_cmd_path: np.ndarray = None       # (N,) mm/s on s_eval, or None
     v_const: Optional[float] = None     # constant-mode ceiling [mm/s]
     # RobotStudio IRC5 spacing×zone cruising cap (on s_eval), or None
     v_capped: np.ndarray = None
     v_capped_waypoint: np.ndarray = None
-    # "commanded" = joint limits ∧ v ≤ v_cmd; "time_optimal" = joint limits
+    # "commanded" = joint limits ∧ v ≤ v_cmd(s); "time_optimal" = joint limits
     # only; "constant" = joint limits ∧ v ≤ v_const
     mode: str = "commanded"
 
@@ -208,7 +212,10 @@ class ToolpathContext:
     q_raw: np.ndarray                 # (M, 6) rad — IK on blended dense path
     poses: np.ndarray                 # (M, 7) dense TCP [x_mm,y_mm,z_mm,qw,qx,qy,qz]
     limits: JointLimits
-    v_cmd: float
+    # Pathwise commanded TCP speed from toolpath column 8 (Feature-3 dense grid).
+    s_cmd_mm: np.ndarray              # (M_cmd,) arc-length [mm] for v_cmd_at_s
+    v_cmd_at_s: np.ndarray            # (M_cmd,) commanded speed [mm/s]
+    v_cmd: float                      # max(v_cmd_at_s) — label / ramp fallback
     waypoints_plate: np.ndarray       # (N, 7) programmed WPs in plate/knife frame [mm+quat]
     waypoints_base: np.ndarray        # (N, 7) same WPs after Zund → robot-base transform
     toolpath_csv: Path
@@ -311,13 +318,22 @@ def load_joint_path_from_toolpath(
     jd = load_joint_dynamics(str(repo / "config" / "robots_config.yaml"), _ROBOT_NAME)
     limits = JointLimits(jd.q_dot_max, jd.q_ddot_accel, jd.q_ddot_decel)
 
-    v_cmd = float(np.nanmax(result.dense_path.v_cmd_at_s)) if len(
-        result.dense_path.v_cmd_at_s
-    ) else 20.0
+    v_cmd_at_s = np.asarray(result.dense_path.v_cmd_at_s, dtype=float).copy()
+    s_cmd_mm = np.asarray(result.dense_path.arc_lengths, dtype=float).copy()
+    if len(v_cmd_at_s) == 0:
+        v_cmd_at_s = np.array([20.0], dtype=float)
+        s_cmd_mm = np.array([0.0], dtype=float)
+    # Sanitize non-finite / non-positive samples (keep previous valid speed).
+    for i in range(len(v_cmd_at_s)):
+        if not (np.isfinite(v_cmd_at_s[i]) and v_cmd_at_s[i] > 0):
+            v_cmd_at_s[i] = v_cmd_at_s[i - 1] if i > 0 else 20.0
+    v_cmd = float(np.nanmax(v_cmd_at_s))
     return ToolpathContext(
         q_raw=q_raw,
         poses=poses,
         limits=limits,
+        s_cmd_mm=s_cmd_mm,
+        v_cmd_at_s=v_cmd_at_s,
         v_cmd=v_cmd,
         waypoints_plate=wp_plate,
         waypoints_base=wp_base,
@@ -407,18 +423,61 @@ def load_rs_joint_vs_arc(
     return rec.s_mm, rec.q_deg
 
 
+def _v_cmd_on_grid(
+    s_query: np.ndarray,
+    s_cmd_mm: np.ndarray,
+    v_cmd_at_s: np.ndarray,
+) -> np.ndarray:
+    """Map Feature-3 pathwise commanded speeds onto an arbitrary s-grid.
+
+    Feature-3 assigns a *piecewise-constant* speed per programmed segment
+    (toolpath CSV column 8 → ``v_cmd_per_wp[seg]`` on that segment's samples).
+    We therefore use previous-neighbor (zero-order hold) lookup, not linear
+    interpolation, so intermediate s values keep the segment's commanded
+    speed rather than blending adjacent WP speeds.
+    """
+    s_q = np.asarray(s_query, dtype=float)
+    s_c = np.asarray(s_cmd_mm, dtype=float)
+    v_c = np.asarray(v_cmd_at_s, dtype=float)
+    if len(s_c) == 0:
+        return np.full(len(s_q), np.nan)
+    if len(s_c) == 1:
+        return np.full(len(s_q), float(v_c[0]))
+    # Ensure monotone s for searchsorted (Feature-3 should already be).
+    order = np.argsort(s_c)
+    s_c = s_c[order]
+    v_c = v_c[order]
+    idx = np.searchsorted(s_c, s_q, side="right") - 1
+    idx = np.clip(idx, 0, len(v_c) - 1)
+    return v_c[idx].astype(float)
+
+
 def _apply_v_cmd_cap(
-    v_lim: np.ndarray, v_cmd: Optional[float], time_optimal: bool,
+    v_lim: np.ndarray,
+    v_cmd: Optional[float | np.ndarray],
+    time_optimal: bool,
 ) -> np.ndarray:
     """Cap a joint-limit ceiling by commanded TCP speed (commanded mode).
 
-    In ``--time-optimal`` mode the command ceiling is ignored.  With no
-    ``v_cmd`` the joint-only ceiling is returned unchanged.
+    ``v_cmd`` may be a scalar or a pathwise array matching ``v_lim``.
+    In ``--time-optimal`` mode the command ceiling is ignored.  Non-finite or
+    non-positive command samples leave the joint ceiling unchanged at those
+    indices (treated as +inf command).
     """
     out = np.asarray(v_lim, dtype=float).copy()
-    if time_optimal or v_cmd is None or not np.isfinite(v_cmd) or v_cmd <= 0:
+    if time_optimal or v_cmd is None:
         return out
-    return np.minimum(out, float(v_cmd))
+    v = np.asarray(v_cmd, dtype=float)
+    if v.ndim == 0:
+        if not np.isfinite(v) or float(v) <= 0:
+            return out
+        return np.minimum(out, float(v))
+    if v.shape != out.shape:
+        raise ValueError(
+            f"pathwise v_cmd shape {v.shape} != v_lim shape {out.shape}"
+        )
+    cap = np.where(np.isfinite(v) & (v > 0), v, np.inf)
+    return np.minimum(out, cap)
 
 
 # =====================================================================
@@ -2068,9 +2127,13 @@ def _plot_tcp_vs_rs(
     if res.v_lim is not None:
         ax.plot(s, res.v_lim, "--", lw=1.0, color="0.35", alpha=0.7,
                 label="solver v_lim ceiling")
-    if res.v_cmd and res.mode == "commanded":
-        ax.axhline(res.v_cmd, ls=":", color="purple", lw=1.2,
-                   label=f"v_cmd = {res.v_cmd:.0f} mm/s")
+    if res.mode == "commanded":
+        if res.v_cmd_path is not None:
+            ax.plot(s, res.v_cmd_path, ":", lw=1.4, color="purple",
+                    label="v_cmd(s) toolpath col-8")
+        elif res.v_cmd:
+            ax.axhline(res.v_cmd, ls=":", color="purple", lw=1.2,
+                       label=f"v_cmd = {res.v_cmd:.0f} mm/s")
 
     trans = res.accel_transient_mask
     if res.mode == "commanded" and trans is not None:
@@ -2292,7 +2355,15 @@ def _make_plots(
     elif res.mode == "constant":
         mode_name = f"constant (v ≤ v_const={res.v_const:g} mm/s, joint-feasible)"
     elif v_cmd:
-        mode_name = f"commanded (v ≤ v_cmd={v_cmd:g} mm/s, joint-feasible)"
+        if res.v_cmd_path is not None:
+            vmin = float(np.nanmin(res.v_cmd_path))
+            vmax = float(np.nanmax(res.v_cmd_path))
+            mode_name = (
+                f"commanded (v ≤ v_cmd(s) from toolpath col-8, "
+                f"{vmin:.0f}–{vmax:.0f} mm/s, joint-feasible)"
+            )
+        else:
+            mode_name = f"commanded (v ≤ v_cmd={v_cmd:g} mm/s, joint-feasible)"
     else:
         mode_name = "commanded (no v_cmd supplied)"
 
@@ -2422,7 +2493,10 @@ def _make_plots(
         axB[0].plot(s, np.clip(res.v_secant, 0, vmax_disp), "-", lw=0.9,
                     color="#B279A2",
                     label="v_secant (raw-path joint-accel cap)")
-    if v_cmd:
+    if res.v_cmd_path is not None and res.mode == "commanded":
+        axB[0].plot(s, res.v_cmd_path, ":", lw=1.4, color="purple",
+                    label="v_cmd(s) toolpath col-8")
+    elif v_cmd:
         axB[0].axhline(v_cmd, ls=":", color="purple", label="v_cmd")
     axB[0].set_ylabel("speed [mm/s]")
     axB[0].set_ylim(0, vmax_disp)
@@ -2644,8 +2718,15 @@ def _write_mode_summary(
         f"Velocity mode: {res.mode}",
         "=" * 56,
     ]
-    if res.mode == "commanded" and res.v_cmd:
-        lines.append(f"v_cmd:                {res.v_cmd:.1f} mm/s")
+    if res.mode == "commanded":
+        if res.v_cmd_path is not None:
+            lines.append(
+                f"v_cmd(s):             {float(np.nanmin(res.v_cmd_path)):.1f}–"
+                f"{float(np.nanmax(res.v_cmd_path)):.1f} mm/s "
+                f"(toolpath col-8; peak label={res.v_cmd:.1f})"
+            )
+        elif res.v_cmd:
+            lines.append(f"v_cmd:                {res.v_cmd:.1f} mm/s")
     if res.mode == "constant" and res.v_const:
         lines.append(f"v_const:              {res.v_const:.2f} mm/s")
     lines += [
@@ -2697,7 +2778,9 @@ def _grid_independence(
     ik_tol_rad: float,
     base_n: int,
     resid_tol_rad: Optional[float] = None,
-    v_cmd: Optional[float] = None,
+    v_cmd: Optional[float | np.ndarray] = None,
+    v_cmd_s_mm: Optional[np.ndarray] = None,
+    v_cmd_at_s: Optional[np.ndarray] = None,
     time_optimal: bool = False,
     secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
 ) -> Dict:
@@ -2725,7 +2808,18 @@ def _grid_independence(
                 s_mm, q_kept, limits.q_ddot_max, mvc_s, secant_window_mm,
             ),
         )
-    mvc_v_lim = _apply_v_cmd_cap(mvc_v_lim_joint, v_cmd, time_optimal)
+
+    def _cap(s_grid: np.ndarray, v_joint: np.ndarray) -> np.ndarray:
+        if time_optimal:
+            return v_joint
+        if (v_cmd_s_mm is not None and v_cmd_at_s is not None
+                and len(np.asarray(v_cmd_at_s)) > 0):
+            return _apply_v_cmd_cap(
+                v_joint, _v_cmd_on_grid(s_grid, v_cmd_s_mm, v_cmd_at_s), False,
+            )
+        return _apply_v_cmd_cap(v_joint, v_cmd, False)
+
+    mvc_v_lim = _cap(mvc_s, mvc_v_lim_joint)
 
     def _duration(n_eval):
         s_e = np.linspace(s_mm[0], s_mm[-1], int(n_eval))
@@ -2735,7 +2829,7 @@ def _grid_independence(
             vl_j = np.minimum(vl_j, secant_accel_ceiling(
                 s_mm, q_kept, limits.q_ddot_max, s_e, secant_window_mm,
             ))
-        v_lim = _apply_v_cmd_cap(vl_j, v_cmd, time_optimal)
+        v_lim = _cap(s_e, vl_j)
         topt = step3_time_optimal(
             s_e, a["dqds"], a["d2qds2"], v_lim, limits,
             mvc_s=mvc_s, mvc_v_lim=mvc_v_lim,
@@ -2798,6 +2892,18 @@ def _compute_metrics(res: ProfileResult, limits: JointLimits,
     for j in range(6):
         sat_frac[f"J{j+1}"] = float(np.mean(res.binding_joint == j))
 
+    # Pathwise ratio when available: mean(v*/v_cmd(s)) over samples with v_cmd>0.
+    if res.v_cmd_path is not None:
+        vc = np.asarray(res.v_cmd_path, dtype=float)
+        ok = np.isfinite(vc) & (vc > 1e-9)
+        v_mean_over_v_cmd = (
+            float(np.mean(v[ok] / vc[ok])) if ok.any() else None
+        )
+    elif v_cmd is not None and np.isfinite(v_cmd) and float(v_cmd) > 0:
+        v_mean_over_v_cmd = float(np.mean(v) / float(v_cmd))
+    else:
+        v_mean_over_v_cmd = None
+
     metrics = {
         "feasibility": {
             "feasible": feasible,
@@ -2813,7 +2919,16 @@ def _compute_metrics(res: ProfileResult, limits: JointLimits,
             "v_min": float(np.min(v)),
             "v_max": float(np.max(v)),
             "v_mean": float(np.mean(v)),
-            "v_mean_over_v_cmd": (float(np.mean(v) / v_cmd) if v_cmd else None),
+            "v_mean_over_v_cmd": v_mean_over_v_cmd,
+            "v_cmd_min": (
+                float(np.nanmin(res.v_cmd_path))
+                if res.v_cmd_path is not None else None
+            ),
+            "v_cmd_max": (
+                float(np.nanmax(res.v_cmd_path))
+                if res.v_cmd_path is not None
+                else (float(v_cmd) if v_cmd else None)
+            ),
         },
         "cruise_fraction": cruise_frac,
         "bottleneck": {
@@ -2838,6 +2953,8 @@ def run_diagnostics(
     limits: JointLimits,
     out_dir: Optional[Path] = None,
     v_cmd: Optional[float] = None,
+    v_cmd_s_mm: Optional[np.ndarray] = None,
+    v_cmd_at_s: Optional[np.ndarray] = None,
     ik_tol_rad: float = 1e-4,
     resid_tol_rad: Optional[float] = None,
     n_eval: Optional[int] = None,
@@ -2861,8 +2978,9 @@ def run_diagnostics(
     Mode selection:
       * ``v_const`` given        → **constant**: TOPP capped at ``v_const``
       * ``time_optimal=True``    → **time_optimal**: joint limits only
-      * otherwise                → **commanded**: TOPP capped at ``v_cmd``
-        (matches RobotStudio recordings taken at the commanded speed)
+      * otherwise                → **commanded**: TOPP capped at pathwise
+        ``v_cmd(s)`` from toolpath column 8 (``v_cmd_s_mm`` / ``v_cmd_at_s``),
+        falling back to scalar ``v_cmd`` if no pathwise schedule is given.
 
     ``secant_window_mm > 0`` additionally caps the velocity ceiling with the
     raw-joint-path secant acceleration bound (resolves sub-knot corner
@@ -2878,10 +2996,15 @@ def run_diagnostics(
     res.v_const = v_const
     if v_const is not None:
         res.mode = "constant"
-        v_cmd = float(v_const)          # same capping machinery as commanded
         time_optimal = False
     else:
         res.mode = "time_optimal" if time_optimal else "commanded"
+
+    has_path_schedule = (
+        v_cmd_s_mm is not None
+        and v_cmd_at_s is not None
+        and len(np.asarray(v_cmd_at_s)) > 0
+    )
 
     # Step 0
     s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(q_raw, poses)
@@ -2910,6 +3033,37 @@ def run_diagnostics(
     )
     res.smoothing = smoothing
 
+    # Toolpath column-8 schedule on grids (always, when provided).
+    path_v_cmd = path_v_cmd_mvc = None
+    if has_path_schedule:
+        path_v_cmd = _v_cmd_on_grid(s_eval, v_cmd_s_mm, v_cmd_at_s)
+        path_v_cmd_mvc = _v_cmd_on_grid(_mvc_s, v_cmd_s_mm, v_cmd_at_s)
+        if res.v_cmd is None or not np.isfinite(res.v_cmd) or res.v_cmd <= 0:
+            res.v_cmd = float(np.nanmax(path_v_cmd))
+
+    # Cap used for THIS mode's TOPP.
+    if res.mode == "constant":
+        v_cmd_for_cap: Optional[float | np.ndarray] = float(v_const)
+        _mvc_v_cmd: Optional[float | np.ndarray] = float(v_const)
+        res.v_cmd_path = None
+    elif res.mode == "commanded":
+        if path_v_cmd is not None:
+            res.v_cmd_path = path_v_cmd
+            v_cmd_for_cap = path_v_cmd
+            _mvc_v_cmd = path_v_cmd_mvc
+        elif v_cmd is not None and np.isfinite(v_cmd) and v_cmd > 0:
+            res.v_cmd_path = np.full(len(s_eval), float(v_cmd))
+            v_cmd_for_cap = float(v_cmd)
+            _mvc_v_cmd = float(v_cmd)
+        else:
+            res.v_cmd_path = None
+            v_cmd_for_cap = None
+            _mvc_v_cmd = None
+    else:  # time_optimal
+        res.v_cmd_path = path_v_cmd  # keep for plots / comparison; not used as cap
+        v_cmd_for_cap = None
+        _mvc_v_cmd = None
+
     # Step 2 — joint ceiling, then optional v_cmd cap for commanded mode
     vl = step2_velocity_limit(res.dqds, res.d2qds2, limits)
     res.v_vel, res.v_accel = vl["v_vel"], vl["v_accel"]
@@ -2931,8 +3085,8 @@ def run_diagnostics(
             ),
         )
 
-    _mvc_v_lim = _apply_v_cmd_cap(_mvc_v_lim_joint, v_cmd, time_optimal)
-    res.v_lim = _apply_v_cmd_cap(res.v_lim_joint, v_cmd, time_optimal)
+    _mvc_v_lim = _apply_v_cmd_cap(_mvc_v_lim_joint, _mvc_v_cmd, time_optimal)
+    res.v_lim = _apply_v_cmd_cap(res.v_lim_joint, v_cmd_for_cap, time_optimal)
 
     if toolpath_csv is not None and apply_rs_velocity_cap:
         from utils.velocity_zone_lookup import build_v_capped_on_eval_grid
@@ -2974,19 +3128,15 @@ def run_diagnostics(
     )
 
     # Accel transients from the COMMANDED-CAPPED reference profile.  The
-    # commanded speed is a property of the input toolpath (its programmed
-    # speed column), so the mask depends only on the toolpath + joint
-    # limits and is identical for commanded/constant/optimal.  Capping the
-    # reference at v_cmd keeps braking distances at the commanded scale
-    # (matching what RobotStudio actually executes) instead of the huge
-    # time-optimal ramps from 600+ mm/s.
-    #
-    # Accel-transient = apex windows seeded in joint space from
-    # κ_j=max|d²q/ds²| (+ util_geom / strong util_tang peaks). Half-width is
-    # geometry-led with a modest TIME-domain util_tang bang boost:
-    # soft apex → narrow, sharp/high-κ → wider.  No global util_tang island OR.
-    ref_v_lim = _apply_v_cmd_cap(res.v_lim_joint, res.v_cmd, False)
-    if res.mode == "commanded" and res.v_cmd:
+    # commanded speed is a property of the input toolpath (column 8), so the
+    # mask depends only on the toolpath + joint limits and is identical for
+    # commanded/constant/optimal.  Prefer the pathwise schedule when present.
+    ref_cap = path_v_cmd if path_v_cmd is not None else res.v_cmd
+    ref_cap_mvc = path_v_cmd_mvc if path_v_cmd_mvc is not None else res.v_cmd
+    ref_v_lim = _apply_v_cmd_cap(res.v_lim_joint, ref_cap, False)
+    if res.mode == "commanded" and (
+        (res.v_cmd_path is not None) or (res.v_cmd is not None and res.v_cmd > 0)
+    ):
         ref_v_star = res.v_star
         ref_s_ddot = res.s_ddot
         ref_q_ddot = res.q_ddot
@@ -2994,7 +3144,7 @@ def run_diagnostics(
         ref = step3_time_optimal(
             res.s_eval, res.dqds, res.d2qds2, ref_v_lim, limits,
             mvc_s=_mvc_s,
-            mvc_v_lim=_apply_v_cmd_cap(_mvc_v_lim_joint, res.v_cmd, False),
+            mvc_v_lim=_apply_v_cmd_cap(_mvc_v_lim_joint, ref_cap_mvc, False),
         )
         ref_v_star = ref["v_star"]
         ref_s_ddot = ref["s_ddot"]
@@ -3003,7 +3153,7 @@ def run_diagnostics(
         res.s_eval, ref_v_star, ref_v_lim,
         buffer_mm=transient_pad_mm,
         s_ddot=ref_s_ddot,
-        v_cmd=res.v_cmd,
+        v_cmd=ref_cap,  # pathwise array or scalar
         dqds=res.dqds,
         d2qds2=res.d2qds2,
         q_ddot=ref_q_ddot,
@@ -3080,16 +3230,22 @@ def run_diagnostics(
     }
 
     # Step 5: grid independence + metrics
+    grid_v_cmd = v_cmd_for_cap if res.mode != "commanded" or not has_path_schedule else None
     grid_check = (
         _grid_independence(
             s_mm, q_kept, limits, ik_tol_rad, len(s_eval),
             resid_tol_rad=resid_tol_rad,
-            v_cmd=v_cmd, time_optimal=time_optimal,
+            v_cmd=grid_v_cmd,
+            v_cmd_s_mm=(v_cmd_s_mm if res.mode == "commanded" and has_path_schedule
+                        else None),
+            v_cmd_at_s=(v_cmd_at_s if res.mode == "commanded" and has_path_schedule
+                        else None),
+            time_optimal=time_optimal,
             secant_window_mm=secant_window_mm,
         )
         if do_grid_check else {"skipped": True}
     )
-    res.metrics.update(_compute_metrics(res, limits, grid_check, v_cmd))
+    res.metrics.update(_compute_metrics(res, limits, grid_check, res.v_cmd))
 
     # Prefer a full RS recording when provided; fall back to (s, q) only.
     if rs_rec is not None:
@@ -3128,7 +3284,10 @@ def _print_metrics(res: ProfileResult) -> None:
     print("STEP 5 — scalar metrics")
     print("=" * 64)
     print(f"  mode:                {res.mode}"
-          + (f"  (v_cmd={res.v_cmd:.1f} mm/s)" if res.v_cmd else ""))
+          + (f"  (v_cmd(s)={float(np.nanmin(res.v_cmd_path)):.1f}–"
+             f"{float(np.nanmax(res.v_cmd_path)):.1f} mm/s)"
+             if res.v_cmd_path is not None
+             else (f"  (v_cmd={res.v_cmd:.1f} mm/s)" if res.v_cmd else "")))
     print(f"  feasible:            {m['feasibility']['feasible']}")
     print(f"  duration:            {m['timing']['duration_s']:.4f} s")
     print(f"  round-trip ∫ds/v*:   {m['timing']['roundtrip_ds_over_v_s']:.4f} s "
@@ -3174,11 +3333,26 @@ def _write_report(res: ProfileResult, out_dir: Path) -> Path:
 # =====================================================================
 # main() — real toolpath diagnostic
 # =====================================================================
-# Short --dataset keys → Toolpaths/ and Results - RobotStudio/ folder names
-# (mirrors tests/experiment24_validation.py).
-_DATASET_FOLDERS = {
+# Short --dataset keys → Experiment-24 Toolpaths/ and Results - RobotStudio/
+# locations.  A plain string means the same relative folder under both roots.
+# A dict allows asymmetric layouts (e.g. v7 sidewall segments).
+_DATASET_FOLDERS: Dict[str, str | Dict[str, str]] = {
     "v6": "v6_constant_tool_orientation_recordings",
     "v6_2": "v6_2",
+    "v7_cropped": {
+        "toolpaths": "v7_sidewall_wrapped_toolpath/cropped_toolpath_by_segment",
+        "rs": (
+            "v7_sidewall_wrapped_toolpath/v7_sidewall_wrapped_toolpath/"
+            "cropped_toolpath"
+        ),
+    },
+    "v7_full": {
+        "toolpaths": "v7_sidewall_wrapped_toolpath/full_toolpath_by_segment",
+        "rs": (
+            "v7_sidewall_wrapped_toolpath/v7_sidewall_wrapped_toolpath/"
+            "full_toolpath"
+        ),
+    },
     "v8": "v8_snake_toolpath_with_variable_wp_spacing",
     "v9": "v9_snake_toolpaths_orientation_test",
 }
@@ -3186,6 +3360,21 @@ _DATASET_FOLDERS = {
 
 def _exp24_root() -> Path:
     return _REPO / "Robot_APCC" / "Experiments" / "Experiement_24"
+
+
+def _dataset_dirs(dataset: str) -> Tuple[Path, Path]:
+    """Return ``(toolpath_dir, rs_dir)`` for a ``--dataset`` key."""
+    spec = _DATASET_FOLDERS[dataset]
+    root = _exp24_root()
+    if isinstance(spec, str):
+        return (
+            root / "Toolpaths" / spec,
+            root / "Results - RobotStudio" / spec,
+        )
+    return (
+        root / "Toolpaths" / spec["toolpaths"],
+        root / "Results - RobotStudio" / spec["rs"],
+    )
 
 
 def _resolve_cases(
@@ -3196,15 +3385,19 @@ def _resolve_cases(
 ) -> List[Tuple[Path, Optional[Path]]]:
     """Return ``[(toolpath_csv, rs_csv_or_None), ...]``.
 
-    * ``--dataset`` → every CSV under Toolpaths/<folder>/, each matched to
-      Results - RobotStudio/<folder>/<same basename>.
+    * ``--dataset`` → every CSV under the dataset toolpath folder, each
+      matched by basename under the dataset RobotStudio folder.
     * ``--toolpath`` → one toolpath; RS from ``--rs-csv``, else basename
       match under ``--rs-dir`` (default = v9 RS folder).
     """
     if dataset and toolpath:
         raise SystemExit("Pass either --dataset or --toolpath, not both.")
     if not dataset and not toolpath:
-        raise SystemExit("Provide --dataset <v6|v6_2|v8|v9> or --toolpath <csv>.")
+        raise SystemExit(
+            "Provide --dataset <"
+            + "|".join(sorted(_DATASET_FOLDERS))
+            + "> or --toolpath <csv>."
+        )
 
     if dataset:
         if dataset not in _DATASET_FOLDERS:
@@ -3212,9 +3405,7 @@ def _resolve_cases(
                 f"Unknown --dataset {dataset!r}; "
                 f"choices: {sorted(_DATASET_FOLDERS)}"
             )
-        folder = _DATASET_FOLDERS[dataset]
-        tp_dir = _exp24_root() / "Toolpaths" / folder
-        rs_root = _exp24_root() / "Results - RobotStudio" / folder
+        tp_dir, rs_root = _dataset_dirs(dataset)
         if not tp_dir.is_dir():
             raise SystemExit(f"Toolpath folder not found: {tp_dir}")
         cases = []
@@ -3223,6 +3414,11 @@ def _resolve_cases(
             cases.append((tp, rs if rs.is_file() else None))
         if not cases:
             raise SystemExit(f"No CSV toolpaths in {tp_dir}")
+        n_rs = sum(1 for _, rs in cases if rs is not None)
+        print(f"  dataset {dataset}: {len(cases)} toolpaths, "
+              f"{n_rs} with matching RobotStudio CSV")
+        print(f"    toolpaths: {tp_dir}")
+        print(f"    RS:        {rs_root}")
         return cases
 
     tp = Path(toolpath)
@@ -3532,7 +3728,9 @@ def _process_one_toolpath(
     ctx = load_joint_path_from_toolpath(str(toolpath), ds_mm=ds_mm)
     print(
         f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
-        f"WPs={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s, "
+        f"WPs={ctx.waypoints_plate.shape[0]}, "
+        f"v_cmd(s)={float(np.nanmin(ctx.v_cmd_at_s)):.1f}–"
+        f"{float(np.nanmax(ctx.v_cmd_at_s)):.1f} mm/s (col-8), "
         f"ds_mm={ds_mm:g}, rs_vcap={'on' if apply_rs_velocity_cap else 'off'}"
     )
 
@@ -3550,6 +3748,8 @@ def _process_one_toolpath(
     case_dir.mkdir(parents=True, exist_ok=True)
     common = dict(
         v_cmd=ctx.v_cmd,
+        v_cmd_s_mm=ctx.s_cmd_mm,
+        v_cmd_at_s=ctx.v_cmd_at_s,
         ik_tol_rad=ik_tol_rad,
         resid_tol_rad=resid_tol_rad,
         make_plots=make_plots,
@@ -3690,9 +3890,9 @@ def main() -> None:
         "--dataset",
         choices=sorted(_DATASET_FOLDERS),
         default=None,
-        help="Experiment 24 dataset key (e.g. v9). Loads all CSVs from "
-             "Toolpaths/<folder>/ and matches RobotStudio results by "
-             "basename under Results - RobotStudio/<folder>/.",
+        help="Experiment 24 dataset key (e.g. v9, v7_cropped, v7_full). "
+             "Loads all CSVs from the mapped Toolpaths/ folder and matches "
+             "RobotStudio results by basename.",
     )
     parser.add_argument(
         "--toolpath",
