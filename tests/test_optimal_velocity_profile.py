@@ -74,6 +74,11 @@ from scipy.interpolate import LSQUnivariateSpline
 _REPO = Path(__file__).resolve().parent.parent
 _ROBOT_NAME = "IRB 1300-7/1.4"
 
+# Default Feature-3 arc-length sampling density for IK [mm].  Finer than
+# 1 mm is needed for z0 corner blends so the quintic has enough support
+# to track joint curvature without exceeding the task-space residual budget.
+_DEFAULT_DS_MM = 0.5
+
 # Consistent J1..J6 colour map used across every joint-wise panel.
 _JOINT_COLORS = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
@@ -163,9 +168,13 @@ class ProfileResult:
     accel_transient_mask: np.ndarray = None
     bottleneck_idx: int = -1
 
-    # TCP rotation (from the dense pose quaternions, on s_eval)
+    # TCP rotation (from the dense pose quaternions, on s_eval; spline-fitted)
     ori_theta: np.ndarray = None        # (N,) cumulative reorientation [rad]
     ori_dtheta_ds: np.ndarray = None    # (N,) geometric rotation rate [rad/mm]
+    ori_d2theta_ds2: np.ndarray = None  # (N,) rotation rate derivative [rad/mm²]
+
+    # Secant acceleration ceiling (raw joint path, spline-independent) or None
+    v_secant: np.ndarray = None
 
     metrics: Dict = field(default_factory=dict)
     figures: List[str] = field(default_factory=list)
@@ -201,7 +210,7 @@ _DEFAULT_RS_DIR = (
 def load_joint_path_from_toolpath(
     toolpath_csv: str,
     repo: Optional[Path] = None,
-    ds_mm: float = 1.0,
+    ds_mm: float = _DEFAULT_DS_MM,
 ) -> ToolpathContext:
     """Blend a toolpath, run IK, and return the joint path that traces it.
 
@@ -548,9 +557,11 @@ def _arc_measure(s: np.ndarray) -> np.ndarray:
     return np.maximum(m, 1e-12)
 
 
-# Max |spline - raw| tolerance per joint [deg].  Placeholder until it is
-# derived from a task-space (FK) tolerance budget.
-_RESID_TOL_DEG = 1.0
+# Max |spline - raw| tolerance per joint [deg].  Chosen so FK(spline)
+# stays within ~1 mm / ~0.1 rad of the Feature-3 dense poses on typical
+# Exp-24 toolpaths (with ds_mm≈0.5).  Wrist joints can still warn if the
+# sample-density floor is hit; the task-space residual is what matters.
+_RESID_TOL_DEG = 0.1
 
 
 def _fit_lsq_quintic(
@@ -574,7 +585,7 @@ def _refine_knots_locally(
     y: np.ndarray,
     w: np.ndarray,
     tol_rad: float,
-    max_iter: int = 25,
+    max_iter: int = 40,
     min_halfwidth_mm: float = 0.1,
     min_samples_per_span: int = 2,
 ) -> Tuple[LSQUnivariateSpline, int, int]:
@@ -599,6 +610,13 @@ def _refine_knots_locally(
     Schoenberg-Whitney risk, or be narrower than ``min_halfwidth_mm``).  Flats
     keep their coarse knots — derivative smoothness is preserved everywhere the
     data allows it.
+
+    ``min_halfwidth_mm`` (default 0.1 mm) is a RINGING / Schoenberg-Whitney
+    floor: knots denser than that chasing per-waypoint orientation-ramp
+    kinks make ``d²q/ds²`` oscillate and trap TOPP.  With Feature-3 sampling
+    at ``ds_mm≈0.5`` this still leaves enough room to meet the task-space
+    residual budget (~1 mm / 0.1 rad).  Sub-floor curvature is handled by
+    the raw-path secant acceleration cap.
 
     The split point is the MEDIAN of the sample locations inside the interval,
     not the geometric midpoint: sampling is heavily non-uniform (0.05 mm on
@@ -687,7 +705,11 @@ def _tune_lsq_spline(
     meas = _arc_measure(s)
     w = np.sqrt(meas)
     max_gap = float(np.max(np.diff(s)))
-    floor_mm = max(2.0, 2.0 * max_gap, L / 1000.0)
+    # Floor ≈ 2× the largest sample gap (Schoenberg-Whitney), but never
+    # coarser than 1 mm when the path is densely sampled — otherwise the
+    # uniform sweep stops before corner blends are resolved and local
+    # refinement cannot recover the task-space residual budget.
+    floor_mm = max(1.0, 2.0 * max_gap, L / 2000.0)
 
     # --- coarse-to-fine sweep -------------------------------------------
     history: List[Tuple[float, float, LSQUnivariateSpline]] = []
@@ -923,6 +945,72 @@ def step2_velocity_limit(
     }
 
 
+def secant_accel_ceiling(
+    s_raw: np.ndarray,
+    q_raw: np.ndarray,
+    qdd_max: np.ndarray,
+    s_query: np.ndarray,
+    window_mm: float = 0.25,
+) -> np.ndarray:
+    """Joint-space secant acceleration ceiling (spline-independent).
+
+    The smoothing spline cannot represent curvature shorter than its knot
+    spacing, so sub-millimetre corner blends (e.g. z0 ≈ 0.3 mm radius) are
+    smoothed away and ``v_accel`` is grossly overestimated there.  This cap
+    recovers the bound directly from the RAW joint samples, using only
+    joint-space data + joint acceleration limits:
+
+        q(s+h) - 2 q(s) + q(s-h) ≈ q''(s) · h²
+
+    At (locally) constant speed v the joint acceleration is q̈ ≈ q''·v², so
+
+        v ≤ sqrt( qdd_max_j · h² / |Δ²q_j| )    (min over joints)
+
+    The window ``h = window_mm`` is chosen at the corner-blend scale: large
+    enough to amortise IK noise (Δ²q noise ~ε while the corner signal is
+    ~q''h²), small enough that genuine sub-mm blends are resolved.  Micro
+    kinks shorter than the window are averaged away — exactly what a real
+    controller's time-smoothing does.
+
+    The cap is only applied where the raw sampling actually RESOLVES the
+    window scale (>= 3 raw samples inside ``[x-h, x+h]``).  Where sampling
+    is coarser than the window, the linear interpolant would concentrate
+    curvature at polyline vertices and over-tighten the bound — and the raw
+    data carries no sub-window information there anyway, so the spline
+    ceiling is already trustworthy.
+
+    Returns +inf where the window does not fit inside the path or the
+    sampling is too coarse.  Disable with ``--no-secant-cap`` (or
+    ``window_mm <= 0``).
+    """
+    h = float(window_mm)
+    s_query = np.asarray(s_query, dtype=float)
+    out = np.full(len(s_query), np.inf)
+    if h <= 0:
+        return out
+    n_in_window = (np.searchsorted(s_raw, s_query + h, side="right")
+                   - np.searchsorted(s_raw, s_query - h, side="left"))
+    ok = ((s_query - h >= s_raw[0]) & (s_query + h <= s_raw[-1])
+          & (n_in_window >= 3))
+    if not ok.any():
+        return out
+    x = s_query[ok]
+
+    def qi(xs: np.ndarray) -> np.ndarray:
+        return np.stack(
+            [np.interp(xs, s_raw, q_raw[:, j]) for j in range(q_raw.shape[1])],
+            axis=1,
+        )
+
+    d2 = qi(x + h) - 2.0 * qi(x) + qi(x - h)          # ≈ q'' h²  (rad)
+    with np.errstate(divide="ignore"):
+        v2 = np.min(
+            qdd_max[None, :] * h * h / np.maximum(np.abs(d2), 1e-15), axis=1,
+        )
+    out[ok] = np.sqrt(v2)
+    return out
+
+
 # =====================================================================
 # STEP 3 — time-optimal profile v*(s) via forward/backward pass
 # =====================================================================
@@ -995,37 +1083,47 @@ def step3_time_optimal(
         lo = np.where(small, -np.inf, lo)
         return float(np.max(lo)), float(np.min(hi))
 
-    # Forward pass (acceleration limited, Heun predictor-corrector) --------
-    uf = np.zeros(N)
-    uf[0] = 0.0
-    for i in range(N - 1):
-        _, A0 = bounds_at(i, uf[i])
-        if not np.isfinite(A0):
-            A0 = 1e12
-        u_pred = min(uf[i] + 2.0 * A0 * ds, u_lim[i + 1])
-        u_pred = max(u_pred, 0.0)
-        _, A1 = bounds_at(i + 1, u_pred)
-        if not np.isfinite(A1):
-            A1 = 1e12
-        uf[i + 1] = min(uf[i] + (A0 + A1) * ds, u_lim[i + 1])
-        uf[i + 1] = max(uf[i + 1], 0.0)
+    def _forward(ceiling: np.ndarray) -> np.ndarray:
+        """Acceleration-limited pass (Heun predictor-corrector)."""
+        uf = np.zeros(N)
+        for i in range(N - 1):
+            _, A0 = bounds_at(i, uf[i])
+            if not np.isfinite(A0):
+                A0 = 1e12
+            u_pred = min(uf[i] + 2.0 * A0 * ds, ceiling[i + 1])
+            u_pred = max(u_pred, 0.0)
+            _, A1 = bounds_at(i + 1, u_pred)
+            if not np.isfinite(A1):
+                A1 = 1e12
+            uf[i + 1] = min(uf[i] + (A0 + A1) * ds, ceiling[i + 1])
+            uf[i + 1] = max(uf[i + 1], 0.0)
+        return uf
 
-    # Backward pass (deceleration limited, Heun predictor-corrector) -------
-    ub = np.zeros(N)
-    ub[-1] = 0.0
-    for i in range(N - 2, -1, -1):
-        A0, _ = bounds_at(i + 1, ub[i + 1])
-        if not np.isfinite(A0):
-            A0 = -1e12
-        u_pred = min(u_lim[i], ub[i + 1] - 2.0 * A0 * ds)
-        u_pred = max(u_pred, 0.0)
-        A1, _ = bounds_at(i, u_pred)
-        if not np.isfinite(A1):
-            A1 = -1e12
-        ub[i] = min(u_lim[i], ub[i + 1] - (A0 + A1) * ds)
-        ub[i] = max(ub[i], 0.0)
+    def _backward(ceiling: np.ndarray) -> np.ndarray:
+        """Deceleration-limited pass (Heun predictor-corrector)."""
+        ub = np.zeros(N)
+        for i in range(N - 2, -1, -1):
+            A0, _ = bounds_at(i + 1, ub[i + 1])
+            if not np.isfinite(A0):
+                A0 = -1e12
+            u_pred = min(ceiling[i], ub[i + 1] - 2.0 * A0 * ds)
+            u_pred = max(u_pred, 0.0)
+            A1, _ = bounds_at(i, u_pred)
+            if not np.isfinite(A1):
+                A1 = -1e12
+            ub[i] = min(ceiling[i], ub[i + 1] - (A0 + A1) * ds)
+            ub[i] = max(ub[i], 0.0)
+        return ub
 
-    u = np.minimum(uf, ub)
+    u = np.minimum(_forward(u_lim), _backward(u_lim))
+
+    # Bang re-integration: taking min(uf, ub) (and clamping to the
+    # conservative cell-min u_lim) can leave segment drops steeper than the
+    # braking capability along the FINAL profile.  Re-running the same two
+    # passes with the combined profile as the ceiling removes them, so
+    # every segment's du is realizable by a within-cell s_ddot inside the
+    # pointwise joint-accel bounds.
+    u = _backward(_forward(u))
     u = np.clip(u, 0.0, None)
     v_star = np.sqrt(u)
 
@@ -1034,6 +1132,24 @@ def step3_time_optimal(
     s_ddot = np.zeros(N)
     s_ddot[:-1] = 0.5 * (u[1:] - u[:-1]) / ds
     s_ddot[-1] = s_ddot[-2]
+
+    # Reported s_ddot: the one-sided PER-CELL-CONSTANT attribution above is
+    # a discretization artifact on stiff cells (c, h can swing by orders of
+    # magnitude within one cell); the continuous profile realizes each
+    # cell's du with a varying s̈(s) inside the pointwise bounds (Heun is
+    # exactly the trapezoid of those bounds).  Clamp the reported value
+    # into the pointwise-feasible interval at each node and record the raw
+    # overshoot for transparency (metrics: qdd_cell_overshoot).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        b1 = (qdd_max[None, :] - h_arr * u[:, None]) / c_arr
+        b2 = (-qdd_max[None, :] - h_arr * u[:, None]) / c_arr
+    small = np.abs(c_arr) <= c_tol
+    hi_pt = np.min(np.where(small, np.inf, np.maximum(b1, b2)), axis=1)
+    lo_pt = np.max(np.where(small, -np.inf, np.minimum(b1, b2)), axis=1)
+    qdd_raw = np.abs(c_arr * s_ddot[:, None] + h_arr * u[:, None])
+    qdd_cell_overshoot = float(np.max(qdd_raw / qdd_max[None, :]))
+    ok_iv = lo_pt <= hi_pt
+    s_ddot = np.where(ok_iv, np.clip(s_ddot, lo_pt, hi_pt), s_ddot)
 
     # Time axis: dt = ds / v_avg over each segment (handles zero endpoints).
     v_avg = 0.5 * (v_star[1:] + v_star[:-1])
@@ -1063,6 +1179,7 @@ def step3_time_optimal(
         "duration_s": duration,
         "roundtrip_ds_over_v": duration,  # sum dt (exact by construction)
         "roundtrip_trapz": rt,
+        "qdd_cell_overshoot": qdd_cell_overshoot,
     }
 
 
@@ -1391,12 +1508,13 @@ def identify_transient_mask(
     merge_gap_mm: float = 15.0,
     buffer_mm: float = 10.0,
 ) -> np.ndarray:
-    """Transient segments = bang phases of the **time-optimal reference**.
+    """Transient segments = bang phases of the **commanded-capped reference**.
 
-    ``v_ref`` / ``v_lim_ref`` must come from the uncapped
-    (joint-limits-only) TOPP run on the same ``q(s)``, so the mask depends
-    only on the input toolpath + joint limits — never on the velocity mode
-    being analysed (commanded / constant / optimal all share it).
+    ``v_ref`` / ``v_lim_ref`` must come from the TOPP run capped at the
+    toolpath's own programmed speed (joint-limits-only when no speed is
+    programmed), so the mask depends only on the input toolpath + joint
+    limits — never on the velocity mode being analysed (commanded /
+    constant / optimal all share it).
 
     Rationale (TOPP structure): the time-optimal profile either *rides*
     the joint velocity ceiling (cruise arcs — quasi-static, acceleration
@@ -1659,8 +1777,9 @@ def _plot_tcp_rotation(
     s = res.s_eval
     r2d = np.rad2deg
     omega = res.ori_dtheta_ds * res.v_star          # rad/s
-    with np.errstate(divide="ignore", invalid="ignore"):
-        alpha = np.gradient(omega, res.t)           # rad/s²
+    # α = dω/dt = θ''·v*² + θ'·s̈  (chain rule; all analytic, no gradients)
+    alpha = (res.ori_d2theta_ds2 * res.v_star ** 2
+             + res.ori_dtheta_ds * res.s_ddot)      # rad/s²
 
     fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
     panels = (
@@ -2141,6 +2260,10 @@ def _make_plots(
     axB[0].plot(s, res.v_vel, "-", lw=0.9, color="#4C78A8", label="v_vel (joint-velocity ceiling)")
     axB[0].plot(s, v_acc_disp, "-", lw=0.9, color="#F58518",
                 label="v_accel (joint-accel ceiling, clipped)")
+    if res.v_secant is not None:
+        axB[0].plot(s, np.clip(res.v_secant, 0, vmax_disp), "-", lw=0.9,
+                    color="#B279A2",
+                    label="v_secant (raw-path joint-accel cap)")
     if v_cmd:
         axB[0].axhline(v_cmd, ls=":", color="purple", label="v_cmd")
     axB[0].set_ylabel("speed [mm/s]")
@@ -2332,7 +2455,78 @@ def _make_plots(
         summary = _write_rs_compare_summary(dir_g, res, rs_rec, mode_name)
         paths.append(str(summary))
 
+    # ---- top-level key artifact: the TCP velocity profile ---------------
+    # (copy of G1 when RS data exists, else D1) so each mode folder can be
+    # understood without descending into the group subfolders.
+    import shutil
+    key_plot = (dir_g / "G1_tcp_speed_accel_vs_rs.png" if rs_rec is not None
+                else dir_d / "D1_optimal_vs_ceiling.png")
+    if key_plot.exists():
+        top = out_dir / "tcp_velocity_profile.png"
+        shutil.copyfile(key_plot, top)
+        paths.append(str(top))
+
     return paths
+
+
+def _write_mode_summary(
+    out_dir: Path,
+    res: ProfileResult,
+    rs_rec: Optional[RSRecording],
+) -> Path:
+    """Compact per-mode summary.txt at the top of the mode folder."""
+    m = res.metrics
+    rot = m.get("rotation", {})
+    lc = m.get("limits_check", {})
+    trans = res.accel_transient_mask
+    n_regions = len(_mask_spans(trans)) if trans is not None else 0
+    trans_frac = float(np.mean(trans)) if trans is not None else 0.0
+
+    lines = [
+        f"Velocity mode: {res.mode}",
+        "=" * 56,
+    ]
+    if res.mode == "commanded" and res.v_cmd:
+        lines.append(f"v_cmd:                {res.v_cmd:.1f} mm/s")
+    if res.mode == "constant" and res.v_const:
+        lines.append(f"v_const:              {res.v_const:.2f} mm/s")
+    lines += [
+        f"traversal time:       {res.metrics_duration:.4f} s",
+        f"TCP speed min/mean/max: {float(np.min(res.v_star)):.1f} / "
+        f"{float(np.mean(res.v_star)):.1f} / {float(np.max(res.v_star)):.1f} mm/s",
+        f"cruise fraction:      {float(np.mean(res.cruise_mask)):.3f}",
+        f"accel-transient:      {n_regions} regions, {100 * trans_frac:.1f}% of path",
+        "",
+        "TCP rotation",
+        f"  θ_total:            {rot.get('theta_total_deg', float('nan')):.1f} deg",
+        f"  ω_max:              {rot.get('omega_max_deg_s', float('nan')):.1f} deg/s",
+        f"  α_max:              {rot.get('alpha_max_deg_s2', float('nan')):.0f} deg/s²",
+        "",
+        "Joint-limit compliance",
+        f"  max |q̇|/q̇_max:      {lc.get('qdot_util_max', float('nan')):.3f}",
+        f"  max |q̈|/q̈_max:      {lc.get('qddot_util_max', float('nan')):.3f}",
+        f"  within limits:      {'YES' if lc.get('ok') else 'NO (!)'}",
+    ]
+    if rs_rec is not None:
+        rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, res.s_eval)
+        keep = (rs_v > 1.0)
+        if trans is not None:
+            keep &= ~trans
+        err = np.abs(res.v_star - rs_v)[keep]
+        rsk = rs_v[keep]
+        dev10 = int(np.sum(err > 0.10 * rsk))
+        lines += [
+            "",
+            "vs RobotStudio (steady-state samples only)",
+            f"  RS duration:        {float(rs_rec.t_s[-1]):.4f} s",
+            f"  |err| med/p95/max:  {np.median(err):.2f} / "
+            f"{np.percentile(err, 95):.2f} / {np.max(err):.2f} mm/s",
+            f"  >10% of RS:         {dev10} / {int(keep.sum())} "
+            f"({100 * dev10 / max(int(keep.sum()), 1):.1f}%)",
+        ]
+    out = Path(out_dir) / "summary.txt"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
 
 
 # =====================================================================
@@ -2347,6 +2541,7 @@ def _grid_independence(
     resid_tol_rad: Optional[float] = None,
     v_cmd: Optional[float] = None,
     time_optimal: bool = False,
+    secant_window_mm: float = 0.25,
 ) -> Dict:
     """Recompute dq/ds, d2q/ds2, v_lim, and duration at 0.5x and 2x N_eval.
 
@@ -2362,16 +2557,27 @@ def _grid_independence(
     )
     mvc_s = np.linspace(s_mm[0], s_mm[-1], max(20000, 4 * base_n))
     mvc_arr = eval_splines(splines, mvc_s)
-    mvc_v_lim = _apply_v_cmd_cap(
-        step2_velocity_limit(mvc_arr["dqds"], mvc_arr["d2qds2"], limits)["v_lim"],
-        v_cmd, time_optimal,
-    )
+    mvc_v_lim_joint = step2_velocity_limit(
+        mvc_arr["dqds"], mvc_arr["d2qds2"], limits
+    )["v_lim"]
+    if secant_window_mm and secant_window_mm > 0:
+        mvc_v_lim_joint = np.minimum(
+            mvc_v_lim_joint,
+            secant_accel_ceiling(
+                s_mm, q_kept, limits.q_ddot_max, mvc_s, secant_window_mm,
+            ),
+        )
+    mvc_v_lim = _apply_v_cmd_cap(mvc_v_lim_joint, v_cmd, time_optimal)
 
     def _duration(n_eval):
         s_e = np.linspace(s_mm[0], s_mm[-1], int(n_eval))
         a = eval_splines(splines, s_e)
-        vl = step2_velocity_limit(a["dqds"], a["d2qds2"], limits)
-        v_lim = _apply_v_cmd_cap(vl["v_lim"], v_cmd, time_optimal)
+        vl_j = step2_velocity_limit(a["dqds"], a["d2qds2"], limits)["v_lim"]
+        if secant_window_mm and secant_window_mm > 0:
+            vl_j = np.minimum(vl_j, secant_accel_ceiling(
+                s_mm, q_kept, limits.q_ddot_max, s_e, secant_window_mm,
+            ))
+        v_lim = _apply_v_cmd_cap(vl_j, v_cmd, time_optimal)
         topt = step3_time_optimal(
             s_e, a["dqds"], a["d2qds2"], v_lim, limits,
             mvc_s=mvc_s, mvc_v_lim=mvc_v_lim,
@@ -2487,6 +2693,8 @@ def run_diagnostics(
     rs_q_deg: Optional[np.ndarray] = None,
     rs_rec: Optional[RSRecording] = None,
     common_dir: Optional[Path] = None,
+    secant_window_mm: float = 0.25,
+    transient_pad_mm: float = 5.0,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -2495,6 +2703,10 @@ def run_diagnostics(
       * ``time_optimal=True``    → **time_optimal**: joint limits only
       * otherwise                → **commanded**: TOPP capped at ``v_cmd``
         (matches RobotStudio recordings taken at the commanded speed)
+
+    ``secant_window_mm > 0`` additionally caps the velocity ceiling with the
+    raw-joint-path secant acceleration bound (resolves sub-knot corner
+    blends the smoothing spline cannot see); ``<= 0`` disables it.
     """
     res = ProfileResult()
     res.v_cmd = v_cmd
@@ -2525,7 +2737,6 @@ def run_diagnostics(
     _mvc_v_lim_joint = step2_velocity_limit(
         _mvc_arr["dqds"], _mvc_arr["d2qds2"], limits
     )["v_lim"]
-    _mvc_v_lim = _apply_v_cmd_cap(_mvc_v_lim_joint, v_cmd, time_optimal)
     res.q, res.dqds, res.d2qds2, res.d3qds3 = (
         arr["q"], arr["dqds"], arr["d2qds2"], arr["d3qds3"]
     )
@@ -2535,9 +2746,25 @@ def run_diagnostics(
     vl = step2_velocity_limit(res.dqds, res.d2qds2, limits)
     res.v_vel, res.v_accel = vl["v_vel"], vl["v_accel"]
     res.v_lim_joint = vl["v_lim"]
-    res.v_lim = _apply_v_cmd_cap(res.v_lim_joint, v_cmd, time_optimal)
     res.vel_ceilings = vl["vel_ceilings"]
     res.binding_joint, res.binding_kind = vl["binding_joint"], vl["binding_kind"]
+
+    # Secant acceleration cap (joint-space, spline-independent): recovers
+    # sub-knot corner-blend curvature the smoothing spline cannot represent.
+    if secant_window_mm and secant_window_mm > 0:
+        res.v_secant = secant_accel_ceiling(
+            s_mm, q_kept, limits.q_ddot_max, s_eval, secant_window_mm,
+        )
+        res.v_lim_joint = np.minimum(res.v_lim_joint, res.v_secant)
+        _mvc_v_lim_joint = np.minimum(
+            _mvc_v_lim_joint,
+            secant_accel_ceiling(
+                s_mm, q_kept, limits.q_ddot_max, _mvc_s, secant_window_mm,
+            ),
+        )
+
+    _mvc_v_lim = _apply_v_cmd_cap(_mvc_v_lim_joint, v_cmd, time_optimal)
+    res.v_lim = _apply_v_cmd_cap(res.v_lim_joint, v_cmd, time_optimal)
     finite_vlim = np.where(np.isfinite(res.v_lim), res.v_lim, np.inf)
     res.bottleneck_idx = int(np.argmin(finite_vlim))
 
@@ -2560,27 +2787,53 @@ def run_diagnostics(
         reg["cruise"], reg["transient"], reg["boundary"]
     )
 
-    # Accel transients from the TIME-OPTIMAL REFERENCE profile: depends only
-    # on q(s) + joint limits — identical for commanded/constant/optimal.
-    if res.mode == "time_optimal":
-        ref_v_star = res.v_star
+    # Accel transients from the COMMANDED-CAPPED reference profile.  The
+    # commanded speed is a property of the input toolpath (its programmed
+    # speed column), so the mask depends only on the toolpath + joint
+    # limits and is identical for commanded/constant/optimal.  Capping the
+    # reference at v_cmd keeps braking distances at the commanded scale
+    # (matching what RobotStudio actually executes) instead of the huge
+    # time-optimal ramps from 600+ mm/s.
+    ref_v_lim = _apply_v_cmd_cap(res.v_lim_joint, res.v_cmd, False)
+    if res.mode == "commanded" and res.v_cmd:
+        ref_v_star = res.v_star            # identical profile — reuse
     else:
         ref = step3_time_optimal(
-            res.s_eval, res.dqds, res.d2qds2, res.v_lim_joint, limits,
-            mvc_s=_mvc_s, mvc_v_lim=_mvc_v_lim_joint,
+            res.s_eval, res.dqds, res.d2qds2, ref_v_lim, limits,
+            mvc_s=_mvc_s,
+            mvc_v_lim=_apply_v_cmd_cap(_mvc_v_lim_joint, res.v_cmd, False),
         )
         ref_v_star = ref["v_star"]
     res.accel_transient_mask = identify_transient_mask(
-        res.s_eval, ref_v_star, res.v_lim_joint,
+        res.s_eval, ref_v_star, ref_v_lim,
+        buffer_mm=transient_pad_mm,
     )
 
-    # TCP rotation from the dense pose quaternions: cumulative geodesic
-    # reorientation angle θ(s) and its geometric rate dθ/ds.
+    # TCP rotation: cumulative geodesic reorientation angle θ(s) from the
+    # dense pose quaternions.  The per-step angle uses the atan2 form
+    # (numerically stable for small angles, unlike arccos of a dot ≈ 1);
+    # θ(s) is then fitted with the SAME knee-tuned LSQ quintic machinery as
+    # the joint paths, so dθ/ds and d²θ/ds² are analytic spline
+    # derivatives — smooth and grid-independent, no finite differences.
     dots = np.abs(np.sum(quat_kept[:-1] * quat_kept[1:], axis=1))
-    dtheta = 2.0 * np.arccos(np.clip(dots, -1.0, 1.0))
+    cross = quat_kept[:-1] * np.array([1.0, -1.0, -1.0, -1.0])  # conj(q_i)
+    # |vector part| of conj(q_i) ⊗ q_{i+1} equals sin(dθ/2); build it from
+    # the quaternion product formula (w-parts only needed for the dot).
+    w0, x0, y0, z0 = cross.T
+    w1, x1, y1, z1 = quat_kept[1:].T
+    vx = w0 * x1 + x0 * w1 + y0 * z1 - z0 * y1
+    vy = w0 * y1 - x0 * z1 + y0 * w1 + z0 * x1
+    vz = w0 * z1 + x0 * y1 - y0 * x1 + z0 * w1
+    sin_half = np.linalg.norm(np.column_stack([vx, vy, vz]), axis=1)
+    dtheta = 2.0 * np.arctan2(sin_half, dots)
     theta_raw = np.concatenate([[0.0], np.cumsum(dtheta)])
-    res.ori_theta = np.interp(s_eval, s_mm, theta_raw)
-    res.ori_dtheta_ds = np.gradient(res.ori_theta, s_eval)
+    _theta_spl, _ = _tune_lsq_spline(
+        s_mm, theta_raw, ik_tol_rad,
+        resid_tol_rad=resid_tol_rad or float(np.deg2rad(_RESID_TOL_DEG)),
+    )
+    res.ori_theta = _theta_spl(s_eval)
+    res.ori_dtheta_ds = _theta_spl(s_eval, nu=1)
+    res.ori_d2theta_ds2 = _theta_spl(s_eval, nu=2)
 
     # limits for plotting/metrics
     res.metrics["_qd_max"] = limits.q_dot_max
@@ -2588,12 +2841,26 @@ def run_diagnostics(
     res.metrics["mode"] = res.mode
     if res.v_const is not None:
         res.metrics["v_const_mm_s"] = float(res.v_const)
-    omega = res.ori_dtheta_ds * res.v_star   # rad/s
+    # ω = θ'·v*  and  α = θ''·v*² + θ'·s̈  (chain rule, all analytic)
+    omega = res.ori_dtheta_ds * res.v_star
+    alpha = res.ori_d2theta_ds2 * res.v_star ** 2 + res.ori_dtheta_ds * res.s_ddot
     res.metrics["rotation"] = {
-        "theta_total_deg": float(np.rad2deg(res.ori_theta[-1])),
+        "theta_total_deg": float(np.rad2deg(res.ori_theta[-1] - res.ori_theta[0])),
         "dtheta_ds_max_deg_mm": float(np.rad2deg(np.max(np.abs(res.ori_dtheta_ds)))),
         "omega_max_deg_s": float(np.rad2deg(np.max(np.abs(omega)))),
+        "alpha_max_deg_s2": float(np.rad2deg(np.max(np.abs(alpha)))),
         "n_transient_regions": len(_mask_spans(res.accel_transient_mask)),
+    }
+
+    # Joint-limit compliance: the realized profile must respect BOTH joint
+    # velocity and acceleration limits for all joints at every sample.
+    qd_util = np.max(np.abs(res.q_dot) / limits.q_dot_max[None, :])
+    qdd_util = np.max(np.abs(res.q_ddot) / limits.q_ddot_max[None, :])
+    res.metrics["limits_check"] = {
+        "qdot_util_max": float(qd_util),
+        "qddot_util_max": float(qdd_util),
+        "qdd_cell_overshoot": float(topt.get("qdd_cell_overshoot", float("nan"))),
+        "ok": bool(qd_util <= 1.0 + 1e-6 and qdd_util <= 1.0 + 1e-6),
     }
 
     # Step 5: grid independence + metrics
@@ -2602,6 +2869,7 @@ def run_diagnostics(
             s_mm, q_kept, limits, ik_tol_rad, len(s_eval),
             resid_tol_rad=resid_tol_rad,
             v_cmd=v_cmd, time_optimal=time_optimal,
+            secant_window_mm=secant_window_mm,
         )
         if do_grid_check else {"skipped": True}
     )
@@ -2652,6 +2920,11 @@ def _print_metrics(res: ProfileResult) -> None:
         print(f"  rotation:            θ_total={rot['theta_total_deg']:.1f}°  "
               f"ω_max={rot['omega_max_deg_s']:.1f}°/s  "
               f"transient regions={rot['n_transient_regions']}")
+    lc = m.get("limits_check", {})
+    if lc:
+        print(f"  joint-limit check:   |q̇|/q̇max={lc['qdot_util_max']:.3f}  "
+              f"|q̈|/q̈max={lc['qddot_util_max']:.3f}  "
+              f"{'OK' if lc['ok'] else 'VIOLATED (!)'}")
     print(f"  grid independence:   max rel change = "
           f"{m['grid_independence'].get('max_relative_change', float('nan')):.3e}")
     print("=" * 64)
@@ -2815,15 +3088,19 @@ def _process_one_toolpath(
     ik_tol_rad: float,
     resid_tol_rad: float,
     make_plots: bool,
+    secant_window_mm: float = 0.25,
+    transient_pad_mm: float = 5.0,
+    ds_mm: float = _DEFAULT_DS_MM,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
     print(f"# Toolpath: {toolpath.name}")
     print("#" * 72)
-    ctx = load_joint_path_from_toolpath(str(toolpath))
+    ctx = load_joint_path_from_toolpath(str(toolpath), ds_mm=ds_mm)
     print(
         f"  q_raw={ctx.q_raw.shape}, poses={ctx.poses.shape}, "
-        f"WPs={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s"
+        f"WPs={ctx.waypoints_plate.shape[0]}, v_cmd={ctx.v_cmd:.1f} mm/s, "
+        f"ds_mm={ds_mm:g}"
     )
 
     rs_rec = None
@@ -2847,6 +3124,8 @@ def _process_one_toolpath(
         waypoints_base=ctx.waypoints_base,
         rs_rec=rs_rec,
         common_dir=case_dir,
+        secant_window_mm=secant_window_mm,
+        transient_pad_mm=transient_pad_mm,
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
@@ -2854,17 +3133,19 @@ def _process_one_toolpath(
                             out_dir=mode_dir, **common, **kw)
         _print_metrics(r)
         _write_report(r, mode_dir)
+        _write_mode_summary(mode_dir, r, rs_rec)
         return r
 
     res_cmd = res_const = res_opt = None
     if time_optimal:
         print("\n--- mode: optimal ---")
         res_opt = _run(case_dir / "optimal", time_optimal=True)
-        keep = ~res_opt.boundary_mask
-        v_const = float(np.min(res_opt.v_star[keep])) if keep.any() else float(
-            np.median(res_opt.v_star))
+        # Fastest constant TCP speed the whole-path ceiling admits: the
+        # minimum of the joint-only velocity ceiling (incl. secant cap).
+        finite = np.isfinite(res_opt.v_lim_joint)
+        v_const = float(np.min(res_opt.v_lim_joint[finite]))
         print(f"  derived v_const = {v_const:.2f} mm/s "
-              "(min time-optimal v*, start/stop ramps excluded)")
+              "(min joint-feasible ceiling over the whole path)")
 
         print("\n--- mode: commanded ---")
         res_cmd = _run(case_dir / "commanded")
@@ -2947,6 +3228,26 @@ def main() -> None:
         help="Compute all 3 velocity modes (commanded, constant, optimal) "
              "into per-mode subfolders. Default is commanded mode only.",
     )
+    parser.add_argument(
+        "--ds-mm", type=float, default=_DEFAULT_DS_MM,
+        help="Feature-3 dense-path sampling step [mm] before IK.  Smaller "
+             "values give the quintic more support at z0 corners "
+             f"(default {_DEFAULT_DS_MM}).",
+    )
+    parser.add_argument(
+        "--secant-window-mm", type=float, default=0.25,
+        help="Half-window [mm] of the raw-joint-path secant acceleration "
+             "cap that resolves sub-knot corner blends (joint-space only).",
+    )
+    parser.add_argument(
+        "--no-secant-cap", action="store_true",
+        help="Disable the secant acceleration cap entirely.",
+    )
+    parser.add_argument(
+        "--transient-pad-mm", type=float, default=5.0,
+        help="Extra padding [mm] added on each side of every detected "
+             "accel-transient segment.",
+    )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
@@ -2973,6 +3274,9 @@ def main() -> None:
             ik_tol_rad=args.ik_tol_rad,
             resid_tol_rad=float(np.deg2rad(args.resid_tol_deg)),
             make_plots=not args.no_plots,
+            secant_window_mm=0.0 if args.no_secant_cap else args.secant_window_mm,
+            transient_pad_mm=args.transient_pad_mm,
+            ds_mm=args.ds_mm,
         )
         batch_rows.append(row)
 
