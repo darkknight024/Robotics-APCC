@@ -77,7 +77,10 @@ _ROBOT_NAME = "IRB 1300-7/1.4"
 # Default Feature-3 arc-length sampling density for IK [mm].  Finer than
 # 1 mm is needed for z0 corner blends so the quintic has enough support
 # to track joint curvature without exceeding the task-space residual budget.
-_DEFAULT_DS_MM = 0.5
+# Dense Feature-3 sampling.  0.25 mm resolves z0 corner blends well enough
+# that a 0.05°-tol quintic keeps FK(spline) within ~1 mm / 0.1 rad of the
+# blended-arc poses (see tests/compare_spline_fk_and_blended_arc.py).
+_DEFAULT_DS_MM = 0.25
 
 # Consistent J1..J6 colour map used across every joint-wise panel.
 _JOINT_COLORS = [
@@ -166,6 +169,7 @@ class ProfileResult:
     # reference* profile on the same q(s) (excluded from RS benchmarking;
     # drawn red on F1/F2).
     accel_transient_mask: np.ndarray = None
+    transient_diag: Dict = field(default_factory=dict)
     bottleneck_idx: int = -1
 
     # TCP rotation (from the dense pose quaternions, on s_eval; spline-fitted)
@@ -557,11 +561,15 @@ def _arc_measure(s: np.ndarray) -> np.ndarray:
     return np.maximum(m, 1e-12)
 
 
-# Max |spline - raw| tolerance per joint [deg].  Chosen so FK(spline)
-# stays within ~1 mm / ~0.1 rad of the Feature-3 dense poses on typical
-# Exp-24 toolpaths (with ds_mm≈0.5).  Wrist joints can still warn if the
-# sample-density floor is hit; the task-space residual is what matters.
-_RESID_TOL_DEG = 0.1
+# Max |spline - raw| joint residual [deg] for the *derivative-preserving*
+# local knot pass.  Tighter than ~0.2° forces knots onto orientation-blend
+# micro-kinks and makes analytic dq/ds ring (see A3 jaggedness).  Task-space
+# residual budget (|Δp|<1 mm) is enforced separately by
+# ``_refine_splines_task_space`` after this pass.
+_RESID_TOL_DEG = 0.2
+
+# FK position residual budget for the task-space knot pass [mm].
+_TASK_POS_TOL_MM = 1.0
 
 
 def _fit_lsq_quintic(
@@ -773,17 +781,140 @@ def _tune_lsq_spline(
     return spl, info
 
 
+def _refine_splines_task_space(
+    splines: List[LSQUnivariateSpline],
+    s_mm: np.ndarray,
+    q_kept: np.ndarray,
+    pos_mm: np.ndarray,
+    pos_tol_mm: float = _TASK_POS_TOL_MM,
+    osc_factor: float = 1.5,
+    min_halfwidth_mm: float = 0.4,
+    max_iters: int = 20,
+) -> Tuple[List[LSQUnivariateSpline], Dict]:
+    """Insert knots only where FK(spline) misses the dense TCP poses.
+
+    Joint-space residual chasing (``_refine_knots_locally`` with a tight
+    degree tolerance) over-fits orientation-blend micro-kinks and makes
+    analytic ``dq/ds`` ring.  This pass starts from a smooth joint fit and
+    bisects knot intervals *only* where ``|FK(q_spline) - pose| > pos_tol_mm``,
+    rejecting any candidate that overshoots the raw finite-difference
+    ``dq/ds`` envelope.  Result: task-space budget met without destroying
+    derivative smoothness.
+    """
+    from core import create_solvers
+    from utils.config_loader import get_robot_by_name
+
+    robot = get_robot_by_name(_ROBOT_NAME)
+    fk, _, _ = create_solvers(str(_REPO / robot.urdf_path), solver="eaik")
+    meas = _arc_measure(s_mm)
+    w = np.sqrt(meas)
+    raw_d1 = np.percentile(np.abs(np.gradient(q_kept, s_mm, axis=0)), 99.5, axis=0)
+    raw_d1 = np.maximum(raw_d1, 1e-12)
+
+    # Skip when the supplied poses are not FK-consistent with q_kept
+    # (synthetic unit tests, wrong frame, etc.) — otherwise we'd insert
+    # knots chasing a geometry the joint path cannot represent.
+    p_ik_m, _ = fk.solve_batch(q_kept)
+    ik_err = np.linalg.norm(p_ik_m * 1000.0 - pos_mm, axis=1)
+    if float(np.max(ik_err)) > max(5.0 * pos_tol_mm, 5.0):
+        return splines, {
+            "pos_tol_mm": float(pos_tol_mm),
+            "skipped": True,
+            "skip_reason": "poses not FK-consistent with q",
+            "ik_pos_max_mm": float(np.max(ik_err)),
+            "met": False,
+        }
+
+    def _pos_err(spls: List[LSQUnivariateSpline]) -> np.ndarray:
+        q_s = eval_splines(spls, s_mm)["q"]
+        p_m, _ = fk.solve_batch(q_s)
+        return np.linalg.norm(p_m * 1000.0 - pos_mm, axis=1)
+
+    err = _pos_err(splines)
+    info = {
+        "pos_tol_mm": float(pos_tol_mm),
+        "pos_max_before_mm": float(np.max(err)),
+        "n_iters": 0,
+        "n_knots_inserted": 0,
+        "rejected_overshoot": 0,
+    }
+    if float(np.max(err)) <= pos_tol_mm:
+        info["pos_max_after_mm"] = info["pos_max_before_mm"]
+        info["met"] = True
+        return splines, info
+
+    splines = list(splines)
+    for it in range(max_iters):
+        bad = err > pos_tol_mm
+        if not bad.any():
+            break
+        info["n_iters"] = it + 1
+        n_new_total = 0
+        for j in range(6):
+            t_int = np.asarray(splines[j].get_knots()[1:-1], dtype=float)
+            edges = np.concatenate([[s_mm[0]], t_int, [s_mm[-1]]])
+            n_iv = len(edges) - 1
+            iv = np.clip(
+                np.searchsorted(edges, s_mm[bad], side="right") - 1, 0, n_iv - 1
+            )
+            mark = np.zeros(n_iv, dtype=bool)
+            mark[iv] = True
+            grown = mark.copy()
+            grown[:-1] |= mark[1:]
+            grown[1:] |= mark[:-1]
+            new_knots = []
+            for i in np.where(grown)[0]:
+                lo, hi = float(edges[i]), float(edges[i + 1])
+                i0 = int(np.searchsorted(s_mm, lo))
+                i1 = int(np.searchsorted(s_mm, hi))
+                if (i1 - i0) < 4:
+                    continue
+                split = float(np.median(s_mm[i0:i1]))
+                if (split - lo) < min_halfwidth_mm or (hi - split) < min_halfwidth_mm:
+                    continue
+                new_knots.append(split)
+            if not new_knots:
+                continue
+            t_try = np.unique(np.concatenate([t_int, new_knots]))
+            try:
+                spl_try = LSQUnivariateSpline(
+                    s_mm, q_kept[:, j], t_try, w=w, k=5
+                )
+            except Exception:
+                continue
+            d1_max = float(np.max(np.abs(spl_try(s_mm, nu=1))))
+            if d1_max > osc_factor * float(raw_d1[j]):
+                info["rejected_overshoot"] += 1
+                continue
+            splines[j] = spl_try
+            n_new_total += len(new_knots)
+        info["n_knots_inserted"] += n_new_total
+        err = _pos_err(splines)
+        if n_new_total == 0:
+            break
+
+    info["pos_max_after_mm"] = float(np.max(err))
+    info["met"] = bool(info["pos_max_after_mm"] <= pos_tol_mm)
+    return splines, info
+
+
 def fit_joint_splines(
     s_mm: np.ndarray,
     q_kept: np.ndarray,
     ik_tol_rad: float = 1e-4,
     resid_tol_rad: Optional[float] = None,
+    pos_mm: Optional[np.ndarray] = None,
+    task_pos_tol_mm: float = _TASK_POS_TOL_MM,
 ) -> Tuple[List[LSQUnivariateSpline], Dict]:
     """Fit the 6 knee-tuned least-squares quintic splines (grid-independent).
 
     The fit depends ONLY on the raw ``(s_mm, q_kept)`` samples — never on the
     downstream evaluation grid — which is exactly why the analytic derivatives
     are grid-independent (the Step-5 check that finite differences fail).
+
+    If ``pos_mm`` is supplied, a second **task-space** knot pass inserts
+    knots only where FK(spline) exceeds ``task_pos_tol_mm``, with an
+    overshoot guard so ``dq/ds`` stays smooth.
     """
     splines: List[LSQUnivariateSpline] = []
     report = {"per_joint": []}
@@ -800,6 +931,24 @@ def fit_joint_splines(
                 f"{info['max_residual_deg']:.2f} deg exceeds the "
                 f"{info['resid_tol_deg']:.2f} deg tolerance "
                 "(local refinement hit the sample-density floor)."
+            )
+    if pos_mm is not None:
+        splines, ts_info = _refine_splines_task_space(
+            splines, s_mm, q_kept, pos_mm, pos_tol_mm=task_pos_tol_mm,
+        )
+        report["task_space"] = ts_info
+        if ts_info.get("skipped"):
+            print(
+                f"  task-space refine: skipped ({ts_info.get('skip_reason')}; "
+                f"IK|Δp|max={ts_info.get('ik_pos_max_mm', float('nan')):.1f} mm)"
+            )
+        else:
+            print(
+                f"  task-space refine: |Δp| {ts_info['pos_max_before_mm']:.3f} → "
+                f"{ts_info['pos_max_after_mm']:.3f} mm  "
+                f"(tol={task_pos_tol_mm:g} mm, +{ts_info['n_knots_inserted']} knots, "
+                f"{ts_info['n_iters']} iters)  "
+                f"{'OK' if ts_info['met'] else 'WARN: budget not met'}"
             )
     return splines, report
 
@@ -825,6 +974,8 @@ def step1_differentiate(
     ik_tol_rad: float = 1e-4,
     n_eval: Optional[int] = None,
     resid_tol_rad: Optional[float] = None,
+    pos_mm: Optional[np.ndarray] = None,
+    task_pos_tol_mm: float = _TASK_POS_TOL_MM,
 ) -> Tuple[np.ndarray, Dict, Dict, List[LSQUnivariateSpline]]:
     """Fit per-joint quintic smoothing splines, evaluate q & derivatives.
 
@@ -837,7 +988,8 @@ def step1_differentiate(
     s_eval = np.linspace(s_mm[0], s_mm[-1], int(n_eval))
 
     splines, report = fit_joint_splines(
-        s_mm, q_kept, ik_tol_rad, resid_tol_rad=resid_tol_rad
+        s_mm, q_kept, ik_tol_rad, resid_tol_rad=resid_tol_rad,
+        pos_mm=pos_mm, task_pos_tol_mm=task_pos_tol_mm,
     )
     arrays = eval_splines(splines, s_eval)
     dqds = arrays["dqds"]
@@ -945,12 +1097,19 @@ def step2_velocity_limit(
     }
 
 
+# Default secant half-window [mm].  Must be several× the Feature-3 sample
+# spacing: a window ≈ ds (e.g. 0.25 mm on a 0.25 mm dense path) turns IK
+# quantization / micro-kinks into fake accel notches, and TOPP bangs in/out
+# of every notch → the jagged v*(s) / |s̈| spikes seen on G1.
+_DEFAULT_SECANT_WINDOW_MM = 1.0
+
+
 def secant_accel_ceiling(
     s_raw: np.ndarray,
     q_raw: np.ndarray,
     qdd_max: np.ndarray,
     s_query: np.ndarray,
-    window_mm: float = 0.25,
+    window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
 ) -> np.ndarray:
     """Joint-space secant acceleration ceiling (spline-independent).
 
@@ -966,28 +1125,28 @@ def secant_accel_ceiling(
 
         v ≤ sqrt( qdd_max_j · h² / |Δ²q_j| )    (min over joints)
 
-    The window ``h = window_mm`` is chosen at the corner-blend scale: large
-    enough to amortise IK noise (Δ²q noise ~ε while the corner signal is
-    ~q''h²), small enough that genuine sub-mm blends are resolved.  Micro
-    kinks shorter than the window are averaged away — exactly what a real
-    controller's time-smoothing does.
+    ``h`` is ``max(window_mm, 3 · median Δs)`` so the second difference is
+    never taken at the raw sample spacing (where |Δ²q| is dominated by IK
+    noise).  The finite ceiling is then median-filtered over one window so
+    isolated noise dips cannot punch notches into ``v_lim`` that TOPP would
+    bang through.
 
     The cap is only applied where the raw sampling actually RESOLVES the
     window scale (>= 3 raw samples inside ``[x-h, x+h]``).  Where sampling
-    is coarser than the window, the linear interpolant would concentrate
-    curvature at polyline vertices and over-tighten the bound — and the raw
-    data carries no sub-window information there anyway, so the spline
-    ceiling is already trustworthy.
+    is coarser than the window, the spline ceiling is already trustworthy.
 
     Returns +inf where the window does not fit inside the path or the
     sampling is too coarse.  Disable with ``--no-secant-cap`` (or
     ``window_mm <= 0``).
     """
-    h = float(window_mm)
+    s_raw = np.asarray(s_raw, dtype=float)
     s_query = np.asarray(s_query, dtype=float)
     out = np.full(len(s_query), np.inf)
-    if h <= 0:
+    if window_mm is None or float(window_mm) <= 0:
         return out
+    med_ds = float(np.median(np.diff(s_raw))) if len(s_raw) > 1 else float(window_mm)
+    # Noise floor: never difference at ~1 sample spacing on a dense path.
+    h = max(float(window_mm), 3.0 * med_ds)
     n_in_window = (np.searchsorted(s_raw, s_query + h, side="right")
                    - np.searchsorted(s_raw, s_query - h, side="left"))
     ok = ((s_query - h >= s_raw[0]) & (s_query + h <= s_raw[-1])
@@ -1007,7 +1166,23 @@ def secant_accel_ceiling(
         v2 = np.min(
             qdd_max[None, :] * h * h / np.maximum(np.abs(d2), 1e-15), axis=1,
         )
-    out[ok] = np.sqrt(v2)
+    raw_cap = np.sqrt(np.maximum(v2, 0.0))
+
+    # Kill single-sample IK-noise dips: median over ~one window along s.
+    if len(x) >= 3:
+        ds_q = float(np.median(np.diff(x))) if len(x) > 1 else h
+        half = max(1, int(round(0.5 * h / max(ds_q, 1e-9))))
+        try:
+            from scipy.ndimage import median_filter
+            raw_cap = median_filter(raw_cap, size=2 * half + 1, mode="nearest")
+        except Exception:
+            padded = np.pad(raw_cap, (half, half), mode="edge")
+            smoothed = np.empty_like(raw_cap)
+            for i in range(len(raw_cap)):
+                smoothed[i] = float(np.median(padded[i: i + 2 * half + 1]))
+            raw_cap = smoothed
+
+    out[ok] = raw_cap
     return out
 
 
@@ -1500,60 +1675,15 @@ def _mask_spans(mask: np.ndarray) -> List[Tuple[int, int]]:
     return spans
 
 
-def identify_transient_mask(
-    s_eval: np.ndarray,
-    v_ref: np.ndarray,
-    v_lim_ref: np.ndarray,
-    touch_frac: float = 0.90,
-    merge_gap_mm: float = 15.0,
-    buffer_mm: float = 10.0,
-) -> np.ndarray:
-    """Transient segments = bang phases of the **commanded-capped reference**.
+def identify_transient_mask(*args, **kwargs):
+    """Delegate to :mod:`transient_classification` (returns mask, diag)."""
+    from transient_classification import identify_transient_mask as _impl
+    return _impl(*args, **kwargs)
 
-    ``v_ref`` / ``v_lim_ref`` must come from the TOPP run capped at the
-    toolpath's own programmed speed (joint-limits-only when no speed is
-    programmed), so the mask depends only on the input toolpath + joint
-    limits — never on the velocity mode being analysed (commanded /
-    constant / optimal all share it).
 
-    Rationale (TOPP structure): the time-optimal profile either *rides*
-    the joint velocity ceiling (cruise arcs — quasi-static, acceleration
-    dynamics irrelevant) or sits *below* it (bang phases — joint accel
-    saturated while braking into / accelerating out of every MVC notch:
-    corners, orientation flips, start/stop ramps).  Those bang phases are
-    exactly where RobotStudio's unmodelled higher-order joint dynamics
-    (accel/jerk shaping) make its TCP speed deviate from any quasi-static
-    estimate.  A sample is transient when ``v_ref < touch_frac ·
-    v_lim_ref`` — a dimensionless criterion with no absolute thresholds,
-    agnostic to toolpath shape, waypoint spacing, and zone data.
-
-    Post-processing: regions separated by less than ``merge_gap_mm`` are
-    merged (a corner's decel + accel pair straddles the notch bottom), then
-    every region is widened by ``buffer_mm`` on each side.
-    """
-    v_ref = np.asarray(v_ref, dtype=float)
-    vl = np.asarray(v_lim_ref, dtype=float)
-    vl = np.where(np.isfinite(vl), vl, np.inf)
-    mask = v_ref < float(touch_frac) * vl
-    if not mask.any():
-        return mask
-    ds = float(s_eval[1] - s_eval[0]) if len(s_eval) > 1 else 1.0
-
-    # Merge regions separated by small gaps.
-    spans = _mask_spans(mask)
-    merged: List[List[int]] = []
-    for lo, hi in spans:
-        if merged and (s_eval[lo] - s_eval[merged[-1][1]]) <= merge_gap_mm:
-            merged[-1][1] = hi
-        else:
-            merged.append([lo, hi])
-
-    # Buffer each region on both sides.
-    n_buf = int(round(buffer_mm / max(ds, 1e-9)))
-    out = np.zeros(len(v_ref), dtype=bool)
-    for lo, hi in merged:
-        out[max(0, lo - n_buf):min(len(out), hi + n_buf + 1)] = True
-    return out
+def write_transient_diagnostics(*args, **kwargs):
+    from transient_classification import write_transient_diagnostics as _impl
+    return _impl(*args, **kwargs)
 
 
 def _plot_waypoints_3d(
@@ -2125,6 +2255,18 @@ def _make_plots(
 
     paths: List[str] = []
     s = res.s_eval
+
+    # Transient decision dump (CSV + multi-panel plot) at mode-folder root.
+    if res.transient_diag and res.accel_transient_mask is not None:
+        try:
+            csv_p, png_p = write_transient_diagnostics(
+                out_dir, res.transient_diag, res.accel_transient_mask,
+                mode_name=str(res.mode),
+            )
+            paths.extend([str(csv_p), str(png_p)])
+        except Exception as exc:
+            print(f"  [WARN] transient diagnostics failed: {exc}")
+
     regions = {"cruise": res.cruise_mask,
                "transient": res.transient_mask,
                "boundary": res.boundary_mask}
@@ -2541,7 +2683,7 @@ def _grid_independence(
     resid_tol_rad: Optional[float] = None,
     v_cmd: Optional[float] = None,
     time_optimal: bool = False,
-    secant_window_mm: float = 0.25,
+    secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
 ) -> Dict:
     """Recompute dq/ds, d2q/ds2, v_lim, and duration at 0.5x and 2x N_eval.
 
@@ -2693,7 +2835,7 @@ def run_diagnostics(
     rs_q_deg: Optional[np.ndarray] = None,
     rs_rec: Optional[RSRecording] = None,
     common_dir: Optional[Path] = None,
-    secant_window_mm: float = 0.25,
+    secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
     transient_pad_mm: float = 5.0,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
@@ -2724,7 +2866,8 @@ def run_diagnostics(
 
     # Step 1
     s_eval, arr, smoothing, _splines = step1_differentiate(
-        s_mm, q_kept, ik_tol_rad, n_eval, resid_tol_rad=resid_tol_rad
+        s_mm, q_kept, ik_tol_rad, n_eval, resid_tol_rad=resid_tol_rad,
+        pos_mm=pos_kept,
     )
     res.s_eval = s_eval
     # TCP xyz on the uniform eval grid (plotting only; linear in s).
@@ -2794,9 +2937,16 @@ def run_diagnostics(
     # reference at v_cmd keeps braking distances at the commanded scale
     # (matching what RobotStudio actually executes) instead of the huge
     # time-optimal ramps from 600+ mm/s.
+    #
+    # Accel-transient = apex windows seeded in joint space from
+    # κ_j=max|d²q/ds²| (+ util_geom / strong util_tang peaks). Half-width is
+    # geometry-led with a modest TIME-domain util_tang bang boost:
+    # soft apex → narrow, sharp/high-κ → wider.  No global util_tang island OR.
     ref_v_lim = _apply_v_cmd_cap(res.v_lim_joint, res.v_cmd, False)
     if res.mode == "commanded" and res.v_cmd:
-        ref_v_star = res.v_star            # identical profile — reuse
+        ref_v_star = res.v_star
+        ref_s_ddot = res.s_ddot
+        ref_q_ddot = res.q_ddot
     else:
         ref = step3_time_optimal(
             res.s_eval, res.dqds, res.d2qds2, ref_v_lim, limits,
@@ -2804,10 +2954,26 @@ def run_diagnostics(
             mvc_v_lim=_apply_v_cmd_cap(_mvc_v_lim_joint, res.v_cmd, False),
         )
         ref_v_star = ref["v_star"]
-    res.accel_transient_mask = identify_transient_mask(
+        ref_s_ddot = ref["s_ddot"]
+        ref_q_ddot = ref["q_ddot"]
+    mask, tdiag = identify_transient_mask(
         res.s_eval, ref_v_star, ref_v_lim,
         buffer_mm=transient_pad_mm,
+        s_ddot=ref_s_ddot,
+        v_cmd=res.v_cmd,
+        dqds=res.dqds,
+        d2qds2=res.d2qds2,
+        q_ddot=ref_q_ddot,
+        qdd_max=limits.q_ddot_max,
     )
+    res.accel_transient_mask = mask
+    res.transient_diag = tdiag
+    res.metrics["transient"] = {
+        "method": tdiag.get("method"),
+        "n_regions": tdiag.get("n_regions"),
+        "fraction": tdiag.get("fraction"),
+        "thresholds": tdiag.get("thresholds", {}),
+    }
 
     # TCP rotation: cumulative geodesic reorientation angle θ(s) from the
     # dense pose quaternions.  The per-step angle uses the atan2 form
@@ -2851,6 +3017,7 @@ def run_diagnostics(
         "alpha_max_deg_s2": float(np.rad2deg(np.max(np.abs(alpha)))),
         "n_transient_regions": len(_mask_spans(res.accel_transient_mask)),
     }
+    # transient metrics already stored under res.metrics["transient"]
 
     # Joint-limit compliance: the realized profile must respect BOTH joint
     # velocity and acceleration limits for all joints at every sample.
@@ -2879,6 +3046,17 @@ def run_diagnostics(
     if rs_rec is not None:
         rs_s_mm = rs_rec.s_mm
         rs_q_deg = rs_rec.q_deg
+
+    # Always dump transient decision CSV/PNG when we have an output dir,
+    # even if the full plot suite is disabled (--no-plots).
+    if out_dir is not None and res.transient_diag and res.accel_transient_mask is not None:
+        try:
+            write_transient_diagnostics(
+                Path(out_dir), res.transient_diag, res.accel_transient_mask,
+                mode_name=str(res.mode),
+            )
+        except Exception as exc:
+            print(f"  [WARN] transient diagnostics failed: {exc}")
 
     # Step 4: plots
     if make_plots and out_dir is not None:
@@ -3088,7 +3266,7 @@ def _process_one_toolpath(
     ik_tol_rad: float,
     resid_tol_rad: float,
     make_plots: bool,
-    secant_window_mm: float = 0.25,
+    secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
     transient_pad_mm: float = 5.0,
     ds_mm: float = _DEFAULT_DS_MM,
 ) -> Dict:
@@ -3141,8 +3319,14 @@ def _process_one_toolpath(
         print("\n--- mode: optimal ---")
         res_opt = _run(case_dir / "optimal", time_optimal=True)
         # Fastest constant TCP speed the whole-path ceiling admits: the
-        # minimum of the joint-only velocity ceiling (incl. secant cap).
-        finite = np.isfinite(res_opt.v_lim_joint)
+        # minimum of the joint-only velocity ceiling (incl. secant cap),
+        # excluding the start/stop samples where v_lim is forced to 0 by
+        # the boundary conditions / singular c≈0 cells.
+        finite = np.isfinite(res_opt.v_lim_joint) & (res_opt.v_lim_joint > 1e-6)
+        if res_opt.boundary_mask is not None:
+            finite &= ~res_opt.boundary_mask
+        if not finite.any():
+            finite = np.isfinite(res_opt.v_lim_joint) & (res_opt.v_lim_joint > 1e-6)
         v_const = float(np.min(res_opt.v_lim_joint[finite]))
         print(f"  derived v_const = {v_const:.2f} mm/s "
               "(min joint-feasible ceiling over the whole path)")
@@ -3235,9 +3419,10 @@ def main() -> None:
              f"(default {_DEFAULT_DS_MM}).",
     )
     parser.add_argument(
-        "--secant-window-mm", type=float, default=0.25,
+        "--secant-window-mm", type=float, default=_DEFAULT_SECANT_WINDOW_MM,
         help="Half-window [mm] of the raw-joint-path secant acceleration "
-             "cap that resolves sub-knot corner blends (joint-space only).",
+             "cap (joint-space).  Auto-raised to ≥3× median sample spacing "
+             f"to avoid IK-noise notches (default {_DEFAULT_SECANT_WINDOW_MM}).",
     )
     parser.add_argument(
         "--no-secant-cap", action="store_true",
