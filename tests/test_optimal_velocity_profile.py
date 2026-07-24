@@ -1458,7 +1458,7 @@ def compute_regions(v_star: np.ndarray, v_lim: np.ndarray,
 # Plot output layout under each velocity-mode folder:
 #   A_geometry_spline/  B_velocity_limits/  C_path_dynamics/
 #   D_optimal_profile/  E_constraint_utilization/  F_path_visualization/
-#   G_robotstudio_compare/  H_tcp_rotation/
+#   G_robotstudio_compare/  H_tcp_rotation/  J_sawtooth_debug/
 # F1/F2 (toolpath-common) and I_spline_fk_check live one level up, in the
 # toolpath folder (same spline / same FK residual for all modes).
 _PLOT_GROUPS = {
@@ -1471,6 +1471,7 @@ _PLOT_GROUPS = {
     "G": "G_robotstudio_compare",
     "H": "H_tcp_rotation",
     "I": "I_spline_fk_check",
+    "J": "J_sawtooth_debug",
 }
 
 
@@ -1963,6 +1964,489 @@ def _plot_tcp_velocity_on_path(
     return str(out_path)
 
 
+def _geodesic_steps_from_quats(quats: np.ndarray) -> np.ndarray:
+    """Per-sample geodesic angle Δθ[i] between quat[i] and quat[i+1] [rad]."""
+    q = np.asarray(quats, dtype=float)
+    dots = np.abs(np.sum(q[:-1] * q[1:], axis=1))
+    # conj(q_i) ⊗ q_{i+1} vector-part norm = sin(Δθ/2)
+    w0, x0, y0, z0 = (q[:-1] * np.array([1.0, -1.0, -1.0, -1.0])).T
+    w1, x1, y1, z1 = q[1:].T
+    vx = w0 * x1 + x0 * w1 + y0 * z1 - z0 * y1
+    vy = w0 * y1 - x0 * z1 + y0 * w1 + z0 * x1
+    vz = w0 * z1 + x0 * y1 - y0 * x1 + z0 * w1
+    sin_half = np.linalg.norm(np.column_stack([vx, vy, vz]), axis=1)
+    return 2.0 * np.arctan2(sin_half, np.clip(dots, 0.0, 1.0))
+
+
+def _waypoint_arc_lengths(
+    waypoints_base: np.ndarray,
+    tcp_xyz: np.ndarray,
+    s: np.ndarray,
+) -> np.ndarray:
+    """Nearest dense-path sample arc-length for each programmed WP [mm]."""
+    wp = np.asarray(waypoints_base, dtype=float)[:, :3]
+    xyz = np.asarray(tcp_xyz, dtype=float)
+    s = np.asarray(s, dtype=float)
+    out = np.empty(len(wp), dtype=float)
+    for i, p in enumerate(wp):
+        out[i] = s[int(np.argmin(np.sum((xyz - p) ** 2, axis=1)))]
+    return out
+
+
+def _local_minima_mask(y: np.ndarray, min_prominence: float) -> np.ndarray:
+    """Boolean mask of strict local minima with prominence ≥ threshold."""
+    y = np.asarray(y, dtype=float)
+    n = len(y)
+    m = np.zeros(n, dtype=bool)
+    if n < 3 or not np.isfinite(min_prominence):
+        return m
+    for i in range(1, n - 1):
+        if not (np.isfinite(y[i]) and y[i] < y[i - 1] and y[i] < y[i + 1]):
+            continue
+        # prominence vs nearest higher neighbors in a small window
+        lo = max(0, i - 20)
+        hi = min(n, i + 21)
+        prom = float(np.nanmax(y[lo:hi]) - y[i])
+        if prom >= min_prominence:
+            m[i] = True
+    return m
+
+
+def write_sawtooth_debug(
+    out_dir: Path,
+    res: ProfileResult,
+    waypoints_base: Optional[np.ndarray] = None,
+    mode_name: str = "",
+) -> List[str]:
+    """Upstream diagnostics for WP-rate sawtooth in v*/v_lim (group J).
+
+    H's θ(s) is an LSQ-smoothed cumulative angle — that can *hide* piecewise-
+    SLERP kinks.  J plots the RAW dense-path orientation FD rates, programmed
+    WP spacing, spline/secant curvature, and which ceiling binds the notches.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: List[str] = []
+
+    s = np.asarray(res.s_eval, dtype=float)
+    s_raw = np.asarray(res.s_raw, dtype=float)
+    v_lim = np.asarray(res.v_lim, dtype=float)
+    v_vel = np.asarray(res.v_vel, dtype=float)
+    v_accel = np.asarray(res.v_accel, dtype=float)
+    v_sec = (np.asarray(res.v_secant, dtype=float)
+             if res.v_secant is not None else np.full_like(v_lim, np.inf))
+    v_star = np.asarray(res.v_star, dtype=float)
+    kappa = np.max(np.abs(res.d2qds2), axis=1)  # rad/mm²
+
+    # ---- programmed WP spacing along the dense path --------------------
+    wp_s = None
+    wp_ds = None
+    if waypoints_base is not None and res.tcp_xyz is not None:
+        wp_s = _waypoint_arc_lengths(waypoints_base, res.tcp_xyz, s)
+        order = np.argsort(wp_s)
+        wp_s = wp_s[order]
+        wp_ds = np.diff(wp_s)
+
+    # ---- RAW orientation from Feature-3 dense quats (NOT spline θ) -----
+    dth_ds_raw = d2th_ds2_raw = theta_raw_cum = None
+    if res.quat_raw is not None and len(s_raw) == len(res.quat_raw):
+        dth = _geodesic_steps_from_quats(res.quat_raw)
+        ds_r = np.diff(s_raw)
+        ds_safe = np.maximum(ds_r, 1e-9)
+        dth_ds_mid = dth / ds_safe
+        # sample-centered rates on raw grid
+        dth_ds_raw = np.empty(len(s_raw), dtype=float)
+        dth_ds_raw[0] = dth_ds_mid[0]
+        dth_ds_raw[-1] = dth_ds_mid[-1]
+        dth_ds_raw[1:-1] = 0.5 * (dth_ds_mid[:-1] + dth_ds_mid[1:])
+        d2th_ds2_raw = np.gradient(dth_ds_raw, s_raw)
+        theta_raw_cum = np.concatenate([[0.0], np.cumsum(dth)])
+
+    # ---- notch / binder attribution ------------------------------------
+    finite_lim = np.where(np.isfinite(v_lim), v_lim, np.nan)
+    prom = 0.05 * float(np.nanpercentile(finite_lim, 90))
+    notch = _local_minima_mask(finite_lim, min_prominence=max(prom, 5.0))
+    # which channel equals v_lim (within tol)
+    tol = 1e-6 + 1e-9 * np.where(np.isfinite(v_lim), v_lim, 0.0)
+    bind_vel = np.isfinite(v_vel) & (np.abs(v_vel - v_lim) <= tol)
+    bind_acc = np.isfinite(v_accel) & (np.abs(v_accel - v_lim) <= tol)
+    bind_sec = np.isfinite(v_sec) & (np.abs(v_sec - v_lim) <= tol)
+    # exclusive priority label for plotting: 0=vel, 1=accel, 2=secant, 3=other
+    binder = np.full(len(s), 3, dtype=int)
+    binder[bind_vel] = 0
+    binder[bind_acc & ~bind_vel] = 1
+    binder[bind_sec & ~bind_vel & ~bind_acc] = 2
+
+    # ==================================================================
+    # J1 — WP spacing vs arc-length + v_lim notches
+    # ==================================================================
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    ax = axes[0]
+    ax.plot(s, v_star, "-", lw=1.2, color="tab:green", label="v*")
+    ax.plot(s, np.clip(v_lim, 0, np.nanpercentile(finite_lim, 99) * 1.2),
+            "--", lw=0.9, color="0.35", label="v_lim")
+    if notch.any():
+        ax.plot(s[notch], v_star[notch], "v", ms=4, color="crimson",
+                label=f"v_lim notches (n={int(notch.sum())})")
+    if wp_s is not None:
+        for xs in wp_s[::max(1, len(wp_s) // 200)]:
+            ax.axvline(xs, color="0.75", lw=0.3, alpha=0.45, zorder=0)
+        ax.plot([], [], color="0.75", lw=0.8, label="programmed WP ticks")
+    ax.set_ylabel("mm/s")
+    ax.set_title(f"J1a  v* / v_lim with WP ticks + detected notches — {mode_name}")
+    ax.legend(fontsize=7, loc="upper right", ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    if wp_s is not None and wp_ds is not None and len(wp_ds):
+        ax.plot(wp_s[1:], wp_ds, "o-", ms=3, lw=0.8, color="#4C78A8",
+                label="Δs between consecutive WPs")
+        ax.set_ylabel("ΔWP [mm]")
+        ax.set_title(
+            f"J1b  programmed inter-waypoint spacing along path  "
+            f"(med={float(np.median(wp_ds)):.2f} mm)"
+        )
+        ax.legend(fontsize=7)
+    else:
+        ax.text(0.5, 0.5, "no waypoints_base", ha="center", transform=ax.transAxes)
+        ax.set_title("J1b  programmed inter-waypoint spacing (unavailable)")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[2]
+    if notch.any() and wp_s is not None and len(wp_s) > 1:
+        notch_s = s[notch]
+        # nearest WP spacing at each notch
+        local_ds = np.interp(notch_s, wp_s[1:], wp_ds)
+        # spacing between consecutive notches
+        notch_gap = np.diff(notch_s)
+        ax.plot(notch_s[1:], notch_gap, "o", ms=4, color="crimson",
+                label="gap between consecutive v_lim notches")
+        ax.plot(notch_s, local_ds, "x", ms=4, color="#4C78A8",
+                label="local ΔWP at notch")
+        if len(notch_gap) and len(local_ds) > 1:
+            # correlate on overlapping length
+            n = min(len(notch_gap), len(local_ds) - 1)
+            if n >= 3:
+                corr = float(np.corrcoef(notch_gap[:n], local_ds[1:n + 1])[0, 1])
+                ax.set_title(
+                    f"J1c  notch gap vs local ΔWP  (corr≈{corr:.2f})  "
+                    "— WP hypothesis if corr high / gaps track ΔWP"
+                )
+            else:
+                ax.set_title("J1c  notch gap vs local ΔWP")
+        ax.legend(fontsize=7)
+        ax.set_ylabel("mm")
+    else:
+        ax.text(0.5, 0.5, "too few notches or no WPs", ha="center",
+                transform=ax.transAxes)
+        ax.set_title("J1c  notch ↔ WP spacing correlation")
+    ax.set_xlabel("arc-length s [mm]")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    p = out_dir / "J1_waypoint_spacing_vs_notches.png"
+    fig.savefig(p, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    paths.append(str(p))
+
+    # ==================================================================
+    # J2 — RAW dense-path orientation rates (FD) vs smoothed H-spline
+    # ==================================================================
+    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
+    r2d = np.rad2deg
+    if dth_ds_raw is not None:
+        axes[0].plot(s_raw, r2d(theta_raw_cum), "-", lw=1.0, color="#4C78A8",
+                     label="θ_raw cum (dense Feature-3 quats)")
+        if res.ori_theta is not None:
+            axes[0].plot(s, r2d(res.ori_theta), "--", lw=1.0, color="k",
+                         alpha=0.7, label="θ_spline (used in H)")
+        axes[0].set_ylabel("θ [deg]")
+        axes[0].set_title(
+            "J2a  cumulative reorientation — RAW dense quats vs H's LSQ spline"
+        )
+        axes[0].legend(fontsize=7)
+
+        axes[1].plot(s_raw, r2d(dth_ds_raw), "-", lw=0.8, color="#E45756",
+                     label="dθ/ds RAW (FD on dense quats)")
+        if res.ori_dtheta_ds is not None:
+            axes[1].plot(s, r2d(res.ori_dtheta_ds), "-", lw=1.0, color="k",
+                         alpha=0.75, label="dθ/ds spline (H2 — may hide kinks)")
+        axes[1].set_ylabel("deg/mm")
+        axes[1].set_title(
+            "J2b  geometric rotation rate — RAW FD shows piecewise-SLERP kinks; "
+            "H2 spline can wash them out"
+        )
+        axes[1].legend(fontsize=7)
+
+        axes[2].plot(s_raw, r2d(d2th_ds2_raw), "-", lw=0.7, color="#F58518",
+                     label="d²θ/ds² RAW (FD)")
+        if res.ori_d2theta_ds2 is not None:
+            axes[2].plot(s, r2d(res.ori_d2theta_ds2), "-", lw=1.0, color="k",
+                         alpha=0.75, label="d²θ/ds² spline (H)")
+        axes[2].set_ylabel("deg/mm²")
+        axes[2].set_title(
+            "J2c  orientation curvature — WP-rate spikes in RAW ⇒ ori is upstream cause"
+        )
+        axes[2].legend(fontsize=7)
+    else:
+        for ax in axes[:3]:
+            ax.text(0.5, 0.5, "quat_raw missing", ha="center",
+                    transform=ax.transAxes)
+
+    axes[3].plot(s, r2d(kappa), "-", lw=0.9, color="#54A24B",
+                 label="max_j |d²q_j/ds²| (spline joints)")
+    # Start/singularity spikes dominate the axis — also show a clipped view
+    # so WP-rate κ structure (if any) is visible.
+    mid = (s > 20.0) & (s < s[-1] - 20.0)
+    if mid.any():
+        k99 = float(np.percentile(r2d(kappa[mid]), 99.5))
+        axes[3].set_ylim(0, max(k99 * 1.5, 1e-3))
+        axes[3].text(
+            0.01, 0.95,
+            f"y clipped to mid-path p99.5={k99:.3g} (start spike excluded)",
+            transform=axes[3].transAxes, fontsize=7, va="top",
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"),
+        )
+    axes[3].set_ylabel("deg/mm²")
+    axes[3].set_title(
+        "J2d  joint-path curvature κ = max|d²q/ds²| (feeds v_accel) — "
+        "zoomed; start spike clipped"
+    )
+    axes[3].legend(fontsize=7)
+    axes[3].set_xlabel("arc-length s [mm]")
+    for ax in axes:
+        if wp_s is not None:
+            step = max(1, len(wp_s) // 250)
+            for xs in wp_s[::step]:
+                ax.axvline(xs, color="0.85", lw=0.25, alpha=0.4, zorder=0)
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    p = out_dir / "J2_raw_orientation_vs_joint_curvature.png"
+    fig.savefig(p, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    paths.append(str(p))
+
+    # Peak count on RAW |d²θ/ds²| (compare to n_WP)
+    n_ori_peaks = 0
+    if d2th_ds2_raw is not None:
+        abs2 = np.abs(d2th_ds2_raw)
+        pmask = np.zeros(len(abs2), dtype=bool)
+        for i in range(1, len(abs2) - 1):
+            if abs2[i] >= abs2[i - 1] and abs2[i] >= abs2[i + 1] and abs2[i] > 1e-6:
+                pmask[i] = True
+        n_ori_peaks = int(pmask.sum())
+
+    # J2e — dedicated zoom: RAW |d²θ/ds²| and κ on the same axes (WP ticks)
+    fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
+    if d2th_ds2_raw is not None:
+        axes[0].plot(s_raw, r2d(np.abs(d2th_ds2_raw)), "-", lw=0.6,
+                     color="#F58518", label="|d²θ/ds²| RAW")
+        axes[0].set_ylabel("deg/mm²")
+        axes[0].set_title(
+            "J2e-top  RAW orientation curvature magnitude "
+            f"(local peaks={n_ori_peaks}; "
+            f"n_WP={0 if wp_s is None else len(wp_s)})"
+        )
+        axes[0].legend(fontsize=7)
+    axes[1].plot(s, r2d(kappa), "-", lw=0.7, color="#54A24B", label="κ joint spline")
+    if mid.any():
+        axes[1].set_ylim(0, max(float(np.percentile(r2d(kappa[mid]), 99.5)) * 1.5, 1e-3))
+    axes[1].set_ylabel("deg/mm²")
+    axes[1].set_xlabel("arc-length s [mm]")
+    axes[1].set_title("J2e-bot  joint κ (clipped) — compare spike cadence to J2e-top / J1b")
+    axes[1].legend(fontsize=7)
+    for ax in axes:
+        if wp_s is not None:
+            step = max(1, len(wp_s) // 250)
+            for xs in wp_s[::step]:
+                ax.axvline(xs, color="0.85", lw=0.25, alpha=0.4, zorder=0)
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    p = out_dir / "J2e_ori_vs_joint_curvature_zoom.png"
+    fig.savefig(p, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    paths.append(str(p))
+
+    # ==================================================================
+    # J3 — ceiling stack + active binder
+    # ==================================================================
+    vmax = float(np.nanpercentile(finite_lim, 99)) * 1.3
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    ax = axes[0]
+    ax.plot(s, np.clip(v_vel, 0, vmax), "-", lw=1.0, color="#4C78A8",
+            label="v_vel")
+    ax.plot(s, np.clip(v_accel, 0, vmax), "-", lw=1.0, color="#F58518",
+            label="v_accel (spline)")
+    ax.plot(s, np.clip(v_sec, 0, vmax), "-", lw=1.0, color="#B279A2",
+            label="v_secant (raw)")
+    ax.plot(s, np.clip(v_lim, 0, vmax), "-", lw=1.8, color="k",
+            label="v_lim = min(...)")
+    if res.v_capped is not None:
+        ax.plot(s, np.clip(res.v_capped, 0, vmax), ":", lw=1.2, color="purple",
+                label="v_capped (RS lookup)")
+    if notch.any():
+        ax.plot(s[notch], np.clip(v_lim[notch], 0, vmax), "v", ms=4,
+                color="crimson", label="notches")
+    ax.set_ylim(0, vmax)
+    ax.set_ylabel("mm/s")
+    ax.set_title("J3a  ceiling stack — sawtooth must appear in accel and/or secant")
+    ax.legend(fontsize=7, ncol=3)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    # binder strip
+    cmap_b = np.array([
+        [0.23, 0.30, 0.75],  # vel
+        [0.96, 0.52, 0.09],  # accel
+        [0.70, 0.47, 0.64],  # secant
+        [0.5, 0.5, 0.5],     # other
+    ])
+    rgb = cmap_b[binder]
+    ax.imshow(rgb[None, :, :], aspect="auto",
+              extent=[s[0], s[-1], 0.0, 1.0], interpolation="nearest")
+    ax.set_yticks([])
+    ax.set_title(
+        "J3b  which channel equals v_lim?  "
+        "blue=v_vel  orange=v_accel  purple=v_secant  gray=other/tie"
+    )
+    from matplotlib.patches import Patch
+    ax.legend(handles=[
+        Patch(color=cmap_b[0], label="v_vel"),
+        Patch(color=cmap_b[1], label="v_accel"),
+        Patch(color=cmap_b[2], label="v_secant"),
+        Patch(color=cmap_b[3], label="other"),
+    ], fontsize=7, loc="upper right", ncol=4)
+
+    ax = axes[2]
+    # fraction of notches attributable
+    if notch.any():
+        n_tot = int(notch.sum())
+        n_a = int((notch & bind_acc).sum())
+        n_s = int((notch & bind_sec).sum())
+        n_v = int((notch & bind_vel).sum())
+        ax.bar(["all notches", "at v_accel", "at v_secant", "at v_vel"],
+               [n_tot, n_a, n_s, n_v],
+               color=["k", "#F58518", "#B279A2", "#4C78A8"])
+        ax.set_ylabel("count")
+        ax.set_title(
+            f"J3c  notch attribution  "
+            f"(accel={n_a}/{n_tot}, secant={n_s}/{n_tot}, vel={n_v}/{n_tot})"
+        )
+    else:
+        ax.text(0.5, 0.5, "no notches detected", ha="center",
+                transform=ax.transAxes)
+        ax.set_title("J3c  notch attribution")
+    ax.set_xlabel("arc-length s [mm] (J3a/b) / category (J3c)")
+    for a in axes[:2]:
+        if wp_s is not None:
+            a.vlines(wp_s, *a.get_ylim(), colors="0.85", lw=0.25, alpha=0.4,
+                     zorder=0)
+    fig.tight_layout()
+    p = out_dir / "J3_ceiling_binder_attribution.png"
+    fig.savefig(p, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    paths.append(str(p))
+
+    # ==================================================================
+    # CSV + summary
+    # ==================================================================
+    csv_path = out_dir / "sawtooth_upstream.csv"
+    header = (
+        "s_mm,v_star,v_lim,v_vel,v_accel,v_secant,"
+        "kappa_max_abs_d2qds2_rad_mm2,"
+        "binder_0vel_1accel_2sec_3other,is_vlim_notch"
+    )
+    cols = [
+        s, v_star, v_lim, v_vel, v_accel, v_sec, kappa,
+        binder.astype(float), notch.astype(float),
+    ]
+    np.savetxt(csv_path, np.column_stack(cols), delimiter=",",
+               header=header, comments="", fmt="%.8g")
+    paths.append(str(csv_path))
+
+    if wp_s is not None:
+        wp_csv = out_dir / "waypoint_spacing_along_s.csv"
+        with open(wp_csv, "w", encoding="utf-8") as f:
+            f.write("wp_index_sorted,s_mm,delta_s_from_prev_mm\n")
+            f.write(f"0,{wp_s[0]:.8g},\n")
+            for i in range(1, len(wp_s)):
+                f.write(f"{i},{wp_s[i]:.8g},{wp_ds[i - 1]:.8g}\n")
+        paths.append(str(wp_csv))
+
+    # raw ori CSV on dense grid
+    if dth_ds_raw is not None:
+        ori_csv = out_dir / "raw_orientation_fd.csv"
+        np.savetxt(
+            ori_csv,
+            np.column_stack([
+                s_raw, r2d(theta_raw_cum), r2d(dth_ds_raw), r2d(d2th_ds2_raw),
+            ]),
+            delimiter=",",
+            header="s_mm,theta_cum_deg,dtheta_ds_deg_mm,d2theta_ds2_deg_mm2",
+            comments="", fmt="%.8g",
+        )
+        paths.append(str(ori_csv))
+
+    # textual verdict
+    lines = [
+        "J_sawtooth_debug — upstream root-cause dump",
+        "=" * 64,
+        f"mode: {res.mode}  ({mode_name})",
+        f"n_eval: {len(s)}   n_raw: {len(s_raw)}",
+        f"v* min/mean/max: {float(np.min(v_star)):.2f} / "
+        f"{float(np.mean(v_star)):.2f} / {float(np.max(v_star)):.2f} mm/s",
+        f"v_lim notches (prominence≥{prom:.2f}): {int(notch.sum())}",
+    ]
+    if notch.any():
+        lines.append(
+            f"  notch binders: accel={int((notch & bind_acc).sum())}  "
+            f"secant={int((notch & bind_sec).sum())}  "
+            f"vel={int((notch & bind_vel).sum())}"
+        )
+    if wp_s is not None and wp_ds is not None and len(wp_ds):
+        lines += [
+            f"n_waypoints: {len(wp_s)}",
+            f"ΔWP mm min/med/max: {float(wp_ds.min()):.3f} / "
+            f"{float(np.median(wp_ds)):.3f} / {float(wp_ds.max()):.3f}",
+        ]
+        if notch.any() and len(s[notch]) > 2:
+            notch_gap = np.diff(s[notch])
+            local_ds = np.interp(s[notch], wp_s[1:], wp_ds)
+            n = min(len(notch_gap), len(local_ds) - 1)
+            if n >= 3:
+                corr = float(np.corrcoef(notch_gap[:n], local_ds[1:n + 1])[0, 1])
+                lines.append(f"corr(notch_gap, local_ΔWP): {corr:.3f}")
+    if dth_ds_raw is not None:
+        lines += [
+            f"RAW |d²θ/ds²| local peaks: {n_ori_peaks}",
+            f"RAW dθ/ds max: {float(r2d(np.max(np.abs(dth_ds_raw)))):.4f} deg/mm",
+            "NOTE: H2 uses LSQ-smoothed θ — use J2 RAW panels to judge ori kinks.",
+        ]
+        if wp_s is not None and len(wp_s) > 0:
+            lines.append(
+                f"ori_peaks / n_WP ≈ {n_ori_peaks / len(wp_s):.3f} "
+                "(≈1 supports one kink per waypoint)"
+            )
+    lines += [
+        "",
+        "How to read:",
+        "  1. J1 — if notch gaps track ΔWP, spacing is in the causal chain.",
+        "  2. J2 — if RAW d²θ/ds² spikes at WP rate but H spline is smooth,",
+        "         piecewise-SLERP orientation is the geometric root.",
+        "  3. J2d/J3 — if κ and v_accel/v_secant carry the same spikes,",
+        "         they transmit ori/joint curvature into the TOPP ceiling.",
+        "  4. J3c — majority notch binder tells which ceiling formula to blame.",
+    ]
+    summary = out_dir / "summary.txt"
+    summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    paths.append(str(summary))
+    print(f"  J_sawtooth_debug → {out_dir}  ({len(paths)} artifacts)")
+    return paths
+
+
 def _plot_tcp_rotation(
     out_path: Path,
     res: ProfileResult,
@@ -2409,6 +2893,16 @@ def _make_plots(
         paths.append(_plot_tcp_rotation(
             dir_h / "H_tcp_rotation.png", res, mode_name,
         ))
+
+    # ---- J: sawtooth / upstream root-cause dump (all modes; critical for optimal)
+    try:
+        paths.extend(write_sawtooth_debug(
+            _group_dir(out_dir, "J"), res,
+            waypoints_base=waypoints_base,
+            mode_name=mode_name,
+        ))
+    except Exception as exc:
+        print(f"  [WARN] J_sawtooth_debug failed: {exc}")
 
     # ---- PANEL GROUP A: per-joint geometry (+ optional RS overlay) ------
     paths.append(_plot_A_geometry_with_rs(
