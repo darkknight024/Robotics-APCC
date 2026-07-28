@@ -10,8 +10,9 @@ trajectory.
 
 **Default mode (commanded):** TOPP under joint velocity/acceleration limits
 **and** the pathwise toolpath commanded TCP speed ``v_cmd(s)`` from CSV
-column 8 (Feature-3 ``v_cmd_at_s``) — same intent as a RobotStudio run that
-follows the programmed speed schedule.
+column 8 (Feature-3 ``v_cmd_at_s``) — RAPID destination semantics: the
+speed at waypoint ``k`` is the cruise used to *reach* ``k`` from ``k-1``.
+Same intent as a RobotStudio run that follows the programmed speed schedule.
 
 **``--time-optimal`` mode:** drop the ``v_cmd(s)`` ceiling and find the fastest
 joint-feasible TCP speed along the whole path.
@@ -271,7 +272,9 @@ def load_joint_path_from_toolpath(
     cfg.feature3_d1.smooth_orientation = bool(smooth_orientation)
     cfg.feature3_d1.ori_smooth_resid_ceiling_deg = float(ori_smooth_resid_ceiling_deg)
     cfg.use_base_frame = False
-    cfg.solver = "pin"
+    # EAIK is the default for velocity-profile diagnostics: Pinocchio cold-start
+    # is flaky on awkward approach poses (e.g. v7 traj_15 sample 0).
+    cfg.solver = "eaik"
 
     robot = get_robot_by_name(_ROBOT_NAME)
     knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
@@ -446,10 +449,11 @@ def _v_cmd_on_grid(
     """Map Feature-3 pathwise commanded speeds onto an arbitrary s-grid.
 
     Feature-3 assigns a *piecewise-constant* speed per programmed segment
-    (toolpath CSV column 8 → ``v_cmd_per_wp[seg]`` on that segment's samples).
-    We therefore use previous-neighbor (zero-order hold) lookup, not linear
-    interpolation, so intermediate s values keep the segment's commanded
-    speed rather than blending adjacent WP speeds.
+    using RAPID destination semantics (CSV column 8 at WP ``k`` = speed to
+    *reach* WP ``k``; see ``sample_blended_path``).  We use previous-neighbor
+    (zero-order hold) lookup, not linear interpolation, so intermediate s
+    values keep the segment's commanded speed rather than blending adjacent
+    WP speeds.
     """
     s_q = np.asarray(s_query, dtype=float)
     s_c = np.asarray(s_cmd_mm, dtype=float)
@@ -2690,18 +2694,33 @@ def _plot_tcp_vs_rs(
     res: ProfileResult,
     rs: RSRecording,
     mode_name: str,
+    waypoints_base: Optional[np.ndarray] = None,
 ) -> str:
     """TCP speed + |TCP accel| vs arc-length: solver vs RobotStudio.
 
     In commanded mode, steady-state samples (outside the accel-transient
     mask) deviating from RS by more than 10% are marked red.
+
+    Panel 3 (commanded mode): per-waypoint inbound-segment area between
+    solver and RS TCP speed curves, integrating only non-transient samples:
+    ``A_i = ∫_{WP_{i-1}}^{WP_i} |v*(s) − v_RS(s)| ds`` [mm²/s ≡ mm·(mm/s)].
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     s = res.s_eval
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    n_panels = 3 if (
+        res.mode == "commanded"
+        and waypoints_base is not None
+        and res.tcp_xyz is not None
+    ) else 2
+    fig, axes = plt.subplots(
+        n_panels, 1, figsize=(14, 4 + 3.2 * n_panels), sharex=True,
+        gridspec_kw={"height_ratios": [2.2, 1.4] + ([1.6] if n_panels == 3 else [])},
+    )
+    if n_panels == 2:
+        axes = list(axes)
     ax = axes[0]
     ax.plot(rs.s_mm, rs.tcp_speed_mm_s, lw=1.3, color="#1f77b4", alpha=0.9,
             label="RobotStudio TCP speed")
@@ -2712,7 +2731,7 @@ def _plot_tcp_vs_rs(
     if res.mode == "commanded":
         if res.v_cmd_path is not None:
             ax.plot(s, res.v_cmd_path, ":", lw=1.4, color="purple",
-                    label="v_cmd(s) toolpath col-8")
+                    label="v_cmd(s) toolpath col-8 (dest WP)")
         elif res.v_cmd:
             ax.axhline(res.v_cmd, ls=":", color="purple", lw=1.2,
                        label=f"v_cmd = {res.v_cmd:.0f} mm/s")
@@ -2746,13 +2765,80 @@ def _plot_tcp_vs_rs(
         for a, b in _mask_spans(trans):
             ax2.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
     ax2.set_ylabel("|TCP accel| [mm/s²]")
-    ax2.set_xlabel("arc-length s [mm]")
     ax2.grid(True, alpha=0.3)
     h2, lab2 = ax2.get_legend_handles_labels()
     if trans is not None and np.any(trans):
         h2 = list(h2) + [_accel_transient_legend_handle()]
         lab2 = list(lab2) + ["accel-transient (excluded from RS bench)"]
     ax2.legend(h2, lab2, loc="best", fontsize=8)
+
+    if n_panels == 3:
+        ax3 = axes[2]
+        wp_s = _waypoint_arc_lengths(waypoints_base, res.tcp_xyz, s)
+        order = np.argsort(wp_s)
+        wp_s = wp_s[order]
+        rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
+        abs_err = np.abs(res.v_star - rs_v)
+        # Exclude accel-transient samples from the integral.
+        use = np.ones(len(s), dtype=bool)
+        if trans is not None:
+            use &= ~trans
+        # Per inbound segment WP[i-1] → WP[i] (i = 1..N-1).
+        areas = []
+        mid_s = []
+        labels = []
+        for i in range(1, len(wp_s)):
+            lo, hi = float(wp_s[i - 1]), float(wp_s[i])
+            if hi <= lo + 1e-9:
+                areas.append(0.0)
+                mid_s.append(0.5 * (lo + hi))
+                labels.append(i)
+                continue
+            m = use & (s >= lo) & (s <= hi)
+            if m.sum() < 2:
+                # No steady samples in this WP span (fully transient).
+                areas.append(np.nan)
+            else:
+                _trapz = getattr(np, "trapezoid", np.trapz)
+                areas.append(float(_trapz(abs_err[m], s[m])))
+            mid_s.append(0.5 * (lo + hi))
+            labels.append(i)
+        areas_a = np.asarray(areas, dtype=float)
+        mid_a = np.asarray(mid_s, dtype=float)
+        finite = np.isfinite(areas_a)
+        colors = np.where(finite, "#9467bd", "#cccccc")
+        ax3.bar(mid_a, np.where(finite, areas_a, 0.0),
+                width=np.maximum(np.diff(wp_s), 0.5),
+                align="center", color=colors, edgecolor="0.3",
+                linewidth=0.4, alpha=0.85)
+        for x, a, lab_i, ok in zip(mid_a, areas_a, labels, finite):
+            if not ok:
+                continue
+            ax3.text(x, a, f"WP{lab_i}", ha="center", va="bottom",
+                     fontsize=6, rotation=90)
+        # Mark WP locations
+        for ws in wp_s:
+            ax3.axvline(ws, color="0.6", lw=0.4, alpha=0.5)
+        if trans is not None and np.any(trans):
+            for a, b in _mask_spans(trans):
+                ax3.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+        total = float(np.nansum(areas_a))
+        ax3.set_ylabel("∫|v*−v_RS| ds\n[mm·(mm/s)]", fontsize=9)
+        ax3.set_xlabel("arc-length s [mm]")
+        ax3.set_title(
+            "G1c  Per-waypoint area between solver and RS TCP speed "
+            f"(non-transient only; total={total:.1f})"
+        )
+        ax3.grid(True, alpha=0.3, axis="y")
+        ax3.legend(
+            handles=[
+                _accel_transient_legend_handle(),
+            ] if (trans is not None and np.any(trans)) else [],
+            fontsize=8, loc="best",
+        )
+    else:
+        axes[-1].set_xlabel("arc-length s [mm]")
+
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
@@ -3249,6 +3335,7 @@ def _make_plots(
     if rs_rec is not None:
         paths.append(_plot_tcp_vs_rs(
             dir_g / "G1_tcp_speed_accel_vs_rs.png", res, rs_rec, mode_name,
+            waypoints_base=waypoints_base,
         ))
         qd_lim = r2d(res.metrics["_qd_max"])
         qdd_lim = r2d(res.metrics["_qdd_max"])

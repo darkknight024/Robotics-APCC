@@ -247,14 +247,16 @@ def sample_blended_path(
     """Generate a dense SE(3) path along the actual TCP trajectory.
 
     Assembles straight-line segments and Bézier blend arcs into a single
-    continuous path.  Each sample gets the commanded speed from the
-    corresponding programmed segment.
+    continuous path.  Each sample gets the commanded speed for the
+    *destination* of its programmed segment (RAPID-style): CSV column 8 at
+    waypoint ``k`` is the speed used to reach waypoint ``k`` from ``k-1``.
 
     Args:
         waypoints_m:    (N, 7) [x_m, y_m, z_m, qw, qx, qy, qz].
         zones:          Per-waypoint :class:`ZoneParams` (overlap-reduced).
         blend_geoms:    Per-waypoint :class:`BlendArcGeometry` (from M2+M3).
-        v_cmd_per_wp:   (N,) commanded TCP speed per waypoint in mm/s.
+        v_cmd_per_wp:   (N,) commanded TCP speed per waypoint in mm/s
+                        (destination speed for the inbound segment).
         ds_mm:          Desired arc-length spacing between samples in mm.
 
     Returns:
@@ -301,7 +303,11 @@ def sample_blended_path(
         q_seg_start = quats[seg_idx]
         q_seg_end = quats[seg_idx + 1]
 
-        v_cmd_seg = float(v_cmd_per_wp[seg_idx])
+        # RAPID / destination semantics: column-8 at waypoint k is the TCP
+        # speed used to *reach* that waypoint from the preceding one.  On the
+        # programmed segment WP[i] → WP[i+1] the commanded cruise is therefore
+        # ``v_cmd_per_wp[i+1]`` (not the departure waypoint's speed).
+        v_cmd_seg = float(v_cmd_per_wp[seg_idx + 1])
 
         # ── First waypoint: include the point itself ──
         if seg_idx == 0 and geom_start is None:
