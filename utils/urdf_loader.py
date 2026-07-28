@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import numpy as np
 from pathlib import Path
-from typing import Any, List, Tuple, Union
-from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple, Union
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -37,6 +37,8 @@ class RobotModel:
     upper_position_limit: np.ndarray # (n_joints,) upper joint limits in radians
     ee_frame_name: str               # End-effector frame name used
     ee_transform_4x4: np.ndarray    # 4x4 homogeneous transform from last actuated link to ee
+    # URDF joint types for actuated joints ("revolute", "continuous", "prismatic", ...)
+    joint_types: List[str] = field(default_factory=list)
 
 
 def resolve_urdf_path(urdf_path: str) -> Path:
@@ -448,18 +450,20 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
             print(f"Warning: EAIK could not find a known kinematic decomposition for this robot. "
                   f"IK may return least-squares solutions only.")
         
-        # Extract joint limits from URDF
+        # Extract joint limits + types from URDF
         lower_limits = np.zeros(n_joints)
         upper_limits = np.zeros(n_joints)
         joint_names = []
+        joint_types: List[str] = []
         
         for i, joint in enumerate(joints):
             joint_names.append(joint.name)
+            joint_types.append(str(getattr(joint, "joint_type", "revolute")).lower())
             if joint.limit is not None:
                 lower_limits[i] = joint.limit.lower if joint.limit.lower is not None else -2 * np.pi
                 upper_limits[i] = joint.limit.upper if joint.limit.upper is not None else 2 * np.pi
             else:
-                # No limits specified - use large range
+                # Continuous / unspecified: no hard stroke — wide sentinel range.
                 lower_limits[i] = -2 * np.pi
                 upper_limits[i] = 2 * np.pi
         
@@ -470,7 +474,8 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
             lower_position_limit=lower_limits,
             upper_position_limit=upper_limits,
             ee_frame_name=ee_frame_name,
-            ee_transform_4x4=ee_transform_4x4
+            ee_transform_4x4=ee_transform_4x4,
+            joint_types=joint_types,
         )
         
     except FileNotFoundError:
@@ -540,3 +545,53 @@ def load_robot_model(urdf_path: str, solver: str = "eaik", ee_frame_name: str = 
         return load_robot_model_pin(urdf_path)
     else:
         raise ValueError(f"Unknown solver backend: '{solver}'. Use 'eaik' or 'pin'.")
+
+
+@dataclass
+class ActuatedJointMeta:
+    """Lightweight URDF actuated-joint metadata (no EAIK / Pinocchio)."""
+
+    joint_names: List[str]
+    joint_types: List[str]
+    lower_position_limit: np.ndarray
+    upper_position_limit: np.ndarray
+
+
+def load_actuated_joint_meta(urdf_path: str) -> ActuatedJointMeta:
+    """Parse actuated joint types + position limits from a URDF (urchin only).
+
+    Use this when you need revolute-vs-continuous semantics / stroke limits
+    without constructing an IK backend.
+    """
+    from urchin import URDF
+
+    urdf_file = resolve_urdf_path(urdf_path)
+    robot = URDF.load(str(urdf_file).replace("\\", "/"), lazy_load_meshes=True)
+    joints = list(robot.actuated_joints)
+    if not joints:
+        raise ValueError(f"No actuated joints in URDF: {urdf_file}")
+
+    names: List[str] = []
+    types: List[str] = []
+    lower = np.zeros(len(joints))
+    upper = np.zeros(len(joints))
+    for i, joint in enumerate(joints):
+        names.append(joint.name)
+        types.append(str(getattr(joint, "joint_type", "revolute")).lower())
+        if joint.limit is not None:
+            lower[i] = (
+                joint.limit.lower if joint.limit.lower is not None else -2 * np.pi
+            )
+            upper[i] = (
+                joint.limit.upper if joint.limit.upper is not None else 2 * np.pi
+            )
+        else:
+            # Continuous joints omit <limit> lower/upper in URDF.
+            lower[i] = -np.inf
+            upper[i] = np.inf
+    return ActuatedJointMeta(
+        joint_names=names,
+        joint_types=types,
+        lower_position_limit=lower,
+        upper_position_limit=upper,
+    )

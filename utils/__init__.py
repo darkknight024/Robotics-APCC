@@ -148,6 +148,10 @@ from .time_parameterization import (
 
 from .math import (
     shortest_angular_distance,
+    signed_shortest_angular_distance,
+    revolute_equivalents_in_limits,
+    map_revolute_near_previous,
+    make_joint_path_continuous,
     compute_joint_space_distance,
     compute_distance_to_joint_limits,
     compute_joint_velocity_ratio,
@@ -250,6 +254,10 @@ __all__ = [
     'waypoint_times_ms_from_positions_and_speeds',
     # Math utilities
     'shortest_angular_distance',
+    'signed_shortest_angular_distance',
+    'revolute_equivalents_in_limits',
+    'map_revolute_near_previous',
+    'make_joint_path_continuous',
     'compute_joint_space_distance',
     'compute_distance_to_joint_limits',
     'compute_joint_velocity_ratio',

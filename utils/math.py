@@ -10,7 +10,10 @@ across feasibility analysis and continuity checks.
 """
 
 import numpy as np
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Sequence, List
+
+
+_TWO_PI = 2.0 * np.pi
 
 
 def shortest_angular_distance(q1: float, q2: float) -> float:
@@ -33,6 +36,145 @@ def shortest_angular_distance(q1: float, q2: float) -> float:
     # differnt way to do it 
     diff = ((q2 - q1 + np.pi) % (2 * np.pi)) - np.pi
     return abs(diff)
+
+
+def signed_shortest_angular_distance(from_angle: float, to_angle: float) -> float:
+    """Signed shortest distance on the circle, in ``(-π, π]``.
+
+    Appropriate for URDF **continuous** joints (no position limits).  Adding
+    the result to ``from_angle`` yields a 2π-equivalent of ``to_angle``.
+    """
+    return float(((to_angle - from_angle + np.pi) % _TWO_PI) - np.pi)
+
+
+def revolute_equivalents_in_limits(
+    angle: float,
+    lower: float,
+    upper: float,
+    tol: float = 1e-9,
+) -> List[float]:
+    """Return all ``angle + 2πk`` that lie in the revolute stroke ``[lower, upper]``.
+
+    URDF **revolute** joints live on a closed interval with hard stops, not on
+    a circle.  When the stroke is wider than ``2π`` (e.g. IRB 1300 J4 ≈ ±230°,
+    J6 ≈ ±400°), several 2π-equivalent encoder readings are valid and physically
+    distinct stops on the same kinematic pose class.
+    """
+    if not np.isfinite(angle) or upper < lower:
+        return []
+    # Inclusive integer k-range covering the stroke.
+    k_lo = int(np.floor((lower - angle) / _TWO_PI)) - 1
+    k_hi = int(np.ceil((upper - angle) / _TWO_PI)) + 1
+    out: List[float] = []
+    for k in range(k_lo, k_hi + 1):
+        cand = float(angle + k * _TWO_PI)
+        if lower - tol <= cand <= upper + tol:
+            out.append(float(np.clip(cand, lower, upper)))
+    # Deduplicate near-ties from clipping.
+    if not out:
+        return []
+    out = sorted(out)
+    dedup = [out[0]]
+    for v in out[1:]:
+        if abs(v - dedup[-1]) > tol:
+            dedup.append(v)
+    return dedup
+
+
+def map_revolute_near_previous(
+    previous: float,
+    raw: float,
+    lower: float,
+    upper: float,
+) -> float:
+    """Choose the revolute reading of ``raw`` closest to ``previous`` in-stroke.
+
+    Among all ``raw + 2πk ∈ [lower, upper]``, pick the one minimizing
+    ``|cand - previous|`` along the joint stroke (absolute distance on the
+    interval — **not** circular shortest distance).  That is the ROS / MoveIt
+    model for limited revolute joints: you may not wrap past the URDF stops.
+
+    If no equivalent fits the stroke, ``raw`` is returned unchanged so a
+    downstream continuity check can still flag a bad sample.
+    """
+    cands = revolute_equivalents_in_limits(raw, lower, upper)
+    if not cands:
+        return float(raw)
+    return float(min(cands, key=lambda c: abs(c - previous)))
+
+
+def make_joint_path_continuous(
+    q: np.ndarray,
+    lower: Optional[np.ndarray] = None,
+    upper: Optional[np.ndarray] = None,
+    joint_types: Optional[Sequence[str]] = None,
+) -> np.ndarray:
+    """Remap a joint path to a continuous representation matching URDF joint type.
+
+    * **revolute** (default): configuration space is ``[lower, upper]``.  Each
+      sample is shifted by ``±2πk`` into the stroke, choosing the equivalent
+      closest to the previous sample.  Unbounded ``np.unwrap`` is **wrong**
+      here — it can walk past hard stops and treats the joint as continuous.
+    * **continuous**: no position limits; use ``np.unwrap`` (multi-turn OK).
+
+    Parameters
+    ----------
+    q :
+        ``(M, n_joints)`` joint samples [rad], typically IK output wrapped into
+        a principal range.
+    lower, upper :
+        ``(n_joints,)`` URDF position limits [rad].  Required for revolute
+        joints; ignored for continuous.
+    joint_types :
+        Per-joint URDF type strings.  ``None`` → all treated as ``revolute``.
+    """
+    q_out = np.asarray(q, dtype=float).copy()
+    if q_out.ndim != 2:
+        raise ValueError(f"q must be 2-D (M, n_joints); got shape {q_out.shape}")
+    M, nj = q_out.shape
+    if M == 0:
+        return q_out
+
+    if joint_types is None:
+        types = ["revolute"] * nj
+    else:
+        types = [str(t).lower() for t in joint_types]
+        if len(types) != nj:
+            raise ValueError(
+                f"joint_types length {len(types)} != n_joints {nj}"
+            )
+
+    if lower is None:
+        lower_arr = np.full(nj, -np.pi)
+    else:
+        lower_arr = np.asarray(lower, dtype=float).ravel()
+    if upper is None:
+        upper_arr = np.full(nj, np.pi)
+    else:
+        upper_arr = np.asarray(upper, dtype=float).ravel()
+    if lower_arr.size != nj or upper_arr.size != nj:
+        raise ValueError(
+            f"lower/upper must have length {nj}; got {lower_arr.size}/{upper_arr.size}"
+        )
+
+    for j in range(nj):
+        jt = types[j]
+        if jt == "continuous":
+            q_out[:, j] = np.unwrap(q_out[:, j])
+            continue
+
+        # revolute (also used as safe default for other angular types)
+        lo = float(lower_arr[j])
+        hi = float(upper_arr[j])
+        c0 = revolute_equivalents_in_limits(q_out[0, j], lo, hi)
+        if c0:
+            # Prefer the equivalent nearest the raw seed (usually already in range).
+            q_out[0, j] = float(min(c0, key=lambda c: abs(c - q_out[0, j])))
+        for i in range(1, M):
+            q_out[i, j] = map_revolute_near_previous(
+                q_out[i - 1, j], q_out[i, j], lo, hi
+            )
+    return q_out
 
 
 def compute_joint_space_distance(q1: np.ndarray, q2: np.ndarray) -> float:

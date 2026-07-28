@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -150,6 +150,9 @@ def detect_corners_joint_space(
     arc_lengths_mm: np.ndarray,
     *,
     corner_speed_ratio: float = 0.4,
+    q_lower: Optional[np.ndarray] = None,
+    q_upper: Optional[np.ndarray] = None,
+    joint_types: Optional[Sequence[str]] = None,
     # Legacy kwargs accepted but ignored (auto-derived internally)
     smoothing_window: Optional[int] = None,
     merge_gap_samples: Optional[int] = None,
@@ -174,11 +177,14 @@ def detect_corners_joint_space(
         MVC < ratio × v_ref.  Default 0.4 (≈ "must slow to 40 % of
         cruising speed").  Lower values detect only sharp corners;
         higher values are more sensitive.
-
-    Returns
-    -------
-    JointSpaceCornerResult
+    q_lower, q_upper, joint_types :
+        Optional URDF position limits / joint types.  When provided,
+        revolute joints are remapped with in-stroke ``±2π`` selection
+        (not unbounded unwrap).  When omitted, falls back to
+        ``np.unwrap`` with a warning — correct only for continuous joints.
     """
+    from utils.math import make_joint_path_continuous
+
     N, nj = q_star_rad.shape
     assert nj == 6
 
@@ -186,8 +192,18 @@ def detect_corners_joint_space(
     alim = np.asarray(accel_limits_rad_s2, dtype=float)
     arc_mm = np.asarray(arc_lengths_mm, dtype=float)
 
-    # ── 1. Unwrap 2π wraps on continuous-rotation joints ──
-    q_unwrapped = np.unwrap(q_star_rad, axis=0)
+    # ── 1. Continuous joint representation (URDF-aware) ──
+    if q_lower is not None and q_upper is not None:
+        q_unwrapped = make_joint_path_continuous(
+            q_star_rad,
+            lower=q_lower,
+            upper=q_upper,
+            joint_types=joint_types,
+        )
+    else:
+        # Legacy fallback: circular unwrap.  Wrong for revolute strokes that
+        # must not walk past URDF stops — callers should pass limits.
+        q_unwrapped = np.unwrap(q_star_rad, axis=0)
 
     # ── 2. Compute joint-space arc length σ ──
     dq = np.diff(q_unwrapped, axis=0)

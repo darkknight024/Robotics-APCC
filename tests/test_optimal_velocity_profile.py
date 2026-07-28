@@ -91,7 +91,27 @@ _JOINT_COLORS = [
 ]
 _JOINT_LABELS = [f"J{j + 1}" for j in range(6)]
 
+# Solver ↔ RobotStudio overlays: fixed palette so every subplot is readable
+# without relying on per-joint colours (which collide with RS blue on J1).
+_RS_COLOR = "#1f77b4"       # matplotlib tab:blue
+_SOLVER_COLOR = "#2ca02c"   # matplotlib tab:green
 _EPS = 1e-12
+
+
+def _rs_solver_legend(ax, *, limits: bool = False, fontsize: int = 7) -> None:
+    """Per-subplot legend: RobotStudio (blue) + solver (green) [+ limits]."""
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Line2D([0], [0], color=_RS_COLOR, lw=1.2, label="RobotStudio"),
+        Line2D([0], [0], color=_SOLVER_COLOR, lw=1.3, label="solver"),
+    ]
+    if limits:
+        handles.append(
+            Line2D([0], [0], color="0.4", ls="--", lw=0.9, label="± joint limit")
+        )
+    ax.legend(handles=handles, fontsize=fontsize, loc="best")
+
 
 
 # =====================================================================
@@ -104,11 +124,21 @@ class JointLimits:
     q_dot_max: np.ndarray        # (6,) rad/s
     q_ddot_accel: np.ndarray     # (6,) rad/s^2
     q_ddot_decel: np.ndarray     # (6,) rad/s^2
+    # URDF position stroke for revolute joints (rad).  None → filled from URDF
+    # at load time when available.
+    q_lower: Optional[np.ndarray] = None
+    q_upper: Optional[np.ndarray] = None
+    # Per-joint URDF type ("revolute", "continuous", ...).  None → all revolute.
+    joint_types: Optional[List[str]] = None
 
     def __post_init__(self) -> None:
         self.q_dot_max = np.asarray(self.q_dot_max, dtype=float)
         self.q_ddot_accel = np.asarray(self.q_ddot_accel, dtype=float)
         self.q_ddot_decel = np.asarray(self.q_ddot_decel, dtype=float)
+        if self.q_lower is not None:
+            self.q_lower = np.asarray(self.q_lower, dtype=float)
+        if self.q_upper is not None:
+            self.q_upper = np.asarray(self.q_upper, dtype=float)
 
     @property
     def q_ddot_max(self) -> np.ndarray:
@@ -332,7 +362,16 @@ def load_joint_path_from_toolpath(
     wp_base[:, :3] *= 1000.0
 
     jd = load_joint_dynamics(str(repo / "config" / "robots_config.yaml"), _ROBOT_NAME)
-    limits = JointLimits(jd.q_dot_max, jd.q_ddot_accel, jd.q_ddot_decel)
+    from utils.urdf_loader import load_actuated_joint_meta
+    jmeta = load_actuated_joint_meta(str(repo / robot.urdf_path))
+    limits = JointLimits(
+        jd.q_dot_max,
+        jd.q_ddot_accel,
+        jd.q_ddot_decel,
+        q_lower=jmeta.lower_position_limit[:6].copy(),
+        q_upper=jmeta.upper_position_limit[:6].copy(),
+        joint_types=list(jmeta.joint_types[:6]),
+    )
 
     v_cmd_at_s = np.asarray(result.dense_path.v_cmd_at_s, dtype=float).copy()
     s_cmd_mm = np.asarray(result.dense_path.arc_lengths, dtype=float).copy()
@@ -441,6 +480,81 @@ def load_rs_joint_vs_arc(
     return rec.s_mm, rec.q_deg
 
 
+def _savgol_time_derivative(
+    y: np.ndarray,
+    t: np.ndarray,
+    *,
+    window_s: float = 0.08,
+    polyorder: int = 3,
+) -> np.ndarray:
+    """Differentiate ``y(t)`` with a Savitzky–Golay filter (low-noise).
+
+    Preferred over raw ``np.gradient`` for RS accel→jerk and for TOPP
+    bang-bang ``s̈``/``q̈`` which are piecewise and otherwise ring under CD.
+
+    * Nearly-uniform ``t``: S-G with ``delta = median(dt)``.
+    * Non-uniform ``t``: interpolate to a uniform grid, differentiate, map back.
+    * Falls back to ``np.gradient`` when the series is too short for S-G.
+    """
+    from scipy.signal import savgol_filter
+
+    y = np.asarray(y, dtype=float)
+    t = np.asarray(t, dtype=float).ravel().copy()
+    if len(t) != len(y):
+        raise ValueError(f"y/t length mismatch: {len(y)} vs {len(t)}")
+    n = len(t)
+    if n < 3:
+        return np.zeros_like(y)
+
+    # Duplicate / non-monotone timestamps (RS CSV) → nudge before gradient/S-G.
+    for i in range(1, n):
+        if not np.isfinite(t[i]) or t[i] <= t[i - 1]:
+            prev = t[i - 1] if np.isfinite(t[i - 1]) else 0.0
+            t[i] = prev + 1e-9
+
+    dt_med = float(np.median(np.diff(t)))
+    if not np.isfinite(dt_med) or dt_med <= 0:
+        return np.gradient(y, t, axis=0)
+
+    # Odd window covering ~window_s seconds, within [polyorder+2, n].
+    n_win = int(round(float(window_s) / dt_med))
+    if n_win % 2 == 0:
+        n_win += 1
+    min_win = polyorder + 2 + (1 - (polyorder + 2) % 2)  # next odd ≥ poly+2
+    n_win = max(min_win, n_win)
+    max_win = n if (n % 2 == 1) else (n - 1)
+    if max_win < min_win:
+        return np.gradient(y, t, axis=0)
+    n_win = min(n_win, max_win)
+
+    dt_arr = np.diff(t)
+    nearly_uniform = float(np.std(dt_arr)) <= 0.05 * abs(dt_med)
+
+    def _sg_1d(yy: np.ndarray, tt: np.ndarray) -> np.ndarray:
+        if nearly_uniform:
+            return savgol_filter(
+                yy, window_length=n_win, polyorder=polyorder,
+                deriv=1, delta=dt_med, mode="interp",
+            )
+        tt_u = np.linspace(tt[0], tt[-1], n)
+        du = float(tt_u[1] - tt_u[0])
+        if du <= 0:
+            return np.gradient(yy, tt)
+        yy_u = np.interp(tt_u, tt, yy)
+        dyy_u = savgol_filter(
+            yy_u, window_length=n_win, polyorder=polyorder,
+            deriv=1, delta=du, mode="interp",
+        )
+        return np.interp(tt, tt_u, dyy_u)
+
+    if y.ndim == 1:
+        return _sg_1d(y, t)
+    out = np.empty_like(y)
+    for j in range(y.shape[1]):
+        out[:, j] = _sg_1d(y[:, j], t)
+    return out
+
+
 def _v_cmd_on_grid(
     s_query: np.ndarray,
     s_cmd_mm: np.ndarray,
@@ -508,6 +622,9 @@ def step0_validate(
     ds_min_mm: float = 1e-6,
     jump_tol_rad: float = 0.3,
     jump_spacing_mm: float = 5.0,
+    q_lower: Optional[np.ndarray] = None,
+    q_upper: Optional[np.ndarray] = None,
+    joint_types: Optional[List[str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict]:
     """Validate + condition the input joint path. Fails loudly.
 
@@ -515,7 +632,15 @@ def step0_validate(
     is the strictly increasing arc-length of the retained samples,
     ``q_kept`` the retained joint samples, ``pos_kept`` the retained TCP
     xyz [mm], and ``quat_kept`` the retained TCP quaternions [wxyz].
+
+    Joint continuity (check 0.5) respects URDF joint *type*:
+      * **revolute** — remap each sample by ``±2πk`` into ``[q_lower, q_upper]``
+        choosing the equivalent nearest the previous sample (interval metric).
+        Unbounded ``np.unwrap`` is incorrect: revolute joints have hard stops.
+      * **continuous** — ``np.unwrap`` (multi-turn on the circle is allowed).
     """
+    from utils.math import make_joint_path_continuous
+
     report: Dict = {"checks": {}}
     q = np.asarray(q_raw, dtype=float)
     poses = np.asarray(poses, dtype=float)
@@ -588,10 +713,24 @@ def step0_validate(
     report["n_kept"] = int(len(s_mm))
 
     # 0.5 CONTINUITY / BRANCH CHECK ---------------------------------------
+    # Remap IK principal-value wraps using URDF joint semantics (revolute
+    # stroke vs continuous unwrap).  See make_joint_path_continuous.
+    types = joint_types if joint_types is not None else ["revolute"] * 6
+    if q_lower is None or q_upper is None:
+        # Safe IRB 1300-7/1.4 fallback if caller forgot URDF limits.
+        q_lower = np.array([-3.1416, -1.6581, -3.6652, -4.0143, -2.2689, -6.9813])
+        q_upper = np.array([ 3.1416,  2.7053,  1.2043,  4.0143,  2.2689,  6.9813])
+        print(
+            "  [WARN] step0: no URDF position limits passed; "
+            "using IRB 1300-7/1.4 revolute stroke defaults."
+        )
+    q_kept = make_joint_path_continuous(
+        q_kept, lower=q_lower, upper=q_upper, joint_types=types,
+    )
+    # After remapping, consecutive samples must be close on the joint stroke.
+    # A remaining large jump is a true IK branch flip (not a ±π principal wrap).
     dq = np.max(np.abs(np.diff(q_kept, axis=0)), axis=1)
     ds_kept = np.diff(s_mm)
-    # Only enforce the jump tolerance where sampling is dense enough that a
-    # large joint step is not simply a legitimately long segment.
     dense = ds_kept <= jump_spacing_mm
     viol = np.where(dense & (dq > jump_tol_rad))[0]
     if viol.size:
@@ -601,9 +740,16 @@ def step0_validate(
             f"(|Δq|={dq[k]:.3f} rad over {ds_kept[k]:.3f} mm > {jump_tol_rad} rad). "
             "Differentiation across a branch flip is meaningless. Aborting."
         )
+    n_rev = sum(1 for t in types if str(t).lower() == "revolute")
+    n_cont = sum(1 for t in types if str(t).lower() == "continuous")
     report["checks"]["0.5_continuity"] = (
-        True, f"max |Δq| = {float(dq.max()):.4f} rad (< {jump_tol_rad})"
+        True,
+        f"max |Δq| = {float(dq.max()):.4f} rad (< {jump_tol_rad}) "
+        f"after URDF remap (revolute={n_rev}, continuous={n_cont})",
     )
+    report["q_lower"] = np.asarray(q_lower, dtype=float)
+    report["q_upper"] = np.asarray(q_upper, dtype=float)
+    report["joint_types"] = list(types)
 
     # 0.6 PASS/FAIL TABLE --------------------------------------------------
     print("\n" + "=" * 64)
@@ -2622,6 +2768,7 @@ def _plot_A_geometry_with_rs(
 
     r2d = np.rad2deg
     s = res.s_eval
+    has_rs = rs_s_mm is not None and rs_q_deg is not None
     fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
     for j, ax in enumerate(axes):
         _shade_regions(ax, s, regions)
@@ -2633,13 +2780,17 @@ def _plot_A_geometry_with_rs(
         for a, b in _mask_spans(binds_acc):
             ax.axvspan(s[a], s[b], color="#F58518", alpha=0.15, lw=0, zorder=0)
 
-        if rs_s_mm is not None and rs_q_deg is not None:
-            ax.plot(rs_s_mm, rs_q_deg[:, j], "-", lw=1.4, color="0.35",
-                    alpha=0.85, zorder=3, label="RobotStudio rs_j*_deg")
+        # When RS is present, enforce RS=blue / solver=green on every joint
+        # subplot so the overlay is unambiguous (same palette as group G).
+        spline_color = _SOLVER_COLOR if has_rs else _JOINT_COLORS[j]
+        raw_color = _SOLVER_COLOR if has_rs else _JOINT_COLORS[j]
+        if has_rs:
+            ax.plot(rs_s_mm, rs_q_deg[:, j], "-", lw=1.4, color=_RS_COLOR,
+                    alpha=0.9, zorder=3, label="RobotStudio")
         ax.plot(res.s_raw, r2d(res.q_raw[:, j]), ".", ms=1.4, alpha=0.25,
-                color=_JOINT_COLORS[j], zorder=4)
-        ax.plot(s, r2d(res.q[:, j]), "-", lw=1.4, color=_JOINT_COLORS[j],
-                zorder=5, label="IK spline")
+                color=raw_color, zorder=4)
+        ax.plot(s, r2d(res.q[:, j]), "-", lw=1.4, color=spline_color,
+                zorder=5, label="solver")
         ax.set_ylabel(f"{_JOINT_LABELS[j]}\nq [deg]", fontsize=8)
         ax.grid(alpha=0.25)
         frac_v = float(np.mean(binds_vel))
@@ -2649,21 +2800,30 @@ def _plot_A_geometry_with_rs(
             f"vel-bind {100 * frac_v:.0f}%  |  accel-bind {100 * frac_a:.0f}%",
             transform=ax.transAxes, ha="right", va="top", fontsize=7,
         )
+        if has_rs:
+            ax.legend(
+                handles=[
+                    Line2D([0], [0], color=_RS_COLOR, lw=1.4, label="RobotStudio"),
+                    Line2D([0], [0], color=_SOLVER_COLOR, lw=1.4, label="solver"),
+                ],
+                fontsize=7, loc="upper left",
+            )
     title = "A  q(s) per joint: IK raw (dots) + quintic spline"
-    if rs_s_mm is not None:
-        title += "  |  RobotStudio joints (gray)"
+    if has_rs:
+        title += "  |  RobotStudio (blue) vs solver (green)"
     axes[0].set_title(title, fontsize=11)
-    handles = [
-        *_region_legend_handles(),
-        Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
-        Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
-        Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.4, label="IK spline"),
-        Line2D([0], [0], color=_JOINT_COLORS[0], marker=".", ls="none",
-               label="IK raw samples"),
-    ]
-    if rs_s_mm is not None:
-        handles.append(Line2D([0], [0], color="0.35", lw=1.4, label="RobotStudio"))
-    axes[0].legend(handles=handles, fontsize=7, loc="upper left", ncol=3)
+    if not has_rs:
+        axes[0].legend(
+            handles=[
+                *_region_legend_handles(),
+                Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
+                Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
+                Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.4, label="IK spline"),
+                Line2D([0], [0], color=_JOINT_COLORS[0], marker=".", ls="none",
+                       label="IK raw samples"),
+            ],
+            fontsize=7, loc="upper left", ncol=3,
+        )
     axes[-1].set_xlabel("arc-length s [mm]")
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
@@ -2695,36 +2855,52 @@ def _plot_tcp_vs_rs(
     rs: RSRecording,
     mode_name: str,
     waypoints_base: Optional[np.ndarray] = None,
+    plot_jerk: bool = False,
 ) -> str:
-    """TCP speed + |TCP accel| vs arc-length: solver vs RobotStudio.
+    """TCP speed + |TCP accel| [+ |TCP jerk|] vs arc-length: solver vs RS.
 
     In commanded mode, steady-state samples (outside the accel-transient
     mask) deviating from RS by more than 10% are marked red.
 
-    Panel 3 (commanded mode): per-waypoint inbound-segment area between
-    solver and RS TCP speed curves, integrating only non-transient samples:
-    ``A_i = ∫_{WP_{i-1}}^{WP_i} |v*(s) − v_RS(s)| ds`` [mm²/s ≡ mm·(mm/s)].
+    Optional jerk panel (``plot_jerk``): Savitzky–Golay ``d/dt`` of solver
+    ``s̈`` and of RS logged TCP accel.
+
+    Final commanded panel: per-waypoint inbound-segment area between solver
+    and RS TCP speed curves (non-transient only):
+    ``A_i = ∫_{WP_{i-1}}^{WP_i} |v*(s) − v_RS(s)| ds``.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     s = res.s_eval
-    n_panels = 3 if (
+    show_area = (
         res.mode == "commanded"
         and waypoints_base is not None
         and res.tcp_xyz is not None
-    ) else 2
-    fig, axes = plt.subplots(
-        n_panels, 1, figsize=(14, 4 + 3.2 * n_panels), sharex=True,
-        gridspec_kw={"height_ratios": [2.2, 1.4] + ([1.6] if n_panels == 3 else [])},
     )
-    if n_panels == 2:
+    # Panel order: speed, accel, [jerk], [area]
+    height_ratios = [2.2, 1.4]
+    if plot_jerk:
+        height_ratios.append(1.4)
+    if show_area:
+        height_ratios.append(1.6)
+    n_panels = len(height_ratios)
+    fig, axes = plt.subplots(
+        n_panels, 1, figsize=(14, 4 + 3.0 * n_panels), sharex=True,
+        gridspec_kw={"height_ratios": height_ratios},
+    )
+    if n_panels == 1:
+        axes = [axes]
+    else:
         axes = list(axes)
-    ax = axes[0]
-    ax.plot(rs.s_mm, rs.tcp_speed_mm_s, lw=1.3, color="#1f77b4", alpha=0.9,
-            label="RobotStudio TCP speed")
-    ax.plot(s, res.v_star, lw=1.4, color="#2ca02c", label="solver TCP speed")
+    panel = 0
+
+    ax = axes[panel]
+    panel += 1
+    ax.plot(rs.s_mm, rs.tcp_speed_mm_s, lw=1.3, color=_RS_COLOR, alpha=0.9,
+            label="RobotStudio")
+    ax.plot(s, res.v_star, lw=1.4, color=_SOLVER_COLOR, label="solver")
     if res.v_lim is not None:
         ax.plot(s, res.v_lim, "--", lw=1.0, color="0.35", alpha=0.7,
                 label="solver v_lim ceiling")
@@ -2754,13 +2930,15 @@ def _plot_tcp_vs_rs(
     ax.grid(True, alpha=0.3)
     ax.legend(h, lab, loc="best", fontsize=8)
     ax.set_title(f"G1  TCP speed & accel — {mode_name}\n"
-                 "RS = recorded RobotStudio run at toolpath commanded speed")
+                 "RS = recorded RobotStudio run at toolpath commanded speed "
+                 "(blue = RobotStudio, green = solver)")
 
-    ax2 = axes[1]
-    ax2.plot(rs.s_mm, np.abs(rs.tcp_accel_mm_s2), lw=1.1, color="#1f77b4",
-             alpha=0.9, label="RobotStudio |TCP accel|")
-    ax2.plot(s, np.abs(res.s_ddot), lw=1.2, color="#d62728",
-             label="solver |s_ddot| (TCP tangential accel)")
+    ax2 = axes[panel]
+    panel += 1
+    ax2.plot(rs.s_mm, np.abs(rs.tcp_accel_mm_s2), lw=1.1, color=_RS_COLOR,
+             alpha=0.9, label="RobotStudio")
+    ax2.plot(s, np.abs(res.s_ddot), lw=1.2, color=_SOLVER_COLOR,
+             label="solver")
     if trans is not None and np.any(trans):
         for a, b in _mask_spans(trans):
             ax2.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
@@ -2772,18 +2950,41 @@ def _plot_tcp_vs_rs(
         lab2 = list(lab2) + ["accel-transient (excluded from RS bench)"]
     ax2.legend(h2, lab2, loc="best", fontsize=8)
 
-    if n_panels == 3:
-        ax3 = axes[2]
+    if plot_jerk and res.t is not None and res.s_ddot is not None:
+        axj = axes[panel]
+        panel += 1
+        solver_jerk = _savgol_time_derivative(res.s_ddot, res.t)
+        rs_jerk = _savgol_time_derivative(rs.tcp_accel_mm_s2, rs.t_s)
+        axj.plot(rs.s_mm, np.abs(rs_jerk), lw=1.1, color=_RS_COLOR,
+                 alpha=0.9, label="RobotStudio")
+        axj.plot(s, np.abs(solver_jerk), lw=1.2, color=_SOLVER_COLOR,
+                 label="solver")
+        if trans is not None and np.any(trans):
+            for a, b in _mask_spans(trans):
+                axj.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+        axj.set_ylabel("|TCP jerk| [mm/s³]")
+        axj.grid(True, alpha=0.3)
+        hj, labj = axj.get_legend_handles_labels()
+        if trans is not None and np.any(trans):
+            hj = list(hj) + [_accel_transient_legend_handle()]
+            labj = list(labj) + ["accel-transient (excluded from RS bench)"]
+        axj.legend(hj, labj, loc="best", fontsize=8)
+        axj.set_title(
+            "G1b  TCP tangential jerk — Savitzky–Golay d/dt of accel "
+            "(~80 ms window; blue = RobotStudio, green = solver)"
+        )
+
+    if show_area:
+        ax3 = axes[panel]
+        panel += 1
         wp_s = _waypoint_arc_lengths(waypoints_base, res.tcp_xyz, s)
         order = np.argsort(wp_s)
         wp_s = wp_s[order]
         rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
         abs_err = np.abs(res.v_star - rs_v)
-        # Exclude accel-transient samples from the integral.
         use = np.ones(len(s), dtype=bool)
         if trans is not None:
             use &= ~trans
-        # Per inbound segment WP[i-1] → WP[i] (i = 1..N-1).
         areas = []
         mid_s = []
         labels = []
@@ -2796,7 +2997,6 @@ def _plot_tcp_vs_rs(
                 continue
             m = use & (s >= lo) & (s <= hi)
             if m.sum() < 2:
-                # No steady samples in this WP span (fully transient).
                 areas.append(np.nan)
             else:
                 _trapz = getattr(np, "trapezoid", np.trapz)
@@ -2816,7 +3016,6 @@ def _plot_tcp_vs_rs(
                 continue
             ax3.text(x, a, f"WP{lab_i}", ha="center", va="bottom",
                      fontsize=6, rotation=90)
-        # Mark WP locations
         for ws in wp_s:
             ax3.axvline(ws, color="0.6", lw=0.4, alpha=0.5)
         if trans is not None and np.any(trans):
@@ -2824,21 +3023,18 @@ def _plot_tcp_vs_rs(
                 ax3.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
         total = float(np.nansum(areas_a))
         ax3.set_ylabel("∫|v*−v_RS| ds\n[mm·(mm/s)]", fontsize=9)
-        ax3.set_xlabel("arc-length s [mm]")
         ax3.set_title(
             "G1c  Per-waypoint area between solver and RS TCP speed "
             f"(non-transient only; total={total:.1f})"
         )
         ax3.grid(True, alpha=0.3, axis="y")
-        ax3.legend(
-            handles=[
-                _accel_transient_legend_handle(),
-            ] if (trans is not None and np.any(trans)) else [],
-            fontsize=8, loc="best",
-        )
-    else:
-        axes[-1].set_xlabel("arc-length s [mm]")
+        if trans is not None and np.any(trans):
+            ax3.legend(
+                handles=[_accel_transient_legend_handle()],
+                fontsize=8, loc="best",
+            )
 
+    axes[-1].set_xlabel("arc-length s [mm]")
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
@@ -2856,36 +3052,33 @@ def _plot_joint_series_vs_rs(
     limits: Optional[np.ndarray] = None,
     unwrap_deg: bool = False,
 ) -> str:
-    """2×3 per-joint overlay: solver vs RobotStudio vs arc-length."""
+    """2×3 per-joint overlay: solver (green) vs RobotStudio (blue) vs arc-length.
+
+    Every joint subplot gets its own legend.  Colours are fixed across J1–J6
+    so the RS/solver pairing is never confused with the per-joint palette.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
 
-    rs_on = _interp_rs_to_solver(rs_s, rs_vals, s_eval, unwrap_deg=unwrap_deg)
     fig, axes = plt.subplots(2, 3, figsize=(16, 8), sharex=True)
     for j in range(6):
         ax = axes[j // 3][j % 3]
-        ax.plot(rs_s, rs_vals[:, j], lw=1.2, color="#1f77b4", alpha=0.85,
+        rs_col = np.asarray(rs_vals[:, j], dtype=float)
+        if unwrap_deg:
+            rs_col = np.rad2deg(np.unwrap(np.deg2rad(rs_col)))
+        ax.plot(rs_s, rs_col, lw=1.2, color=_RS_COLOR, alpha=0.9,
                 label="RobotStudio")
-        ax.plot(s_eval, solver_vals[:, j], lw=1.3, color=_JOINT_COLORS[j],
+        ax.plot(s_eval, solver_vals[:, j], lw=1.3, color=_SOLVER_COLOR,
                 label="solver")
         if limits is not None:
             lim = float(abs(limits[j]))
-            ax.axhline(lim, ls="--", color="0.4", lw=0.9, label="± joint limit")
+            ax.axhline(lim, ls="--", color="0.4", lw=0.9)
             ax.axhline(-lim, ls="--", color="0.4", lw=0.9)
         ax.set_title(_JOINT_LABELS[j], fontsize=10)
         ax.set_ylabel(ylabel, fontsize=8)
         ax.grid(True, alpha=0.3)
-        if j == 0:
-            handles = [
-                Line2D([0], [0], color="#1f77b4", lw=1.2, label="RobotStudio"),
-                Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.3, label="solver"),
-            ]
-            if limits is not None:
-                handles.append(Line2D([0], [0], color="0.4", ls="--",
-                                      label="± joint limit"))
-            ax.legend(handles=handles, fontsize=7, loc="best")
+        _rs_solver_legend(ax, limits=(limits is not None))
     for ax in axes[1]:
         ax.set_xlabel("arc-length s [mm]")
     fig.suptitle(title, fontsize=12)
@@ -2979,6 +3172,7 @@ def _make_plots(
     rs_q_deg: Optional[np.ndarray] = None,
     rs_rec: Optional[RSRecording] = None,
     common_dir: Optional[Path] = None,
+    plot_jerk: bool = False,
 ) -> List[str]:
     import matplotlib
     matplotlib.use("Agg")
@@ -3336,6 +3530,7 @@ def _make_plots(
         paths.append(_plot_tcp_vs_rs(
             dir_g / "G1_tcp_speed_accel_vs_rs.png", res, rs_rec, mode_name,
             waypoints_base=waypoints_base,
+            plot_jerk=plot_jerk,
         ))
         qd_lim = r2d(res.metrics["_qd_max"])
         qdd_lim = r2d(res.metrics["_qdd_max"])
@@ -3363,6 +3558,21 @@ def _make_plots(
             "dashed = joint acceleration limits",
             limits=qdd_lim,
         ))
+        if plot_jerk and res.t is not None and res.q_ddot is not None:
+            # Joint jerk = Savitzky–Golay d/dt of joint acceleration (deg/s³).
+            solver_jerk_deg = _savgol_time_derivative(
+                np.rad2deg(res.q_ddot), res.t,
+            )
+            rs_jerk_deg = _savgol_time_derivative(
+                rs_rec.qddot_deg_s2, rs_rec.t_s,
+            )
+            paths.append(_plot_joint_series_vs_rs(
+                dir_g / "G5_joint_jerk_vs_rs.png",
+                s, solver_jerk_deg, rs_rec.s_mm, rs_jerk_deg,
+                "q⃛ [deg/s³]",
+                f"G5  Joint jerk — {mode_name}\n"
+                "Savitzky–Golay d/dt of joint acceleration (~80 ms window)",
+            ))
         summary = _write_rs_compare_summary(dir_g, res, rs_rec, mode_name)
         paths.append(str(summary))
 
@@ -3651,6 +3861,7 @@ def run_diagnostics(
     transient_pad_mm: float = 5.0,
     toolpath_csv: Optional[str | Path] = None,
     apply_rs_velocity_cap: bool = True,
+    plot_jerk: bool = False,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -3686,7 +3897,13 @@ def run_diagnostics(
     )
 
     # Step 0
-    s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(q_raw, poses)
+    s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(
+        q_raw,
+        poses,
+        q_lower=limits.q_lower,
+        q_upper=limits.q_upper,
+        joint_types=limits.joint_types,
+    )
     res.s_raw, res.q_raw, res.tcp_xyz_raw, res.step0 = s_mm, q_kept, pos_kept, step0
     res.quat_raw = quat_kept
 
@@ -3952,6 +4169,7 @@ def run_diagnostics(
             rs_q_deg=rs_q_deg,
             rs_rec=rs_rec,
             common_dir=common_dir,
+            plot_jerk=plot_jerk,
         )
 
     return res
@@ -4034,6 +4252,7 @@ _DATASET_FOLDERS: Dict[str, str | Dict[str, str]] = {
     },
     "v8": "v8_snake_toolpath_with_variable_wp_spacing",
     "v9": "v9_snake_toolpaths_orientation_test",
+    "v11": "v11_snake_toolpaths_with_x_axis_ori_changes",
 }
 
 
@@ -4400,6 +4619,7 @@ def _process_one_toolpath(
     ds_mm: float = _DEFAULT_DS_MM,
     apply_rs_velocity_cap: bool = True,
     smooth_orientation: bool = True,
+    plot_jerk: bool = False,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -4464,6 +4684,7 @@ def _process_one_toolpath(
         common_dir=case_dir,
         secant_window_mm=secant_window_mm,
         transient_pad_mm=transient_pad_mm,
+        plot_jerk=plot_jerk,
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
@@ -4662,6 +4883,11 @@ def main() -> None:
         help="Keep Feature-3 piecewise-SLERP orientation (default: replace "
              "with a globally smooth R(s) before IK; XYZ blends unchanged).",
     )
+    parser.add_argument(
+        "--jerk", action="store_true",
+        help="Enable joint (G5) and TCP jerk panels: Savitzky–Golay d/dt of "
+             "acceleration for solver and RobotStudio (off by default).",
+    )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
 
@@ -4693,6 +4919,7 @@ def main() -> None:
             ds_mm=args.ds_mm,
             apply_rs_velocity_cap=not args.no_vcap,
             smooth_orientation=not args.no_smooth_orientation,
+            plot_jerk=bool(args.jerk),
         )
         batch_rows.append(row)
 

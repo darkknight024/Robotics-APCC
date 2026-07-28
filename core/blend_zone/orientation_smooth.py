@@ -102,6 +102,27 @@ def hemispherize_quats(quats_wxyz: np.ndarray) -> np.ndarray:
     return q
 
 
+def _ensure_strictly_increasing(x: np.ndarray, eps: float = 1e-9) -> np.ndarray:
+    """Return a copy of ``x`` with ties / decreases nudged so ``diff(x) > 0``.
+
+    Needed before ``np.gradient(..., x)`` — zero steps (pure reorientation
+    samples on a Feature-3 path) otherwise yield divide-by-zero warnings and
+    NaNs that poison overshoot guards and diagnostics.
+    """
+    x = np.asarray(x, dtype=float).copy()
+    for i in range(1, len(x)):
+        if not np.isfinite(x[i]) or x[i] <= x[i - 1]:
+            prev = x[i - 1] if np.isfinite(x[i - 1]) else 0.0
+            x[i] = prev + eps
+    return x
+
+
+def _safe_gradient(y: np.ndarray, x: np.ndarray, axis: int = 0) -> np.ndarray:
+    """``np.gradient(y, x)`` with strictly-increasing ``x`` (no zero dx)."""
+    x_safe = _ensure_strictly_increasing(np.asarray(x, dtype=float).ravel())
+    return np.gradient(y, x_safe, axis=axis)
+
+
 def _wxyz_to_scipy(quats_wxyz: np.ndarray) -> Rotation:
     """Batch Rotation from (N,4) wxyz."""
     q = _normalize_quats(quats_wxyz)
@@ -262,12 +283,12 @@ def _tune_rotvec_shared(
             break
 
     # Overshoot guard on ||dr/ds||
-    raw_d1 = np.linalg.norm(np.gradient(r, s, axis=0), axis=1)
+    raw_d1 = np.linalg.norm(_safe_gradient(r, s, axis=0), axis=1)
     slope_ref = max(float(np.percentile(raw_d1, 99.5)), 1e-12)
     n_backoff = 0
     while pick > 0:
         r_hat = history[pick][3]
-        d1 = np.linalg.norm(np.gradient(r_hat, s, axis=0), axis=1)
+        d1 = np.linalg.norm(_safe_gradient(r_hat, s, axis=0), axis=1)
         if float(np.max(d1)) <= osc_factor * slope_ref:
             break
         pick -= 1
@@ -343,12 +364,8 @@ def smooth_orientation_along_s(
             info={"skipped": True, "reason": "M<6", "n_samples": len(q)},
         )
 
-    # Ensure strictly increasing s for LSQUnivariateSpline.
-    if np.any(np.diff(s) <= 0):
-        s = s.copy()
-        for i in range(1, len(s)):
-            if s[i] <= s[i - 1]:
-                s[i] = s[i - 1] + 1e-6
+    # Ensure strictly increasing s for LSQUnivariateSpline / gradients.
+    s = _ensure_strictly_increasing(s)
 
     q_raw = hemispherize_quats(q_in)
     r_raw = cumulative_body_rotvec(q_raw)
@@ -444,6 +461,6 @@ def orientation_rate_spectrum(
     dth_ds[0] = dth_ds_mid[0]
     dth_ds[-1] = dth_ds_mid[-1]
     dth_ds[1:-1] = 0.5 * (dth_ds_mid[:-1] + dth_ds_mid[1:])
-    d2 = np.gradient(dth_ds, s)
+    d2 = _safe_gradient(dth_ds, s)
     theta = np.concatenate([[0.0], np.cumsum(dth)])
     return {"theta_cum": theta, "dtheta_ds": dth_ds, "d2theta_ds2": d2}
