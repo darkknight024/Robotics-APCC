@@ -318,10 +318,15 @@ def plot_3d_comparison_html(
     max_i = int(np.argmax(pos_err))
 
     fig = go.Figure()
+    _hover = (
+        "x: %{x:.3f} mm<br>y: %{y:.3f} mm<br>z: %{z:.3f} mm<br>"
+        "s = %{customdata:.2f} mm<extra>%{fullData.name}</extra>"
+    )
     fig.add_trace(go.Scatter3d(
         x=gt_xyz[:, 0], y=gt_xyz[:, 1], z=gt_xyz[:, 2],
         mode="lines", name="Feature-3 dense poses",
         line=dict(color="steelblue", width=4), scene="scene",
+        customdata=s_eval, hovertemplate=_hover,
     ))
     fig.add_trace(go.Scatter3d(
         x=fk_xyz_mm[:, 0], y=fk_xyz_mm[:, 1], z=fk_xyz_mm[:, 2],
@@ -331,6 +336,7 @@ def plot_3d_comparison_html(
             colorbar=dict(title="|Δp| [mm]", x=1.0, len=0.5, y=0.75),
         ),
         scene="scene",
+        customdata=s_eval, hovertemplate=_hover,
     ))
     fig.add_trace(go.Scatter3d(
         x=[float(fk_xyz_mm[max_i, 0])],
