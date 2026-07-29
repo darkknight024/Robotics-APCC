@@ -413,6 +413,65 @@ class RSRecording:
     path: Path = field(default_factory=Path)
 
 
+@dataclass
+class RSPathDerivatives:
+    """Geometric path derivatives estimated from an RS recording.
+
+    Reliability
+    -----------
+    * ``q(s)``, ``s_dot`` — direct logs; reliable.
+    * ``s_ddot`` — Savitzky–Golay ``d(speed)/dt`` (tangential). More consistent
+      with ``s_dot`` than the CSV ``linear_acceleration`` column (which only
+      correlates ~0.6 with ``dv/dt`` and may mix path-normal content).
+    * ``dq/ds = q̇ / ṡ``, ``d²q/ds² = (q̈ − dq/ds·s̈) / ṡ²`` — reliable only
+      where ``|ṡ| ≥ v_min`` (elsewhere NaN). RS sampling is coarse (~2–3 mm,
+      ~24 ms), so ``d²q/ds²`` is noisier than the dense IK/spline estimates.
+    """
+
+    s_mm: np.ndarray
+    q_deg: np.ndarray
+    dqds_deg_mm: np.ndarray
+    d2qds2_deg_mm2: np.ndarray
+    s_dot_mm_s: np.ndarray
+    s_ddot_mm_s2: np.ndarray
+    valid_geom: np.ndarray
+    v_min_mm_s: float
+
+
+def estimate_rs_path_derivatives(
+    rs: RSRecording,
+    v_min_mm_s: float = 5.0,
+) -> RSPathDerivatives:
+    """Estimate q(s), dq/ds, d²q/ds², ṡ, s̈ from RobotStudio logs."""
+    s_dot = np.asarray(rs.tcp_speed_mm_s, dtype=float).copy()
+    # Tangential path accel from the logged speed schedule (not CSV accel).
+    s_ddot = _savgol_time_derivative(s_dot[:, None], rs.t_s).ravel()
+
+    qdot = np.deg2rad(np.asarray(rs.qdot_deg_s, dtype=float))
+    qdd = np.deg2rad(np.asarray(rs.qddot_deg_s2, dtype=float))
+    valid = np.isfinite(s_dot) & (np.abs(s_dot) >= float(v_min_mm_s))
+
+    dqds = np.full_like(qdot, np.nan)
+    d2qds2 = np.full_like(qdot, np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dqds[valid] = qdot[valid] / s_dot[valid, None]
+        d2qds2[valid] = (
+            (qdd[valid] - dqds[valid] * s_ddot[valid, None])
+            / np.maximum(s_dot[valid, None] ** 2, 1e-12)
+        )
+
+    return RSPathDerivatives(
+        s_mm=np.asarray(rs.s_mm, dtype=float),
+        q_deg=np.asarray(rs.q_deg, dtype=float),
+        dqds_deg_mm=np.rad2deg(dqds),
+        d2qds2_deg_mm2=np.rad2deg(d2qds2),
+        s_dot_mm_s=s_dot,
+        s_ddot_mm_s2=s_ddot,
+        valid_geom=valid,
+        v_min_mm_s=float(v_min_mm_s),
+    )
+
+
 def find_matching_rs_csv(
     toolpath_csv: str | Path,
     rs_dir: Optional[Path] = None,
@@ -1888,10 +1947,14 @@ def _plot_per_joint_vs_s(
     regions: Dict,
     hline: Optional[float] = None,
     hband: Optional[float] = None,
+    rs_s: Optional[np.ndarray] = None,
+    rs_y: Optional[np.ndarray] = None,
+    rs_label: str = "RobotStudio",
 ) -> str:
     """Six vertically stacked per-joint panels vs arc-length s.
 
     Raw (non-spline) traces, when provided, are drawn as dashed lines.
+    Optional ``rs_s`` / ``rs_y`` (K,6) overlays RobotStudio estimates in blue.
     """
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
@@ -1900,18 +1963,29 @@ def _plot_per_joint_vs_s(
     s = res.s_eval
     fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
     has_raw = False
+    has_rs = (
+        rs_s is not None and rs_y is not None
+        and len(rs_s) == len(rs_y) and rs_y.ndim == 2
+    )
     for j, ax in enumerate(axes):
         _shade_regions(ax, s, regions)
         _mark_bottleneck(ax, s, res.bottleneck_idx, res)
+        if has_rs:
+            ax.plot(
+                rs_s, rs_y[:, j], "-", lw=1.3, color=_RS_COLOR, alpha=0.9,
+                zorder=3, label=rs_label,
+            )
         y_raw = y_raw_fn(j)
         if y_raw is not None:
             has_raw = True
             ax.plot(
                 res.s_raw, y_raw, "--", lw=1.0, alpha=0.75,
-                color=_JOINT_COLORS[j], zorder=4, label="raw FD",
+                color=_JOINT_COLORS[j] if not has_rs else _SOLVER_COLOR,
+                zorder=4, label="raw FD",
             )
         ax.plot(
-            s, y_eval_fn(j), "-", lw=1.3, color=_JOINT_COLORS[j],
+            s, y_eval_fn(j), "-", lw=1.3,
+            color=_JOINT_COLORS[j] if not has_rs else _SOLVER_COLOR,
             zorder=5, label="quintic spline",
         )
         if hline is not None:
@@ -1928,6 +2002,31 @@ def _plot_per_joint_vs_s(
             ax.axvspan(s[a], s[b], color="#F58518", alpha=0.15, lw=0, zorder=0)
         ax.set_ylabel(f"{_JOINT_LABELS[j]}\n{ylabel}", fontsize=8)
         ax.grid(alpha=0.25)
+        # Keep RS noise from exploding the y-axis: clip to solver+raw envelope.
+        if has_rs:
+            y_sol = np.asarray(y_eval_fn(j), dtype=float)
+            y_r = np.asarray(y_raw, dtype=float) if y_raw is not None else y_sol
+            y_rs_j = np.asarray(rs_y[:, j], dtype=float)
+            finite_sol = np.concatenate([
+                y_sol[np.isfinite(y_sol)],
+                y_r[np.isfinite(y_r)] if y_raw is not None else [],
+            ])
+            if len(finite_sol) > 10:
+                lo = float(np.percentile(finite_sol, 1))
+                hi = float(np.percentile(finite_sol, 99))
+                pad = 0.15 * max(hi - lo, 1e-6)
+                # Allow RS within 2× the solver span before hard clip of view
+                span = max(hi - lo, 1e-6)
+                rs_finite = y_rs_j[np.isfinite(y_rs_j)]
+                if len(rs_finite):
+                    lo = min(lo, float(np.percentile(rs_finite, 5)))
+                    hi = max(hi, float(np.percentile(rs_finite, 95)))
+                # But never let a single RS spike dominate: cap at 3× solver span
+                mid = 0.5 * (float(np.percentile(finite_sol, 1))
+                             + float(np.percentile(finite_sol, 99)))
+                lo = max(lo, mid - 3.0 * span)
+                hi = min(hi, mid + 3.0 * span)
+                ax.set_ylim(lo - pad, hi + pad)
         frac_v = float(np.mean(binds_vel))
         frac_a = float(np.mean(binds_acc))
         ax.text(
@@ -1936,16 +2035,23 @@ def _plot_per_joint_vs_s(
             transform=ax.transAxes, ha="right", va="top", fontsize=7,
         )
     axes[0].set_title(title, fontsize=11)
+    sol_color = _SOLVER_COLOR if has_rs else _JOINT_COLORS[0]
     handles = [
         *_region_legend_handles(),
         Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
         Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
-        Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.3, ls="-",
-               label="quintic spline"),
     ]
+    if has_rs:
+        handles.append(
+            Line2D([0], [0], color=_RS_COLOR, lw=1.3, label=rs_label),
+        )
+    handles.append(
+        Line2D([0], [0], color=sol_color, lw=1.3, ls="-",
+               label="quintic spline"),
+    )
     if has_raw:
         handles.append(
-            Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.0, ls="--",
+            Line2D([0], [0], color=sol_color, lw=1.0, ls="--",
                    label="raw (finite difference)"),
         )
     axes[0].legend(handles=handles, fontsize=7, loc="upper left", ncol=3)
@@ -2913,6 +3019,7 @@ def _plot_tcp_vs_rs(
     mode_name: str,
     waypoints_base: Optional[np.ndarray] = None,
     plot_jerk: bool = False,
+    rs_geom: Optional[RSPathDerivatives] = None,
 ) -> str:
     """TCP speed + |TCP accel| [+ |TCP jerk|] vs arc-length: solver vs RS.
 
@@ -2921,6 +3028,9 @@ def _plot_tcp_vs_rs(
 
     Optional jerk panel (``plot_jerk``): Savitzky–Golay ``d/dt`` of solver
     ``s̈`` and of RS logged TCP accel.
+
+    When ``rs_geom`` is provided, the accel panel also shows
+    ``|d(speed)/dt|`` (preferred tangential ``s̈`` estimate).
 
     Final commanded panel: per-waypoint inbound-segment area between solver
     and RS TCP speed curves (non-transient only):
@@ -2993,9 +3103,14 @@ def _plot_tcp_vs_rs(
     ax2 = axes[panel]
     panel += 1
     ax2.plot(rs.s_mm, np.abs(rs.tcp_accel_mm_s2), lw=1.1, color=_RS_COLOR,
-             alpha=0.9, label="RobotStudio")
+             alpha=0.55, label="RS |linear_accel| (CSV)")
+    if rs_geom is not None:
+        ax2.plot(
+            rs_geom.s_mm, np.abs(rs_geom.s_ddot_mm_s2), "--", lw=1.2,
+            color=_RS_COLOR, alpha=0.95, label="RS |d(speed)/dt| ≈ |s̈|",
+        )
     ax2.plot(s, np.abs(res.s_ddot), lw=1.2, color=_SOLVER_COLOR,
-             label="solver")
+             label="solver |s̈|")
     if trans is not None and np.any(trans):
         for a, b in _mask_spans(trans):
             ax2.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
@@ -3383,23 +3498,35 @@ def _make_plots(
     paths.append(str(pR))
 
     dqds_raw, d2qds2_raw = _raw_s_derivatives(res.s_raw, res.q_raw)
+    rs_geom = estimate_rs_path_derivatives(rs_rec) if rs_rec is not None else None
+    a3_title = "A3  dq/ds per joint — solid=quintic, dashed=raw FD"
+    a4_title = "A4  d²q/ds² per joint — solid=quintic, dashed=raw FD"
+    if rs_geom is not None:
+        a3_title += " | blue=RS (q̇/ṡ)"
+        a4_title += " | blue=RS ((q̈−c·s̈)/ṡ²)"
     paths.append(_plot_per_joint_vs_s(
         res, dir_a / "A3_dqds_per_joint.png",
         y_raw_fn=lambda j: r2d(dqds_raw[:, j]),
         y_eval_fn=lambda j: r2d(res.dqds[:, j]),
         ylabel="dq/ds [deg/mm]",
-        title="A3  dq/ds per joint — solid=quintic, dashed=raw FD",
+        title=a3_title,
         regions=regions,
         hline=0.0,
+        rs_s=rs_geom.s_mm if rs_geom is not None else None,
+        rs_y=rs_geom.dqds_deg_mm if rs_geom is not None else None,
+        rs_label=f"RS q̇/ṡ (|ṡ|≥{rs_geom.v_min_mm_s:.0f})" if rs_geom else "RobotStudio",
     ))
     paths.append(_plot_per_joint_vs_s(
         res, dir_a / "A4_d2qds2_per_joint.png",
         y_raw_fn=lambda j: r2d(d2qds2_raw[:, j]),
         y_eval_fn=lambda j: r2d(res.d2qds2[:, j]),
         ylabel="d²q/ds² [deg/mm²]",
-        title="A4  d²q/ds² per joint — solid=quintic, dashed=raw FD",
+        title=a4_title,
         regions=regions,
         hline=0.0,
+        rs_s=rs_geom.s_mm if rs_geom is not None else None,
+        rs_y=rs_geom.d2qds2_deg_mm2 if rs_geom is not None else None,
+        rs_label=f"RS (q̈−c·s̈)/ṡ² (|ṡ|≥{rs_geom.v_min_mm_s:.0f})" if rs_geom else "RobotStudio",
     ))
 
     # ---- PANEL GROUP B: velocity limit curve ----------------------------
@@ -3484,16 +3611,29 @@ def _make_plots(
 
     # ---- PANEL GROUP C: path-parameter dynamics -------------------------
     figC, axC = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
-    axC[0].plot(s, res.v_star, "-", lw=1.8, color="tab:green", label="v*")
+    if rs_geom is not None:
+        axC[0].plot(
+            rs_geom.s_mm, rs_geom.s_dot_mm_s, "-", lw=1.4, color=_RS_COLOR,
+            alpha=0.9, label="RS ṡ (logged TCP speed)",
+        )
+    axC[0].plot(s, res.v_star, "-", lw=1.8, color=_SOLVER_COLOR, label="solver v* = ṡ")
     axC[0].plot(s, res.v_lim, "--", lw=1.0, color="k", alpha=0.7, label="v_lim")
     axC[0].set_ylabel("s_dot = v* [mm/s]")
-    axC[0].set_title("C1  path speed s_dot(s) = TCP linear speed")
+    axC[0].set_title(
+        "C1  path speed s_dot(s) = TCP linear speed"
+        + ("  |  blue=RS, green=solver" if rs_geom is not None else "")
+    )
     h, lab = axC[0].get_legend_handles_labels()
     axC[0].legend(list(h) + _region_legend_handles(),
                   list(lab) + [p.get_label() for p in _region_legend_handles()],
                   fontsize=7)
 
-    axC[1].plot(s, res.u, "-", lw=1.6, color="tab:green", label="u = s_dot²")
+    axC[1].plot(s, res.u, "-", lw=1.6, color=_SOLVER_COLOR, label="u = s_dot²")
+    if rs_geom is not None:
+        axC[1].plot(
+            rs_geom.s_mm, rs_geom.s_dot_mm_s ** 2, "-", lw=1.2, color=_RS_COLOR,
+            alpha=0.9, label="RS ṡ²",
+        )
     axC[1].plot(s, np.clip(res.v_lim, 0, vmax_disp) ** 2, "--", lw=1.2,
                 color="k", label="v_lim²")
     axC[1].set_ylabel("u [mm²/s²]")
@@ -3501,10 +3641,18 @@ def _make_plots(
     axC[1].set_title("C2  phase plane: u vs v_lim² (touch=cruise, below=transient)")
     axC[1].legend(fontsize=7)
 
-    axC[2].plot(s, res.s_ddot, "-", lw=1.2, color="tab:red", label="s_ddot")
+    if rs_geom is not None:
+        axC[2].plot(
+            rs_geom.s_mm, rs_geom.s_ddot_mm_s2, "-", lw=1.2, color=_RS_COLOR,
+            alpha=0.9, label="RS s̈ ≈ d(speed)/dt",
+        )
+    axC[2].plot(s, res.s_ddot, "-", lw=1.2, color=_SOLVER_COLOR, label="solver s̈")
     axC[2].axhline(0.0, color="grey", lw=0.6, label="zero")
     axC[2].set_ylabel("s_ddot [mm/s²]")
-    axC[2].set_title("C3  tangential accel s_ddot (≈0 on cruise, saturated on ramps)")
+    axC[2].set_title(
+        "C3  tangential accel s_ddot (≈0 on cruise, saturated on ramps)"
+        + ("  |  RS from S-G d(speed)/dt" if rs_geom is not None else "")
+    )
     h2, lab2 = axC[2].get_legend_handles_labels()
     axC[2].legend(list(h2) + _region_legend_handles(),
                   list(lab2) + [p.get_label() for p in _region_legend_handles()],
@@ -3585,10 +3733,32 @@ def _make_plots(
 
     # ---- PANEL GROUP G: RobotStudio benchmark overlays ------------------
     if rs_rec is not None:
+        if rs_geom is None:
+            rs_geom = estimate_rs_path_derivatives(rs_rec)
+        # Persist estimated geometric series for offline inspection.
+        try:
+            geom_csv = dir_g / "rs_path_derivatives.csv"
+            header = (
+                "s_mm,t_s,s_dot_mm_s,s_ddot_mm_s2,valid_geom,"
+                + ",".join(f"q{j}_deg" for j in range(1, 7)) + ","
+                + ",".join(f"dqds{j}_deg_mm" for j in range(1, 7)) + ","
+                + ",".join(f"d2qds2_{j}_deg_mm2" for j in range(1, 7))
+            )
+            data = np.column_stack([
+                rs_geom.s_mm, rs_rec.t_s, rs_geom.s_dot_mm_s, rs_geom.s_ddot_mm_s2,
+                rs_geom.valid_geom.astype(float),
+                rs_geom.q_deg, rs_geom.dqds_deg_mm, rs_geom.d2qds2_deg_mm2,
+            ])
+            np.savetxt(geom_csv, data, delimiter=",", header=header, comments="", fmt="%.8g")
+            paths.append(str(geom_csv))
+        except Exception as exc:
+            print(f"  [WARN] rs_path_derivatives.csv failed: {exc}")
+
         paths.append(_plot_tcp_vs_rs(
             dir_g / "G1_tcp_speed_accel_vs_rs.png", res, rs_rec, mode_name,
             waypoints_base=waypoints_base,
             plot_jerk=plot_jerk,
+            rs_geom=rs_geom,
         ))
         qd_lim = r2d(res.metrics["_qd_max"])
         qdd_lim = r2d(res.metrics["_qdd_max"])
