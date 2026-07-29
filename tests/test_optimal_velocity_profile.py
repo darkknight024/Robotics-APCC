@@ -1842,6 +1842,42 @@ def _plot_joint_realization_time_figure(
     return str(out_path)
 
 
+def _raw_s_derivatives(
+    s_raw: np.ndarray, q_raw: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Finite-difference dq/ds and d²q/ds² on the dense IK samples (no spline).
+
+    First derivative: central difference on interior samples.
+    Second derivative: central second difference on the irregular ``s`` grid
+    (same stencil used by the corner-curvature diagnostic).
+    """
+    s = np.asarray(s_raw, dtype=float)
+    q = np.asarray(q_raw, dtype=float)
+    M, nj = q.shape
+    dqds = np.zeros((M, nj))
+    d2qds2 = np.zeros((M, nj))
+    if M < 3:
+        return dqds, d2qds2
+    ds = np.diff(s)
+    for j in range(nj):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # one-sided at ends, central elsewhere
+            dqds[0, j] = (q[1, j] - q[0, j]) / ds[0] if ds[0] > 1e-12 else 0.0
+            dqds[-1, j] = (q[-1, j] - q[-2, j]) / ds[-1] if ds[-1] > 1e-12 else 0.0
+            dqds[1:-1, j] = (q[2:, j] - q[:-2, j]) / (s[2:] - s[:-2])
+        for k in range(1, M - 1):
+            ds_prev = s[k] - s[k - 1]
+            ds_next = s[k + 1] - s[k]
+            if ds_prev < 1e-12 or ds_next < 1e-12:
+                continue
+            g_prev = (q[k, j] - q[k - 1, j]) / ds_prev
+            g_next = (q[k + 1, j] - q[k, j]) / ds_next
+            d2qds2[k, j] = (g_next - g_prev) / (0.5 * (ds_prev + ds_next))
+        d2qds2[0, j] = d2qds2[1, j]
+        d2qds2[-1, j] = d2qds2[-2, j]
+    return dqds, d2qds2
+
+
 def _plot_per_joint_vs_s(
     res: ProfileResult,
     out_path: Path,
@@ -1853,18 +1889,31 @@ def _plot_per_joint_vs_s(
     hline: Optional[float] = None,
     hband: Optional[float] = None,
 ) -> str:
-    """Six vertically stacked per-joint panels vs arc-length s."""
+    """Six vertically stacked per-joint panels vs arc-length s.
+
+    Raw (non-spline) traces, when provided, are drawn as dashed lines.
+    """
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
 
     s = res.s_eval
     fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
+    has_raw = False
     for j, ax in enumerate(axes):
         _shade_regions(ax, s, regions)
         _mark_bottleneck(ax, s, res.bottleneck_idx, res)
         y_raw = y_raw_fn(j)
         if y_raw is not None:
-            ax.plot(res.s_raw, y_raw, ".", ms=1.5, alpha=0.3, color=_JOINT_COLORS[j])
-        ax.plot(s, y_eval_fn(j), "-", lw=1.3, color=_JOINT_COLORS[j])
+            has_raw = True
+            ax.plot(
+                res.s_raw, y_raw, "--", lw=1.0, alpha=0.75,
+                color=_JOINT_COLORS[j], zorder=4, label="raw FD",
+            )
+        ax.plot(
+            s, y_eval_fn(j), "-", lw=1.3, color=_JOINT_COLORS[j],
+            zorder=5, label="quintic spline",
+        )
         if hline is not None:
             ax.axhline(hline, color="grey", lw=0.6)
             ax.axhline(-hline, color="grey", lw=0.6)
@@ -1887,15 +1936,19 @@ def _plot_per_joint_vs_s(
             transform=ax.transAxes, ha="right", va="top", fontsize=7,
         )
     axes[0].set_title(title, fontsize=11)
-    from matplotlib.patches import Patch
-    axes[0].legend(
-        handles=[
-            *_region_legend_handles(),
-            Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
-            Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
-        ],
-        fontsize=7, loc="upper left", ncol=4,
-    )
+    handles = [
+        *_region_legend_handles(),
+        Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
+        Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
+        Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.3, ls="-",
+               label="quintic spline"),
+    ]
+    if has_raw:
+        handles.append(
+            Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.0, ls="--",
+                   label="raw (finite difference)"),
+        )
+    axes[0].legend(handles=handles, fontsize=7, loc="upper left", ncol=3)
     axes[-1].set_xlabel("arc-length s [mm]")
     fig.tight_layout()
     fig.savefig(out_path, dpi=130)
@@ -2787,8 +2840,8 @@ def _plot_A_geometry_with_rs(
         if has_rs:
             ax.plot(rs_s_mm, rs_q_deg[:, j], "-", lw=1.4, color=_RS_COLOR,
                     alpha=0.9, zorder=3, label="RobotStudio")
-        ax.plot(res.s_raw, r2d(res.q_raw[:, j]), ".", ms=1.4, alpha=0.25,
-                color=raw_color, zorder=4)
+        ax.plot(res.s_raw, r2d(res.q_raw[:, j]), "--", lw=1.0, alpha=0.75,
+                color=raw_color, zorder=4, label="IK raw")
         ax.plot(s, r2d(res.q[:, j]), "-", lw=1.4, color=spline_color,
                 zorder=5, label="solver")
         ax.set_ylabel(f"{_JOINT_LABELS[j]}\nq [deg]", fontsize=8)
@@ -2804,11 +2857,14 @@ def _plot_A_geometry_with_rs(
             ax.legend(
                 handles=[
                     Line2D([0], [0], color=_RS_COLOR, lw=1.4, label="RobotStudio"),
-                    Line2D([0], [0], color=_SOLVER_COLOR, lw=1.4, label="solver"),
+                    Line2D([0], [0], color=_SOLVER_COLOR, lw=1.4, ls="-",
+                           label="solver spline"),
+                    Line2D([0], [0], color=_SOLVER_COLOR, lw=1.0, ls="--",
+                           label="IK raw"),
                 ],
                 fontsize=7, loc="upper left",
             )
-    title = "A  q(s) per joint: IK raw (dots) + quintic spline"
+    title = "A  q(s) per joint: IK raw (dashed) + quintic spline"
     if has_rs:
         title += "  |  RobotStudio (blue) vs solver (green)"
     axes[0].set_title(title, fontsize=11)
@@ -2818,9 +2874,10 @@ def _plot_A_geometry_with_rs(
                 *_region_legend_handles(),
                 Patch(facecolor="#4C78A8", alpha=0.15, label="this joint binds (vel)"),
                 Patch(facecolor="#F58518", alpha=0.15, label="this joint binds (accel)"),
-                Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.4, label="IK spline"),
-                Line2D([0], [0], color=_JOINT_COLORS[0], marker=".", ls="none",
-                       label="IK raw samples"),
+                Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.4, ls="-",
+                       label="IK spline"),
+                Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.0, ls="--",
+                       label="IK raw"),
             ],
             fontsize=7, loc="upper left", ncol=3,
         )
@@ -3325,21 +3382,22 @@ def _make_plots(
     plt.close(figR)
     paths.append(str(pR))
 
+    dqds_raw, d2qds2_raw = _raw_s_derivatives(res.s_raw, res.q_raw)
     paths.append(_plot_per_joint_vs_s(
         res, dir_a / "A3_dqds_per_joint.png",
-        y_raw_fn=lambda j: None,
+        y_raw_fn=lambda j: r2d(dqds_raw[:, j]),
         y_eval_fn=lambda j: r2d(res.dqds[:, j]),
         ylabel="dq/ds [deg/mm]",
-        title="A3  dq/ds per joint (no spikes over flat-q regions)",
+        title="A3  dq/ds per joint — solid=quintic, dashed=raw FD",
         regions=regions,
         hline=0.0,
     ))
     paths.append(_plot_per_joint_vs_s(
         res, dir_a / "A4_d2qds2_per_joint.png",
-        y_raw_fn=lambda j: None,
+        y_raw_fn=lambda j: r2d(d2qds2_raw[:, j]),
         y_eval_fn=lambda j: r2d(res.d2qds2[:, j]),
         ylabel="d²q/ds² [deg/mm²]",
-        title="A4  d²q/ds² per joint",
+        title="A4  d²q/ds² per joint — solid=quintic, dashed=raw FD",
         regions=regions,
         hline=0.0,
     ))
@@ -4333,6 +4391,54 @@ def _resolve_cases(
     return [(tp, matched)]
 
 
+def _plot_raw_vs_spline_q_png(
+    s_raw: np.ndarray,
+    q_raw: np.ndarray,
+    s_spline: np.ndarray,
+    q_spline: np.ndarray,
+    out_path: Path,
+    title_suffix: str = "",
+) -> str:
+    """Six-panel raw IK q(s) (dashed) vs quintic spline q(s) (solid)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    r2d = np.rad2deg
+    fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
+    for j, ax in enumerate(axes):
+        ax.plot(
+            s_raw, r2d(q_raw[:, j]), "--", lw=1.0, alpha=0.8,
+            color=_JOINT_COLORS[j], zorder=4, label="IK raw",
+        )
+        ax.plot(
+            s_spline, r2d(q_spline[:, j]), "-", lw=1.4,
+            color=_JOINT_COLORS[j], zorder=5, label="quintic spline",
+        )
+        ax.set_ylabel(f"{_JOINT_LABELS[j]}\nq [deg]", fontsize=8)
+        ax.grid(alpha=0.25)
+    axes[0].set_title(
+        f"I  raw q(s) vs quintic spline q(s){title_suffix}", fontsize=11,
+    )
+    axes[0].legend(
+        handles=[
+            Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.4, ls="-",
+                   label="quintic spline"),
+            Line2D([0], [0], color=_JOINT_COLORS[0], lw=1.0, ls="--",
+                   label="IK raw"),
+        ],
+        fontsize=8, loc="upper right",
+    )
+    axes[-1].set_xlabel("arc-length s [mm]")
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    return str(out_path)
+
+
 def write_spline_fk_check(
     out_dir: Path,
     res: ProfileResult,
@@ -4348,6 +4454,7 @@ def write_spline_fk_check(
       * ``spline_fk_vs_blend_residual.csv`` — per-sample 6-DoF residual
       * ``segment_max_error.csv`` — max |Δp|/|Δθ| per arc-length segment
       * ``blend_vs_spline_6dof.png``, ``blend_vs_spline_3d.html``
+      * ``raw_vs_spline_q_per_joint.png`` — raw IK vs quintic q(s) per joint
       * ``summary.txt``, ``fk_check_flag.txt`` (PASS/FAIL)
     """
     from compare_spline_fk_and_blended_arc import (
@@ -4477,6 +4584,14 @@ def write_spline_fk_check(
         )
     except Exception as exc:
         print(f"  [WARN] I_spline_fk_check HTML failed: {exc}")
+    try:
+        _plot_raw_vs_spline_q_png(
+            s_mm, q_kept, s_eval, q_spline,
+            out_dir / "raw_vs_spline_q_per_joint.png",
+            title_suffix=f" — {Path(toolpath).name}" if toolpath else "",
+        )
+    except Exception as exc:
+        print(f"  [WARN] I_spline_fk_check q(s) PNG failed: {exc}")
 
     # ---- summary + flag -------------------------------------------------
     n_fail_seg = sum(int(r["segment_fail"]) for r in seg_rows)
