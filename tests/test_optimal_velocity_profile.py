@@ -861,10 +861,10 @@ def _arc_measure(s: np.ndarray) -> np.ndarray:
 _RESID_TOL_DEG = 0.2
 
 # FK position residual budget for the task-space knot pass [mm].
-_TASK_POS_TOL_MM = 1.0
+_TASK_POS_TOL_MM = 0.2
 
 # I_spline_fk_check budgets (FK(spline) vs Feature-3 blended poses).
-_FK_CHECK_POS_TOL_MM = 1.0
+_FK_CHECK_POS_TOL_MM = 0.2
 _FK_CHECK_ROT_TOL_RAD = 0.1
 _FK_CHECK_SEGMENT_MM = 50.0  # arc-length bins for per-segment max-error report
 
@@ -1078,6 +1078,53 @@ def _tune_lsq_spline(
     return spl, info
 
 
+def _fd_position_jacobian_mm(fk, q_rad: np.ndarray, eps_rad: float = 1e-6) -> np.ndarray:
+    """3×6 TCP position Jacobian [mm/rad] by forward differences (7 FK calls)."""
+    qs = np.repeat(np.asarray(q_rad, dtype=float)[None, :], 7, axis=0)
+    for j in range(6):
+        qs[j + 1, j] += eps_rad
+    p_m, _ = fk.solve_batch(qs)
+    p_mm = np.asarray(p_m, dtype=float) * 1000.0
+    return (p_mm[1:] - p_mm[0]).T / eps_rad
+
+
+def _weighted_quantile_knots(
+    x: np.ndarray,
+    weight: np.ndarray,
+    n_knots: int,
+    min_gap_mm: float,
+) -> List[float]:
+    """Place ``n_knots`` interior knots at weighted quantiles of ``x``.
+
+    ``weight`` is a non-negative importance density sampled at ``x`` (we use
+    ``sqrt(|d²q/ds²|_raw)`` — the classic curvature-equidistribution measure,
+    so knots cluster exactly where the corner curvature lives).  Knots closer
+    than ``min_gap_mm`` to the interval edges or to each other are dropped:
+    near-coincident knots are what would actually degrade d³q/ds³.
+    """
+    if n_knots < 1 or len(x) < 4:
+        return []
+    wgt = np.maximum(np.asarray(weight, dtype=float), 0.0) + 1e-12
+    cum = np.cumsum(wgt)
+    cum = (cum - cum[0]) / max(cum[-1] - cum[0], 1e-300)
+    targets = (np.arange(1, n_knots + 1)) / (n_knots + 1.0)
+    cand = np.interp(targets, cum, x)
+    lo, hi = float(x[0]), float(x[-1])
+    out: List[float] = []
+    prev = lo
+    for c in np.sort(cand):
+        c = float(c)
+        if (c - prev) < min_gap_mm or (hi - c) < min_gap_mm:
+            continue
+        # Schoenberg–Whitney safety: ≥2 samples in the new sub-interval
+        n_left = int(np.searchsorted(x, c) - np.searchsorted(x, prev))
+        if n_left < 2:
+            continue
+        out.append(c)
+        prev = c
+    return out
+
+
 def _refine_splines_task_space(
     splines: List[LSQUnivariateSpline],
     s_mm: np.ndarray,
@@ -1085,18 +1132,40 @@ def _refine_splines_task_space(
     pos_mm: np.ndarray,
     pos_tol_mm: float = _TASK_POS_TOL_MM,
     osc_factor: float = 1.5,
-    min_halfwidth_mm: float = 0.4,
-    max_iters: int = 20,
+    max_iters: int = 30,
+    max_knots_per_interval: int = 3,
+    contrib_share: float = 0.15,
+    patience: int = 3,
+    max_total_knots: int = 3000,
 ) -> Tuple[List[LSQUnivariateSpline], Dict]:
     """Insert knots only where FK(spline) misses the dense TCP poses.
 
-    Joint-space residual chasing (``_refine_knots_locally`` with a tight
-    degree tolerance) over-fits orientation-blend micro-kinks and makes
-    analytic ``dq/ds`` ring.  This pass starts from a smooth joint fit and
-    bisects knot intervals *only* where ``|FK(q_spline) - pose| > pos_tol_mm``,
-    rejecting any candidate that overshoots the raw finite-difference
-    ``dq/ds`` envelope.  Result: task-space budget met without destroying
-    derivative smoothness.
+    Robust version of the FK-driven knot pass, designed for tight budgets
+    (0.2 mm) without wrecking d³q/ds³:
+
+    1. **Data floor first** — the effective tolerance is
+       ``max(pos_tol_mm, 1.2 × max|FK(q_raw) − pos|)``: the spline is never
+       asked to beat the accuracy of the IK data itself.
+    2. **Jacobian attribution** — each over-budget span is attributed to the
+       joints actually producing the task error via
+       ``Δp ≈ Σ_j J_j·(q_spline_j − q_raw_j)``; only contributing joints
+       (share ≥ ``contrib_share`` of the worst contributor) get knots, so
+       knot counts stay low and non-contributing joints keep smooth d³.
+    3. **Curvature-equidistributed insertion** — up to
+       ``max_knots_per_interval`` knots per bad interval, placed at weighted
+       quantiles of ``sqrt(|d²q/ds²|_raw)``, with a **local** minimum gap of
+       ``max(2.5 × local median Δs, 0.05 mm)`` instead of a global 0.4 mm
+       half-width (the old guard made sub-millimetre corner blends physically
+       unreachable — the reason the 1 mm budget failed on v11).  Knots are
+       always simple (min-gap enforced), so the quintic stays C⁴ and d³ stays
+       C¹ by construction.
+    4. **Ringing guards** — a refit is rejected if it overshoots the raw
+       dq/ds envelope (Gibbs) or exceeds 1.5× the raw finite-difference
+       |d²q/ds²| envelope: the spline may recover the true corner curvature
+       but never invent more than the data contains.
+    5. **Diminishing-returns stop** — no ≥2 % relative improvement of the
+       max error for ``patience`` consecutive iterations → stop (with a hard
+       cap of ``max_total_knots``).
     """
     from core import create_solvers
     from utils.config_loader import get_robot_by_name
@@ -1105,71 +1174,131 @@ def _refine_splines_task_space(
     fk, _, _ = create_solvers(str(_REPO / robot.urdf_path), solver="eaik")
     meas = _arc_measure(s_mm)
     w = np.sqrt(meas)
-    raw_d1 = np.percentile(np.abs(np.gradient(q_kept, s_mm, axis=0)), 99.5, axis=0)
-    raw_d1 = np.maximum(raw_d1, 1e-12)
+
+    grad_raw = np.gradient(q_kept, s_mm, axis=0)
+    # Gibbs guard: generous envelope (never tighter than the old p99.5×1.5,
+    # and at least 1.1× the raw absolute max so genuine corner slopes on
+    # short arcs are not rejected just because straights dominate the p99.5).
+    d1_env = np.maximum(
+        osc_factor * np.percentile(np.abs(grad_raw), 99.5, axis=0),
+        1.1 * np.max(np.abs(grad_raw), axis=0),
+    )
+    d1_env = np.maximum(d1_env, 1e-12)
+    _, d2_raw = _raw_s_derivatives(s_mm, q_kept)
+    d2_env = 1.5 * np.maximum(np.max(np.abs(d2_raw), axis=0), 1e-12)
+    knot_weight = np.sqrt(np.abs(d2_raw))          # (M, 6) equidistribution measure
 
     # Skip when the supplied poses are not FK-consistent with q_kept
     # (synthetic unit tests, wrong frame, etc.) — otherwise we'd insert
     # knots chasing a geometry the joint path cannot represent.
     p_ik_m, _ = fk.solve_batch(q_kept)
     ik_err = np.linalg.norm(p_ik_m * 1000.0 - pos_mm, axis=1)
-    if float(np.max(ik_err)) > max(5.0 * pos_tol_mm, 5.0):
+    floor_mm = float(np.max(ik_err))
+    if floor_mm > max(5.0 * pos_tol_mm, 5.0):
         return splines, {
             "pos_tol_mm": float(pos_tol_mm),
             "skipped": True,
             "skip_reason": "poses not FK-consistent with q",
-            "ik_pos_max_mm": float(np.max(ik_err)),
+            "ik_pos_max_mm": floor_mm,
             "met": False,
         }
+    tol_eff = max(float(pos_tol_mm), 1.2 * floor_mm)
+    if floor_mm > pos_tol_mm:
+        print(
+            f"  [WARN] task-space refine: FK(q_raw) floor {floor_mm:.3f} mm "
+            f"exceeds budget {pos_tol_mm:g} mm — fitting to "
+            f"{tol_eff:.3f} mm instead (fix upstream IK/pose bookkeeping)."
+        )
 
     def _pos_err(spls: List[LSQUnivariateSpline]) -> np.ndarray:
         q_s = eval_splines(spls, s_mm)["q"]
         p_m, _ = fk.solve_batch(q_s)
         return np.linalg.norm(p_m * 1000.0 - pos_mm, axis=1)
 
+    def _d3_stats(spls: List[LSQUnivariateSpline]) -> Dict:
+        d3max, d3en = [], []
+        for spl in spls:
+            d3 = spl(s_mm, nu=3)
+            d3max.append(float(np.max(np.abs(d3))))
+            d3en.append(float(np.sum(meas * d3 * d3)))
+        return {"d3_max": d3max, "d3_energy": d3en}
+
     err = _pos_err(splines)
     info = {
         "pos_tol_mm": float(pos_tol_mm),
+        "tol_eff_mm": float(tol_eff),
+        "ik_floor_mm": floor_mm,
         "pos_max_before_mm": float(np.max(err)),
         "n_iters": 0,
         "n_knots_inserted": 0,
-        "rejected_overshoot": 0,
+        "rejected_overshoot_d1": 0,
+        "rejected_overshoot_d2": 0,
+        "stopped_reason": "converged",
+        "d3_before": _d3_stats(splines),
     }
-    if float(np.max(err)) <= pos_tol_mm:
+    if float(np.max(err)) <= tol_eff:
         info["pos_max_after_mm"] = info["pos_max_before_mm"]
         info["met"] = True
+        info["d3_after"] = info["d3_before"]
         return splines, info
 
     splines = list(splines)
+    best_err = float(np.max(err))
+    stall_count = 0
     for it in range(max_iters):
-        bad = err > pos_tol_mm
+        bad = err > tol_eff
         if not bad.any():
             break
         info["n_iters"] = it + 1
+
+        # --- Jacobian attribution: which joints cause each bad span? -----
+        q_spl_at = np.column_stack([splines[j](s_mm) for j in range(6)])
+        joint_bad = [np.zeros(len(s_mm), dtype=bool) for _ in range(6)]
+        for a, b in _mask_spans(bad):
+            k_star = a + int(np.argmax(err[a:b + 1]))
+            J = _fd_position_jacobian_mm(fk, q_kept[k_star])
+            dq = q_spl_at[k_star] - q_kept[k_star]
+            contrib = np.linalg.norm(J, axis=0) * np.abs(dq)
+            c_max = float(np.max(contrib))
+            sel = contrib >= contrib_share * max(c_max, 1e-30)
+            sel[int(np.argmax(contrib))] = True
+            for j in np.where(sel)[0]:
+                joint_bad[j][a:b + 1] = True
+
         n_new_total = 0
         for j in range(6):
+            if not joint_bad[j].any():
+                continue
             t_int = np.asarray(splines[j].get_knots()[1:-1], dtype=float)
             edges = np.concatenate([[s_mm[0]], t_int, [s_mm[-1]]])
             n_iv = len(edges) - 1
             iv = np.clip(
-                np.searchsorted(edges, s_mm[bad], side="right") - 1, 0, n_iv - 1
+                np.searchsorted(edges, s_mm[joint_bad[j]], side="right") - 1,
+                0, n_iv - 1,
             )
             mark = np.zeros(n_iv, dtype=bool)
             mark[iv] = True
             grown = mark.copy()
             grown[:-1] |= mark[1:]
             grown[1:] |= mark[:-1]
-            new_knots = []
+            new_knots: List[float] = []
             for i in np.where(grown)[0]:
                 lo, hi = float(edges[i]), float(edges[i + 1])
                 i0 = int(np.searchsorted(s_mm, lo))
                 i1 = int(np.searchsorted(s_mm, hi))
-                if (i1 - i0) < 4:
+                if (i1 - i0) < 8:        # need ≥4 samples per sub-interval
                     continue
-                split = float(np.median(s_mm[i0:i1]))
-                if (split - lo) < min_halfwidth_mm or (hi - split) < min_halfwidth_mm:
+                x = s_mm[i0:i1]
+                local_ds = float(np.median(np.diff(x))) if len(x) > 1 else 0.25
+                min_gap = max(2.5 * local_ds, 0.05)
+                n_by_samples = (i1 - i0) // 4 - 1
+                n_by_width = int((hi - lo) / max(min_gap, 1e-9)) - 1
+                n = int(min(max_knots_per_interval, n_by_samples, n_by_width))
+                if n < 1:
                     continue
-                new_knots.append(split)
+                new_knots.extend(_weighted_quantile_knots(
+                    x, knot_weight[i0:i1, j], n, min_gap,
+                ))
             if not new_knots:
                 continue
             t_try = np.unique(np.concatenate([t_int, new_knots]))
@@ -1179,19 +1308,36 @@ def _refine_splines_task_space(
                 )
             except Exception:
                 continue
-            d1_max = float(np.max(np.abs(spl_try(s_mm, nu=1))))
-            if d1_max > osc_factor * float(raw_d1[j]):
-                info["rejected_overshoot"] += 1
+            if float(np.max(np.abs(spl_try(s_mm, nu=1)))) > float(d1_env[j]):
+                info["rejected_overshoot_d1"] += 1
+                continue
+            if float(np.max(np.abs(spl_try(s_mm, nu=2)))) > float(d2_env[j]):
+                info["rejected_overshoot_d2"] += 1
                 continue
             splines[j] = spl_try
             n_new_total += len(new_knots)
         info["n_knots_inserted"] += n_new_total
         err = _pos_err(splines)
+
         if n_new_total == 0:
+            info["stopped_reason"] = "no_insertable_knots"
             break
+        if info["n_knots_inserted"] > max_total_knots:
+            info["stopped_reason"] = "max_total_knots"
+            break
+        cur = float(np.max(err))
+        if cur > 0.98 * best_err:
+            stall_count += 1
+            if stall_count >= patience:
+                info["stopped_reason"] = "diminishing_returns"
+                break
+        else:
+            stall_count = 0
+        best_err = min(best_err, cur)
 
     info["pos_max_after_mm"] = float(np.max(err))
-    info["met"] = bool(info["pos_max_after_mm"] <= pos_tol_mm)
+    info["met"] = bool(info["pos_max_after_mm"] <= tol_eff)
+    info["d3_after"] = _d3_stats(splines)
     return splines, info
 
 
@@ -1243,10 +1389,24 @@ def fit_joint_splines(
             print(
                 f"  task-space refine: |Δp| {ts_info['pos_max_before_mm']:.3f} → "
                 f"{ts_info['pos_max_after_mm']:.3f} mm  "
-                f"(tol={task_pos_tol_mm:g} mm, +{ts_info['n_knots_inserted']} knots, "
-                f"{ts_info['n_iters']} iters)  "
+                f"(tol={task_pos_tol_mm:g} mm, floor={ts_info['ik_floor_mm']:.4f} mm, "
+                f"+{ts_info['n_knots_inserted']} knots, "
+                f"{ts_info['n_iters']} iters, stop={ts_info['stopped_reason']})  "
                 f"{'OK' if ts_info['met'] else 'WARN: budget not met'}"
             )
+            d3b = ts_info.get("d3_before", {}).get("d3_max")
+            d3a = ts_info.get("d3_after", {}).get("d3_max")
+            if d3b and d3a:
+                growth = [
+                    (a / b if b > 1e-12 else float("inf"))
+                    for a, b in zip(d3a, d3b)
+                ]
+                print(
+                    "  d³q/ds³ max growth per joint (task pass): "
+                    + "  ".join(
+                        f"J{j+1}={g:.1f}x" for j, g in enumerate(growth)
+                    )
+                )
     return splines, report
 
 

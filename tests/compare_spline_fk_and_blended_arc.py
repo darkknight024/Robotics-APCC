@@ -389,7 +389,7 @@ def compare_spline_fk_and_blended_arc(
     resid_tol_deg: float = _RESID_TOL_DEG,
     ds_mm: float = _DEFAULT_DS_MM,
     solver: str = "eaik",
-    pos_tol_mm: float = 1.0,
+    pos_tol_mm: float = 0.2,
     rot_tol_rad: float = 0.1,
     make_plots: bool = True,
     also_bezier: bool = True,
@@ -581,7 +581,7 @@ def main() -> None:
         "--ds-mm", type=float, default=_DEFAULT_DS_MM,
         help=f"Feature-3 dense-path sampling [mm] (default {_DEFAULT_DS_MM}).",
     )
-    parser.add_argument("--pos-tol-mm", type=float, default=1.0,
+    parser.add_argument("--pos-tol-mm", type=float, default=0.2,
                         help="Position residual budget [mm].")
     parser.add_argument("--rot-tol-rad", type=float, default=0.1,
                         help="Rotation residual budget [rad].")
