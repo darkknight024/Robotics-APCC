@@ -97,6 +97,276 @@ _RS_COLOR = "#1f77b4"       # matplotlib tab:blue
 _SOLVER_COLOR = "#2ca02c"   # matplotlib tab:green
 _EPS = 1e-12
 
+# RobotStudio TCP speed comparison: fail only if |err| exceeds BOTH 10% of RS
+# and 2.5 mm/s (pass slow-speed segments within the absolute floor).
+_RS_BENCH_REL_TOL = 0.10
+_RS_BENCH_ABS_FLOOR_MM_S = 2.5
+
+_TOOLPATH_WP_HEADER_BASE = [
+    "x_mm", "y_mm", "z_mm", "qw", "qx", "qy", "qz", "speed_mm_s",
+    "pzone_tcp", "pzone_ori", "pzone_eax", "zone_ori", "zone_leax", "zone_reax",
+]
+_TOOLPATH_WP_HEADER_EXTRA = [
+    "v_actual_mm_s", "v_optimal_mm_s", "v_constant_mm_s",
+    "Ignored", "feasible", "RS_benchmarking",
+]
+
+
+def _rs_bench_fail_mask(err: np.ndarray, rs_v: np.ndarray) -> np.ndarray:
+    """True where |solver − RS| exceeds both relative and absolute tolerance."""
+    err = np.abs(np.asarray(err, dtype=float))
+    rs_v = np.asarray(rs_v, dtype=float)
+    rel = _RS_BENCH_REL_TOL * np.maximum(rs_v, 1e-9)
+    return (err > _RS_BENCH_ABS_FLOOR_MM_S) & (err > rel)
+
+
+def _is_toolpath_waypoint_row(line: str) -> bool:
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 7:
+        return False
+    try:
+        for i in range(7):
+            float(parts[i])
+        return True
+    except ValueError:
+        return False
+
+
+def _sample_v_at_waypoints(
+    res: ProfileResult,
+    waypoints_base: np.ndarray,
+) -> np.ndarray:
+    """Interpolate a mode's ``v_star`` onto programmed waypoint arc-lengths."""
+    wp_s = _waypoint_arc_lengths(waypoints_base, res.tcp_xyz, res.s_eval)
+    return np.interp(wp_s, res.s_eval, res.v_star)
+
+
+def _waypoint_ignored_labels(
+    res_cmd: ProfileResult,
+    waypoints_base: np.ndarray,
+) -> List[str]:
+    """Per-waypoint ignore reason: ``lookup``, ``transient``, or ``no``."""
+    n = len(waypoints_base)
+    wp_s = _waypoint_arc_lengths(waypoints_base, res_cmd.tcp_xyz, res_cmd.s_eval)
+    s_eval = res_cmd.s_eval
+    idx = np.clip(np.searchsorted(s_eval, wp_s), 0, len(s_eval) - 1)
+    labels: List[str] = []
+    trans = res_cmd.accel_transient_mask
+    vcap_ex = res_cmd.vcap_excluded_mask
+    vcap_wp = res_cmd.v_capped_waypoint
+
+    for i in range(n):
+        if vcap_wp is not None and (
+            i >= len(vcap_wp) or not np.isfinite(vcap_wp[i])
+        ):
+            labels.append("lookup")
+        elif vcap_ex is not None and bool(vcap_ex[idx[i]]):
+            labels.append("lookup")
+        elif trans is not None and bool(trans[idx[i]]):
+            labels.append("transient")
+        else:
+            labels.append("no")
+    return labels
+
+
+def _write_waypoint_benchmark_csv(
+    toolpath_csv: Path,
+    out_path: Path,
+    *,
+    res_cmd: ProfileResult,
+    waypoints_base: np.ndarray,
+    rs_rec: Optional[RSRecording],
+    res_opt: Optional[ProfileResult] = None,
+    res_const: Optional[ProfileResult] = None,
+) -> Dict:
+    """Write toolpath-shaped CSV with per-waypoint benchmark columns."""
+    raw_lines = toolpath_csv.read_text(encoding="utf-8").splitlines()
+    v_actual = _sample_v_at_waypoints(res_cmd, waypoints_base)
+    v_opt = (
+        _sample_v_at_waypoints(res_opt, waypoints_base)
+        if res_opt is not None else None
+    )
+    v_const = (
+        _sample_v_at_waypoints(res_const, waypoints_base)
+        if res_const is not None else None
+    )
+    ignored = _waypoint_ignored_labels(res_cmd, waypoints_base)
+    wp_s = _waypoint_arc_lengths(waypoints_base, res_cmd.tcp_xyz, res_cmd.s_eval)
+
+    rs_v_wp = None
+    if rs_rec is not None:
+        rs_v_wp = np.interp(
+            wp_s, rs_rec.s_mm, rs_rec.tcp_speed_mm_s,
+        )
+
+    out_lines: List[str] = []
+    header_written = False
+    n_wp = 0
+    n_feasible = 0
+    n_infeasible = 0
+    n_ignored = 0
+    n_rs_pass = 0
+    n_rs_fail = 0
+    n_rs_na = 0
+
+    for line in raw_lines:
+        if not _is_toolpath_waypoint_row(line):
+            out_lines.append(line)
+            continue
+
+        parts = [p.strip() for p in line.split(",")]
+        n_cols = len(parts)
+        if not header_written:
+            base_hdr = _TOOLPATH_WP_HEADER_BASE[:n_cols]
+            if len(base_hdr) < n_cols:
+                base_hdr += [f"col_{j}" for j in range(len(base_hdr), n_cols)]
+            out_lines.append(",".join(base_hdr + _TOOLPATH_WP_HEADER_EXTRA))
+            header_written = True
+
+        v_cmd_wp = float(parts[7]) if len(parts) > 7 else float("nan")
+        ign = ignored[n_wp]
+        if ign != "no":
+            n_ignored += 1
+            feasible = True
+            rs_bench = "N/A"
+            n_rs_na += 1
+        else:
+            feasible = bool(v_cmd_wp <= v_actual[n_wp] + 1e-6)
+            if feasible:
+                n_feasible += 1
+            else:
+                n_infeasible += 1
+            if rs_v_wp is not None and rs_v_wp[n_wp] > 1.0:
+                err = abs(v_actual[n_wp] - rs_v_wp[n_wp])
+                if _rs_bench_fail_mask(
+                    np.array([err]), np.array([rs_v_wp[n_wp]]),
+                )[0]:
+                    rs_bench = "fail"
+                    n_rs_fail += 1
+                else:
+                    rs_bench = "pass"
+                    n_rs_pass += 1
+            else:
+                rs_bench = "N/A"
+                n_rs_na += 1
+
+        def _fmt_v(v: Optional[np.ndarray], i: int) -> str:
+            if v is None:
+                return "N/A"
+            return f"{float(v[i]):.4f}"
+
+        extra = [
+            _fmt_v(v_actual, n_wp),
+            _fmt_v(v_opt, n_wp),
+            _fmt_v(v_const, n_wp),
+            ign,
+            "true" if feasible else "false",
+            rs_bench,
+        ]
+        out_lines.append(",".join(parts + extra))
+        n_wp += 1
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+
+    n_eval = n_wp - n_ignored
+    overall_feasible = (n_infeasible == 0)
+    overall_rs_pass = (n_rs_fail == 0) if n_eval > 0 and rs_rec is not None else None
+
+    return {
+        "path": str(out_path),
+        "n_waypoints": n_wp,
+        "n_ignored": n_ignored,
+        "n_feasible": n_feasible,
+        "n_infeasible": n_infeasible,
+        "n_rs_pass": n_rs_pass,
+        "n_rs_fail": n_rs_fail,
+        "overall_feasible": overall_feasible,
+        "overall_rs_pass": overall_rs_pass,
+    }
+
+
+def _write_run_feasibility_summary(
+    out_root: Path,
+    batch_rows: List[Dict],
+) -> Path:
+    """High-level feasibility + traversal times for an entire results run."""
+    lines = [
+        "Run feasibility summary",
+        "=" * 72,
+        f"output: {out_root}",
+        f"n toolpaths: {len(batch_rows)}",
+        "",
+        "Per toolpath (non-ignored waypoints only for feasibility / RS bench)",
+        "-" * 72,
+    ]
+    n_all_feasible = 0
+    n_all_rs_pass = 0
+    n_with_rs = 0
+
+    for row in batch_rows:
+        name = Path(row["toolpath"]).name
+        wp = row.get("waypoint_benchmark", {})
+        n_wp = wp.get("n_waypoints", 0)
+        n_ign = wp.get("n_ignored", 0)
+        n_infeas = wp.get("n_infeasible", 0)
+        n_rs_fail = wp.get("n_rs_fail", 0)
+        n_rs_pass = wp.get("n_rs_pass", 0)
+        feas_ok = wp.get("overall_feasible")
+        rs_ok = wp.get("overall_rs_pass")
+
+        lines.append(f"\n{name}")
+        lines.append(
+            f"  feasibility:  {n_wp - n_ign - n_infeas}/{max(n_wp - n_ign, 0)} "
+            f"waypoints meet v_cmd  "
+            f"({'PASS' if feas_ok else 'FAIL' if feas_ok is False else 'n/a'})"
+        )
+        if row.get("rs_duration_s") is not None:
+            n_with_rs += 1
+            lines.append(
+                f"  RS bench:     {n_rs_pass} pass / {n_rs_fail} fail  "
+                f"({'PASS' if rs_ok else 'FAIL' if rs_ok is False else 'n/a'})"
+            )
+            if rs_ok:
+                n_all_rs_pass += 1
+        else:
+            lines.append("  RS bench:     (no RobotStudio recording)")
+
+        if feas_ok:
+            n_all_feasible += 1
+
+        lines.append("  traversal [s]:")
+        if row.get("rs_duration_s") is not None:
+            lines.append(f"    RobotStudio:  {row['rs_duration_s']:.4f}")
+        lines.append(f"    commanded:    {row.get('commanded_s', float('nan')):.4f}")
+        if row.get("optimal_s") is not None:
+            lines.append(f"    optimal:      {row['optimal_s']:.4f}")
+        else:
+            lines.append("    optimal:      N/A")
+        if row.get("constant_s") is not None:
+            lines.append(
+                f"    constant:     {row['constant_s']:.4f}"
+                f"  (v_const={row.get('v_const', float('nan')):.1f} mm/s)"
+            )
+        else:
+            lines.append("    constant:     N/A")
+
+    lines += [
+        "",
+        "Totals",
+        "-" * 72,
+        f"  all waypoints feasible (v_cmd):  {n_all_feasible} / {len(batch_rows)}",
+    ]
+    if n_with_rs:
+        lines.append(
+            f"  all RS bench pass:               {n_all_rs_pass} / {n_with_rs}"
+        )
+    lines.append("")
+
+    out_path = out_root / "run_feasibility_summary.txt"
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out_path
+
 
 def _rs_solver_legend(ax, *, limits: bool = False, fontsize: int = 7) -> None:
     """Per-subplot legend: RobotStudio (blue) + solver (green) [+ limits]."""
@@ -3201,8 +3471,9 @@ def _plot_tcp_vs_rs(
 ) -> str:
     """TCP speed + |TCP accel| [+ |TCP jerk|] vs arc-length: solver vs RS.
 
-    In commanded mode, steady-state samples (outside the accel-transient
-    mask) deviating from RS by more than 10% are marked red.
+    In commanded mode, steady-state samples (outside excluded regions)
+    deviating from RS beyond tolerance are marked red (fail if |err| > 10%
+    of RS *and* |err| > 2.5 mm/s).
 
     Optional jerk panel (``plot_jerk``): Savitzky–Golay ``d/dt`` of solver
     ``s̈`` and of RS logged TCP accel.
@@ -3262,11 +3533,12 @@ def _plot_tcp_vs_rs(
     bench_ex = _rs_bench_exclude_mask(res, len(s))
     if res.mode == "commanded" and trans is not None:
         rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
-        dev = np.abs(res.v_star - rs_v) > 0.10 * np.maximum(rs_v, 1e-9)
+        dev = _rs_bench_fail_mask(res.v_star - rs_v, rs_v)
         flag = dev & ~bench_ex & (rs_v > 1.0)
         if flag.any():
             ax.plot(s[flag], res.v_star[flag], "o", ms=4, color="red",
-                    zorder=5, label=f">10% vs RS (n={int(flag.sum())})")
+                    zorder=5,
+                    label=f">tol vs RS (n={int(flag.sum())})")
         for a, b in _mask_spans(trans):
             ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
     if vcap_ex is not None and np.any(vcap_ex):
@@ -4072,17 +4344,20 @@ def _write_mode_summary(
         keep = (rs_v > 1.0)
         if trans is not None:
             keep &= ~trans
+        if res.vcap_excluded_mask is not None:
+            keep &= ~res.vcap_excluded_mask
         err = np.abs(res.v_star - rs_v)[keep]
         rsk = rs_v[keep]
-        dev10 = int(np.sum(err > 0.10 * rsk))
+        dev_fail = int(_rs_bench_fail_mask(err, rsk).sum())
         lines += [
             "",
             "vs RobotStudio (steady-state samples only)",
             f"  RS duration:        {float(rs_rec.t_s[-1]):.4f} s",
             f"  |err| med/p95/max:  {np.median(err):.2f} / "
             f"{np.percentile(err, 95):.2f} / {np.max(err):.2f} mm/s",
-            f"  >10% of RS:         {dev10} / {int(keep.sum())} "
-            f"({100 * dev10 / max(int(keep.sum()), 1):.1f}%)",
+            f"  >tol vs RS:         {dev_fail} / {int(keep.sum())} "
+            f"({100 * dev_fail / max(int(keep.sum()), 1):.1f}%)  "
+            f"(fail if |err|>10% RS and |err|>{_RS_BENCH_ABS_FLOOR_MM_S:g} mm/s)",
         ]
     out = Path(out_dir) / "summary.txt"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -5103,23 +5378,26 @@ def _write_benchmark_summary(
     else:
         s = res_cmd.s_eval
         rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, s)
-        trans = res_cmd.accel_transient_mask
-        steady = ~trans & (rs_v > 1.0)
+        bench_ex = _rs_bench_exclude_mask(res_cmd, len(s))
+        steady = ~bench_ex & (rs_v > 1.0)
         err = np.abs(res_cmd.v_star - rs_v)
-        flag10 = steady & (err > 0.10 * rs_v)
+        flag_fail = steady & _rs_bench_fail_mask(res_cmd.v_star - rs_v, rs_v)
         n_steady = int(steady.sum())
-        lines.append(f"  transient fraction:   {float(np.mean(trans)):.3f}")
-        lines.append(f"  steady-state samples: {n_steady}")
+        lines.append(f"  excluded fraction:    {float(np.mean(bench_ex)):.3f}")
+        lines.append(f"  bench-eligible:       {n_steady}")
         if n_steady:
             e = err[steady]
-            frac = 100.0 * flag10.sum() / n_steady
+            frac = 100.0 * flag_fail.sum() / n_steady
             lines.append(f"  |err| med/p95/max:    {np.median(e):.2f} / "
                          f"{np.percentile(e, 95):.2f} / {np.max(e):.2f} mm/s")
-            lines.append(f"  >10% of RS:           {int(flag10.sum())} / "
-                         f"{n_steady} ({frac:.1f}%)")
+            lines.append(
+                f"  >tol vs RS:           {int(flag_fail.sum())} / "
+                f"{n_steady} ({frac:.1f}%)  "
+                f"(fail if |err|>10% RS and |err|>{_RS_BENCH_ABS_FLOOR_MM_S:g} mm/s)"
+            )
             if frac > 25.0:
-                lines.append(f"  [ABNORMAL] {frac:.1f}% of steady samples "
-                             "deviate by >10% from RS")
+                lines.append(f"  [ABNORMAL] {frac:.1f}% of eligible samples "
+                             "deviate beyond RS tolerance")
 
     lines += ["", "Speed stats by mode [mm/s]", "-" * 40]
     for label, r in (("commanded", res_cmd), ("constant", res_const),
@@ -5263,6 +5541,22 @@ def _process_one_toolpath(
             case_dir / "summary.txt", str(toolpath), ctx.v_cmd, rs_rec, res_cmd,
         )
 
+    wp_bench = _write_waypoint_benchmark_csv(
+        toolpath,
+        case_dir / "waypoint_benchmark.csv",
+        res_cmd=res_cmd,
+        waypoints_base=ctx.waypoints_base,
+        rs_rec=rs_rec,
+        res_opt=res_opt,
+        res_const=res_const,
+    )
+    print(
+        f"  waypoint benchmark CSV: {wp_bench['path']}  "
+        f"({wp_bench['n_feasible']} feasible, {wp_bench['n_infeasible']} infeasible, "
+        f"{wp_bench['n_ignored']} ignored; "
+        f"RS {wp_bench['n_rs_pass']} pass / {wp_bench['n_rs_fail']} fail)"
+    )
+
     # Toolpath-common FK(spline) vs blended-arc check (same q(s) for all modes).
     fk_ref = res_cmd or res_opt or res_const
     fk_check = None
@@ -5313,6 +5607,7 @@ def _process_one_toolpath(
         "fk_n_fail_segments": (
             None if fk_check is None else fk_check.get("n_fail_segments")
         ),
+        "waypoint_benchmark": wp_bench,
     }
 
 
@@ -5496,6 +5791,8 @@ def main() -> None:
             f"(of {n_fk})"
         )
 
+    feas_path = _write_run_feasibility_summary(out_root, batch_rows)
+    print(f"Run feasibility summary: {feas_path}")
     print(f"\nDone. Results under: {out_root}")
 
 
