@@ -227,6 +227,8 @@ class ProfileResult:
     # RobotStudio IRC5 spacing×zone cruising cap (on s_eval), or None
     v_capped: np.ndarray = None
     v_capped_waypoint: np.ndarray = None
+    # Samples where RS v_cap lookup failed — excluded from RS benchmarking.
+    vcap_excluded_mask: np.ndarray = None
     # "commanded" = joint limits ∧ v ≤ v_cmd(s); "time_optimal" = joint limits
     # only; "constant" = joint limits ∧ v ≤ v_const
     mode: str = "commanded"
@@ -1881,6 +1883,22 @@ def _accel_transient_legend_handle():
                  label="accel-transient (excluded from RS bench)")
 
 
+def _vcap_excluded_legend_handle():
+    from matplotlib.patches import Patch
+    return Patch(facecolor="#EEC900", alpha=0.18,
+                 label="RS v_cap unresolved (excluded from RS bench)")
+
+
+def _rs_bench_exclude_mask(res: ProfileResult, n: int) -> np.ndarray:
+    """Combined mask of samples excluded from RS benchmarking overlays/stats."""
+    excluded = np.zeros(n, dtype=bool)
+    if res.accel_transient_mask is not None:
+        excluded |= np.asarray(res.accel_transient_mask, dtype=bool)
+    if res.vcap_excluded_mask is not None:
+        excluded |= np.asarray(res.vcap_excluded_mask, dtype=bool)
+    return excluded
+
+
 def _shade_regions(ax, s, regions):
     """Draw cruise (green) / transient (red) / boundary (darker red) bands."""
     def _spans(mask):
@@ -3240,19 +3258,27 @@ def _plot_tcp_vs_rs(
                        label=f"v_cmd = {res.v_cmd:.0f} mm/s")
 
     trans = res.accel_transient_mask
+    vcap_ex = res.vcap_excluded_mask
+    bench_ex = _rs_bench_exclude_mask(res, len(s))
     if res.mode == "commanded" and trans is not None:
         rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
         dev = np.abs(res.v_star - rs_v) > 0.10 * np.maximum(rs_v, 1e-9)
-        flag = dev & ~trans & (rs_v > 1.0)
+        flag = dev & ~bench_ex & (rs_v > 1.0)
         if flag.any():
             ax.plot(s[flag], res.v_star[flag], "o", ms=4, color="red",
                     zorder=5, label=f">10% vs RS (n={int(flag.sum())})")
         for a, b in _mask_spans(trans):
             ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+    if vcap_ex is not None and np.any(vcap_ex):
+        for a, b in _mask_spans(vcap_ex):
+            ax.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
     h, lab = ax.get_legend_handles_labels()
     if trans is not None and np.any(trans):
         h = list(h) + [_accel_transient_legend_handle()]
         lab = list(lab) + ["accel-transient (excluded from RS bench)"]
+    if vcap_ex is not None and np.any(vcap_ex):
+        h = list(h) + [_vcap_excluded_legend_handle()]
+        lab = list(lab) + ["RS v_cap unresolved (excluded from RS bench)"]
     ax.set_ylabel("TCP speed [mm/s]")
     ax.grid(True, alpha=0.3)
     ax.legend(h, lab, loc="best", fontsize=8)
@@ -3274,12 +3300,18 @@ def _plot_tcp_vs_rs(
     if trans is not None and np.any(trans):
         for a, b in _mask_spans(trans):
             ax2.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+    if vcap_ex is not None and np.any(vcap_ex):
+        for a, b in _mask_spans(vcap_ex):
+            ax2.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
     ax2.set_ylabel("|TCP accel| [mm/s²]")
     ax2.grid(True, alpha=0.3)
     h2, lab2 = ax2.get_legend_handles_labels()
     if trans is not None and np.any(trans):
         h2 = list(h2) + [_accel_transient_legend_handle()]
         lab2 = list(lab2) + ["accel-transient (excluded from RS bench)"]
+    if vcap_ex is not None and np.any(vcap_ex):
+        h2 = list(h2) + [_vcap_excluded_legend_handle()]
+        lab2 = list(lab2) + ["RS v_cap unresolved (excluded from RS bench)"]
     ax2.legend(h2, lab2, loc="best", fontsize=8)
 
     if plot_jerk and res.t is not None and res.s_ddot is not None:
@@ -3294,12 +3326,18 @@ def _plot_tcp_vs_rs(
         if trans is not None and np.any(trans):
             for a, b in _mask_spans(trans):
                 axj.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+        if vcap_ex is not None and np.any(vcap_ex):
+            for a, b in _mask_spans(vcap_ex):
+                axj.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
         axj.set_ylabel("|TCP jerk| [mm/s³]")
         axj.grid(True, alpha=0.3)
         hj, labj = axj.get_legend_handles_labels()
         if trans is not None and np.any(trans):
             hj = list(hj) + [_accel_transient_legend_handle()]
             labj = list(labj) + ["accel-transient (excluded from RS bench)"]
+        if vcap_ex is not None and np.any(vcap_ex):
+            hj = list(hj) + [_vcap_excluded_legend_handle()]
+            labj = list(labj) + ["RS v_cap unresolved (excluded from RS bench)"]
         axj.legend(hj, labj, loc="best", fontsize=8)
         axj.set_title(
             "G1b  TCP tangential jerk — Savitzky–Golay d/dt of accel "
@@ -3315,8 +3353,7 @@ def _plot_tcp_vs_rs(
         rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
         abs_err = np.abs(res.v_star - rs_v)
         use = np.ones(len(s), dtype=bool)
-        if trans is not None:
-            use &= ~trans
+        use &= ~bench_ex
         areas = []
         mid_s = []
         labels = []
@@ -3353,18 +3390,23 @@ def _plot_tcp_vs_rs(
         if trans is not None and np.any(trans):
             for a, b in _mask_spans(trans):
                 ax3.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+        if vcap_ex is not None and np.any(vcap_ex):
+            for a, b in _mask_spans(vcap_ex):
+                ax3.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
         total = float(np.nansum(areas_a))
         ax3.set_ylabel("∫|v*−v_RS| ds\n[mm·(mm/s)]", fontsize=9)
         ax3.set_title(
             "G1c  Per-waypoint area between solver and RS TCP speed "
-            f"(non-transient only; total={total:.1f})"
+            f"(bench-eligible only; total={total:.1f})"
         )
         ax3.grid(True, alpha=0.3, axis="y")
+        legend_handles = []
         if trans is not None and np.any(trans):
-            ax3.legend(
-                handles=[_accel_transient_legend_handle()],
-                fontsize=8, loc="best",
-            )
+            legend_handles.append(_accel_transient_legend_handle())
+        if vcap_ex is not None and np.any(vcap_ex):
+            legend_handles.append(_vcap_excluded_legend_handle())
+        if legend_handles:
+            ax3.legend(handles=legend_handles, fontsize=8, loc="best")
 
     axes[-1].set_xlabel("arc-length s [mm]")
     fig.tight_layout()
@@ -3430,7 +3472,8 @@ def _write_rs_compare_summary(
     s = res.s_eval
     rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
     rs_a = _interp_rs_to_solver(rs.s_mm, np.abs(rs.tcp_accel_mm_s2), s)
-    active = rs_v > 1.0
+    bench_ex = _rs_bench_exclude_mask(res, len(s))
+    active = (rs_v > 1.0) & ~bench_ex
     lines = [
         f"Solver vs RobotStudio — {mode_name}",
         "=" * 60,
@@ -3440,7 +3483,8 @@ def _write_rs_compare_summary(
         f"solver duration = {res.metrics_duration:.4f} s",
         f"RS duration     = {float(rs.t_s[-1]):.4f} s",
         "",
-        "TCP speed [mm/s] (samples with RS speed > 1 mm/s):",
+        "TCP speed [mm/s] (RS speed > 1 mm/s, excluding accel-transient "
+        "and RS v_cap unresolved segments):",
     ]
     if np.any(active):
         err = res.v_star[active] - rs_v[active]
@@ -4373,18 +4417,46 @@ def run_diagnostics(
     res.v_lim = _apply_v_cmd_cap(res.v_lim_joint, v_cmd_for_cap, time_optimal)
 
     if toolpath_csv is not None and apply_rs_velocity_cap:
-        from utils.velocity_zone_lookup import build_v_capped_on_eval_grid
+        from utils.velocity_zone_lookup import (
+            build_v_capped_on_eval_grid,
+            map_v_capped_to_arc_length,
+        )
 
-        wp_for_cap = waypoints_plate if waypoints_plate is not None else waypoints_base
-        res.v_capped, res.v_capped_waypoint = build_v_capped_on_eval_grid(
+        wp_for_cap = (
+            waypoints_base if waypoints_base is not None else waypoints_plate
+        )
+        vcap = build_v_capped_on_eval_grid(
             toolpath_csv,
             s_eval,
             waypoints=wp_for_cap,
             custom_zone=True,
             default_zone="z5",
         )
-        res.v_lim = np.minimum(res.v_lim, res.v_capped)
-        _mvc_v_lim = np.minimum(_mvc_v_lim, res.v_capped)
+        res.v_capped = vcap.v_capped_eval
+        res.v_capped_waypoint = vcap.v_capped_waypoint
+        res.vcap_excluded_mask = vcap.excluded_mask
+
+        v_cap_mvc = map_v_capped_to_arc_length(
+            vcap.s_waypoint_mm, vcap.v_capped_waypoint, _mvc_s,
+        )
+
+        finite_cap = np.isfinite(vcap.v_capped_eval)
+        if np.any(finite_cap):
+            res.v_lim[finite_cap] = np.minimum(
+                res.v_lim[finite_cap], vcap.v_capped_eval[finite_cap],
+            )
+        finite_cap_mvc = np.isfinite(v_cap_mvc)
+        if np.any(finite_cap_mvc):
+            _mvc_v_lim[finite_cap_mvc] = np.minimum(
+                _mvc_v_lim[finite_cap_mvc], v_cap_mvc[finite_cap_mvc],
+            )
+
+        n_unresolved = int(np.sum(~vcap.valid_waypoint))
+        if n_unresolved:
+            print(
+                f"  [WARN] RS v_cap unresolved at {n_unresolved} waypoint(s); "
+                f"those segments excluded from RS benchmarking."
+            )
 
     finite_vlim = np.where(np.isfinite(res.v_lim), res.v_lim, np.inf)
     res.bottleneck_idx = int(np.argmin(finite_vlim))
@@ -4398,8 +4470,12 @@ def run_diagnostics(
         topt["v_star"], topt["u"], topt["s_ddot"], topt["t"]
     )
     if res.v_capped is not None:
-        res.v_star = np.minimum(res.v_star, res.v_capped)
-        res.u = res.v_star ** 2
+        finite_cap = np.isfinite(res.v_capped)
+        if np.any(finite_cap):
+            res.v_star[finite_cap] = np.minimum(
+                res.v_star[finite_cap], res.v_capped[finite_cap],
+            )
+            res.u = res.v_star ** 2
     res.q_dot, res.q_ddot = topt["q_dot"], topt["q_ddot"]
     res.metrics_duration = topt["duration_s"]
     res.metrics_roundtrip = topt["roundtrip_ds_over_v"]
@@ -4497,10 +4573,17 @@ def run_diagnostics(
     # transient metrics already stored under res.metrics["transient"]
 
     if res.v_capped is not None:
+        valid_wp = np.isfinite(res.v_capped_waypoint)
         res.metrics["rs_velocity_cap"] = {
-            "v_cap_min_mm_s": float(np.min(res.v_capped)),
-            "v_cap_max_mm_s": float(np.max(res.v_capped)),
+            "v_cap_min_mm_s": float(np.nanmin(res.v_capped)),
+            "v_cap_max_mm_s": float(np.nanmax(res.v_capped)),
             "n_waypoints": int(len(res.v_capped_waypoint)),
+            "n_waypoints_resolved": int(np.sum(valid_wp)),
+            "n_waypoints_unresolved": int(np.sum(~valid_wp)),
+            "bench_excluded_fraction": (
+                float(np.mean(res.vcap_excluded_mask))
+                if res.vcap_excluded_mask is not None else None
+            ),
         }
     # Joint-limit compliance: the realized profile must respect BOTH joint
     # velocity and acceleration limits for all joints at every sample.
@@ -5133,30 +5216,14 @@ def _process_one_toolpath(
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
-        run_kw = dict(
+        r = run_diagnostics(
+            ctx.q_raw, ctx.poses, ctx.limits,
+            out_dir=mode_dir,
             toolpath_csv=toolpath if apply_rs_velocity_cap else None,
             apply_rs_velocity_cap=apply_rs_velocity_cap,
             **common,
             **kw,
         )
-        try:
-            r = run_diagnostics(
-                ctx.q_raw, ctx.poses, ctx.limits,
-                out_dir=mode_dir,
-                **run_kw,
-            )
-        except Exception as exc:
-            from utils.velocity_zone_lookup import VelocityZoneLookupError
-            if not apply_rs_velocity_cap or not isinstance(exc, VelocityZoneLookupError):
-                raise
-            print(f"  [WARN] RS velocity cap disabled: {exc}")
-            run_kw["toolpath_csv"] = None
-            run_kw["apply_rs_velocity_cap"] = False
-            r = run_diagnostics(
-                ctx.q_raw, ctx.poses, ctx.limits,
-                out_dir=mode_dir,
-                **run_kw,
-            )
         _print_metrics(r)
         _write_report(r, mode_dir)
         _write_mode_summary(mode_dir, r, rs_rec)
@@ -5321,7 +5388,7 @@ def main() -> None:
     parser.add_argument(
         "--no_vcap", action="store_true",
         help="Disable RobotStudio spacing×zone cruising-speed cap from "
-             "velocity_zone_lookup_table.csv (default: cap enabled).",
+             "velocity_zone_lookup_table_interp.csv (default: cap enabled).",
     )
     parser.add_argument(
         "--no-smooth-orientation", action="store_true",
@@ -5500,17 +5567,23 @@ def _limits():
 
 
 def test_velocity_zone_lookup_example_toolpath():
-    """Lookup table: 1 mm + z0 → 75 mm/s; out-of-table spacing raises."""
+    """Interp table: 1 mm + z0; 50 mm spacing unresolved (no extrapolation)."""
     from utils.velocity_zone_lookup import (
-        VelocityZoneLookupError,
-        compute_v_capped_per_waypoint,
+        compute_v_capped_per_waypoint_from_arrays,
+        interpolate_v_cap_mm_s,
         load_velocity_zone_lookup_table,
-        snap_spacing_mm,
     )
+    from utils.csv_loader_toolpath import load_toolpath_f3
 
     table = load_velocity_zone_lookup_table()
-    assert snap_spacing_mm(0.8, table) == 1.0
-    assert table.lookup(1.0, "z0") == 75.0
+    v_exact, ok = interpolate_v_cap_mm_s(table, 1.0, "z0")
+    assert ok and abs(v_exact - 74.93) < 0.01
+
+    v_mid, ok_mid = interpolate_v_cap_mm_s(table, 0.85, "z0")
+    assert ok_mid and np.isfinite(v_mid)
+
+    v_out, ok_out = interpolate_v_cap_mm_s(table, 50.0, "z0")
+    assert not ok_out and not np.isfinite(v_out)
 
     tp = (
         _REPO
@@ -5525,26 +5598,18 @@ def test_velocity_zone_lookup_example_toolpath():
         import pytest
         pytest.skip(f"Example toolpath not present: {tp}")
 
-    # Straight segments along the snake use 1 mm spacing → 75 mm/s (z0).
-    from utils.csv_loader_toolpath import load_toolpath_f3
-    import numpy as np
-
     lr = load_toolpath_f3(str(tp), custom_zone=True)
-    pos_mm = lr.waypoints[0][:, :3] * 1000.0
+    wp = lr.waypoints[0]
+    zs = lr.zone_specs[0]
+    result = compute_v_capped_per_waypoint_from_arrays(wp, zs, lookup_table=table)
+    pos_mm = wp[:, :3] * 1000.0
     ds = np.linalg.norm(np.diff(pos_mm, axis=0), axis=1)
     one_mm_idx = np.where(np.abs(ds - 1.0) < 0.01)[0]
-    for i in one_mm_idx[:5]:
-        spacing = snap_spacing_mm(float(ds[i]), table)
-        assert spacing == 1.0
-        assert table.lookup(spacing, "z0") == 75.0
+    assert np.allclose(result.v_capped_mm_s[one_mm_idx], 74.93, rtol=0, atol=0.01)
 
-    # Row-to-row jumps (50 mm) are outside the table → error at that waypoint.
     jump_idx = int(np.where(np.abs(ds - 50.0) < 0.01)[0][0])
-    try:
-        compute_v_capped_per_waypoint(tp, lookup_table=table)
-        raise AssertionError("expected VelocityZoneLookupError for 50 mm spacing")
-    except VelocityZoneLookupError as exc:
-        assert f"waypoint {jump_idx}" in str(exc)
+    assert not result.valid[jump_idx]
+    assert not np.isfinite(result.v_capped_mm_s[jump_idx])
 
 
 def test_T1_straight_constant_orientation():
