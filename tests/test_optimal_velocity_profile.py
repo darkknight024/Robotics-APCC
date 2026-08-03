@@ -102,6 +102,11 @@ _EPS = 1e-12
 _RS_BENCH_REL_TOL = 0.10
 _RS_BENCH_ABS_FLOOR_MM_S = 2.5
 
+# Dual-cruise gate: sample is "at local v_cmd" if |v − v_cmd| passes this band
+# (pass if err ≤ abs floor OR err ≤ frac × v_cmd).  Configurable via CLI.
+_DEFAULT_BENCH_CRUISE_TOL_FRAC = _RS_BENCH_REL_TOL
+_DEFAULT_BENCH_CRUISE_TOL_ABS_MM_S = _RS_BENCH_ABS_FLOOR_MM_S
+
 _TOOLPATH_WP_HEADER_BASE = [
     "x_mm", "y_mm", "z_mm", "qw", "qx", "qy", "qz", "speed_mm_s",
     "pzone_tcp", "pzone_ori", "pzone_eax", "zone_ori", "zone_leax", "zone_reax",
@@ -112,12 +117,169 @@ _TOOLPATH_WP_HEADER_EXTRA = [
 ]
 
 
-def _rs_bench_fail_mask(err: np.ndarray, rs_v: np.ndarray) -> np.ndarray:
+def _rs_bench_fail_mask(
+    err: np.ndarray,
+    rs_v: np.ndarray,
+    *,
+    rel_tol: float = _RS_BENCH_REL_TOL,
+    abs_floor_mm_s: float = _RS_BENCH_ABS_FLOOR_MM_S,
+) -> np.ndarray:
     """True where |solver − RS| exceeds both relative and absolute tolerance."""
     err = np.abs(np.asarray(err, dtype=float))
     rs_v = np.asarray(rs_v, dtype=float)
-    rel = _RS_BENCH_REL_TOL * np.maximum(rs_v, 1e-9)
-    return (err > _RS_BENCH_ABS_FLOOR_MM_S) & (err > rel)
+    rel = float(rel_tol) * np.maximum(rs_v, 1e-9)
+    return (err > float(abs_floor_mm_s)) & (err > rel)
+
+
+def _within_cruise_tol(
+    v: np.ndarray,
+    v_target: np.ndarray,
+    *,
+    cruise_tol_frac: float,
+    cruise_tol_abs_mm_s: float,
+) -> np.ndarray:
+    """True where *v* is within the cruise band around *v_target* (speed domain).
+
+    Pass if ``|v − v_target| ≤ cruise_tol_abs_mm_s`` **or**
+    ``|v − v_target| ≤ cruise_tol_frac × |v_target|`` — same pass logic as
+    RS benchmarking tolerance, with configurable knobs.  Independent of how
+    arc-length ``s`` is defined (mm-only vs pose-weighted).
+    """
+    err = np.abs(np.asarray(v, dtype=float) - np.asarray(v_target, dtype=float))
+    ref = np.maximum(np.abs(np.asarray(v_target, dtype=float)), 1e-9)
+    rel_ok = err <= float(cruise_tol_frac) * ref
+    abs_ok = err <= float(cruise_tol_abs_mm_s)
+    return rel_ok | abs_ok
+
+
+@dataclass
+class RSBenchExclusionConfig:
+    """Which RS benchmark exclusion zones are active and how tight cruise is."""
+
+    cruise_tol_frac: float = _DEFAULT_BENCH_CRUISE_TOL_FRAC
+    cruise_tol_abs_mm_s: float = _DEFAULT_BENCH_CRUISE_TOL_ABS_MM_S
+    enable_transient: bool = True
+    enable_vcap_lookup: bool = True
+    enable_v_cmd_ramp: bool = True
+
+
+@dataclass
+class RSBenchExclusions:
+    """Per-source RS benchmark exclusion masks on ``s_eval`` (computed separately)."""
+
+    config: RSBenchExclusionConfig
+    transient: np.ndarray = None          # joint accel-transient (raw, always stored)
+    vcap_lookup: np.ndarray = None          # RS v_cap table unresolved
+    v_cmd_ramp: np.ndarray = None           # approach ramp (continuous bench window)
+    hard_unified: np.ndarray = None         # transient | vcap — disables waypoint eval
+    unified: np.ndarray = None              # hard | v_cmd_ramp — continuous path bench
+
+    def enabled_fractions(self) -> Dict[str, float]:
+        n = len(self.unified) if self.unified is not None else 0
+        if n == 0:
+            return {}
+        cfg = self.config
+        out: Dict[str, float] = {}
+        if self.transient is not None and cfg.enable_transient:
+            out["transient"] = float(np.mean(self.transient))
+        if self.vcap_lookup is not None and cfg.enable_vcap_lookup:
+            out["vcap_lookup"] = float(np.mean(self.vcap_lookup))
+        if self.v_cmd_ramp is not None and cfg.enable_v_cmd_ramp:
+            out["v_cmd_ramp"] = float(np.mean(self.v_cmd_ramp))
+        if self.hard_unified is not None:
+            out["hard_unified"] = float(np.mean(self.hard_unified))
+        if self.unified is not None:
+            out["unified"] = float(np.mean(self.unified))
+        return out
+
+
+def _compute_v_cmd_ramp_exclusion_mask(
+    res: ProfileResult,
+    rs_rec: RSRecording,
+    config: RSBenchExclusionConfig,
+) -> np.ndarray:
+    """Continuous-path window: exclude samples outside dual-cruise near v_cmd.
+
+    Used only for arc-length sample benchmarking (red dots, summaries over
+    ``s_eval``).  Does **not** disable per-waypoint evaluation — waypoints
+    are compared at their programmed arc-length regardless of this mask.
+    """
+    n = len(res.s_eval)
+    out = np.zeros(n, dtype=bool)
+    if res.v_cmd_path is None or len(res.v_cmd_path) != n:
+        return out
+    rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, res.s_eval)
+    v_cmd = np.asarray(res.v_cmd_path, dtype=float)
+    kw = dict(
+        cruise_tol_frac=config.cruise_tol_frac,
+        cruise_tol_abs_mm_s=config.cruise_tol_abs_mm_s,
+    )
+    solver_at = _within_cruise_tol(res.v_star, v_cmd, **kw)
+    rs_at = _within_cruise_tol(rs_v, v_cmd, **kw)
+    # Continuous bench only where BOTH profiles have reached local v_cmd.
+    out = ~(solver_at & rs_at)
+    return out
+
+
+def _build_rs_bench_exclusions(
+    res: ProfileResult,
+    rs_rec: Optional[RSRecording],
+    config: RSBenchExclusionConfig,
+) -> RSBenchExclusions:
+    """Compute each exclusion source separately, then merge enabled zones."""
+    n = len(res.s_eval)
+    excl = RSBenchExclusions(config=config)
+
+    excl.transient = (
+        np.asarray(res.accel_transient_mask, dtype=bool).copy()
+        if res.accel_transient_mask is not None
+        else np.zeros(n, dtype=bool)
+    )
+    excl.vcap_lookup = (
+        np.asarray(res.vcap_excluded_mask, dtype=bool).copy()
+        if res.vcap_excluded_mask is not None
+        else np.zeros(n, dtype=bool)
+    )
+    if rs_rec is not None and res.mode == "commanded":
+        excl.v_cmd_ramp = _compute_v_cmd_ramp_exclusion_mask(res, rs_rec, config)
+    else:
+        excl.v_cmd_ramp = np.zeros(n, dtype=bool)
+
+    hard = np.zeros(n, dtype=bool)
+    if config.enable_transient:
+        hard |= excl.transient
+    if config.enable_vcap_lookup:
+        hard |= excl.vcap_lookup
+    excl.hard_unified = hard
+
+    unified = hard.copy()
+    if config.enable_v_cmd_ramp:
+        unified |= excl.v_cmd_ramp
+    excl.unified = unified
+    return excl
+
+
+def _rs_bench_hard_exclude_mask(res: ProfileResult) -> np.ndarray:
+    """Hard exclusions that disable waypoint/segment RS benchmarking."""
+    if (
+        res.rs_bench_exclusions is not None
+        and res.rs_bench_exclusions.hard_unified is not None
+    ):
+        return np.asarray(res.rs_bench_exclusions.hard_unified, dtype=bool)
+    n = len(res.s_eval) if res.s_eval is not None else 0
+    excluded = np.zeros(n, dtype=bool)
+    if res.accel_transient_mask is not None:
+        excluded |= np.asarray(res.accel_transient_mask, dtype=bool)
+    if res.vcap_excluded_mask is not None:
+        excluded |= np.asarray(res.vcap_excluded_mask, dtype=bool)
+    return excluded
+
+
+def _rs_bench_exclude_mask(res: ProfileResult) -> np.ndarray:
+    """Full RS benchmark exclusion mask for continuous ``s_eval`` samples."""
+    if res.rs_bench_exclusions is not None and res.rs_bench_exclusions.unified is not None:
+        return np.asarray(res.rs_bench_exclusions.unified, dtype=bool)
+    return _rs_bench_hard_exclude_mask(res)
 
 
 def _is_toolpath_waypoint_row(line: str) -> bool:
@@ -145,15 +307,21 @@ def _waypoint_ignored_labels(
     res_cmd: ProfileResult,
     waypoints_base: np.ndarray,
 ) -> List[str]:
-    """Per-waypoint ignore reason: ``lookup``, ``transient``, or ``no``."""
+    """Per-waypoint ignore reason (hard exclusions only: lookup, transient)."""
     n = len(waypoints_base)
     wp_s = _waypoint_arc_lengths(waypoints_base, res_cmd.tcp_xyz, res_cmd.s_eval)
     s_eval = res_cmd.s_eval
     idx = np.clip(np.searchsorted(s_eval, wp_s), 0, len(s_eval) - 1)
     labels: List[str] = []
-    trans = res_cmd.accel_transient_mask
-    vcap_ex = res_cmd.vcap_excluded_mask
+
+    excl = res_cmd.rs_bench_exclusions
     vcap_wp = res_cmd.v_capped_waypoint
+    if excl is not None:
+        trans = excl.transient if excl.config.enable_transient else None
+        vcap_ex = excl.vcap_lookup if excl.config.enable_vcap_lookup else None
+    else:
+        trans = res_cmd.accel_transient_mask
+        vcap_ex = res_cmd.vcap_excluded_mask
 
     for i in range(n):
         if vcap_wp is not None and (
@@ -167,6 +335,20 @@ def _waypoint_ignored_labels(
         else:
             labels.append("no")
     return labels
+
+
+def _compute_waypoint_speed_deviations(
+    res: ProfileResult,
+    rs: RSRecording,
+    waypoints_base: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    """|v_solver − v_RS| at each programmed waypoint arc-length."""
+    wp_s = _waypoint_arc_lengths(waypoints_base, res.tcp_xyz, res.s_eval)
+    v_solver = np.interp(wp_s, res.s_eval, res.v_star)
+    v_rs = np.interp(wp_s, rs.s_mm, rs.tcp_speed_mm_s)
+    abs_err = np.abs(v_solver - v_rs)
+    ignored = _waypoint_ignored_labels(res, waypoints_base)
+    return wp_s, v_solver, v_rs, abs_err, ignored
 
 
 def _write_waypoint_benchmark_csv(
@@ -238,8 +420,9 @@ def _write_waypoint_benchmark_csv(
                 n_infeasible += 1
             if rs_v_wp is not None and rs_v_wp[n_wp] > 1.0:
                 err = abs(v_actual[n_wp] - rs_v_wp[n_wp])
+                cruise_kw = _bench_cruise_kw(res_cmd)
                 if _rs_bench_fail_mask(
-                    np.array([err]), np.array([rs_v_wp[n_wp]]),
+                    np.array([err]), np.array([rs_v_wp[n_wp]]), **cruise_kw,
                 )[0]:
                     rs_bench = "fail"
                     n_rs_fail += 1
@@ -499,6 +682,8 @@ class ProfileResult:
     v_capped_waypoint: np.ndarray = None
     # Samples where RS v_cap lookup failed — excluded from RS benchmarking.
     vcap_excluded_mask: np.ndarray = None
+    # Modular RS benchmark exclusions (transient / vcap / v_cmd_ramp → unified).
+    rs_bench_exclusions: Optional[RSBenchExclusions] = None
     # "commanded" = joint limits ∧ v ≤ v_cmd(s); "time_optimal" = joint limits
     # only; "constant" = joint limits ∧ v ≤ v_const
     mode: str = "commanded"
@@ -2159,14 +2344,162 @@ def _vcap_excluded_legend_handle():
                  label="RS v_cap unresolved (excluded from RS bench)")
 
 
-def _rs_bench_exclude_mask(res: ProfileResult, n: int) -> np.ndarray:
-    """Combined mask of samples excluded from RS benchmarking overlays/stats."""
-    excluded = np.zeros(n, dtype=bool)
-    if res.accel_transient_mask is not None:
-        excluded |= np.asarray(res.accel_transient_mask, dtype=bool)
-    if res.vcap_excluded_mask is not None:
-        excluded |= np.asarray(res.vcap_excluded_mask, dtype=bool)
-    return excluded
+def _v_cmd_ramp_excluded_legend_handle():
+    from matplotlib.patches import Patch
+    return Patch(facecolor="#56B4E9", alpha=0.20,
+                 label="approach ramp (continuous bench window only)")
+
+
+def _draw_bench_exclusion_spans(
+    ax,
+    s: np.ndarray,
+    excl: Optional[RSBenchExclusions],
+    *,
+    hard_only: bool = False,
+) -> None:
+    """Draw per-source benchmark exclusion bands (no legend)."""
+    if excl is None:
+        return
+    cfg = excl.config
+    if cfg.enable_transient and excl.transient is not None and np.any(excl.transient):
+        for a, b in _mask_spans(excl.transient):
+            ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
+    if cfg.enable_vcap_lookup and excl.vcap_lookup is not None and np.any(excl.vcap_lookup):
+        for a, b in _mask_spans(excl.vcap_lookup):
+            ax.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
+    if (
+        not hard_only
+        and cfg.enable_v_cmd_ramp
+        and excl.v_cmd_ramp is not None
+        and np.any(excl.v_cmd_ramp)
+    ):
+        for a, b in _mask_spans(excl.v_cmd_ramp):
+            ax.axvspan(s[a], s[b], color="#56B4E9", alpha=0.20, lw=0, zorder=0)
+
+
+def _shade_bench_exclusions(ax, s: np.ndarray, excl: Optional[RSBenchExclusions]) -> List:
+    """Draw per-source benchmark exclusion bands; return legend handles added."""
+    handles = []
+    if excl is None:
+        return handles
+    _draw_bench_exclusion_spans(ax, s, excl)
+    cfg = excl.config
+    if cfg.enable_transient and excl.transient is not None and np.any(excl.transient):
+        handles.append(_accel_transient_legend_handle())
+    if cfg.enable_vcap_lookup and excl.vcap_lookup is not None and np.any(excl.vcap_lookup):
+        handles.append(_vcap_excluded_legend_handle())
+    if cfg.enable_v_cmd_ramp and excl.v_cmd_ramp is not None and np.any(excl.v_cmd_ramp):
+        handles.append(_v_cmd_ramp_excluded_legend_handle())
+    return handles
+
+
+def _bench_cruise_kw(res: ProfileResult) -> Dict[str, float]:
+    """Cruise-band kwargs from modular exclusion config when available."""
+    excl = res.rs_bench_exclusions
+    if excl is not None:
+        return dict(
+            rel_tol=excl.config.cruise_tol_frac,
+            abs_floor_mm_s=excl.config.cruise_tol_abs_mm_s,
+        )
+    return {}
+
+
+def _write_rs_bench_exclusion_report(
+    out_dir: Path,
+    excl: RSBenchExclusions,
+) -> Path:
+    """Dump per-source RS benchmark exclusion fractions and config."""
+    cfg = excl.config
+    report = {
+        "config": {
+            "cruise_tol_frac": cfg.cruise_tol_frac,
+            "cruise_tol_abs_mm_s": cfg.cruise_tol_abs_mm_s,
+            "enable_transient": cfg.enable_transient,
+            "enable_vcap_lookup": cfg.enable_vcap_lookup,
+            "enable_v_cmd_ramp": cfg.enable_v_cmd_ramp,
+        },
+        "fractions": excl.enabled_fractions(),
+    }
+    p = out_dir / "rs_bench_exclusions.json"
+    p.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return p
+
+
+def _plot_waypoint_speed_deviation_panel(
+    ax,
+    res: ProfileResult,
+    rs: RSRecording,
+    waypoints_base: np.ndarray,
+    excl: Optional[RSBenchExclusions],
+) -> None:
+    """G1c: lollipop chart of |v_solver − v_RS| at each programmed waypoint."""
+    from matplotlib.lines import Line2D
+
+    wp_s, v_sol, v_rs, abs_err, ignored = _compute_waypoint_speed_deviations(
+        res, rs, waypoints_base,
+    )
+    cruise_kw = _bench_cruise_kw(res)
+    cfg = excl.config if excl is not None else None
+    tol_abs = cfg.cruise_tol_abs_mm_s if cfg else _RS_BENCH_ABS_FLOOR_MM_S
+
+    n_wp = len(wp_s)
+    x = np.arange(n_wp, dtype=float)
+    eligible = np.array([ign == "no" for ign in ignored], dtype=bool)
+    fail = np.zeros(n_wp, dtype=bool)
+    if np.any(eligible):
+        fail[eligible] = _rs_bench_fail_mask(
+            abs_err[eligible], v_rs[eligible], **cruise_kw,
+        )
+
+    # Lollipop stems + markers
+    for i in range(n_wp):
+        if not eligible[i]:
+            ax.plot(x[i], 0.0, marker="x", ms=7, color="0.55", mew=1.4, zorder=3)
+            continue
+        color = "#D62728" if fail[i] else "#2CA02C"
+        ax.vlines(x[i], 0.0, abs_err[i], color=color, lw=1.6, alpha=0.85, zorder=2)
+        ax.scatter(
+            [x[i]], [abs_err[i]], s=42, color=color, edgecolors="white",
+            linewidths=0.6, zorder=4,
+        )
+
+    ax.axhline(tol_abs, color="0.35", ls="--", lw=1.0, alpha=0.8, zorder=1)
+    ax.text(
+        0.99, tol_abs, f" {tol_abs:g} mm/s abs tol",
+        transform=ax.get_yaxis_transform(),
+        ha="right", va="bottom", fontsize=7, color="0.35",
+    )
+
+    # Waypoint labels on x-axis (1-based WP index)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"WP{i + 1}" for i in range(n_wp)], rotation=45, ha="right")
+    ax.set_xlim(-0.6, n_wp - 0.4)
+    ax.set_ylabel("|v_solver − v_RS|\n[mm/s]", fontsize=9)
+    ax.grid(True, alpha=0.25, axis="y")
+
+    n_eval = int(eligible.sum())
+    n_fail = int(fail.sum())
+    med = float(np.median(abs_err[eligible])) if n_eval else float("nan")
+    ax.set_title(
+        "G1c  Per-waypoint TCP speed deviation at programmed waypoint "
+        f"(n={n_eval} evaluated, {n_fail} fail; med={med:.2f} mm/s)",
+        fontsize=10,
+    )
+
+    legend = [
+        Line2D([0], [0], color="#2CA02C", lw=2, marker="o", markersize=5,
+               label="pass vs RS"),
+        Line2D([0], [0], color="#D62728", lw=2, marker="o", markersize=5,
+               label="fail vs RS"),
+        Line2D([0], [0], color="0.55", lw=0, marker="x", markersize=7,
+               label="ignored (transient / lookup)"),
+    ]
+    if excl is not None:
+        if excl.config.enable_transient and excl.transient is not None and np.any(excl.transient):
+            legend.append(_accel_transient_legend_handle())
+        if excl.config.enable_vcap_lookup and excl.vcap_lookup is not None and np.any(excl.vcap_lookup):
+            legend.append(_vcap_excluded_legend_handle())
+    ax.legend(handles=legend, fontsize=7, loc="upper right", framealpha=0.92)
 
 
 def _shade_regions(ax, s, regions):
@@ -2526,6 +2859,16 @@ def _mask_spans(mask: np.ndarray) -> List[Tuple[int, int]]:
 def identify_transient_mask(*args, **kwargs):
     """Delegate to :mod:`transient_classification` (returns mask, diag)."""
     from transient_classification import identify_transient_mask as _impl
+    return _impl(*args, **kwargs)
+
+
+def identify_rs_transient_mask(*args, **kwargs):
+    from transient_classification import identify_rs_transient_mask as _impl
+    return _impl(*args, **kwargs)
+
+
+def combine_transient_masks(*args, **kwargs):
+    from transient_classification import combine_transient_masks as _impl
     return _impl(*args, **kwargs)
 
 
@@ -3481,29 +3824,28 @@ def _plot_tcp_vs_rs(
     When ``rs_geom`` is provided, the accel panel also shows
     ``|d(speed)/dt|`` (preferred tangential ``s̈`` estimate).
 
-    Final commanded panel: per-waypoint inbound-segment area between solver
-    and RS TCP speed curves (non-transient only):
-    ``A_i = ∫_{WP_{i-1}}^{WP_i} |v*(s) − v_RS(s)| ds``.
+    Final commanded panel (G1c): per-waypoint |v_solver − v_RS| at the
+    programmed waypoint arc-length (hard exclusions only disable a WP).
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     s = res.s_eval
-    show_area = (
+    show_wp_dev = (
         res.mode == "commanded"
         and waypoints_base is not None
         and res.tcp_xyz is not None
     )
-    # Panel order: speed, accel, [jerk], [area]
+    # Panel order: speed, accel, [jerk], [waypoint deviation]
     height_ratios = [2.2, 1.4]
     if plot_jerk:
         height_ratios.append(1.4)
-    if show_area:
-        height_ratios.append(1.6)
+    if show_wp_dev:
+        height_ratios.append(1.8)
     n_panels = len(height_ratios)
     fig, axes = plt.subplots(
-        n_panels, 1, figsize=(14, 4 + 3.0 * n_panels), sharex=True,
+        n_panels, 1, figsize=(14, 4 + 3.0 * n_panels), sharex=False,
         gridspec_kw={"height_ratios": height_ratios},
     )
     if n_panels == 1:
@@ -3511,6 +3853,14 @@ def _plot_tcp_vs_rs(
     else:
         axes = list(axes)
     panel = 0
+
+    excl = res.rs_bench_exclusions
+    bench_ex = _rs_bench_exclude_mask(res)
+    cruise_kw = _bench_cruise_kw(res)
+    rs_v = (
+        _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
+        if res.mode == "commanded" else None
+    )
 
     ax = axes[panel]
     panel += 1
@@ -3528,29 +3878,18 @@ def _plot_tcp_vs_rs(
             ax.axhline(res.v_cmd, ls=":", color="purple", lw=1.2,
                        label=f"v_cmd = {res.v_cmd:.0f} mm/s")
 
-    trans = res.accel_transient_mask
-    vcap_ex = res.vcap_excluded_mask
-    bench_ex = _rs_bench_exclude_mask(res, len(s))
-    if res.mode == "commanded" and trans is not None:
-        rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
-        dev = _rs_bench_fail_mask(res.v_star - rs_v, rs_v)
+    if res.mode == "commanded" and rs_v is not None:
+        dev = _rs_bench_fail_mask(res.v_star - rs_v, rs_v, **cruise_kw)
         flag = dev & ~bench_ex & (rs_v > 1.0)
         if flag.any():
             ax.plot(s[flag], res.v_star[flag], "o", ms=4, color="red",
                     zorder=5,
                     label=f">tol vs RS (n={int(flag.sum())})")
-        for a, b in _mask_spans(trans):
-            ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
-    if vcap_ex is not None and np.any(vcap_ex):
-        for a, b in _mask_spans(vcap_ex):
-            ax.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
+    excl_handles = _shade_bench_exclusions(ax, s, excl)
     h, lab = ax.get_legend_handles_labels()
-    if trans is not None and np.any(trans):
-        h = list(h) + [_accel_transient_legend_handle()]
-        lab = list(lab) + ["accel-transient (excluded from RS bench)"]
-    if vcap_ex is not None and np.any(vcap_ex):
-        h = list(h) + [_vcap_excluded_legend_handle()]
-        lab = list(lab) + ["RS v_cap unresolved (excluded from RS bench)"]
+    if excl_handles:
+        h = list(h) + excl_handles
+        lab = list(lab) + [hnd.get_label() for hnd in excl_handles]
     ax.set_ylabel("TCP speed [mm/s]")
     ax.grid(True, alpha=0.3)
     ax.legend(h, lab, loc="best", fontsize=8)
@@ -3569,21 +3908,13 @@ def _plot_tcp_vs_rs(
         )
     ax2.plot(s, np.abs(res.s_ddot), lw=1.2, color=_SOLVER_COLOR,
              label="solver |s̈|")
-    if trans is not None and np.any(trans):
-        for a, b in _mask_spans(trans):
-            ax2.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
-    if vcap_ex is not None and np.any(vcap_ex):
-        for a, b in _mask_spans(vcap_ex):
-            ax2.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
+    _draw_bench_exclusion_spans(ax2, s, excl)
     ax2.set_ylabel("|TCP accel| [mm/s²]")
     ax2.grid(True, alpha=0.3)
     h2, lab2 = ax2.get_legend_handles_labels()
-    if trans is not None and np.any(trans):
-        h2 = list(h2) + [_accel_transient_legend_handle()]
-        lab2 = list(lab2) + ["accel-transient (excluded from RS bench)"]
-    if vcap_ex is not None and np.any(vcap_ex):
-        h2 = list(h2) + [_vcap_excluded_legend_handle()]
-        lab2 = list(lab2) + ["RS v_cap unresolved (excluded from RS bench)"]
+    if excl_handles:
+        h2 = list(h2) + excl_handles
+        lab2 = list(lab2) + [hnd.get_label() for hnd in excl_handles]
     ax2.legend(h2, lab2, loc="best", fontsize=8)
 
     if plot_jerk and res.t is not None and res.s_ddot is not None:
@@ -3595,92 +3926,30 @@ def _plot_tcp_vs_rs(
                  alpha=0.9, label="RobotStudio")
         axj.plot(s, np.abs(solver_jerk), lw=1.2, color=_SOLVER_COLOR,
                  label="solver")
-        if trans is not None and np.any(trans):
-            for a, b in _mask_spans(trans):
-                axj.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
-        if vcap_ex is not None and np.any(vcap_ex):
-            for a, b in _mask_spans(vcap_ex):
-                axj.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
+        _draw_bench_exclusion_spans(axj, s, excl)
         axj.set_ylabel("|TCP jerk| [mm/s³]")
         axj.grid(True, alpha=0.3)
         hj, labj = axj.get_legend_handles_labels()
-        if trans is not None and np.any(trans):
-            hj = list(hj) + [_accel_transient_legend_handle()]
-            labj = list(labj) + ["accel-transient (excluded from RS bench)"]
-        if vcap_ex is not None and np.any(vcap_ex):
-            hj = list(hj) + [_vcap_excluded_legend_handle()]
-            labj = list(labj) + ["RS v_cap unresolved (excluded from RS bench)"]
+        if excl_handles:
+            hj = list(hj) + excl_handles
+            labj = list(labj) + [hnd.get_label() for hnd in excl_handles]
         axj.legend(hj, labj, loc="best", fontsize=8)
         axj.set_title(
             "G1b  TCP tangential jerk — Savitzky–Golay d/dt of accel "
             "(~80 ms window; blue = RobotStudio, green = solver)"
         )
 
-    if show_area:
+    if show_wp_dev:
         ax3 = axes[panel]
         panel += 1
-        wp_s = _waypoint_arc_lengths(waypoints_base, res.tcp_xyz, s)
-        order = np.argsort(wp_s)
-        wp_s = wp_s[order]
-        rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
-        abs_err = np.abs(res.v_star - rs_v)
-        use = np.ones(len(s), dtype=bool)
-        use &= ~bench_ex
-        areas = []
-        mid_s = []
-        labels = []
-        for i in range(1, len(wp_s)):
-            lo, hi = float(wp_s[i - 1]), float(wp_s[i])
-            if hi <= lo + 1e-9:
-                areas.append(0.0)
-                mid_s.append(0.5 * (lo + hi))
-                labels.append(i)
-                continue
-            m = use & (s >= lo) & (s <= hi)
-            if m.sum() < 2:
-                areas.append(np.nan)
-            else:
-                _trapz = getattr(np, "trapezoid", np.trapz)
-                areas.append(float(_trapz(abs_err[m], s[m])))
-            mid_s.append(0.5 * (lo + hi))
-            labels.append(i)
-        areas_a = np.asarray(areas, dtype=float)
-        mid_a = np.asarray(mid_s, dtype=float)
-        finite = np.isfinite(areas_a)
-        colors = np.where(finite, "#9467bd", "#cccccc")
-        ax3.bar(mid_a, np.where(finite, areas_a, 0.0),
-                width=np.maximum(np.diff(wp_s), 0.5),
-                align="center", color=colors, edgecolor="0.3",
-                linewidth=0.4, alpha=0.85)
-        for x, a, lab_i, ok in zip(mid_a, areas_a, labels, finite):
-            if not ok:
-                continue
-            ax3.text(x, a, f"WP{lab_i}", ha="center", va="bottom",
-                     fontsize=6, rotation=90)
-        for ws in wp_s:
-            ax3.axvline(ws, color="0.6", lw=0.4, alpha=0.5)
-        if trans is not None and np.any(trans):
-            for a, b in _mask_spans(trans):
-                ax3.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
-        if vcap_ex is not None and np.any(vcap_ex):
-            for a, b in _mask_spans(vcap_ex):
-                ax3.axvspan(s[a], s[b], color="#EEC900", alpha=0.18, lw=0, zorder=0)
-        total = float(np.nansum(areas_a))
-        ax3.set_ylabel("∫|v*−v_RS| ds\n[mm·(mm/s)]", fontsize=9)
-        ax3.set_title(
-            "G1c  Per-waypoint area between solver and RS TCP speed "
-            f"(bench-eligible only; total={total:.1f})"
+        _plot_waypoint_speed_deviation_panel(
+            ax3, res, rs, waypoints_base, excl,
         )
-        ax3.grid(True, alpha=0.3, axis="y")
-        legend_handles = []
-        if trans is not None and np.any(trans):
-            legend_handles.append(_accel_transient_legend_handle())
-        if vcap_ex is not None and np.any(vcap_ex):
-            legend_handles.append(_vcap_excluded_legend_handle())
-        if legend_handles:
-            ax3.legend(handles=legend_handles, fontsize=8, loc="best")
 
-    axes[-1].set_xlabel("arc-length s [mm]")
+    n_arc_panels = panel - (1 if show_wp_dev else 0)
+    for i in range(1, n_arc_panels):
+        axes[i].sharex(axes[0])
+    axes[n_arc_panels - 1].set_xlabel("arc-length s [mm]")
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
@@ -3744,8 +4013,12 @@ def _write_rs_compare_summary(
     s = res.s_eval
     rs_v = _interp_rs_to_solver(rs.s_mm, rs.tcp_speed_mm_s, s)
     rs_a = _interp_rs_to_solver(rs.s_mm, np.abs(rs.tcp_accel_mm_s2), s)
-    bench_ex = _rs_bench_exclude_mask(res, len(s))
+    bench_ex = _rs_bench_exclude_mask(res)
     active = (rs_v > 1.0) & ~bench_ex
+    cruise_kw = _bench_cruise_kw(res)
+    cfg = res.rs_bench_exclusions.config if res.rs_bench_exclusions else None
+    tol_frac = cfg.cruise_tol_frac if cfg else _RS_BENCH_REL_TOL
+    tol_abs = cfg.cruise_tol_abs_mm_s if cfg else _RS_BENCH_ABS_FLOOR_MM_S
     lines = [
         f"Solver vs RobotStudio — {mode_name}",
         "=" * 60,
@@ -3755,8 +4028,7 @@ def _write_rs_compare_summary(
         f"solver duration = {res.metrics_duration:.4f} s",
         f"RS duration     = {float(rs.t_s[-1]):.4f} s",
         "",
-        "TCP speed [mm/s] (RS speed > 1 mm/s, excluding accel-transient "
-        "and RS v_cap unresolved segments):",
+        "TCP speed [mm/s] (RS speed > 1 mm/s, unified benchmark exclusions):",
     ]
     if np.any(active):
         err = res.v_star[active] - rs_v[active]
@@ -3768,6 +4040,15 @@ def _write_rs_compare_summary(
         )
     else:
         lines.append("  (no active RS samples)")
+
+    if res.rs_bench_exclusions is not None:
+        lines.append("")
+        lines.append("RS benchmark exclusion fractions (enabled zones):")
+        for k, v in res.rs_bench_exclusions.enabled_fractions().items():
+            lines.append(f"  {k:12s} {100 * v:.1f}%")
+        lines.append(
+            f"  cruise band: ±{tol_abs:g} mm/s or ±{100 * tol_frac:.0f}% of target"
+        )
 
     lines.append("TCP |accel| [mm/s²]:")
     a_err = np.abs(res.s_ddot) - rs_a
@@ -4280,15 +4561,14 @@ def _make_plots(
         summary = _write_rs_compare_summary(dir_g, res, rs_rec, mode_name)
         paths.append(str(summary))
 
-    # ---- top-level key artifact: the TCP velocity profile ---------------
-    # (copy of G1 when RS data exists, else D1) so each mode folder can be
-    # understood without descending into the group subfolders.
+    # ---- top-level key artifact: copy G1 (no re-render) ----------------
     import shutil
     key_plot = (dir_g / "G1_tcp_speed_accel_vs_rs.png" if rs_rec is not None
                 else dir_d / "D1_optimal_vs_ceiling.png")
     if key_plot.exists():
         top = out_dir / "tcp_velocity_profile.png"
-        shutil.copyfile(key_plot, top)
+        if top.resolve() != key_plot.resolve():
+            shutil.copyfile(key_plot, top)
         paths.append(str(top))
 
     return paths
@@ -4341,24 +4621,41 @@ def _write_mode_summary(
     ]
     if rs_rec is not None:
         rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, res.s_eval)
-        keep = (rs_v > 1.0)
-        if trans is not None:
-            keep &= ~trans
-        if res.vcap_excluded_mask is not None:
-            keep &= ~res.vcap_excluded_mask
+        bench_ex = _rs_bench_exclude_mask(res)
+        keep = (rs_v > 1.0) & ~bench_ex
         err = np.abs(res.v_star - rs_v)[keep]
         rsk = rs_v[keep]
-        dev_fail = int(_rs_bench_fail_mask(err, rsk).sum())
-        lines += [
+        cruise_kw = _bench_cruise_kw(res)
+        cfg = res.rs_bench_exclusions.config if res.rs_bench_exclusions else None
+        tol_frac = cfg.cruise_tol_frac if cfg else _RS_BENCH_REL_TOL
+        tol_abs = cfg.cruise_tol_abs_mm_s if cfg else _RS_BENCH_ABS_FLOOR_MM_S
+        dev_fail = int(_rs_bench_fail_mask(err, rsk, **cruise_kw).sum()) if err.size else 0
+        n_keep = int(keep.sum())
+        excl_lines = ["", "RS benchmark exclusions (enabled zones):"]
+        if res.rs_bench_exclusions is not None:
+            for k, v in res.rs_bench_exclusions.enabled_fractions().items():
+                excl_lines.append(f"  {k:12s} {100 * v:.1f}%")
+        lines += excl_lines
+        rs_lines = [
             "",
-            "vs RobotStudio (steady-state samples only)",
+            "vs RobotStudio (bench-eligible samples only)",
             f"  RS duration:        {float(rs_rec.t_s[-1]):.4f} s",
-            f"  |err| med/p95/max:  {np.median(err):.2f} / "
-            f"{np.percentile(err, 95):.2f} / {np.max(err):.2f} mm/s",
-            f"  >tol vs RS:         {dev_fail} / {int(keep.sum())} "
-            f"({100 * dev_fail / max(int(keep.sum()), 1):.1f}%)  "
-            f"(fail if |err|>10% RS and |err|>{_RS_BENCH_ABS_FLOOR_MM_S:g} mm/s)",
+            f"  bench-eligible:     {n_keep}",
         ]
+        if n_keep:
+            rs_lines += [
+                f"  |err| med/p95/max:  {np.median(err):.2f} / "
+                f"{np.percentile(err, 95):.2f} / {np.max(err):.2f} mm/s",
+                f"  >tol vs RS:         {dev_fail} / {n_keep} "
+                f"({100 * dev_fail / n_keep:.1f}%)  "
+                f"(fail if |err|>{100 * tol_frac:.0f}% RS and |err|>{tol_abs:g} mm/s)",
+            ]
+        else:
+            rs_lines.append(
+                "  (no bench-eligible samples — path fully excluded by "
+                "transient / lookup masks)"
+            )
+        lines += rs_lines
     out = Path(out_dir) / "summary.txt"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out
@@ -4569,6 +4866,7 @@ def run_diagnostics(
     toolpath_csv: Optional[str | Path] = None,
     apply_rs_velocity_cap: bool = True,
     plot_jerk: bool = False,
+    rs_bench_exclusion_config: Optional[RSBenchExclusionConfig] = None,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -4794,13 +5092,41 @@ def run_diagnostics(
         q_ddot=ref_q_ddot,
         qdd_max=limits.q_ddot_max,
     )
+    # Augment with RS-side peak detector when a recording is available.
+    if rs_rec is not None:
+        rs_mask, rs_diag = identify_rs_transient_mask(
+            rs_rec.t_s, rs_rec.tcp_speed_mm_s, rs_rec.s_mm, res.s_eval,
+        )
+        mask, tdiag = combine_transient_masks(
+            res.s_eval, mask, tdiag, rs_mask, rs_diag,
+        )
     res.accel_transient_mask = mask
     res.transient_diag = tdiag
     res.metrics["transient"] = {
         "method": tdiag.get("method"),
         "n_regions": tdiag.get("n_regions"),
         "fraction": tdiag.get("fraction"),
+        "model_fraction": tdiag.get("model_fraction"),
+        "rs_fraction": tdiag.get("rs_fraction"),
         "thresholds": tdiag.get("thresholds", {}),
+        "watchdog_triggered": tdiag.get("watchdog_triggered", False),
+    }
+
+    # Modular RS benchmark exclusions (computed separately, merged for stats).
+    if rs_bench_exclusion_config is None:
+        rs_bench_exclusion_config = RSBenchExclusionConfig()
+    res.rs_bench_exclusions = _build_rs_bench_exclusions(
+        res, rs_rec, rs_bench_exclusion_config,
+    )
+    res.metrics["rs_bench_exclusions"] = {
+        "config": {
+            "cruise_tol_frac": rs_bench_exclusion_config.cruise_tol_frac,
+            "cruise_tol_abs_mm_s": rs_bench_exclusion_config.cruise_tol_abs_mm_s,
+            "enable_transient": rs_bench_exclusion_config.enable_transient,
+            "enable_vcap_lookup": rs_bench_exclusion_config.enable_vcap_lookup,
+            "enable_v_cmd_ramp": rs_bench_exclusion_config.enable_v_cmd_ramp,
+        },
+        "fractions": res.rs_bench_exclusions.enabled_fractions(),
     }
 
     # TCP rotation: cumulative geodesic reorientation angle θ(s) from the
@@ -4904,6 +5230,12 @@ def run_diagnostics(
             )
         except Exception as exc:
             print(f"  [WARN] transient diagnostics failed: {exc}")
+
+    if out_dir is not None and res.rs_bench_exclusions is not None:
+        try:
+            _write_rs_bench_exclusion_report(Path(out_dir), res.rs_bench_exclusions)
+        except Exception as exc:
+            print(f"  [WARN] RS bench exclusion report failed: {exc}")
 
     # Step 4: plots
     if make_plots and out_dir is not None:
@@ -5372,18 +5704,28 @@ def _write_benchmark_summary(
         lines.append(f"  v_optimal:    {res_opt.metrics_duration:.4f} s")
 
     lines += ["", "TCP velocity evaluation (commanded vs RobotStudio, "
-                  "transients excluded)", "-" * 40]
+                  "unified benchmark exclusions)", "-" * 40]
     if rs_rec is None:
         lines.append("  (skipped — no RS recording)")
     else:
         s = res_cmd.s_eval
         rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, s)
-        bench_ex = _rs_bench_exclude_mask(res_cmd, len(s))
+        bench_ex = _rs_bench_exclude_mask(res_cmd)
         steady = ~bench_ex & (rs_v > 1.0)
         err = np.abs(res_cmd.v_star - rs_v)
-        flag_fail = steady & _rs_bench_fail_mask(res_cmd.v_star - rs_v, rs_v)
+        cruise_kw = _bench_cruise_kw(res_cmd)
+        cfg = res_cmd.rs_bench_exclusions.config if res_cmd.rs_bench_exclusions else None
+        tol_frac = cfg.cruise_tol_frac if cfg else _RS_BENCH_REL_TOL
+        tol_abs = cfg.cruise_tol_abs_mm_s if cfg else _RS_BENCH_ABS_FLOOR_MM_S
+        flag_fail = steady & _rs_bench_fail_mask(
+            res_cmd.v_star - rs_v, rs_v, **cruise_kw,
+        )
         n_steady = int(steady.sum())
-        lines.append(f"  excluded fraction:    {float(np.mean(bench_ex)):.3f}")
+        lines.append(f"  unified excluded:     {float(np.mean(bench_ex)):.3f}")
+        if res_cmd.rs_bench_exclusions is not None:
+            for k, v in res_cmd.rs_bench_exclusions.enabled_fractions().items():
+                if k != "unified":
+                    lines.append(f"    {k:14s} {100 * v:.1f}%")
         lines.append(f"  bench-eligible:       {n_steady}")
         if n_steady:
             e = err[steady]
@@ -5393,7 +5735,7 @@ def _write_benchmark_summary(
             lines.append(
                 f"  >tol vs RS:           {int(flag_fail.sum())} / "
                 f"{n_steady} ({frac:.1f}%)  "
-                f"(fail if |err|>10% RS and |err|>{_RS_BENCH_ABS_FLOOR_MM_S:g} mm/s)"
+                f"(fail if |err|>{100 * tol_frac:.0f}% RS and |err|>{tol_abs:g} mm/s)"
             )
             if frac > 25.0:
                 lines.append(f"  [ABNORMAL] {frac:.1f}% of eligible samples "
@@ -5426,6 +5768,7 @@ def _process_one_toolpath(
     apply_rs_velocity_cap: bool = True,
     smooth_orientation: bool = True,
     plot_jerk: bool = False,
+    rs_bench_exclusion_config: Optional[RSBenchExclusionConfig] = None,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -5491,6 +5834,7 @@ def _process_one_toolpath(
         secant_window_mm=secant_window_mm,
         transient_pad_mm=transient_pad_mm,
         plot_jerk=plot_jerk,
+        rs_bench_exclusion_config=rs_bench_exclusion_config,
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
@@ -5695,8 +6039,42 @@ def main() -> None:
         help="Enable joint (G5) and TCP jerk panels: Savitzky–Golay d/dt of "
              "acceleration for solver and RobotStudio (off by default).",
     )
+    parser.add_argument(
+        "--bench-cruise-tol-frac", type=float,
+        default=_DEFAULT_BENCH_CRUISE_TOL_FRAC,
+        help="Relative cruise band for v_cmd ramp exclusion and RS bench "
+             f"fail gate: pass if |err| ≤ frac×|target| (default "
+             f"{_DEFAULT_BENCH_CRUISE_TOL_FRAC}).",
+    )
+    parser.add_argument(
+        "--bench-cruise-tol-abs-mm-s", type=float,
+        default=_DEFAULT_BENCH_CRUISE_TOL_ABS_MM_S,
+        help="Absolute cruise band [mm/s] for v_cmd ramp exclusion and RS "
+             f"bench fail gate (default {_DEFAULT_BENCH_CRUISE_TOL_ABS_MM_S}).",
+    )
+    parser.add_argument(
+        "--no-bench-exclude-transient", action="store_true",
+        help="Do not exclude joint accel-transient regions from RS benchmarking.",
+    )
+    parser.add_argument(
+        "--no-bench-exclude-vcap", action="store_true",
+        help="Do not exclude RS v_cap lookup failures from RS benchmarking.",
+    )
+    parser.add_argument(
+        "--no-bench-exclude-v-cmd-ramp", action="store_true",
+        help="Disable the v_cmd approach-ramp window on continuous arc-length "
+             "benchmarking (does not disable per-waypoint evaluation).",
+    )
     parser.add_argument("--no-plots", action="store_true")
     args = parser.parse_args()
+
+    rs_bench_cfg = RSBenchExclusionConfig(
+        cruise_tol_frac=args.bench_cruise_tol_frac,
+        cruise_tol_abs_mm_s=args.bench_cruise_tol_abs_mm_s,
+        enable_transient=not args.no_bench_exclude_transient,
+        enable_vcap_lookup=not args.no_bench_exclude_vcap,
+        enable_v_cmd_ramp=not args.no_bench_exclude_v_cmd_ramp,
+    )
 
     cases = _resolve_cases(args.dataset, args.toolpath, args.rs_dir, args.rs_csv)
 
@@ -5727,6 +6105,7 @@ def main() -> None:
             apply_rs_velocity_cap=not args.no_vcap,
             smooth_orientation=not args.no_smooth_orientation,
             plot_jerk=bool(args.jerk),
+            rs_bench_exclusion_config=rs_bench_cfg,
         )
         batch_rows.append(row)
 
