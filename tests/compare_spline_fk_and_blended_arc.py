@@ -34,14 +34,16 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from test_optimal_velocity_profile import (
+from core.optimal_velocity.differentiation import (
+    _RESID_TOL_DEG,
+    step1_differentiate,
+)
+from core.optimal_velocity.validate import step0_validate
+from utils.optimal_velocity.toolpath_load import (
     _DEFAULT_DS_MM,
     _REPO,
-    _RESID_TOL_DEG,
     _ROBOT_NAME,
     load_joint_path_from_toolpath,
-    step0_validate,
-    step1_differentiate,
 )
 from core import create_solvers
 from core.blend_zone import (
@@ -151,7 +153,7 @@ def residual_on_samples(
     fk_solver,
 ) -> dict:
     """True fit residual: evaluate spline at the IK sample sites, FK, compare."""
-    from test_optimal_velocity_profile import eval_splines
+    from core.optimal_velocity.differentiation import eval_splines
     q_s = eval_splines(splines, s_mm)["q"]
     pos_m, quat = fk_solver.solve_batch(q_s)
     pos_mm = pos_m * 1000.0

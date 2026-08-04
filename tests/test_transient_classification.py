@@ -307,12 +307,10 @@ def find_transients_for_toolpath(
     rs_csv: Optional[str | Path] = None,
 ) -> dict:
     """Blend + IK a toolpath, run the profile pipeline, classify transients."""
-    from test_optimal_velocity_profile import (
-        load_joint_path_from_toolpath,
-        load_rs_recording,
-        run_diagnostics,
-        write_transient_diagnostics,
-    )
+    from core.optimal_velocity import run_diagnostics
+    from transient_classification import write_transient_diagnostics
+    from utils.optimal_velocity.rs_recording import load_rs_recording
+    from utils.optimal_velocity.toolpath_load import load_joint_path_from_toolpath
 
     toolpath_csv = Path(toolpath_csv)
     out_dir = Path(out_dir)
