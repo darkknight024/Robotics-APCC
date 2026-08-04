@@ -50,6 +50,7 @@ def process_toolpath(
     traj_id: Optional[int] = None,
     use_flat_output_structure: bool = False,
     robotstudio_csv_path: Optional[str] = None,
+    force_failure_graphs: bool = False,
 ) -> dict:
     """Process a single toolpath through the Feature 2 feasibility pipeline.
 
@@ -73,6 +74,7 @@ def process_toolpath(
         traj_id=traj_id,
         use_flat_output_structure=use_flat_output_structure,
         robotstudio_csv_path=robotstudio_csv_path,
+        force_failure_graphs=force_failure_graphs,
     )
     return run_feasibility_pipeline(inputs)
 
@@ -99,7 +101,7 @@ def main():
     parser.add_argument(
         "--urdf", "-u",
         default="Assets/Robot APCC/IRB_1300_1400_URDF/urdf/"
-                "IRB_1300_1400_URDF_with_fixture.urdf",
+                "IRB_1300_1400_URDF.urdf",
     )
     parser.add_argument(
         "--config", "-c", default="config/batch_feasibility_config.yaml",

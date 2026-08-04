@@ -39,6 +39,9 @@ class FeasibilityPipelineInputs:
     # waypoints by TCP nearest-neighbour (plate frame), then TCP optionally
     # transformed to base with the knife pose for task-space overlays.
     robotstudio_csv_path: Optional[str] = None
+    # When True, enable failure-relevant graphs for Level-1-failing trajectories
+    # even if config ``generate_graphs`` flags are False (used by input validation).
+    force_failure_graphs: bool = False
 
 
 @dataclass

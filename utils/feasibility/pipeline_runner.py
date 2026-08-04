@@ -33,6 +33,67 @@ from utils.feasibility_plot import export_dense_ik_trajectory_csv
 from utils.transform_handler import transform_trajectory_to_base_frame
 
 
+def _any_trajectory_graphs_enabled(config: FeasibilityConfig) -> bool:
+    """True if any per-trajectory plot group is enabled."""
+    if config.reachability.generate_graphs:
+        return True
+    if config.singularity.enabled and config.singularity.generate_graphs:
+        return True
+    if config.manipulability.enabled and config.manipulability.generate_graphs:
+        return True
+    if config.continuity.enabled and config.continuity.generate_graphs:
+        return True
+    if config.topp_ra.generate_graphs:
+        return True
+    if config.eaik_multi_solution.enabled and config.eaik_multi_solution.generate_graphs:
+        return True
+    wp = config.waypoint_density
+    if wp.enabled and (wp.generate_graphs or wp.task_space_graphs):
+        return True
+    return False
+
+
+_FAILURE_GRAPH_FIELDS = [
+    ("reachability", "generate_graphs"),
+    ("singularity", "generate_graphs"),
+    ("continuity", "generate_graphs"),
+    ("topp_ra", "generate_graphs"),
+]
+
+
+def _apply_failure_graphs(config: FeasibilityConfig, flags: Dict[str, Any]) -> Dict[str, bool]:
+    """Temporarily enable graphs relevant to Level-1 failures.
+
+    Returns a dict of ``{group.field: original_value}`` that must be restored
+    via :func:`_restore_failure_graphs`.
+    """
+    groups_to_enable: List[str] = []
+    if not flags.get("reachability_ok", True):
+        groups_to_enable.extend(["reachability", "singularity"])
+    if not flags.get("c0_ok", True):
+        groups_to_enable.append("continuity")
+    if not flags.get("c1_ok", True):
+        groups_to_enable.extend(["continuity", "topp_ra"])
+
+    saved: Dict[str, bool] = {}
+    for group_name, field_name in _FAILURE_GRAPH_FIELDS:
+        if group_name not in groups_to_enable:
+            continue
+        group = getattr(config, group_name)
+        key = f"{group_name}.{field_name}"
+        if key not in saved:
+            saved[key] = getattr(group, field_name)
+        setattr(group, field_name, True)
+    return saved
+
+
+def _restore_failure_graphs(config: FeasibilityConfig, saved: Dict[str, bool]) -> None:
+    """Restore graph flags saved by :func:`_apply_failure_graphs`."""
+    for key, value in saved.items():
+        group_name, field_name = key.split(".", 1)
+        setattr(getattr(config, group_name), field_name, value)
+
+
 def _resolve_output_path(
     inputs: FeasibilityPipelineInputs,
     toolpath_name: str,
@@ -53,9 +114,11 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
         pass
 
     ik_cfg = load_ik_config_as_object(solver=inputs.config.solver)
+    ee_frame = robot_config.fixture_name if robot_config and robot_config.fixture_name else ik_cfg.ee_frame_name
+
     fk_solver, ik_solver, robot_data = create_solvers(
         inputs.urdf_path, solver=inputs.config.solver, ik_config=ik_cfg,
-        ee_frame_name=ik_cfg.ee_frame_name,
+        ee_frame_name=ee_frame,
     )
 
     final_vel_lims = inputs.velocity_limits_rad_s
@@ -165,7 +228,7 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
         print(f"\nAnalyzing: {toolpath_name}")
 
     out_path = _resolve_output_path(inputs, toolpath_name)
-    out_path.mkdir(parents=True, exist_ok=True)
+    # Defer mkdir until something is actually written (fast validation / pass-only).
 
     ctx = _build_runtime_context(inputs, out_path)
     fk_solver = ctx.fk_solver
@@ -270,26 +333,6 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
         if verbose:
             print(f"  {traj_name}: {traj_result['reachable_count']}/{n_waypoints} reachable")
 
-        traj_out = out_path / traj_name
-        traj_out.mkdir(parents=True, exist_ok=True)
-
-        time_ms_dense = waypoint_times_ms_from_positions_and_speeds(
-            positions,
-            speeds,
-            default_speed_mm_s=float(wp_cfg.default_speed_mm_s),
-        )
-        q_dense_export = np.full((n_waypoints, 6), np.nan)
-        for i, r in enumerate(per_wp):
-            if r.joint_positions_rad is not None:
-                q_dense_export[i, :] = r.joint_positions_rad
-        export_dense_ik_trajectory_csv(
-            traj_out / f"dense_ik_trajectory_{traj_name}.csv",
-            time_ms_dense,
-            q_dense_export,
-            positions,
-            quaternions,
-        )
-
         topp_result_raw: Optional[ToppraResult] = None
         topp_dict: Optional[Dict] = None
         joint_finite = (
@@ -381,33 +424,96 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
                 c1_status = "C1=not evaluated (disabled)"
             print(f"    Feasibility: {status} (reach={reachability_ok}, C0={c0_ok}, {c1_status})")
 
-        plot_single_trajectory_outputs(
-            config=config,
-            toolpath_name=toolpath_name,
-            traj_name=traj_name,
-            traj_out=traj_out,
-            out_path=out_path,
-            per_wp=per_wp,
-            traj_result=traj_result,
-            positions=positions,
-            quaternions=quaternions,
-            speeds=speeds,
-            joint_angles_rad=joint_angles_rad,
-            topp_result_raw=topp_result_raw,
-            ts_vel_result=ts_vel_result,
-            c0_result=c0_result,
-            original_trajectories_before_dense=original_trajectories_before_dense[local_idx],
-            density=density_results[local_idx],
-            wp_cfg=wp_cfg,
-            rs_ref=rs_ref,
-            fk_solver=fk_solver,
-            robot_reach_m=inputs.robot_reach_m,
-            analyzer=analyzer,
-            ms_weights=ms_weights,
-            speed_mm_s=inputs.speed_mm_s,
-            final_vel_lims=final_vel_lims,
-            final_joint_jump=final_joint_jump,
-        )
+        export_csvs = config.output.export_trajectory_csvs
+        write_failed_only = config.output.write_failed_trajectories_only
+        should_consider_write = (not write_failed_only) or (not level1_valid)
+
+        graph_saved: Dict[str, bool] = {}
+        if should_consider_write and inputs.force_failure_graphs and not level1_valid:
+            graph_saved = _apply_failure_graphs(config, feasibility_flags)
+
+        try:
+            will_plot = _any_trajectory_graphs_enabled(config)
+            should_write = should_consider_write and (export_csvs or will_plot)
+
+            if should_write:
+                out_path.mkdir(parents=True, exist_ok=True)
+                traj_out = out_path / traj_name
+                traj_out.mkdir(parents=True, exist_ok=True)
+
+                if not level1_valid:
+                    fails = []
+                    if not reachability_ok:
+                        fails.append(
+                            f"reachability ({traj_result['reachable_count']}/{n_waypoints} waypoints)"
+                        )
+                    if not c0_ok:
+                        max_jump = (
+                            float(np.max(c0_result.joint_space_distances))
+                            if c0_result is not None and len(c0_result.joint_space_distances)
+                            else float("nan")
+                        )
+                        fails.append(
+                            f"C0 continuity (max joint jump={max_jump:.4f} rad, "
+                            f"limit={final_joint_jump})"
+                        )
+                    if not c1_ok:
+                        fails.append("C1 continuity (joint vel/accel limits)")
+                    (traj_out / "failure_reason.txt").write_text(
+                        f"trajectory_{traj_idx + 1}: FAIL\n"
+                        + "\n".join(f"- {f}" for f in fails)
+                        + "\n"
+                    )
+
+                if export_csvs:
+                    time_ms_dense = waypoint_times_ms_from_positions_and_speeds(
+                        positions,
+                        speeds,
+                        default_speed_mm_s=float(wp_cfg.default_speed_mm_s),
+                    )
+                    q_dense_export = np.full((n_waypoints, 6), np.nan)
+                    for i, r in enumerate(per_wp):
+                        if r.joint_positions_rad is not None:
+                            q_dense_export[i, :] = r.joint_positions_rad
+                    export_dense_ik_trajectory_csv(
+                        traj_out / f"dense_ik_trajectory_{traj_name}.csv",
+                        time_ms_dense,
+                        q_dense_export,
+                        positions,
+                        quaternions,
+                    )
+
+                if will_plot:
+                    plot_single_trajectory_outputs(
+                        config=config,
+                        toolpath_name=toolpath_name,
+                        traj_name=traj_name,
+                        traj_out=traj_out,
+                        out_path=out_path,
+                        per_wp=per_wp,
+                        traj_result=traj_result,
+                        positions=positions,
+                        quaternions=quaternions,
+                        speeds=speeds,
+                        joint_angles_rad=joint_angles_rad,
+                        topp_result_raw=topp_result_raw,
+                        ts_vel_result=ts_vel_result,
+                        c0_result=c0_result,
+                        original_trajectories_before_dense=original_trajectories_before_dense[local_idx],
+                        density=density_results[local_idx],
+                        wp_cfg=wp_cfg,
+                        rs_ref=rs_ref,
+                        fk_solver=fk_solver,
+                        robot_reach_m=inputs.robot_reach_m,
+                        analyzer=analyzer,
+                        ms_weights=ms_weights,
+                        speed_mm_s=inputs.speed_mm_s,
+                        final_vel_lims=final_vel_lims,
+                        final_joint_jump=final_joint_jump,
+                    )
+        finally:
+            if graph_saved:
+                _restore_failure_graphs(config, graph_saved)
 
         c0_dists = c0_result.joint_space_distances.tolist() if c0_result is not None else []
         c0_per_joint = c0_result.per_joint_deltas.tolist() if c0_result is not None else []
@@ -457,16 +563,22 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
 
     traj_results = results["trajectory_results"]
 
-    plot_aggregated_outputs(
-        out_path=out_path,
-        toolpath_name=toolpath_name,
-        traj_results=traj_results,
-        config=config,
-        n_trajectories=n_trajectories,
-        speed_mm_s=inputs.speed_mm_s,
-        final_vel_lims=final_vel_lims,
-        final_joint_jump=final_joint_jump,
+    any_failed = any(
+        t is not None and not t.get("level1_valid", False) for t in traj_results
     )
+    write_failed_only = config.output.write_failed_trajectories_only
+    if (not write_failed_only or any_failed) and _any_trajectory_graphs_enabled(config):
+        out_path.mkdir(parents=True, exist_ok=True)
+        plot_aggregated_outputs(
+            out_path=out_path,
+            toolpath_name=toolpath_name,
+            traj_results=traj_results,
+            config=config,
+            n_trajectories=n_trajectories,
+            speed_mm_s=inputs.speed_mm_s,
+            final_vel_lims=final_vel_lims,
+            final_joint_jump=final_joint_jump,
+        )
 
     if not speed_extracted:
         results["speed_warning"] = f"WARNING: TCP speed not extracted from CSV. Using default {_DEFAULT_SPEED_MM_S} mm/s."
@@ -475,7 +587,8 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
     else:
         results["speed_warning"] = None
 
-    if config.output.save_analysis:
+    if config.output.save_analysis and (not write_failed_only or any_failed):
+        out_path.mkdir(parents=True, exist_ok=True)
         report_path = out_path / "analysis_report.txt"
         generate_analysis_report(results, report_path)
         if verbose:

@@ -1,0 +1,87 @@
+# =============================================================================
+# Toolpath Input Validation Configuration
+# =============================================================================
+# Settings for utils/validate_toolpath_input.py.
+# Level-1 checks only: reachability (IK) + C0 (+ optional C1).
+# Reuses the Feature 2 pipeline from feasibility_analysis.py.
+#
+# Usage:
+#   python utils/validate_toolpath_input.py
+#   python utils/validate_toolpath_input.py --no-dump-failures
+
+# =============================================================================
+# Input — CSV file, or folder of CSVs (non-recursive; non-CSV files ignored)
+# =============================================================================
+toolpaths_input: "Assets/Robot APCC/Toolpaths/Successful"
+
+# =============================================================================
+# Knife pose (T_B_K) — transforms toolpath T_P_K → T_B_P
+# =============================================================================
+knife_config: "config/knife_config.yaml"
+knife_pose: "Zund"
+use_base_frame: false
+
+# =============================================================================
+# Robot / URDF (resolved from config/robots_config.yaml)
+# =============================================================================
+robots_to_use:
+  - "IRB 1300-7/1.4"
+
+# =============================================================================
+# Output (written under <input_folder>/validation_MM_DD_YY_HH_MM_SS/)
+# =============================================================================
+output:
+  level1_only: true
+  save_analysis: true
+  export_trajectory_csvs: false
+  write_failed_trajectories_only: true
+
+# =============================================================================
+# Solver & Level-1 validation
+# =============================================================================
+solver: "eaik"
+max_ik_failures_per_trajectory: 1
+
+reachability:
+  generate_graphs: false
+
+eaik_multi_solution:
+  enabled: true
+  weights:
+    c0: 10.0
+    singularity: 10.0
+    manipulability: 0.0
+    branch_discontinuity: 10.0
+  generate_graphs: false
+  max_waypoints_in_graph: 10000
+
+singularity:
+  enabled: false
+  check_j5_only: true
+  j5_threshold_deg: 0.76
+  generate_graphs: false
+
+manipulability:
+  enabled: false
+  generate_graphs: false
+
+continuity:
+  enabled: true
+  enable_c1: false
+  pose_scale_m_per_rad: 0.1
+  safety_factor: 1.05
+  default_speed_mm_s: 100.0
+  generate_graphs: false
+
+waypoint_density:
+  enabled: true
+  check_frequency_hz: 50.0
+  max_gap_mm: 4.5
+  interpolate_sparse: true
+  default_speed_mm_s: 100.0
+  generate_graphs: false
+  task_space_graphs: false
+
+topp_ra:
+  enabled: true
+  generate_graphs: false

@@ -17,6 +17,28 @@ from typing import Any, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
 
 
+def build_transform_from_xyz_rpy(xyz: List[float], rpy: List[float]) -> np.ndarray:
+    """Build a 4x4 homogeneous transform from xyz translation and rpy (roll-pitch-yaw) angles.
+
+    Convention: URDF (fixed-axis XYZ / extrinsic roll-pitch-yaw).
+    R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
+    """
+    roll, pitch, yaw = rpy
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+
+    R = np.array([
+        [cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
+        [sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
+        [-sp,   cp*sr,            cp*cr],
+    ])
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = xyz
+    return T
+
+
 @dataclass
 class RobotModel:
     """
@@ -357,10 +379,15 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
     3. Computes the end-effector offset from the last actuated joint to ee_frame_name
     4. Creates an EAIK.Robot with the proper end-effector transformation
     
+    If ee_frame_name is not found in the URDF, it is looked up in
+    fixture_config.yaml and the corresponding transform is composed on top
+    of the last actuated link's frame.
+    
     Args:
         urdf_path: Path to URDF file (can be relative or absolute)
-        ee_frame_name: Name of end-effector frame in URDF (default: "ee_link").
-                       If the frame doesn't exist, falls back to last actuated link.
+        ee_frame_name: Name of end-effector frame. If present in the URDF it is
+                       used directly; otherwise resolved from fixture_config.yaml.
+                       Falls back to the last actuated link if not found in either.
         
     Returns:
         RobotModel containing EAIK robot and joint metadata
@@ -435,15 +462,20 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
             ee_fk = fk_zero_pose[ee_link]
             ee_transform_4x4 = T_eaik_zero_inv @ ee_fk
         else:
-            # No ee_link or it matches the last actuated link — still need to
-            # correct EAIK's rotation convention (PoE uses identity at zero-config,
-            # while urchin preserves the URDF frame orientation)
-            if ee_frame_name and ee_frame_name != joints[-1].child:
-                print(f"Warning: End-effector frame '{ee_frame_name}' not found in URDF. "
-                      f"Using last actuated link '{joints[-1].child}' as end-effector.")
-                ee_frame_name = joints[-1].child
+            # ee_link not in URDF — compute transform to last actuated link,
+            # then look up the fixture transform from fixture_config.yaml.
             last_link_fk = fk_zero_pose[last_actuated_link]
             ee_transform_4x4 = T_eaik_zero_inv @ last_link_fk
+
+            from utils.config_loader import get_fixture_transform_4x4
+            fixture_T = get_fixture_transform_4x4(ee_frame_name)
+            if fixture_T is not None:
+                ee_transform_4x4 = ee_transform_4x4 @ fixture_T
+            elif ee_frame_name and ee_frame_name != joints[-1].child:
+                print(f"Warning: End-effector frame '{ee_frame_name}' not found in URDF "
+                      f"or fixture_config.yaml. Using last actuated link "
+                      f"'{joints[-1].child}' as end-effector.")
+                ee_frame_name = joints[-1].child
         
         # Check if robot has a known decomposition
         if not eaik_robot.has_known_decomposition():
@@ -488,14 +520,17 @@ def load_robot_model_eaik(urdf_path: str, ee_frame_name: str = "ee_link") -> Rob
         ) from e
 
 
-def load_robot_model_pin(urdf_path: str):
+def load_robot_model_pin(urdf_path: str, ee_frame_name: str = "ee_link"):
     """
     Load robot model from URDF file using Pinocchio.
 
-    Restored from commit d78ff39.
+    If ee_frame_name is not found in the loaded model, it is looked up in
+    fixture_config.yaml and added as an operational frame on the last joint.
 
     Args:
         urdf_path: Path to URDF file (can be relative or absolute)
+        ee_frame_name: End-effector frame name. If not present in the model,
+                       resolved from fixture_config.yaml and added dynamically.
 
     Returns:
         (model, data): Pinocchio model and data objects
@@ -514,6 +549,29 @@ def load_robot_model_pin(urdf_path: str):
 
     try:
         model = pin.buildModelFromUrdf(urdf_path_str)
+
+        # Add fixture frame if it doesn't already exist in the model
+        if ee_frame_name:
+            frame_exists = ee_frame_name in [f.name for f in model.frames]
+            if not frame_exists:
+                from utils.config_loader import get_fixture_transform_4x4
+                fixture_T = get_fixture_transform_4x4(ee_frame_name)
+                if fixture_T is not None:
+                    parent_joint_id = model.njoints - 1
+                    parent_frame_id = model.getFrameId(model.frames[-1].name)
+                    placement = pin.SE3(
+                        fixture_T[:3, :3].copy(),
+                        fixture_T[:3, 3].copy(),
+                    )
+                    frame = pin.Frame(
+                        ee_frame_name,
+                        parent_joint_id,
+                        parent_frame_id,
+                        placement,
+                        pin.FrameType.OP_FRAME,
+                    )
+                    model.addFrame(frame)
+
         data = model.createData()
         return model, data
     except Exception as e:
@@ -531,8 +589,8 @@ def load_robot_model(urdf_path: str, solver: str = "eaik", ee_frame_name: str = 
     Args:
         urdf_path: Path to URDF file
         solver: "eaik" or "pin"
-        ee_frame_name: End-effector frame name (used by EAIK loader;
-                       for Pinocchio, pass to the FK/IK solver instead)
+        ee_frame_name: End-effector frame name. Resolved from fixture_config.yaml
+                       if not found in the URDF.
 
     Returns:
         - If solver == "eaik": RobotModel dataclass
@@ -542,7 +600,7 @@ def load_robot_model(urdf_path: str, solver: str = "eaik", ee_frame_name: str = 
     if solver == "eaik":
         return load_robot_model_eaik(urdf_path, ee_frame_name=ee_frame_name)
     elif solver in ("pin", "pinocchio"):
-        return load_robot_model_pin(urdf_path)
+        return load_robot_model_pin(urdf_path, ee_frame_name=ee_frame_name)
     else:
         raise ValueError(f"Unknown solver backend: '{solver}'. Use 'eaik' or 'pin'.")
 

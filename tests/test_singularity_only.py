@@ -230,9 +230,10 @@ def main():
 
     solver_type = args.solver or config.get("options", {}).get("solver", "eaik")
     ik_config = load_ik_config_as_object(solver=solver_type)
+    ee_frame = robot.fixture_name or ik_config.ee_frame_name
     fk_solver, _, _ = create_solvers(
         robot.urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name,
+        ee_frame_name=ee_frame,
     )
 
     sing_cfg = config.get("singularity_analysis", {})

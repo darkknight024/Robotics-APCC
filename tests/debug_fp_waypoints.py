@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 
 # ── Configuration ───────────────────────────────────────────────────
-URDF_PATH = "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf"
+URDF_PATH = "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"
 TOOLPATH = "Robot_APCC/Experiments/Experiment_14/Toolpaths/IRB_1300-7_1.4/waypoints_expA.csv"
 RS_RESULTS = "Robot_APCC/Experiments/Experiment_14/Results/robotstudio/waypoints_expA_ik_results.csv"
 OUTPUT_DIR = "Robot_APCC/Experiments/Experiment_14/Results/fp_debug"

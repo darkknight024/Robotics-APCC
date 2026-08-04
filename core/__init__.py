@@ -93,7 +93,11 @@ except ImportError:
 
 def create_solvers(urdf_path: str, solver: str = "eaik",
                    ik_config=None, ee_frame_name: str = "ee_link"):
-    """Factory: create an (fk_solver, ik_solver) pair for the requested backend."""
+    """Factory: create an (fk_solver, ik_solver) pair for the requested backend.
+
+    ee_frame_name controls which frame is tracked. If the frame is not present
+    in the URDF, it is resolved from fixture_config.yaml automatically.
+    """
     solver = solver.lower().strip()
 
     if solver == "eaik":
@@ -107,7 +111,7 @@ def create_solvers(urdf_path: str, solver: str = "eaik",
     elif solver in ("pin", "pinocchio"):
         from .pin_fk_solver import PinocchioFKSolver
         from .pin_ik_solver import PinocchioIKSolver, PinocchioIKConfig
-        model, data = load_robot_model_pin(urdf_path)
+        model, data = load_robot_model_pin(urdf_path, ee_frame_name=ee_frame_name)
         fk = PinocchioFKSolver(model, data, ee_frame_name=ee_frame_name)
         if ik_config is None:
             ik_config = PinocchioIKConfig(ee_frame_name=ee_frame_name)

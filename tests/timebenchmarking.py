@@ -28,22 +28,15 @@ from utils import (
     validate_robostudio_csv,
     load_ik_config_as_object
 )
+from utils.config_loader import get_robot_by_name
+
 
 def resolve_urdf(robot_name: str, project_root: Path) -> str:
     """Look up URDF path from config/robots_config.yaml by robot name."""
-    robots_path = project_root / "config" / "robots_config.yaml"
-    with open(robots_path, 'r') as f:
-        data = yaml.safe_load(f)
+    robot = get_robot_by_name(robot_name)
+    return robot.urdf_path
 
-    for robot in data.get('robots', []):
-        if robot['name'] == robot_name:
-            # The path in the config might be relative to the project root
-            # so we just return it as a string
-            return robot['urdf_path']
-
-    raise ValueError(f"Robot '{robot_name}' not found in {robots_path}")
-
-def benchmark_solvers(input_folder, output_folder, urdf_path, ee_frame, ik_config_path):
+def benchmark_solvers(input_folder, output_folder, urdf_path, ee_frame, ik_config_path, fixture_name=None):
     input_path = Path(input_folder)
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -54,9 +47,11 @@ def benchmark_solvers(input_folder, output_folder, urdf_path, ee_frame, ik_confi
     eaik_ik_config = load_ik_config_as_object(ik_config_path, solver="eaik")
     
     use_robostudio_seed = pin_ik_config.use_robostudio_seed if hasattr(pin_ik_config, 'use_robostudio_seed') else False
+
+    ee_frame_resolved = fixture_name or ee_frame
     
-    _, pin_ik_solver, _ = create_solvers(urdf_path, solver="pin", ik_config=pin_ik_config, ee_frame_name=ee_frame)
-    _, eaik_solver, _ = create_solvers(urdf_path, solver="eaik", ik_config=eaik_ik_config, ee_frame_name=ee_frame)
+    _, pin_ik_solver, _ = create_solvers(urdf_path, solver="pin", ik_config=pin_ik_config, ee_frame_name=ee_frame_resolved)
+    _, eaik_solver, _ = create_solvers(urdf_path, solver="eaik", ik_config=eaik_ik_config, ee_frame_name=ee_frame_resolved)
     
     csv_files = find_robostudio_csvs(input_path)
     if not csv_files:
@@ -232,9 +227,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     try:
-        urdf_path = resolve_urdf(args.robot, Path(__file__).parent.parent)
+        robot_cfg = get_robot_by_name(args.robot)
+        urdf_path = robot_cfg.urdf_path
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
         
-    benchmark_solvers(args.input, args.output, urdf_path, args.ee_frame, args.ik_config)
+    benchmark_solvers(args.input, args.output, urdf_path, args.ee_frame, args.ik_config,
+                      fixture_name=robot_cfg.fixture_name)

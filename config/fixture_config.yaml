@@ -1,0 +1,17 @@
+# =============================================================================
+# Fixture Configuration
+# =============================================================================
+# Defines end-effector fixture poses relative to Link_6 (robot flange).
+# Each entry represents a calibrated tool center point (TCP) that can be
+# referenced by name in robots_config.yaml via the `fixture_name` field.
+#
+# When fixture_name is set to "Link_6" in robots_config.yaml, no additional
+# fixture transform is applied — the robot flange itself is tracked.
+
+fixtures:
+  ee_link:
+    description: "Default APCC fixture (calibrated tool center point)"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.0998237, 0.123033, 0.0828027]
+      rpy: [0.001199, 0.000599, 2.782547]

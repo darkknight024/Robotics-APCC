@@ -349,7 +349,7 @@ def plot_single_trajectory_outputs(
             rs_tcp_quat=rs_ref.tcp_quat,
         )
 
-    if topp_result_raw is not None:
+    if topp_result_raw is not None and config.output.export_trajectory_csvs:
         pos_m_topp, quat_wxyz_topp = fk_solver.solve_batch(topp_result_raw.q_t)
         export_final_trajectory_csv(
             traj_out / f"final_trajectory_{traj_name}.csv",

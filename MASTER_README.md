@@ -18,6 +18,8 @@ A toolkit for validating robot kinematics using Pinocchio or EAIK analytical sol
 - [Documentation Guide](#documentation-guide)
 - [Data Flow](#data-flow)
 - [Coordinate Frames](#coordinate-frames)
+- [Reconfiguring End-Effector Fixture Pose](#reconfiguring-end-effector-fixture-pose)
+- [Toolpath Input Validation](#toolpath-input-validation)
 - [Quick Reference](#quick-reference)
 
 ---
@@ -124,12 +126,15 @@ Robotics-APCC/
 │   ├── csv_loader_toolpath.py     # Toolpath CSV loader
 │   ├── csv_loader_robostudio.py   # RobotStudio test data loader
 │   ├── feasibility_plot.py        # Feasibility & continuity plots
-│   └── generate_plot_ik.py        # IK comparison & solver outcome plots
+│   ├── generate_plot_ik.py        # IK comparison & solver outcome plots
+│   └── validate_toolpath_input.py # Incoming toolpath Level-1 validation
 │
 ├── config/                         # Main configuration files
-│   ├── robots_config.yaml         # Robot definitions (URDF, limits)
+│   ├── robots_config.yaml         # Robot definitions (URDF, fixture_name, limits)
+│   ├── fixture_config.yaml        # End-effector fixture poses (relative to Link_6)
 │   ├── knife_config.yaml          # Knife poses (T_B_K transforms)
 │   ├── ik_config.yaml             # IK solver parameters (all solvers)
+│   ├── toolpath_validation_config.yaml  # Input validation (knife, URDF, checks)
 │   ├── batch_feasibility_config.yaml
 │   ├── combinatorial_search_config.yaml
 │   └── scoring_weights.yaml
@@ -482,6 +487,73 @@ CSV (T_P_K)  →  T_B_P = T_B_K @ inv(T_P_K)  →  IK Solver  →  Joint Angles
 
 ---
 
+## Reconfiguring End-Effector Fixture Pose
+
+Fixture TCP poses are **not** baked into the URDF. Robots load the base flange URDF (`Link_6`), and the tool center point is selected by name from YAML.
+
+### 1. Define or edit a fixture — `config/fixture_config.yaml`
+
+Each entry is a pose relative to the robot flange (`Link_6`):
+
+```yaml
+fixtures:
+  ee_link:
+    description: "Default APCC fixture (calibrated tool center point)"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.0998237, 0.123033, 0.0828027]   # meters
+      rpy: [0.001199, 0.000599, 2.782547]     # radians (roll, pitch, yaw)
+
+  ee_link_alt:                                 # example: add another TCP and switch to it
+    description: "Alternate fixture for siping trials"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.10, 0.12, 0.08]
+      rpy: [0.0, 0.0, 2.78]
+```
+
+### 2. Point the robot at that fixture — `config/robots_config.yaml`
+
+```yaml
+robots:
+  - name: "IRB 1300-7/1.4"
+    urdf_path: "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"  # base URDF (no fixture)
+    fixture_name: "ee_link"   # must match a key under fixtures: — or use "Link_6" for flange-only
+```
+
+| `fixture_name` | Behavior |
+|----------------|----------|
+| `"ee_link"` (or any key in `fixture_config.yaml`) | TCP = flange + that fixture transform |
+| `"Link_6"` | Track flange only (no extra fixture) |
+
+No URDF edits are required to try a new TCP. Loaders resolve `fixture_name` / `ee_frame_name` against `fixture_config.yaml` automatically.
+
+### 3. Run analysis
+
+Batch feasibility (uses robots from `batch_feasibility_config.yaml` → `robots_config.yaml`):
+
+```bash
+conda activate robotics
+python feasibility_analysis_batch.py --config config/batch_feasibility_config.yaml --workers 4
+```
+
+Single toolpath:
+
+```bash
+python feasibility_analysis.py --toolpath <csv> --knife-pose pose_1
+```
+
+Solver / reachability tests (override frame on the CLI if needed):
+
+```bash
+python tests/test_reachability.py --config tests/configs/test_reachability_config.yaml
+python tests/test_solvers.py --config tests/configs/test_solvers_config.yaml --ee-frame ee_link
+```
+
+**Typical workflow to compare fixtures:** add poses in `fixture_config.yaml` → change `fixture_name` on the robot → re-run `feasibility_analysis_batch.py` (or a single `feasibility_analysis.py` run).
+
+---
+
 ## Core Solver Architecture
 
 ### Abstract Base Classes (`core/base_solvers.py`)
@@ -525,24 +597,50 @@ class BaseIKSolver(ABC):
 
 ---
 
+## Toolpath Input Validation
+
+Use this before running feasibility or batch analysis on new raw toolpath CSVs. It transforms each path into the robot base frame with the configured knife pose (default: **Zund**), then runs the existing Feature 2 feasibility pipeline with the same numerical thresholds as `feasibility_analysis.py` / `batch_feasibility_config.yaml`.
+
+Results are written **inside the input folder** as `validation_MM_DD_YY_HH_MM_SS/`. Passing toolpaths leave no subfolders. Failed toolpaths get a folder (same name as the CSV stem) with only failed `trajectory_<N>/` artifacts and failure-relevant graphs (toggle with `--dump-failures` / `--no-dump-failures`; dumps are on by default). No dense/final trajectory CSVs are written.
+
+```bash
+# Uses toolpaths_input from config (default: Assets/Robot APCC/Toolpaths/Successful)
+python utils/validate_toolpath_input.py
+
+# Single CSV or folder of CSVs (folder is non-recursive; non-CSV files ignored)
+python utils/validate_toolpath_input.py -i path/to/toolpath.csv
+python utils/validate_toolpath_input.py -i path/to/folder/
+
+# Skip failure graphs for a faster run
+python utils/validate_toolpath_input.py --no-dump-failures
+```
+
+Configure input path, knife pose, robot/URDF, and check toggles in `config/toolpath_validation_config.yaml`. Exit `0` = all pass; `1` = one or more failures.
+
+---
+
 ## Quick Reference
 
 | Task | Command |
 |------|---------|
 | **Single toolpath feasibility** | `python feasibility_analysis.py --toolpath <csv> --knife-pose pose_1` |
 | **Batch feasibility** | `python feasibility_analysis_batch.py --config config/batch_feasibility_config.yaml --workers 4` |
+| **Toolpath input validation** | `python utils/validate_toolpath_input.py -i <csv_or_folder>` |
+| **Toolpath input validation (no dumps)** | `python utils/validate_toolpath_input.py --no-dump-failures` |
 | **Combinatorial search** | `python combinatorial_search.py --config config/combinatorial_search_config.yaml --workers 8` |
 | **Test FK/IK vs RobotStudio** | `python tests/test_solvers.py --config tests/configs/test_solvers_config.yaml` |
 | **Reachability test** | `python tests/test_reachability.py --config tests/configs/test_reachability_config.yaml` |
-| **Toolpath validation** | `python tests/test_toolpaths.py --config config/toolpath_config.yaml` |
+| **Toolpath vs RobotStudio** | `python tests/test_toolpaths.py --config config/toolpath_config.yaml` |
 | **Automated experiments** | `python tests/run_experiments.py --config tests/configs/experiments_config.yaml` |
 | **Time benchmark IK** | `python tests/timebenchmarking.py --input <csv_folder> --output <dir>` |
 
 | Config | Purpose |
 |--------|---------|
-| `config/robots_config.yaml` | Robot definitions (URDF, reach, velocity limits) |
+| `config/robots_config.yaml` | Robot definitions (URDF, `fixture_name`, reach, velocity limits) |
+| `config/fixture_config.yaml` | End-effector fixture poses (TCP vs `Link_6`) |
 | `config/knife_config.yaml` | Knife poses (T_B_K transforms) |
 | `config/ik_config.yaml` | IK solver parameters (both Pinocchio & EAIK) |
+| `config/toolpath_validation_config.yaml` | Incoming toolpath input validation settings |
 | `config/batch_feasibility_config.yaml` | Batch feasibility settings |
 | `config/combinatorial_search_config.yaml` | Combinatorial search & ranking |
 | `tests/configs/experiments_config.yaml` | Experiment definitions (robots, toolpaths, solvers, runs) |

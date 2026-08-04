@@ -682,7 +682,7 @@ def main():
     print(f"Loading robot model: {urdf_path}")
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=solver_type, ik_config=ik_config,
-        ee_frame_name=ik_config.ee_frame_name
+        ee_frame_name=ik_config.ee_frame_name,
     )
     n_joints = robot_data.n_joints if hasattr(robot_data, 'n_joints') else robot_data[0].nq
     print(f"  Solver: {ik_solver.solver_name}, Joints: {n_joints}")
