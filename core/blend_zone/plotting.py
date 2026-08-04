@@ -109,23 +109,34 @@ def _plot_speed_profile(
     plt,
     dense_path=None,
 ) -> None:
-    """Speed profile: v_cmd vs v_actual (pure physics-based solver output)."""
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
-    arc_s = sr.arc_lengths_mm
+    """Speed profile: v_cmd vs v_actual, plus SE(3) contributions when available."""
+    has_se3 = (
+        dense_path is not None
+        and getattr(dense_path, "dp_ds", None) is not None
+        and getattr(dense_path, "dtheta_ds", None) is not None
+        and float(getattr(dense_path, "lambda_eff_mm_per_rad", 0.0) or 0.0) > 0.0
+    )
+    n_panels = 4 if has_se3 else 3
+    fig, axes = plt.subplots(n_panels, 1, figsize=(14, 3.2 * n_panels), sharex=True)
+    arc_s = sr.arc_lengths_mm  # always s_pos for the task-space x-axis
 
     ax = axes[0]
     ax.plot(arc_s, sr.v_cmd, "b--", alpha=0.6, linewidth=1.0, label="v_cmd")
-    ax.plot(arc_s, sr.v_actual, "r-", linewidth=1.2, label="v_actual (physics)")
+    ax.plot(arc_s, sr.v_actual, "r-", linewidth=1.2, label="TCP linear speed")
     blend_mask = sr.is_blend_arc
     if np.any(blend_mask):
         ax.fill_between(
             arc_s, 0, sr.v_actual.max() * 1.1,
             where=blend_mask, alpha=0.1, color="orange", label="blend arc",
         )
-    ax.set_ylabel("TCP Speed (mm/s)")
+    ax.set_ylabel("TCP linear speed (mm/s)")
     ax.set_title(f"Speed Profile — {name}")
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
+
+    # Secondary axis / overlay for angular speed when SE(3) TOPP data is absent
+    # from SpeedProfileResult — derive ω ≈ (dθ/ds)·v / max(dp_ds, ε) is messy;
+    # instead plot λ·dθ contribution panel separately when SE(3) is attached.
 
     ax = axes[1]
     gap = np.abs(sr.v_cmd - sr.v_actual)
@@ -149,10 +160,30 @@ def _plot_speed_profile(
     ax.plot(arc_s, v_ceil, "g-", linewidth=0.8, label="v_blend_ceiling")
     ax.plot(arc_s, sr.v_cmd, "b--", alpha=0.4, label="v_cmd")
     ax.set_ylabel("Speed (mm/s)")
-    ax.set_xlabel("Arc-length (mm)")
+    if not has_se3:
+        ax.set_xlabel("s_pos (mm)")
     ax.set_title("Centripetal Blend Speed Ceiling")
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
+
+    if has_se3:
+        ax = axes[3]
+        lam = float(dense_path.lambda_eff_mm_per_rad)
+        dp_ds = np.asarray(dense_path.dp_ds, dtype=float)
+        dth_ds = np.asarray(dense_path.dtheta_ds, dtype=float)
+        rot_frac = lam * dth_ds
+        ax.plot(arc_s, dp_ds, "C0-", lw=1.2, label="dp/ds (positional)")
+        ax.plot(arc_s, rot_frac, "C3-", lw=1.2, label="λ·dθ/ds (rotational)")
+        quad = np.sqrt(dp_ds ** 2 + rot_frac ** 2)
+        ax.plot(arc_s, quad, "k--", lw=0.8, alpha=0.5, label="√(dp²+(λdθ)²) ≈ 1")
+        ax.set_ylabel("Fraction")
+        ax.set_xlabel("s_pos (mm)")
+        ax.set_title(
+            f"SE(3) parameter contributions (λ={lam:.1f} mm/rad)"
+        )
+        ax.set_ylim(-0.05, 1.15)
+        ax.legend(loc="upper right")
+        ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     fig.savefig(out / "speed_profile.png", dpi=150, bbox_inches="tight")

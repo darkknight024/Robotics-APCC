@@ -67,6 +67,10 @@ import numpy as np
 
 from .blend_geometry import BlendArcGeometry
 from .path_sampler import DensePath, _sample_bezier_arc
+from .se3_arc_length import (
+    LEGACY_TOPP_LAMBDA_MM_PER_RAD as _POSE_ARC_SCALE_MM_PER_RAD,
+    pose_arc_length_mm as _pose_arc_length_mm_impl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +131,10 @@ class BlendedToppResult:
     n_knots_used: int = 0
     q_ddot_scale: float = 1.0
     toppra_result: Optional[Any] = None
+    omega_tcp_rad_s: Optional[np.ndarray] = None
+    lambda_mm_per_rad: float = _POSE_ARC_SCALE_MM_PER_RAD
+    dp_ds: Optional[np.ndarray] = None
+    dtheta_ds: Optional[np.ndarray] = None
 
 
 def _select_topp_knots(
@@ -184,40 +192,18 @@ def _dedup_monotonic(s_knots: np.ndarray, q_knots: np.ndarray, eps: float = 1e-9
 #: IK branch switch rather than angle wrapping.
 _BRANCH_JUMP_RAD = 0.5
 
-#: Orientation-to-position weight (mm per rad) for the pose arc length used to
-#: reparameterise the path before TOPP-RA.  Position arc length is a poor
-#: parameter for orientation-varying paths: where the TCP barely translates but
-#: reorients fast (e.g. Exp24 v9 n90 wrist sweeps), the position arc barely
-#: advances while q changes a lot, so q'(s)/q''(s) blow up and IK noise is
-#: amplified.  Weighting orientation into the parameter keeps dq/du bounded and
-#: the spline well-conditioned.  100 mm/rad matches continuity.pose_scale
-#: (0.1 m/rad).
-_POSE_ARC_SCALE_MM_PER_RAD = 100.0
 
+def _pose_arc_length_mm(
+    poses: np.ndarray,
+    lambda_mm_per_rad: float = _POSE_ARC_SCALE_MM_PER_RAD,
+) -> np.ndarray:
+    """Cumulative pose arc length (mm): √(|Δp|² + (λ·|Δφ|)²).
 
-def _pose_arc_length_mm(poses: np.ndarray) -> np.ndarray:
-    """Cumulative pose arc length (mm): √(|Δp|² + (scale·|Δφ|)²).
-
-    ``poses`` is (M, 7) [x_m, y_m, z_m, qw, qx, qy, qz].  Combines translation
-    (mm) and orientation (rad × ``_POSE_ARC_SCALE_MM_PER_RAD``) into a single
-    monotonic path parameter whose derivative of q is well-conditioned.
+    ``poses`` is (M, 7) [x_m, y_m, z_m, qw, qx, qy, qz].  Delegates to
+    :func:`core.blend_zone.se3_arc_length.pose_arc_length_mm`.  Default λ
+    is the legacy TOPP value (100 mm/rad) for backward compatibility.
     """
-    pos_mm = np.asarray(poses[:, :3], dtype=float) * 1000.0
-    quat = np.asarray(poses[:, 3:7], dtype=float).copy()
-    M = len(poses)
-    for i in range(M):
-        n = np.linalg.norm(quat[i])
-        if n > 1e-12:
-            quat[i] /= n
-        if i > 0 and np.dot(quat[i - 1], quat[i]) < 0.0:
-            quat[i] = -quat[i]
-    u = np.zeros(M, dtype=float)
-    for i in range(1, M):
-        dpos = float(np.linalg.norm(pos_mm[i] - pos_mm[i - 1]))
-        dot = abs(float(np.clip(np.dot(quat[i - 1], quat[i]), -1.0, 1.0)))
-        dphi = float(2.0 * np.arccos(dot))
-        u[i] = u[i - 1] + np.sqrt(dpos * dpos + (_POSE_ARC_SCALE_MM_PER_RAD * dphi) ** 2)
-    return u
+    return _pose_arc_length_mm_impl(poses, lambda_mm_per_rad=lambda_mm_per_rad)
 
 
 #: Savitzky-Golay window (dense samples) for light smoothing of the REPORTED
@@ -321,6 +307,7 @@ def compute_joint_mvc(
     joint_dynamics,
     q_ddot_scale: float = 1.0,
     n_knots: int = 4000,
+    lambda_mm_per_rad: float = _POSE_ARC_SCALE_MM_PER_RAD,
 ) -> tuple:
     """Maximum-Velocity Curve (MVC) in TCP speed (mm/s) from joint limits only.
 
@@ -342,7 +329,7 @@ def compute_joint_mvc(
     """
     q, _ = _unwrap_joint_path(np.asarray(q_star, dtype=float))
     poses = np.asarray(poses, dtype=float)
-    u_raw = _pose_arc_length_mm(poses)
+    u_raw = _pose_arc_length_mm(poses, lambda_mm_per_rad=lambda_mm_per_rad)
     U = float(u_raw[-1])
     if not np.isfinite(U) or U <= 0:
         M = len(q)
@@ -507,6 +494,7 @@ def compute_time_optimal_on_blended_path(
     smoothing_mode: str = "jerk_limited",
     jerk_smooth_time_s: float = 0.05,
     v_cap_mm_s: Optional[float] = None,
+    lambda_mm_per_rad: Optional[float] = None,
 ) -> BlendedToppResult:
     """Run TOPP-RA on the fixed dense joint path and return the
     time-optimal profile.
@@ -572,18 +560,43 @@ def compute_time_optimal_on_blended_path(
             "arc position will be pessimistic.", max_jump,
         )
 
-    # ── Step 1: reparameterise by normalised POSE arc length ──
+    # ── Step 1: reparameterise by normalised POSE / SE(3) arc length ──
     # Position arc length is ill-conditioned on orientation-varying paths
     # (dq/ds → ∞ where the TCP reorients without translating).  A pose arc
     # (position + scaled orientation) keeps dq/du bounded so the spline and
     # its derivatives are smooth and IK noise is not amplified.
-    u_raw = _pose_arc_length_mm(dense_path.poses)
+    if lambda_mm_per_rad is not None:
+        lam = float(lambda_mm_per_rad)
+    elif (
+        getattr(dense_path, "s_se3", None) is not None
+        and float(getattr(dense_path, "lambda_eff_mm_per_rad", 0.0) or 0.0) > 0.0
+    ):
+        lam = float(dense_path.lambda_eff_mm_per_rad)
+    else:
+        # se3 disabled / no explicit λ → preserve legacy TOPP behaviour (λ=100).
+        lam = float(_POSE_ARC_SCALE_MM_PER_RAD)
+
+    from .se3_arc_length import compute_se3_arc_length
+    pos_mm = np.asarray(dense_path.poses[:, :3], dtype=float) * 1000.0
+    quats = np.asarray(dense_path.poses[:, 3:7], dtype=float)
+    if (
+        dense_path.s_se3 is not None
+        and dense_path.dp_ds is not None
+        and dense_path.dtheta_ds is not None
+        and abs(float(dense_path.lambda_eff_mm_per_rad) - lam) < 1e-12
+        and float(dense_path.lambda_eff_mm_per_rad) > 0.0
+    ):
+        u_raw = np.asarray(dense_path.s_se3, dtype=float)
+        dp_ds_arr = np.asarray(dense_path.dp_ds, dtype=float)
+        dtheta_ds_arr = np.asarray(dense_path.dtheta_ds, dtype=float)
+    else:
+        u_raw, dp_ds_arr, dtheta_ds_arr = compute_se3_arc_length(
+            pos_mm, quats, lam,
+        )
     U_total = float(u_raw[-1])
     if not np.isfinite(U_total) or U_total <= 0:
         return _empty_topp_result(M, feasible=False, reason="non-positive pose arc-length")
     u_norm_dense = np.clip(u_raw / U_total, 0.0, 1.0)
-    # Position arc length per unit u, needed to recover the linear TCP speed.
-    pos_mm = np.asarray(dense_path.poses[:, :3], dtype=float) * 1000.0
 
     # ── Step 2: resample onto a uniform u grid + Savitzky-Golay smoothing ──
     # Uniform knot spacing in a well-conditioned parameter removes the
@@ -741,6 +754,9 @@ def compute_time_optimal_on_blended_path(
     dpos_du_uni = np.linalg.norm(_central_diff_1(pos_knots_sm, u_uniform), axis=1)
     dpos_du_mag = np.interp(u_norm_dense, u_uniform, dpos_du_uni)  # mm per unit u
     v_tcp_mm_s = dpos_du_mag * sd_dense                            # linear TCP speed (mm/s)
+    # Angular TCP speed: ω = (dθ/ds_se3) · ṡ_se3, with ṡ_se3 = u̇ · U_total.
+    s_dot_se3 = sd_dense * U_total                                 # SE(3)-mm/s
+    omega_tcp_rad_s = dtheta_ds_arr * s_dot_se3                    # rad/s
 
     # ── Step 6: joint velocities & accelerations at the optimal speed ──
     # Evaluate q̇ = q'(u)·u̇ and q̈ = q''(u)·u̇² + q'(u)·ü at the TOPP-RA
@@ -859,6 +875,10 @@ def compute_time_optimal_on_blended_path(
         n_knots_used=len(s_knots_u),
         q_ddot_scale=scale,
         toppra_result=toppra_result_obj,
+        omega_tcp_rad_s=omega_tcp_rad_s,
+        lambda_mm_per_rad=lam,
+        dp_ds=dp_ds_arr,
+        dtheta_ds=dtheta_ds_arr,
     )
 
 

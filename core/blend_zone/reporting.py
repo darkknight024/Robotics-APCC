@@ -113,6 +113,10 @@ def generate_f3_report(
         "n_fine_point_stops": len(speed_result.fine_point_indices),
     }
 
+    se3 = getattr(result, "se3_parameterisation", None)
+    if se3 is not None:
+        report["se3_parameterisation"] = dict(se3)
+
     if joint_vel_result is not None:
         report["joint_velocity"] = {
             "max_utilisation_pct": joint_vel_result.max_utilisation.tolist(),
@@ -147,6 +151,13 @@ def generate_f3_report(
             "n_knots_used": int(topp.n_knots_used),
             "m5_traversal_s": float(m5_traversal),
             "duration_vs_m5_traversal_ratio": ratio,
+            "lambda_mm_per_rad": float(getattr(topp, "lambda_mm_per_rad", 0.0) or 0.0),
+            "omega_tcp_max_deg_s": (
+                float(np.rad2deg(np.nanmax(topp.omega_tcp_rad_s)))
+                if getattr(topp, "omega_tcp_rad_s", None) is not None
+                and np.any(np.isfinite(topp.omega_tcp_rad_s))
+                else None
+            ),
         }
 
     # ── F3 D2: Global no-dip constant TCP speed ──

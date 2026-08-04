@@ -415,6 +415,24 @@ class Feature3D1Config:
     # These fields are kept for backward config-file compatibility only.
     apply_rs_speed_cap: bool = False
     rs_speed_cap_path: str = ""
+    # ── SE(3) arc-length parameterisation ──
+    # True  = weighted SE(3): s = √(‖Δp‖² + λ²·Δθ²)
+    # False = position-only for M5/plots; TOPP/MVC keep legacy λ=100 mm/rad
+    # Default False preserves production behaviour for configs that omit this
+    # key; opt in via YAML (batch_feasibility_config.yaml sets true).
+    se3_arc_length_enabled: bool = False
+    # "auto"    = estimate λ per segment from waypoint data
+    # "fixed"   = use se3_lambda_fixed_value for all segments
+    # "default" = URDF-derived default (≈172.7 mm/rad) for all segments
+    se3_lambda_mode: str = "auto"
+    # Only used when se3_lambda_mode = "fixed". Units: mm/rad.
+    se3_lambda_fixed_value: float = 172.7
+    # Multiplier applied to estimated/fixed/default λ AFTER computation.
+    # 1.0 = no change; 0.0 = position-only SE(3) arc (λ·Δθ = 0).
+    se3_lambda_scale: float = 1.0
+    # If True, re-run TOPP at λ_scale ∈ {0.5, 1.0, 2.0} and write a
+    # comparison plot + console sensitivity report.
+    se3_lambda_sensitivity_run: bool = False
 
 
 @dataclass

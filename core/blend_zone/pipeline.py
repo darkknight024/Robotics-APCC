@@ -92,6 +92,10 @@ class Feature3D1Result:
     orientation_smooth: Optional[dict] = None
     # Piecewise-SLERP quats before Step 5b (wxyz); None if smoothing off.
     orientation_quats_raw: Optional[np.ndarray] = None
+    # SE(3) arc-length parameterisation diagnostics (None if not computed).
+    se3_parameterisation: Optional[dict] = None
+    # Lambda-sensitivity comparison results (None unless sensitivity run).
+    se3_lambda_sensitivity: Optional[dict] = None
 
 
 def _zone_to_dict(z: ZoneParams) -> dict:
@@ -401,6 +405,51 @@ def run_feature3(
                     f"spacing={ori_smooth_info.get('base_knot_spacing_mm'):.2f} mm"
                 )
 
+        # ── Step 5c: Weighted SE(3) arc-length parameterisation ──
+        from .path_sampler import attach_se3_arc_length
+        from .se3_arc_length import (
+            DEFAULT_LAMBDA_MM_PER_RAD,
+            resolve_lambda,
+            se3_parameterisation_summary,
+        )
+        se3_enabled = bool(getattr(f3_cfg, "se3_arc_length_enabled", True))
+        se3_mode = str(getattr(f3_cfg, "se3_lambda_mode", "auto"))
+        se3_scale = float(getattr(f3_cfg, "se3_lambda_scale", 1.0))
+        se3_fixed = float(
+            getattr(f3_cfg, "se3_lambda_fixed_value", DEFAULT_LAMBDA_MM_PER_RAD)
+        )
+        wp_pos_mm = np.asarray(waypoints[:, :3], dtype=float) * 1000.0
+        wp_quats = np.asarray(waypoints[:, 3:7], dtype=float)
+        lambda_raw, lambda_eff = resolve_lambda(
+            enabled=se3_enabled,
+            mode=se3_mode,
+            fixed_value=se3_fixed,
+            scale=se3_scale,
+            positions_mm=wp_pos_mm,
+            quaternions=wp_quats,
+            default_lambda=DEFAULT_LAMBDA_MM_PER_RAD,
+        )
+        dense_path = attach_se3_arc_length(dense_path, lambda_eff)
+        se3_info = se3_parameterisation_summary(
+            enabled=se3_enabled,
+            lambda_mode=se3_mode,
+            lambda_raw=lambda_raw,
+            lambda_scale=se3_scale,
+            lambda_eff=lambda_eff,
+            s_pos=dense_path.arc_lengths,
+            s_se3=dense_path.s_se3,
+            dp_ds=dense_path.dp_ds,
+            dtheta_ds=dense_path.dtheta_ds,
+        )
+        if verbose:
+            print(
+                f"    SE(3) arc: enabled={se3_enabled} mode={se3_mode} "
+                f"λ_raw={lambda_raw:.1f} λ_eff={lambda_eff:.1f} mm/rad  "
+                f"s_pos={se3_info['s_pos_total_mm']:.1f} mm  "
+                f"s_se3={se3_info['s_se3_total_mm']:.1f} mm "
+                f"(+{se3_info['s_se3_increase_pct']:.2f}%)"
+            )
+
         # ── Step 6: Feature 2 IK on the dense blended path ──
         positions = dense_path.poses[:, :3]
         quaternions = dense_path.poses[:, 3:7]
@@ -443,6 +492,7 @@ def run_feature3(
                 waypoints_m=waypoints,
                 orientation_smooth=ori_smooth_info,
                 orientation_quats_raw=ori_quats_raw,
+                se3_parameterisation=se3_info,
             )
             all_results.append(result)
             if verbose:
@@ -485,6 +535,11 @@ def run_feature3(
                 q_ddot_scale=q_ddot_scale,
                 smoothing_mode=str(getattr(f3_cfg, "smoothing_mode", "jerk_limited")),
                 jerk_smooth_time_s=float(getattr(f3_cfg, "jerk_smooth_time_s", 0.05)),
+                lambda_mm_per_rad=(
+                    float(dense_path.lambda_eff_mm_per_rad)
+                    if se3_enabled
+                    else None  # disabled → legacy λ=100 inside TOPP
+                ),
             )
             n_fine = len(speed_result.fine_point_indices)
             m5_traversal = (
@@ -537,6 +592,11 @@ def run_feature3(
                     smoothing_mode=str(getattr(f3_cfg, "smoothing_mode", "jerk_limited")),
                     jerk_smooth_time_s=float(getattr(f3_cfg, "jerk_smooth_time_s", 0.05)),
                     v_cap_mm_s=v_cmd_cap,
+                    lambda_mm_per_rad=(
+                        float(dense_path.lambda_eff_mm_per_rad)
+                        if se3_enabled
+                        else None
+                    ),
                 )
                 if verbose and commanded_topp.feasible:
                     print(
@@ -709,7 +769,36 @@ def run_feature3(
             commanded_topp=commanded_topp,
             orientation_smooth=ori_smooth_info,
             orientation_quats_raw=ori_quats_raw,
+            se3_parameterisation=se3_info,
         )
+
+        # ── Step 7d: Optional λ-sensitivity comparison ──
+        if (
+            se3_enabled
+            and bool(getattr(f3_cfg, "se3_lambda_sensitivity_run", False))
+            and want_topp
+            and joint_dynamics is not None
+            and topp_blended is not None
+            and lambda_eff > 0.0
+        ):
+            from .se3_arc_length import run_lambda_sensitivity
+            se3_sensitivity = run_lambda_sensitivity(
+                q_star=joint_angles_rad,
+                dense_path=dense_path,
+                joint_dynamics=joint_dynamics,
+                lambda_baseline=lambda_eff,
+                f3_cfg=f3_cfg,
+                output_dir=traj_out if plots else None,
+                segment_label=traj_name,
+                verbose=verbose,
+            )
+            if se3_sensitivity is not None:
+                se3_info = dict(se3_info)
+                se3_info["lambda_sensitivity_pct"] = se3_sensitivity.get(
+                    "duration_spread_pct"
+                )
+                result.se3_parameterisation = se3_info
+                result.se3_lambda_sensitivity = se3_sensitivity
 
         # ── Step 10: Plots and reports ──
         if plots and f3_cfg.generate_plots:

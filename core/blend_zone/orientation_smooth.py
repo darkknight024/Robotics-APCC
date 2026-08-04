@@ -435,6 +435,10 @@ def smooth_dense_path_orientation(
         v_cmd_at_s=dense_path.v_cmd_at_s,
         blend_t=dense_path.blend_t,
         blend_wp_idx=dense_path.blend_wp_idx,
+        s_se3=dense_path.s_se3,
+        dp_ds=dense_path.dp_ds,
+        dtheta_ds=dense_path.dtheta_ds,
+        lambda_eff_mm_per_rad=dense_path.lambda_eff_mm_per_rad,
     )
     return new_path, result
 

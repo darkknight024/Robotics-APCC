@@ -197,6 +197,15 @@ feature3_d1:
   # post-processing step in tests/experiment24_validation.py --rs-speed-cap on.
   apply_rs_speed_cap: false
   rs_speed_cap_path: "Robot_APCC/Experiments/Experiement_24/v_capped/analysis/rs_speed_cap_model.json"
+  # ── SE(3) arc-length parameterisation ──
+  # Weighted path parameter s = √(‖Δp‖² + λ²·Δθ²).  λ is the effective TCP
+  # lever arm (mm/rad).  Default ≈172.7 is the mean of the IRB-1300 wrist
+  # (J4/J5/J6) home-config lever arms from the URDF; envelope ≈[123, 236].
+  se3_arc_length_enabled: true
+  se3_lambda_mode: "auto"          # auto | fixed | default
+  se3_lambda_fixed_value: 172.7    # mm/rad; only when mode=fixed
+  se3_lambda_scale: 1.0            # post-multiplier (0.0 = position-only)
+  se3_lambda_sensitivity_run: false  # re-run at 0.5λ / λ / 2λ + comparison plot
 
 # =============================================================================
 # Ranking (used by combinatorial search only)

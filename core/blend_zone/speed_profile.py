@@ -751,12 +751,18 @@ def predict_speed_profile(
     ):
         try:
             from .topp_on_blended_path import compute_joint_mvc
+            se3_lam = float(getattr(dense_path, "lambda_eff_mm_per_rad", 0.0) or 0.0)
+            # When SE(3) is disabled (λ=0), MVC keeps the legacy TOPP λ=100.
+            mvc_kwargs = {}
+            if se3_lam > 0.0:
+                mvc_kwargs["lambda_mm_per_rad"] = se3_lam
             v_vel_mvc, v_acc_mvc = compute_joint_mvc(
                 np.asarray(q_path, dtype=float),
                 dense_path.poses,
                 arc_s,
                 calibration.joint_dynamics,
                 q_ddot_scale=accel_scale,
+                **mvc_kwargs,
             )
             if enable_v_joint:
                 # Direct q'(u) velocity MVC (pose-arc) is more robust than the

@@ -1129,6 +1129,35 @@ def _apply_v_cmd_cap(
     return np.minimum(out, cap)
 
 
+def _tcp_speed_to_path_speed(
+    v_tcp: float | np.ndarray,
+    dp_ds: np.ndarray,
+) -> float | np.ndarray:
+    """Convert TCP linear speed [mm/s] → SE(3) path speed ṡ [mm/s].
+
+    ``ṡ = v_tcp / (dp/ds)``.  Pure-rotation samples (dp/ds≈0) get +inf
+    (linear TCP limit does not bind).
+    """
+    dp = np.asarray(dp_ds, dtype=float)
+    v = np.asarray(v_tcp, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = np.where(dp > 1e-12, v / dp, np.inf)
+    if np.ndim(v_tcp) == 0 and np.ndim(out) > 0:
+        # scalar input but array dp_ds → return array (pathwise ceiling)
+        return out
+    if np.ndim(v_tcp) == 0:
+        return float(out) if np.ndim(out) == 0 else out
+    return out
+
+
+def _path_speed_to_tcp_speed(
+    s_dot: np.ndarray,
+    dp_ds: np.ndarray,
+) -> np.ndarray:
+    """Convert SE(3) path speed ṡ → TCP linear speed [mm/s]."""
+    return np.asarray(s_dot, dtype=float) * np.asarray(dp_ds, dtype=float)
+
+
 # =====================================================================
 # STEP 0 — verify the input is a valid q(s)
 # =====================================================================
@@ -1141,6 +1170,7 @@ def step0_validate(
     q_lower: Optional[np.ndarray] = None,
     q_upper: Optional[np.ndarray] = None,
     joint_types: Optional[List[str]] = None,
+    se3_lambda_mm_per_rad: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict]:
     """Validate + condition the input joint path. Fails loudly.
 
@@ -1148,6 +1178,11 @@ def step0_validate(
     is the strictly increasing arc-length of the retained samples,
     ``q_kept`` the retained joint samples, ``pos_kept`` the retained TCP
     xyz [mm], and ``quat_kept`` the retained TCP quaternions [wxyz].
+
+    When ``se3_lambda_mm_per_rad`` is set and > 0, ``s_mm`` is the weighted
+    SE(3) arc ``√(|Δp|² + (λ·Δθ)²)`` instead of position-only Σ|Δp|.  The
+    report then also carries ``s_pos_mm``, ``dp_ds``, and ``dtheta_ds`` for
+    converting path speed ↔ TCP linear/angular speed.
 
     Joint continuity (check 0.5) respects URDF joint *type*:
       * **revolute** — remap each sample by ``±2πk`` into ``[q_lower, q_upper]``
@@ -1203,30 +1238,68 @@ def step0_validate(
 
     # 0.3 ARC-LENGTH -------------------------------------------------------
     pos_mm = poses[:, :3]
-    ds = np.linalg.norm(np.diff(pos_mm, axis=0), axis=1)
-    s_full = np.concatenate([[0.0], np.cumsum(ds)])
-    total_len = float(s_full[-1])
-    report["checks"]["0.3_arc_length"] = (
-        True, f"total arc-length = {total_len:.3f} mm"
-    )
+    ds_pos = np.linalg.norm(np.diff(pos_mm, axis=0), axis=1)
+    s_pos_full = np.concatenate([[0.0], np.cumsum(ds_pos)])
+    total_pos = float(s_pos_full[-1])
+    lam = float(se3_lambda_mm_per_rad) if se3_lambda_mm_per_rad is not None else 0.0
+    if lam > 0.0:
+        from core.blend_zone.se3_arc_length import compute_se3_arc_length
+        s_full, dp_ds_full, dtheta_ds_full = compute_se3_arc_length(
+            pos_mm, quat, lam,
+        )
+        total_len = float(s_full[-1])
+        report["checks"]["0.3_arc_length"] = (
+            True,
+            f"SE(3) arc-length = {total_len:.3f} mm "
+            f"(s_pos={total_pos:.3f} mm, λ={lam:.1f} mm/rad, "
+            f"+{100.0*(total_len/total_pos - 1.0) if total_pos > 1e-9 else 0.0:.1f}%)",
+        )
+        report["se3_enabled"] = True
+        report["se3_lambda_mm_per_rad"] = lam
+        report["s_pos_total_mm"] = total_pos
+        report["s_se3_total_mm"] = total_len
+    else:
+        s_full = s_pos_full
+        dp_ds_full = np.ones(M, dtype=float)
+        dtheta_ds_full = np.zeros(M, dtype=float)
+        total_len = total_pos
+        report["checks"]["0.3_arc_length"] = (
+            True, f"total arc-length = {total_len:.3f} mm"
+        )
+        report["se3_enabled"] = False
+        report["se3_lambda_mm_per_rad"] = 0.0
+        report["s_pos_total_mm"] = total_pos
+        report["s_se3_total_mm"] = total_len
     report["total_arc_length_mm"] = total_len
 
     # 0.4 MONOTONE / DE-DUP ------------------------------------------------
-    keep = np.concatenate([[True], ds >= ds_min_mm])
+    # Drop near-duplicates in the *active* path parameter (SE(3) or position).
+    ds_param = np.diff(s_full)
+    keep = np.concatenate([[True], ds_param >= ds_min_mm])
     n_removed = int((~keep).sum())
     s_mm = s_full[keep]
     q_kept = q[keep]
     pos_kept = pos_mm[keep]
     quat_kept = quat[keep]
+    s_pos_kept = s_pos_full[keep]
+    dp_ds_kept = dp_ds_full[keep]
+    dtheta_ds_kept = dtheta_ds_full[keep]
     # Rebuild strictly-increasing arc-length from retained points.
     if not np.all(np.diff(s_mm) > 0):
         # Any residual ties (shouldn't happen after de-dup) get nudged.
         s_mm = np.maximum.accumulate(s_mm + np.arange(len(s_mm)) * 1e-9)
+    if not np.all(np.diff(s_pos_kept) >= 0):
+        s_pos_kept = np.maximum.accumulate(
+            s_pos_kept + np.arange(len(s_pos_kept)) * 1e-9
+        )
     report["checks"]["0.4_monotone_dedup"] = (
         True, f"removed {n_removed} near-duplicate samples (ds < {ds_min_mm} mm)"
     )
     report["n_removed"] = n_removed
     report["n_kept"] = int(len(s_mm))
+    report["s_pos_mm"] = s_pos_kept
+    report["dp_ds"] = dp_ds_kept
+    report["dtheta_ds"] = dtheta_ds_kept
 
     # 0.5 CONTINUITY / BRANCH CHECK ---------------------------------------
     # Remap IK principal-value wraps using URDF joint semantics (revolute
@@ -4676,6 +4749,9 @@ def _grid_independence(
     v_cmd_at_s: Optional[np.ndarray] = None,
     time_optimal: bool = False,
     secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
+    se3_dp_ds_s: Optional[np.ndarray] = None,
+    se3_dp_ds: Optional[np.ndarray] = None,
+    se3_s_pos: Optional[np.ndarray] = None,
 ) -> Dict:
     """Recompute dq/ds, d2q/ds2, v_lim, and duration at 0.5x and 2x N_eval.
 
@@ -4702,13 +4778,33 @@ def _grid_independence(
             ),
         )
 
+    se3_on = (
+        se3_dp_ds_s is not None
+        and se3_dp_ds is not None
+        and len(se3_dp_ds_s) == len(se3_dp_ds)
+    )
+
     def _cap(s_grid: np.ndarray, v_joint: np.ndarray) -> np.ndarray:
         if time_optimal:
             return v_joint
         if (v_cmd_s_mm is not None and v_cmd_at_s is not None
                 and len(np.asarray(v_cmd_at_s)) > 0):
+            # Pathwise TCP schedule is on s_pos; map via se3↔pos when needed.
+            if se3_on and se3_s_pos is not None:
+                s_pos_g = np.interp(s_grid, se3_dp_ds_s, se3_s_pos)
+                v_tcp = _v_cmd_on_grid(s_pos_g, v_cmd_s_mm, v_cmd_at_s)
+                dp = np.interp(s_grid, se3_dp_ds_s, se3_dp_ds)
+                return _apply_v_cmd_cap(
+                    v_joint, _tcp_speed_to_path_speed(v_tcp, dp), False,
+                )
             return _apply_v_cmd_cap(
                 v_joint, _v_cmd_on_grid(s_grid, v_cmd_s_mm, v_cmd_at_s), False,
+            )
+        # Scalar (or matching-length) TCP / path ceiling.
+        if se3_on and v_cmd is not None and np.ndim(v_cmd) == 0:
+            dp = np.interp(s_grid, se3_dp_ds_s, se3_dp_ds)
+            return _apply_v_cmd_cap(
+                v_joint, _tcp_speed_to_path_speed(float(v_cmd), dp), False,
             )
         return _apply_v_cmd_cap(v_joint, v_cmd, False)
 
@@ -4867,6 +4963,7 @@ def run_diagnostics(
     apply_rs_velocity_cap: bool = True,
     plot_jerk: bool = False,
     rs_bench_exclusion_config: Optional[RSBenchExclusionConfig] = None,
+    se3_lambda_mm_per_rad: Optional[float] = None,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -4885,6 +4982,10 @@ def run_diagnostics(
     the RobotStudio spacing×zone cruising cap from
     :func:`utils.velocity_zone_lookup.build_v_capped_on_eval_grid` is applied
     to the TOPP ceiling and realized TCP speed (``v_star``).
+
+    When ``se3_lambda_mm_per_rad > 0``, the path parameter is the weighted
+    SE(3) arc; TOPP runs in that space and TCP linear speeds / RS x-axis are
+    converted back via ``dp/ds`` / ``s_pos`` before plots and benchmarking.
     """
     res = ProfileResult()
     res.v_cmd = v_cmd
@@ -4908,9 +5009,13 @@ def run_diagnostics(
         q_lower=limits.q_lower,
         q_upper=limits.q_upper,
         joint_types=limits.joint_types,
+        se3_lambda_mm_per_rad=se3_lambda_mm_per_rad,
     )
     res.s_raw, res.q_raw, res.tcp_xyz_raw, res.step0 = s_mm, q_kept, pos_kept, step0
     res.quat_raw = quat_kept
+    se3_on = bool(step0.get("se3_enabled", False))
+    s_pos_raw = np.asarray(step0.get("s_pos_mm", s_mm), dtype=float)
+    dp_ds_raw = np.asarray(step0.get("dp_ds", np.ones(len(s_mm))), dtype=float)
 
     # Step 1
     s_eval, arr, smoothing, _splines = step1_differentiate(
@@ -4935,33 +5040,59 @@ def run_diagnostics(
     res.smoothing = smoothing
 
     # Toolpath column-8 schedule on grids (always, when provided).
+    # Schedule is authored vs position arc (s_pos); when SE(3) is active we
+    # look it up on s_pos and convert TCP→path-speed for the TOPP ceiling.
+    dp_ds_eval = np.interp(s_eval, s_mm, dp_ds_raw)
+    dp_ds_mvc = np.interp(_mvc_s, s_mm, dp_ds_raw)
+    s_pos_eval = np.interp(s_eval, s_mm, s_pos_raw)
+    s_pos_mvc = np.interp(_mvc_s, s_mm, s_pos_raw)
+
     path_v_cmd = path_v_cmd_mvc = None
+    path_v_cmd_tcp = path_v_cmd_tcp_mvc = None
     if has_path_schedule:
-        path_v_cmd = _v_cmd_on_grid(s_eval, v_cmd_s_mm, v_cmd_at_s)
-        path_v_cmd_mvc = _v_cmd_on_grid(_mvc_s, v_cmd_s_mm, v_cmd_at_s)
+        lookup_s = s_pos_eval if se3_on else s_eval
+        lookup_s_mvc = s_pos_mvc if se3_on else _mvc_s
+        path_v_cmd_tcp = _v_cmd_on_grid(lookup_s, v_cmd_s_mm, v_cmd_at_s)
+        path_v_cmd_tcp_mvc = _v_cmd_on_grid(lookup_s_mvc, v_cmd_s_mm, v_cmd_at_s)
+        if se3_on:
+            path_v_cmd = _tcp_speed_to_path_speed(path_v_cmd_tcp, dp_ds_eval)
+            path_v_cmd_mvc = _tcp_speed_to_path_speed(path_v_cmd_tcp_mvc, dp_ds_mvc)
+        else:
+            path_v_cmd = path_v_cmd_tcp
+            path_v_cmd_mvc = path_v_cmd_tcp_mvc
         if res.v_cmd is None or not np.isfinite(res.v_cmd) or res.v_cmd <= 0:
-            res.v_cmd = float(np.nanmax(path_v_cmd))
+            res.v_cmd = float(np.nanmax(path_v_cmd_tcp))
 
     # Cap used for THIS mode's TOPP.
     if res.mode == "constant":
-        v_cmd_for_cap: Optional[float | np.ndarray] = float(v_const)
-        _mvc_v_cmd: Optional[float | np.ndarray] = float(v_const)
+        # v_const is TCP linear (derived from prior optimal mode's ceiling).
+        if se3_on:
+            v_cmd_for_cap = _tcp_speed_to_path_speed(float(v_const), dp_ds_eval)
+            _mvc_v_cmd = _tcp_speed_to_path_speed(float(v_const), dp_ds_mvc)
+        else:
+            v_cmd_for_cap = float(v_const)
+            _mvc_v_cmd = float(v_const)
         res.v_cmd_path = None
     elif res.mode == "commanded":
         if path_v_cmd is not None:
-            res.v_cmd_path = path_v_cmd
+            # Store TCP schedule for plots; TOPP uses path-speed ceiling.
+            res.v_cmd_path = path_v_cmd_tcp if path_v_cmd_tcp is not None else path_v_cmd
             v_cmd_for_cap = path_v_cmd
             _mvc_v_cmd = path_v_cmd_mvc
         elif v_cmd is not None and np.isfinite(v_cmd) and v_cmd > 0:
             res.v_cmd_path = np.full(len(s_eval), float(v_cmd))
-            v_cmd_for_cap = float(v_cmd)
-            _mvc_v_cmd = float(v_cmd)
+            if se3_on:
+                v_cmd_for_cap = _tcp_speed_to_path_speed(float(v_cmd), dp_ds_eval)
+                _mvc_v_cmd = _tcp_speed_to_path_speed(float(v_cmd), dp_ds_mvc)
+            else:
+                v_cmd_for_cap = float(v_cmd)
+                _mvc_v_cmd = float(v_cmd)
         else:
             res.v_cmd_path = None
             v_cmd_for_cap = None
             _mvc_v_cmd = None
     else:  # time_optimal
-        res.v_cmd_path = path_v_cmd  # keep for plots / comparison; not used as cap
+        res.v_cmd_path = path_v_cmd_tcp if path_v_cmd_tcp is not None else path_v_cmd
         v_cmd_for_cap = None
         _mvc_v_cmd = None
 
@@ -4998,25 +5129,34 @@ def run_diagnostics(
         wp_for_cap = (
             waypoints_base if waypoints_base is not None else waypoints_plate
         )
+        # RS v_cap is a TCP linear speed on the position arc.
+        vcap_s = s_pos_eval if se3_on else s_eval
+        vcap_s_mvc = s_pos_mvc if se3_on else _mvc_s
         vcap = build_v_capped_on_eval_grid(
             toolpath_csv,
-            s_eval,
+            vcap_s,
             waypoints=wp_for_cap,
             custom_zone=True,
             default_zone="z5",
         )
-        res.v_capped = vcap.v_capped_eval
+        res.v_capped = vcap.v_capped_eval  # TCP mm/s (for post-TOPP / plots)
         res.v_capped_waypoint = vcap.v_capped_waypoint
         res.vcap_excluded_mask = vcap.excluded_mask
 
-        v_cap_mvc = map_v_capped_to_arc_length(
-            vcap.s_waypoint_mm, vcap.v_capped_waypoint, _mvc_s,
+        v_cap_mvc_tcp = map_v_capped_to_arc_length(
+            vcap.s_waypoint_mm, vcap.v_capped_waypoint, vcap_s_mvc,
         )
+        if se3_on:
+            v_cap_path = _tcp_speed_to_path_speed(vcap.v_capped_eval, dp_ds_eval)
+            v_cap_mvc = _tcp_speed_to_path_speed(v_cap_mvc_tcp, dp_ds_mvc)
+        else:
+            v_cap_path = vcap.v_capped_eval
+            v_cap_mvc = v_cap_mvc_tcp
 
-        finite_cap = np.isfinite(vcap.v_capped_eval)
+        finite_cap = np.isfinite(v_cap_path)
         if np.any(finite_cap):
             res.v_lim[finite_cap] = np.minimum(
-                res.v_lim[finite_cap], vcap.v_capped_eval[finite_cap],
+                res.v_lim[finite_cap], v_cap_path[finite_cap],
             )
         finite_cap_mvc = np.isfinite(v_cap_mvc)
         if np.any(finite_cap_mvc):
@@ -5042,7 +5182,8 @@ def run_diagnostics(
     res.v_star, res.u, res.s_ddot, res.t = (
         topt["v_star"], topt["u"], topt["s_ddot"], topt["t"]
     )
-    if res.v_capped is not None:
+    # Defer TCP-space v_capped until after SE(3)→TCP conversion below.
+    if res.v_capped is not None and not se3_on:
         finite_cap = np.isfinite(res.v_capped)
         if np.any(finite_cap):
             res.v_star[finite_cap] = np.minimum(
@@ -5054,7 +5195,7 @@ def run_diagnostics(
     res.metrics_roundtrip = topt["roundtrip_ds_over_v"]
     res.metrics_roundtrip_trapz = topt["roundtrip_trapz"]
 
-    # regions (vs the ceiling actually used for TOPP)
+    # regions (vs the ceiling actually used for TOPP) — still in path-parameter space
     reg = compute_regions(res.v_star, res.v_lim)
     res.cruise_mask, res.transient_mask, res.boundary_mask = (
         reg["cruise"], reg["transient"], reg["boundary"]
@@ -5066,6 +5207,10 @@ def run_diagnostics(
     # commanded/constant/optimal.  Prefer the pathwise schedule when present.
     ref_cap = path_v_cmd if path_v_cmd is not None else res.v_cmd
     ref_cap_mvc = path_v_cmd_mvc if path_v_cmd_mvc is not None else res.v_cmd
+    if se3_on and ref_cap is not None and path_v_cmd is None and np.ndim(ref_cap) == 0:
+        # Scalar TCP v_cmd → path-speed ceiling on the eval grid.
+        ref_cap = _tcp_speed_to_path_speed(float(ref_cap), dp_ds_eval)
+        ref_cap_mvc = _tcp_speed_to_path_speed(float(ref_cap_mvc), dp_ds_mvc)
     ref_v_lim = _apply_v_cmd_cap(res.v_lim_joint, ref_cap, False)
     if res.mode == "commanded" and (
         (res.v_cmd_path is not None) or (res.v_cmd is not None and res.v_cmd > 0)
@@ -5092,6 +5237,48 @@ def run_diagnostics(
         q_ddot=ref_q_ddot,
         qdd_max=limits.q_ddot_max,
     )
+
+    # ── SE(3) → task-space conversion (TCP linear speed + s_pos x-axis) ──
+    # TOPP / joint profiles stay consistent (q̇ used ṡ_se3).  Deliverables and
+    # RS overlays need TCP linear speed on the position arc.
+    s_dot_se3 = None
+    if se3_on:
+        s_dot_se3 = np.asarray(res.v_star, dtype=float).copy()
+        res.v_star = _path_speed_to_tcp_speed(res.v_star, dp_ds_eval)
+        res.v_lim = _path_speed_to_tcp_speed(res.v_lim, dp_ds_eval)
+        res.v_lim_joint = _path_speed_to_tcp_speed(res.v_lim_joint, dp_ds_eval)
+        if res.v_vel is not None:
+            res.v_vel = _path_speed_to_tcp_speed(res.v_vel, dp_ds_eval)
+        if res.v_accel is not None:
+            finite_acc = np.isfinite(res.v_accel)
+            res.v_accel = res.v_accel.copy()
+            res.v_accel[finite_acc] = _path_speed_to_tcp_speed(
+                res.v_accel[finite_acc], dp_ds_eval[finite_acc],
+            )
+        if res.v_secant is not None:
+            res.v_secant = _path_speed_to_tcp_speed(res.v_secant, dp_ds_eval)
+        if res.vel_ceilings is not None:
+            res.vel_ceilings = res.vel_ceilings * dp_ds_eval[:, None]
+        res.u = res.v_star ** 2
+        res.s_eval = s_pos_eval
+        res.s_raw = s_pos_raw
+        step0["dp_ds_eval"] = dp_ds_eval
+        step0["s_dot_se3"] = s_dot_se3
+        print(
+            f"  SE(3) λ={float(step0.get('se3_lambda_mm_per_rad', 0.0)):.1f} mm/rad: "
+            f"s_pos={float(step0.get('s_pos_total_mm', 0.0)):.1f} mm, "
+            f"s_se3={float(step0.get('s_se3_total_mm', 0.0)):.1f} mm "
+            f"(+{100.0*(step0.get('s_se3_total_mm', 0.0)/max(step0.get('s_pos_total_mm', 1.0), 1e-9) - 1.0):.1f}%)"
+        )
+
+    if res.v_capped is not None and se3_on:
+        finite_cap = np.isfinite(res.v_capped)
+        if np.any(finite_cap):
+            res.v_star[finite_cap] = np.minimum(
+                res.v_star[finite_cap], res.v_capped[finite_cap],
+            )
+            res.u = res.v_star ** 2
+
     # Augment with RS-side peak detector when a recording is available.
     if rs_rec is not None:
         rs_mask, rs_diag = identify_rs_transient_mask(
@@ -5111,6 +5298,13 @@ def run_diagnostics(
         "thresholds": tdiag.get("thresholds", {}),
         "watchdog_triggered": tdiag.get("watchdog_triggered", False),
     }
+    if se3_on:
+        res.metrics["se3"] = {
+            "enabled": True,
+            "lambda_mm_per_rad": float(step0.get("se3_lambda_mm_per_rad", 0.0)),
+            "s_pos_total_mm": float(step0.get("s_pos_total_mm", 0.0)),
+            "s_se3_total_mm": float(step0.get("s_se3_total_mm", 0.0)),
+        }
 
     # Modular RS benchmark exclusions (computed separately, merged for stats).
     if rs_bench_exclusion_config is None:
@@ -5161,9 +5355,16 @@ def run_diagnostics(
     res.metrics["mode"] = res.mode
     if res.v_const is not None:
         res.metrics["v_const_mm_s"] = float(res.v_const)
-    # ω = θ'·v*  and  α = θ''·v*² + θ'·s̈  (chain rule, all analytic)
-    omega = res.ori_dtheta_ds * res.v_star
-    alpha = res.ori_d2theta_ds2 * res.v_star ** 2 + res.ori_dtheta_ds * res.s_ddot
+    # ω = θ'·ṡ  (path-parameter chain rule).  When SE(3) is on, θ was fit vs
+    # s_se3 and ṡ_se3 was saved before the TCP conversion of v_star.
+    _s_dot_for_ori = (
+        s_dot_se3 if (se3_on and s_dot_se3 is not None) else res.v_star
+    )
+    omega = res.ori_dtheta_ds * _s_dot_for_ori
+    alpha = (
+        res.ori_d2theta_ds2 * _s_dot_for_ori ** 2
+        + res.ori_dtheta_ds * res.s_ddot
+    )
     res.metrics["rotation"] = {
         "theta_total_deg": float(np.rad2deg(res.ori_theta[-1] - res.ori_theta[0])),
         "dtheta_ds_max_deg_mm": float(np.rad2deg(np.max(np.abs(res.ori_dtheta_ds)))),
@@ -5198,18 +5399,30 @@ def run_diagnostics(
     }
 
     # Step 5: grid independence + metrics
-    grid_v_cmd = v_cmd_for_cap if res.mode != "commanded" or not has_path_schedule else None
+    # Constant-mode v_const is TCP linear; under SE(3) the path-speed cap is
+    # pathwise (v_const / dp_ds).  Pass the scalar TCP value here and let
+    # _grid_independence re-map via dp_ds when provided.
+    if res.mode == "constant":
+        grid_v_cmd = float(v_const) if v_const is not None else None
+        grid_v_cmd_s = grid_v_cmd_v = None
+    elif res.mode == "commanded" and has_path_schedule:
+        grid_v_cmd = None
+        grid_v_cmd_s, grid_v_cmd_v = v_cmd_s_mm, v_cmd_at_s
+    else:
+        grid_v_cmd = v_cmd_for_cap
+        grid_v_cmd_s = grid_v_cmd_v = None
     grid_check = (
         _grid_independence(
             s_mm, q_kept, limits, ik_tol_rad, len(s_eval),
             resid_tol_rad=resid_tol_rad,
             v_cmd=grid_v_cmd,
-            v_cmd_s_mm=(v_cmd_s_mm if res.mode == "commanded" and has_path_schedule
-                        else None),
-            v_cmd_at_s=(v_cmd_at_s if res.mode == "commanded" and has_path_schedule
-                        else None),
+            v_cmd_s_mm=grid_v_cmd_s,
+            v_cmd_at_s=grid_v_cmd_v,
             time_optimal=time_optimal,
             secant_window_mm=secant_window_mm,
+            se3_dp_ds_s=s_mm if se3_on else None,
+            se3_dp_ds=dp_ds_raw if se3_on else None,
+            se3_s_pos=s_pos_raw if se3_on else None,
         )
         if do_grid_check else {"skipped": True}
     )
@@ -5299,6 +5512,10 @@ def _write_report(res: ProfileResult, out_dir: Path) -> Path:
         "n_removed": res.step0.get("n_removed"),
         "n_kept": res.step0.get("n_kept"),
         "total_arc_length_mm": res.step0.get("total_arc_length_mm"),
+        "se3_enabled": res.step0.get("se3_enabled", False),
+        "se3_lambda_mm_per_rad": res.step0.get("se3_lambda_mm_per_rad"),
+        "s_pos_total_mm": res.step0.get("s_pos_total_mm"),
+        "s_se3_total_mm": res.step0.get("s_se3_total_mm"),
     }
     p = out_dir / "optimal_velocity_profile_report.json"
     p.write_text(json.dumps(report, indent=2, default=float), encoding="utf-8")
@@ -5769,6 +5986,10 @@ def _process_one_toolpath(
     smooth_orientation: bool = True,
     plot_jerk: bool = False,
     rs_bench_exclusion_config: Optional[RSBenchExclusionConfig] = None,
+    se3_arc_length: bool = False,
+    se3_lambda_scale: float = 1.0,
+    se3_lambda_mode: str = "auto",
+    se3_lambda_fixed: float = 172.7,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -5777,6 +5998,33 @@ def _process_one_toolpath(
     ctx = load_joint_path_from_toolpath(
         str(toolpath), ds_mm=ds_mm, smooth_orientation=smooth_orientation,
     )
+
+    se3_lambda = None
+    if se3_arc_length:
+        from core.blend_zone.se3_arc_length import (
+            DEFAULT_LAMBDA_MM_PER_RAD,
+            resolve_lambda,
+        )
+        # Estimate from dense TCP poses (mm + wxyz) — same frame as profiler.
+        pos_mm = np.asarray(ctx.poses[:, :3], dtype=float)
+        quats = np.asarray(ctx.poses[:, 3:7], dtype=float)
+        raw, eff = resolve_lambda(
+            enabled=True,
+            mode=se3_lambda_mode,
+            fixed_value=float(se3_lambda_fixed),
+            scale=float(se3_lambda_scale),
+            positions_mm=pos_mm,
+            quaternions=quats,
+            default_lambda=DEFAULT_LAMBDA_MM_PER_RAD,
+        )
+        se3_lambda = float(eff)
+        print(
+            f"  SE(3) arc-length ON: mode={se3_lambda_mode}  "
+            f"λ_raw={raw:.1f}  scale={se3_lambda_scale:g}  λ_eff={se3_lambda:.1f} mm/rad"
+        )
+    else:
+        print("  SE(3) arc-length OFF (position-only path parameter)")
+
     ori = ctx.orientation_smooth
     ori_msg = "off"
     if ori and not ori.get("skipped", False):
@@ -5835,6 +6083,7 @@ def _process_one_toolpath(
         transient_pad_mm=transient_pad_mm,
         plot_jerk=plot_jerk,
         rs_bench_exclusion_config=rs_bench_exclusion_config,
+        se3_lambda_mm_per_rad=se3_lambda,
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
@@ -5944,6 +6193,9 @@ def _process_one_toolpath(
             float(res_opt.metrics_duration) if res_opt is not None else None
         ),
         "v_const": res_const.v_const if res_const is not None else None,
+        "se3_arc_length": bool(se3_arc_length),
+        "se3_lambda_mm_per_rad": se3_lambda,
+        "se3_lambda_scale": float(se3_lambda_scale) if se3_arc_length else None,
         "summary": str(summary),
         "fk_check_pass": None if fk_check is None else bool(fk_check.get("pass")),
         "fk_pos_max_mm": None if fk_check is None else fk_check.get("pos_max_mm"),
@@ -6066,6 +6318,27 @@ def main() -> None:
              "benchmarking (does not disable per-waypoint evaluation).",
     )
     parser.add_argument("--no-plots", action="store_true")
+    # ── SE(3) arc-length (experimental; OFF by default) ──
+    parser.add_argument(
+        "--se3-arc-length", action="store_true",
+        help="EXPERIMENTAL: parameterise q(s) with weighted SE(3) arc "
+             "s=√(|Δp|²+(λ·Δθ)²) instead of position-only Σ|Δp|.  "
+             "Disabled by default — enable only for λ-sensitivity experiments.",
+    )
+    parser.add_argument(
+        "--se3-lambda-scale", type=float, default=1.0,
+        help="Multiplier on the resolved λ when --se3-arc-length is set "
+             "(default 1.0). Try 0.5 / 1.0 / 2.0 for sensitivity.",
+    )
+    parser.add_argument(
+        "--se3-lambda-mode", choices=["auto", "fixed", "default"],
+        default="auto",
+        help="How to choose λ when --se3-arc-length is set (default: auto).",
+    )
+    parser.add_argument(
+        "--se3-lambda-fixed", type=float, default=172.7,
+        help="λ [mm/rad] when --se3-lambda-mode=fixed (default 172.7).",
+    )
     args = parser.parse_args()
 
     rs_bench_cfg = RSBenchExclusionConfig(
@@ -6106,6 +6379,10 @@ def main() -> None:
             smooth_orientation=not args.no_smooth_orientation,
             plot_jerk=bool(args.jerk),
             rs_bench_exclusion_config=rs_bench_cfg,
+            se3_arc_length=bool(args.se3_arc_length),
+            se3_lambda_scale=float(args.se3_lambda_scale),
+            se3_lambda_mode=str(args.se3_lambda_mode),
+            se3_lambda_fixed=float(args.se3_lambda_fixed),
         )
         batch_rows.append(row)
 

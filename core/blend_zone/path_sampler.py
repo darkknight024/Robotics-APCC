@@ -46,7 +46,9 @@ class DensePath:
 
     Attributes:
         poses:         (M, 7) [x_m, y_m, z_m, qw, qx, qy, qz].
-        arc_lengths:   (M,)   cumulative arc-length from path start, in mm.
+        arc_lengths:   (M,)   cumulative **position-only** arc-length (Σ‖Δp‖)
+                              from path start, in mm.  Used as the RS-comparison
+                              and plotting x-axis (``s_pos``).
         is_blend_arc:  (M,)   True where the sample lies on a blend arc.
         segment_ids:   (M,)   Programmed-segment index for each sample.
         v_cmd_at_s:    (M,)   Commanded TCP speed (mm/s) at each sample.
@@ -55,6 +57,11 @@ class DensePath:
                               curvature along each arc.
         blend_wp_idx:  (M,)   Waypoint index of the blend arc each sample
                               belongs to; ``-1`` for non-blend samples.
+        s_se3:         (M,)   weighted SE(3) arc-length (mm); None until
+                              :func:`attach_se3_arc_length` runs.
+        dp_ds:         (M,)   ‖Δp‖/Δs positional fraction of SE(3) arc.
+        dtheta_ds:     (M,)   Δθ/Δs rotational fraction (rad per mm of s_se3).
+        lambda_eff_mm_per_rad: effective λ used for ``s_se3`` (0 = position-only).
     """
 
     poses: np.ndarray
@@ -64,6 +71,10 @@ class DensePath:
     v_cmd_at_s: np.ndarray
     blend_t: np.ndarray = None
     blend_wp_idx: np.ndarray = None
+    s_se3: np.ndarray = None
+    dp_ds: np.ndarray = None
+    dtheta_ds: np.ndarray = None
+    lambda_eff_mm_per_rad: float = 0.0
 
     @property
     def n_samples(self) -> int:
@@ -72,6 +83,49 @@ class DensePath:
     @property
     def total_arc_length_mm(self) -> float:
         return float(self.arc_lengths[-1]) if len(self.arc_lengths) > 0 else 0.0
+
+    @property
+    def total_se3_arc_length_mm(self) -> float:
+        if self.s_se3 is None or len(self.s_se3) == 0:
+            return self.total_arc_length_mm
+        return float(self.s_se3[-1])
+
+    @property
+    def path_parameter_mm(self) -> np.ndarray:
+        """Active dynamics path parameter: ``s_se3`` when present, else ``s_pos``."""
+        if self.s_se3 is not None and len(self.s_se3) == len(self.arc_lengths):
+            return self.s_se3
+        return self.arc_lengths
+
+
+def attach_se3_arc_length(
+    dense_path: DensePath,
+    lambda_mm_per_rad: float,
+) -> DensePath:
+    """Return a copy of ``dense_path`` with SE(3) arc-length fields filled.
+
+    ``arc_lengths`` (position-only ``s_pos``) is preserved unchanged.
+    """
+    from .se3_arc_length import compute_se3_arc_length
+
+    pos_mm = np.asarray(dense_path.poses[:, :3], dtype=float) * 1000.0
+    quats = np.asarray(dense_path.poses[:, 3:7], dtype=float)
+    s_se3, dp_ds, dtheta_ds = compute_se3_arc_length(
+        pos_mm, quats, float(lambda_mm_per_rad),
+    )
+    return DensePath(
+        poses=dense_path.poses,
+        arc_lengths=dense_path.arc_lengths,
+        is_blend_arc=dense_path.is_blend_arc,
+        segment_ids=dense_path.segment_ids,
+        v_cmd_at_s=dense_path.v_cmd_at_s,
+        blend_t=dense_path.blend_t,
+        blend_wp_idx=dense_path.blend_wp_idx,
+        s_se3=s_se3,
+        dp_ds=dp_ds,
+        dtheta_ds=dtheta_ds,
+        lambda_eff_mm_per_rad=float(lambda_mm_per_rad),
+    )
 
 
 def _slerp(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
