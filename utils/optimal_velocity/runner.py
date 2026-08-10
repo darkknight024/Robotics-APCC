@@ -60,6 +60,9 @@ def process_one_toolpath(
     path_jerk_max: float = 0.0,
     pointwise_overshoot: float = 0.0,
     cmd_accel_max: float = 8000.0,
+    uniform_resample_mm: Optional[float] = 0.25,
+    secant_sample_factor: float = 5.0,
+    secant_median_windows: float = 2.0,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -159,6 +162,9 @@ def process_one_toolpath(
         path_jerk_max=path_jerk_max,
         pointwise_overshoot=pointwise_overshoot,
         cmd_accel_max=cmd_accel_max,
+        uniform_resample_mm=uniform_resample_mm,
+        secant_sample_factor=secant_sample_factor,
+        secant_median_windows=secant_median_windows,
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:

@@ -99,11 +99,21 @@ def step2_velocity_limit(
     }
 
 
-# Default secant half-window [mm].  Must be several× the Feature-3 sample
-# spacing: a window ≈ ds (e.g. 0.25 mm on a 0.25 mm dense path) turns IK
-# quantization / micro-kinks into fake accel notches, and TOPP bangs in/out
-# of every notch → the jagged v*(s) / |s̈| spikes seen on G1.
-_DEFAULT_SECANT_WINDOW_MM = 1.0
+# Default secant half-window [mm].  Must be several× the Feature-3 / uniform-
+# resample spacing: a window ≈ ds (e.g. 0.25 mm on a 0.25 mm dense path)
+# turns IK quantization / micro-kinks into fake accel notches, and TOPP bangs
+# in/out of every notch → the jagged v*(s) / |s̈| spikes seen on G1.  2.5 mm
+# is large enough to average out single-sample IK jitter while still resolving
+# the ~few-mm corner blends that the smoothing spline misses.
+_DEFAULT_SECANT_WINDOW_MM = 2.5
+# Widen the half-window past the raw sample spacing so the second difference
+# averages over several cells of IK noise rather than picking up single-
+# sample jitter as if it were corner curvature.
+_DEFAULT_SECANT_SAMPLE_FACTOR = 5.0
+# Median-filter width in units of the half-window.  >1 suppresses texture
+# that survives a single-window median (the dominant remaining source of
+# ceiling jaggedness once the window itself is sane).
+_DEFAULT_SECANT_MEDIAN_WINDOWS = 2.0
 
 
 def secant_accel_ceiling(
@@ -112,6 +122,8 @@ def secant_accel_ceiling(
     qdd_max: np.ndarray,
     s_query: np.ndarray,
     window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
+    sample_factor: float = _DEFAULT_SECANT_SAMPLE_FACTOR,
+    median_windows: float = _DEFAULT_SECANT_MEDIAN_WINDOWS,
 ) -> np.ndarray:
     """Joint-space secant acceleration ceiling (spline-independent).
 
@@ -127,11 +139,11 @@ def secant_accel_ceiling(
 
         v ≤ sqrt( qdd_max_j · h² / |Δ²q_j| )    (min over joints)
 
-    ``h`` is ``max(window_mm, 3 · median Δs)`` so the second difference is
-    never taken at the raw sample spacing (where |Δ²q| is dominated by IK
-    noise).  The finite ceiling is then median-filtered over one window so
-    isolated noise dips cannot punch notches into ``v_lim`` that TOPP would
-    bang through.
+    ``h`` is ``max(window_mm, sample_factor · median Δs)`` so the second
+    difference is never taken at the raw sample spacing (where |Δ²q| is
+    dominated by IK noise).  The finite ceiling is then median-filtered over
+    ``median_windows`` half-windows so isolated noise dips cannot punch
+    notches into ``v_lim`` that TOPP would bang through.
 
     The cap is only applied where the raw sampling actually RESOLVES the
     window scale (>= 3 raw samples inside ``[x-h, x+h]``).  Where sampling
@@ -148,7 +160,10 @@ def secant_accel_ceiling(
         return out
     med_ds = float(np.median(np.diff(s_raw))) if len(s_raw) > 1 else float(window_mm)
     # Noise floor: never difference at ~1 sample spacing on a dense path.
-    h = max(float(window_mm), 3.0 * med_ds)
+    # ``sample_factor`` widens the half-window past the raw spacing so the
+    # second difference averages over several raw samples instead of picking
+    # up single-sample IK jitter as if it were corner curvature.
+    h = max(float(window_mm), float(sample_factor) * med_ds)
     n_in_window = (np.searchsorted(s_raw, s_query + h, side="right")
                    - np.searchsorted(s_raw, s_query - h, side="left"))
     ok = ((s_query - h >= s_raw[0]) & (s_query + h <= s_raw[-1])
@@ -170,10 +185,14 @@ def secant_accel_ceiling(
         )
     raw_cap = np.sqrt(np.maximum(v2, 0.0))
 
-    # Kill single-sample IK-noise dips: median over ~one window along s.
+    # Kill IK-noise dips: median over ``median_windows`` windows along s.
+    # Wider than 1 window suppresses texture that survives a single-window
+    # median (the dominant source of ceiling jaggedness on non-uniform or
+    # noisy raw paths) while still tracking real corner valleys.
     if len(x) >= 3:
         ds_q = float(np.median(np.diff(x))) if len(x) > 1 else h
-        half = max(1, int(round(0.5 * h / max(ds_q, 1e-9))))
+        half = max(1, int(round(0.5 * float(median_windows) * h
+                                / max(ds_q, 1e-9))))
         try:
             from scipy.ndimage import median_filter
             raw_cap = median_filter(raw_cap, size=2 * half + 1, mode="nearest")

@@ -15,6 +15,8 @@ from core.path_parameterization.speed_conversion import (
 from .differentiation import eval_splines, fit_joint_splines
 from .heun_topp import step3_time_optimal
 from .mvc_ceilings import (
+    _DEFAULT_SECANT_MEDIAN_WINDOWS,
+    _DEFAULT_SECANT_SAMPLE_FACTOR,
     _DEFAULT_SECANT_WINDOW_MM,
     secant_accel_ceiling,
     smooth_ceiling_min_preserving,
@@ -34,6 +36,8 @@ def _grid_independence(
     v_cmd_at_s: Optional[np.ndarray] = None,
     time_optimal: bool = False,
     secant_window_mm: float = _DEFAULT_SECANT_WINDOW_MM,
+    secant_sample_factor: float = _DEFAULT_SECANT_SAMPLE_FACTOR,
+    secant_median_windows: float = _DEFAULT_SECANT_MEDIAN_WINDOWS,
     se3_dp_ds_s: Optional[np.ndarray] = None,
     se3_dp_ds: Optional[np.ndarray] = None,
     se3_s_pos: Optional[np.ndarray] = None,
@@ -64,6 +68,8 @@ def _grid_independence(
             mvc_v_lim_joint,
             secant_accel_ceiling(
                 s_mm, q_kept, limits.q_ddot_max, mvc_s, secant_window_mm,
+                sample_factor=secant_sample_factor,
+                median_windows=secant_median_windows,
             ),
         )
     if ceiling_smooth_mm and ceiling_smooth_mm > 0:
@@ -125,6 +131,8 @@ def _grid_independence(
         if secant_window_mm and secant_window_mm > 0:
             vl_j = np.minimum(vl_j, secant_accel_ceiling(
                 s_mm, q_kept, limits.q_ddot_max, s_e, secant_window_mm,
+                sample_factor=secant_sample_factor,
+                median_windows=secant_median_windows,
             ))
         if ceiling_smooth_mm and ceiling_smooth_mm > 0:
             vl_j = smooth_ceiling_min_preserving(vl_j, s_e, ceiling_smooth_mm)

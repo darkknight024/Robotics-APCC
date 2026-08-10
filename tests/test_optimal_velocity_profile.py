@@ -40,7 +40,11 @@ from core.optimal_velocity.differentiation import (
     fit_joint_splines,
     step1_differentiate,
 )
-from core.optimal_velocity.mvc_ceilings import _DEFAULT_SECANT_WINDOW_MM
+from core.optimal_velocity.mvc_ceilings import (
+    _DEFAULT_SECANT_MEDIAN_WINDOWS,
+    _DEFAULT_SECANT_SAMPLE_FACTOR,
+    _DEFAULT_SECANT_WINDOW_MM,
+)
 from core.optimal_velocity.validate import step0_validate
 from utils.optimal_velocity.benchmarking import (
     _DEFAULT_BENCH_CRUISE_TOL_ABS_MM_S,
@@ -199,8 +203,38 @@ def main() -> None:
     parser.add_argument(
         "--secant-window-mm", type=float, default=_DEFAULT_SECANT_WINDOW_MM,
         help="Half-window [mm] of the raw-joint-path secant acceleration "
-             "cap (joint-space).  Auto-raised to ≥3× median sample spacing "
+             "cap (joint-space).  Auto-raised to "
+             "≥ --secant-sample-factor × median sample spacing "
              f"to avoid IK-noise notches (default {_DEFAULT_SECANT_WINDOW_MM}).",
+    )
+    parser.add_argument(
+        "--uniform-resample-mm", type=float, default=0.25,
+        help="Resample the dense path (joints, pose, plate) onto a "
+             "UNIFORM position-arc grid with this spacing [mm] BEFORE any "
+             "differentiation/ceilings (default 0.25; 0 disables).  Removes "
+             "position-dependent sampling "
+             "density (collapsed spacing in corner blends vs straightaways) "
+             "that otherwise leaks into the secant ceiling's Δs-tied window "
+             "and the spline weighting.  Per-waypoint diagnostics are "
+             "unaffected (they map waypoints onto the solver grid by "
+             "nearest-TCP, independent of sampling).",
+    )
+    parser.add_argument(
+        "--secant-sample-factor", type=float,
+        default=_DEFAULT_SECANT_SAMPLE_FACTOR,
+        help="Secant ceiling noise floor: half-window is "
+             "max(--secant-window-mm, factor × median Δs).  Larger values "
+             "average the second difference over more raw samples, "
+             f"suppressing single-sample IK jitter "
+             f"(default {_DEFAULT_SECANT_SAMPLE_FACTOR}).",
+    )
+    parser.add_argument(
+        "--secant-median-windows", type=float,
+        default=_DEFAULT_SECANT_MEDIAN_WINDOWS,
+        help="Median-filter width (in units of the secant half-window) applied "
+             "to the raw secant ceiling.  >1 suppresses texture that survives "
+             f"a single-window median "
+             f"(default {_DEFAULT_SECANT_MEDIAN_WINDOWS}).",
     )
     parser.add_argument(
         "--no-secant-cap", action="store_true",
@@ -323,6 +357,9 @@ def main() -> None:
             path_jerk_max=float(args.path_jerk_max),
             pointwise_overshoot=float(args.pointwise_overshoot),
             cmd_accel_max=float(args.cmd_accel_max),
+            uniform_resample_mm=float(args.uniform_resample_mm),
+            secant_sample_factor=float(args.secant_sample_factor),
+            secant_median_windows=float(args.secant_median_windows),
         )
         batch_rows.append(row)
 

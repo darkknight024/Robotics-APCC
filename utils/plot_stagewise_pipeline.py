@@ -77,6 +77,8 @@ from core.optimal_velocity.differentiation import (
 )
 from core.optimal_velocity.heun_topp import step3_time_optimal
 from core.optimal_velocity.mvc_ceilings import (
+    _DEFAULT_SECANT_MEDIAN_WINDOWS,
+    _DEFAULT_SECANT_SAMPLE_FACTOR,
     _DEFAULT_SECANT_WINDOW_MM,
     secant_accel_ceiling,
     smooth_ceiling_min_preserving,
@@ -227,6 +229,19 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
     knife_t_mm = np.asarray(ctx.knife_translation_m, dtype=float) * 1000.0 \
         if ctx.knife_translation_m is not None else None
 
+    # Optional uniform-arc resampling BEFORE parameterization/ceilings.
+    _q_in, _poses_in, _plate_in = ctx.q_raw, ctx.poses, ctx.plate_xyz
+    if args.uniform_resample_mm and args.uniform_resample_mm > 0:
+        from core.path_parameterization.uniform_resample import (
+            resample_path_uniform,
+        )
+        _q_in, _poses_in, _plate_in, _urs = resample_path_uniform(
+            ctx.q_raw, ctx.poses, ctx.plate_xyz, float(args.uniform_resample_mm),
+        )
+        print(f"  Uniform resample: {_urs['n_in']}→{_urs['n_out']} @ "
+              f"{_urs['uniform_ds_mm']} mm "
+              f"(in Δs med={_urs['in_ds_median_mm']:.3f} mm)")
+
     # ────────────────────────────────────────────────────────────────
     # STAGE 0 — load (already done by caller via ctx); dump artifacts
     # ────────────────────────────────────────────────────────────────
@@ -258,11 +273,25 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
     # ────────────────────────────────────────────────────────────────
     # STAGE 1 — parameterization (step0_validate)
     # ────────────────────────────────────────────────────────────────
-    s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(
-        ctx.q_raw, ctx.poses,
-        q_upper=limits.q_upper, joint_types=limits.joint_types,
-        se3_lambda_mm_per_rad=se3_lambda,
-    )
+    try:
+        s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(
+            _q_in, _poses_in,
+            q_upper=limits.q_upper, joint_types=limits.joint_types,
+            se3_lambda_mm_per_rad=se3_lambda,
+        )
+    except ValueError:
+        if _q_in is not ctx.q_raw:   # resampling surfaced a coarse-IK branch flip
+            print("  [WARN] uniform resample hit an IK branch flip in the "
+                  "coarse dense path; falling back to the raw sampling for "
+                  "this trajectory.")
+            _q_in, _poses_in, _plate_in = ctx.q_raw, ctx.poses, ctx.plate_xyz
+            s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(
+                _q_in, _poses_in,
+                q_upper=limits.q_upper, joint_types=limits.joint_types,
+                se3_lambda_mm_per_rad=se3_lambda,
+            )
+        else:
+            raise
     keep = np.asarray(step0["keep_mask"], dtype=bool)
     s_pos_raw = np.asarray(step0.get("s_pos_mm", s_mm), dtype=float)
     dp_ds_raw = np.asarray(step0.get("dp_ds", np.ones(len(s_mm))), dtype=float)
@@ -298,10 +327,18 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
         ax[2].legend(); ax[2].grid(alpha=0.3)
         _save(fig, d1 / "stage1_parameterization.png")
 
-    # programmed segment edges on the ACTIVE parameter
+    # programmed segment edges on the ACTIVE parameter — via the explicit
+    # waypoint→s index map (independent of uniform vs raw sampling).
+    from core.path_parameterization.uniform_resample import waypoint_arc_map
     if "edges" not in seg_edges_cache:
-        seg_edges_cache["edges"] = _seg_edges_from_waypoints(
-            pos_kept, ctx.waypoints_base, s_mm)
+        _wp_map = waypoint_arc_map(ctx.waypoints_base, pos_kept, s_mm)
+        seg_edges_cache["edges"] = np.unique(_wp_map["wp_s"])
+        seg_edges_cache["wp_map"] = _wp_map
+        _write_csv(d1 / "waypoint_arc_map.csv", {
+            "wp_idx": _wp_map["wp_idx"],
+            "wp_s_mm": _wp_map["wp_s"],
+            "seg_ds_mm": np.concatenate([_wp_map["seg_ds"], [np.nan]]),
+        })
     seg_edges = seg_edges_cache["edges"]
 
     # ────────────────────────────────────────────────────────────────
@@ -354,8 +391,8 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
     # ────────────────────────────────────────────────────────────────
     # STAGE 3 — frame gain (tool frame ↔ active parameter)
     # ────────────────────────────────────────────────────────────────
-    plate_on = ctx.plate_xyz is not None and len(ctx.plate_xyz) == len(ctx.q_raw)
-    plate_all = np.asarray(ctx.plate_xyz, dtype=float) if plate_on else None
+    plate_on = _plate_in is not None and len(_plate_in) == len(_q_in)
+    plate_all = np.asarray(_plate_in, dtype=float) if plate_on else None
     s_plate_raw = g_raw = None
     g_eval = g_mvc = None
     dec = {}
@@ -449,7 +486,9 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
     v_lim_raw = np.minimum(v_vel, v_acc)
     if secant_on:
         v_secant = secant_accel_ceiling(
-            s_mm, q_kept, limits.q_ddot_max, s_eval, float(args.secant_window_mm))
+            s_mm, q_kept, limits.q_ddot_max, s_eval, float(args.secant_window_mm),
+            sample_factor=float(args.secant_sample_factor),
+            median_windows=float(args.secant_median_windows))
         v_lim_raw = np.minimum(v_lim_raw, v_secant)
     v_lim_joint = v_lim_raw.copy()
     if args.ceiling_smooth_mm and args.ceiling_smooth_mm > 0:
@@ -465,7 +504,9 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
     if secant_on:
         mvc_v_lim = np.minimum(mvc_v_lim, secant_accel_ceiling(
             s_mm, q_kept, limits.q_ddot_max, mvc_s,
-            float(args.secant_window_mm)))
+            float(args.secant_window_mm),
+            sample_factor=float(args.secant_sample_factor),
+            median_windows=float(args.secant_median_windows)))
     if args.ceiling_smooth_mm and args.ceiling_smooth_mm > 0:
         mvc_v_lim = smooth_ceiling_min_preserving(
             mvc_v_lim, mvc_s, float(args.ceiling_smooth_mm))
@@ -798,6 +839,21 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
     # ────────────────────────────────────────────────────────────────
     # STAGE 7 — realization: joint profiles + tool-frame reporting
     # ────────────────────────────────────────────────────────────────
+    # Uniform-arc sanity guard: the ACTIVE parameter (s_act) must be sampled
+    # uniformly on the eval grid — this is what makes dq/ds_act and q̇ free of
+    # sampling-texture ripples.  When SE(3) is on, s_act is deliberately
+    # uniform and s_pos is NOT (that's the point of the re-weighting), so we
+    # check the axis the solver actually integrates over, not s_pos.
+    _ds_act = np.diff(s_eval)
+    _ds_pos = np.diff(s_pos_eval)
+    if len(_ds_act) and np.ptp(_ds_act) > 5e-2 * np.median(_ds_act):
+        print(f"  [WARN] s_act not uniform on eval grid: Δs_act ptp="
+              f"{np.ptp(_ds_act):.3f} mm (median {np.median(_ds_act):.3f}) — "
+              "sampling texture will leak into dq/ds / q̇.")
+    if len(_ds_pos) and se3_on and np.ptp(_ds_pos) > 5e-2 * np.median(_ds_pos):
+        print(f"  [INFO] s_pos intentionally non-uniform under SE(3) "
+              f"(Δs_pos cv={np.std(_ds_pos)/np.mean(_ds_pos):.2f}); "
+              "solver samples uniformly in s_act = √(‖Δp‖²+λ²Δθ²).")
     q_dot = dqds * s_dot[:, None]
     q_ddot = dqds * s_ddot[:, None] + d2qds2 * u[:, None]
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -876,9 +932,15 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
         _save(fig, d7 / "stage7_utilization.png")
 
         # --- tool speed vs arc and vs time, with RS overlay
+        # NOTE on frames / y-axes:
+        #   * v_tool (this plot) is the KNIFE-RELATIVE cut speed = g(s)·ṡ.
+        #     It differs from the Stage-4 ceiling (PATH-SPACE [mm/s of the
+        #     SE(3)/position parameter]) by exactly the frame gain g(s).
+        #     For optimal/constant modes v_cmd is the tool-frame cap, so the
+        #     same y-scale applies; the joint ceilings are in path space.
         fig, axes = _panel_grid(2, 1, height=2.9,
                                 title=f"[{mode}] Stage 7 — tool-frame speed "
-                                      "(reported)")
+                                      "(reported; = g·ṡ, knife-relative)")
         for a, x, xl in ((axes[0], s_pos_eval, "s_pos [mm]"),
                          (axes[1], t_s, "t [s]")):
             a.plot(x, v_tool, lw=1.1, color="tab:green", label="solver v_tool")
@@ -892,24 +954,60 @@ def run_mode(mode: str, ctx, limits, args, se3_lambda: Optional[float],
                        alpha=0.8, label="RobotStudio")
             a.set_ylabel("v_tool [mm/s]"); a.set_xlabel(xl)
             a.legend(fontsize=8); a.grid(alpha=0.3)
-        if plots and len(seg_edges):
-            pass
         _save(fig, d7 / "stage7_tool_speed.png")
 
+        # --- plate twist: linear + angular, base frame vs knife frame.
+        # The 6-vector twist does NOT have a frame-invariant magnitude for
+        # the LINEAR part (it changes by the lever-arm term ω×r); the
+        # ANGULAR part ω is frame-invariant (same body rotation seen from
+        # any fixed frame).  We therefore show linear in both frames and
+        # angular in both (identical magnitude, shown for completeness).
         if dec:
-            fig, axes = _panel_grid(2, 1, height=2.7,
-                                    title=f"[{mode}] Stage 7 — plate twist")
-            axes[0].plot(s_eval, np.linalg.norm(tw_lin_base, axis=1), lw=0.9,
-                         label="‖v‖ base")
-            axes[0].plot(s_eval, np.linalg.norm(knife_lin, axis=1), lw=0.9,
-                         label="‖v‖ knife frame (= g·ṡ)")
+            ang_base_deg = np.rad2deg(np.linalg.norm(tw_ang_base, axis=1))
+            # knife-frame angular speed is the same magnitude (rigid body),
+            # expressed via the same θ'·ṡ (rotation is frame-independent).
+            lin_base = np.linalg.norm(tw_lin_base, axis=1)
+            lin_knife = np.linalg.norm(knife_lin, axis=1)
+            fig, axes = _panel_grid(2, 1, height=2.9,
+                                    title=f"[{mode}] Stage 7 — plate twist "
+                                          "(linear: frame-dependent; "
+                                          "angular: frame-invariant)")
+            axes[0].plot(s_eval, lin_base, lw=1.0, color="tab:blue",
+                         label="‖v_BP‖  (plate tip in ROBOT BASE frame)")
+            axes[0].plot(s_eval, lin_knife, lw=1.0, color="tab:green",
+                         ls="--", label="‖v_tool‖ = g·ṡ  (knife-rel, tool frame)")
             axes[0].set_ylabel("linear speed [mm/s]")
             axes[0].legend(fontsize=8); axes[0].grid(alpha=0.3)
-            axes[1].plot(s_eval, np.rad2deg(np.linalg.norm(tw_ang_base, axis=1)),
-                         lw=0.9, color="tab:purple")
+            axes[1].plot(s_eval, ang_base_deg, lw=1.0, color="tab:purple",
+                         label="‖ω‖ angular speed  (frame-invariant)")
+            axes[1].plot(s_eval, ang_base_deg, lw=0.5, color="tab:purple",
+                         alpha=0.35, ls=":",
+                         label="(same ‖ω‖ in base & knife frames)")
             axes[1].set_ylabel("angular speed [deg/s]")
-            axes[1].set_xlabel("s_act [mm]"); axes[1].grid(alpha=0.3)
+            axes[1].set_xlabel("s_act [mm]")
+            axes[1].legend(fontsize=8); axes[1].grid(alpha=0.3)
             _save(fig, d7 / "stage7_twist.png")
+
+            # --- dedicated angular-speed comparison: base vs tool frame.
+            # Magnitudes are identical (rigid-body ω); we plot both to make
+            # the frame-invariance explicit and to give RS a reference line.
+            fig, axes = _panel_grid(2, 1, height=2.7,
+                                    title=f"[{mode}] Stage 7 — plate angular "
+                                          "speed: base frame vs tool frame")
+            axes[0].plot(s_eval, ang_base_deg, lw=1.0, color="tab:purple",
+                         label="‖ω‖ in ROBOT BASE frame")
+            if rs is not None and rs.get("speed_mm_s") is not None:
+                # RS does not log orientation rate; overlay normalized speed
+                # only as a shape reference (not the same quantity).
+                pass
+            axes[0].set_ylabel("‖ω‖ [deg/s]")
+            axes[0].legend(fontsize=8); axes[0].grid(alpha=0.3)
+            axes[1].plot(s_eval, ang_base_deg, lw=1.0, color="tab:brown",
+                         label="‖ω‖ in TOOL (knife) frame")
+            axes[1].set_ylabel("‖ω‖ [deg/s]")
+            axes[1].set_xlabel("s_act [mm]")
+            axes[1].legend(fontsize=8); axes[1].grid(alpha=0.3)
+            _save(fig, d7 / "stage7_twist_angular_frames.png")
 
     return {
         "mode": mode, "duration_s": duration,
@@ -1083,6 +1181,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ds-mm", type=float, default=0.5)
     p.add_argument("--secant-window-mm", type=float,
                    default=_DEFAULT_SECANT_WINDOW_MM)
+    p.add_argument("--uniform-resample-mm", type=float, default=0.25,
+                   help="Resample the dense path onto a uniform position-arc "
+                        "grid (this spacing [mm]) BEFORE parameterization/"
+                        "ceilings (default 0.25; 0 disables).  Removes "
+                        "position-dependent sampling density that leaks into "
+                        "the secant ceiling.  Per-waypoint diagnostics are "
+                        "unaffected (nearest-TCP projection).")
+    p.add_argument("--secant-sample-factor", type=float,
+                   default=_DEFAULT_SECANT_SAMPLE_FACTOR)
+    p.add_argument("--secant-median-windows", type=float,
+                   default=_DEFAULT_SECANT_MEDIAN_WINDOWS)
     p.add_argument("--no-secant-cap", action="store_true")
     p.add_argument("--transient-pad-mm", type=float, default=5.0)
     p.add_argument("--no_vcap", action="store_true")
@@ -1117,6 +1226,10 @@ def _resolve_cases(args):
     if args.dataset:
         tdir = _DATASET_DIRS[args.dataset]
         tps = sorted(tdir.glob("*.csv"))
+        if args.toolpath:  # filter the dataset down to the named case(s)
+            stem = Path(args.toolpath).stem
+            tps = [tp for tp in tps
+                   if tp.stem == stem or stem in tp.stem]
         return [(tp, None) for tp in tps]
     if args.toolpath:
         return [(Path(args.toolpath), args.rs_csv)]
@@ -1162,11 +1275,18 @@ def main() -> None:
                   f"eff={eff:.1f} mm/rad")
 
         rs = _load_rs(rs_csv)
-        if rs is None and rs_csv is None and not args.dataset:
-            cand = Path(args.rs_dir) / f"{toolpath.stem}.csv"
-            if cand.exists():
-                rs = _load_rs(str(cand))
-                print(f"  RS overlay: {cand.name}")
+        if rs is None and rs_csv is None:
+            # Try the stem as-is, then a name containing the stem (RS exports
+            # often carry an extra prefix/suffix around the toolpath stem).
+            rs_dir = Path(args.rs_dir)
+            cands = ([rs_dir / f"{toolpath.stem}.csv"]
+                     + sorted(rs_dir.glob(f"*{toolpath.stem}*.csv")))
+            for cand in cands:
+                if cand.exists():
+                    rs = _load_rs(str(cand))
+                    if rs is not None:
+                        print(f"  RS overlay: {cand.name}")
+                        break
 
         seg_edges_cache: Dict = {}
         results: Dict[str, Dict] = {}

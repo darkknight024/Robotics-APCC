@@ -24,6 +24,8 @@ from .differentiation import (
 from .heun_topp import step3_time_optimal
 from .metrics import _compute_metrics, _grid_independence
 from .mvc_ceilings import (
+    _DEFAULT_SECANT_MEDIAN_WINDOWS,
+    _DEFAULT_SECANT_SAMPLE_FACTOR,
     _DEFAULT_SECANT_WINDOW_MM,
     secant_accel_ceiling,
     smooth_ceiling_min_preserving,
@@ -249,6 +251,9 @@ def run_diagnostics(
     path_jerk_max: float = 0.0,
     pointwise_overshoot: float = 0.0,
     cmd_accel_max: float = 8000.0,
+    uniform_resample_mm: Optional[float] = 0.25,
+    secant_sample_factor: float = _DEFAULT_SECANT_SAMPLE_FACTOR,
+    secant_median_windows: float = _DEFAULT_SECANT_MEDIAN_WINDOWS,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -322,15 +327,61 @@ def run_diagnostics(
         and len(np.asarray(v_cmd_at_s)) > 0
     )
 
+    # Optional uniform-arc resampling BEFORE any differentiation/ceilings:
+    # removes the position-dependent sampling density (collapsed spacing in
+    # corner blends vs stretched on straightaways) that otherwise leaks into
+    # the secant ceiling's Δs-tied window and the spline weighting.  Default
+    # 0.25 mm matches the Feature-3 dense-path sampling; set to 0 to keep
+    # the raw (non-uniform) Feature-3 samples.  Per-waypoint diagnostics
+    # are unaffected — they project programmed waypoints onto the solver
+    # grid by nearest-TCP, independent of sampling density.
+    _q_orig, _poses_orig, _plate_orig = q_raw, poses, plate_xyz
+    _did_resample = False
+    _urs: Optional[Dict] = None
+    if uniform_resample_mm and uniform_resample_mm > 0:
+        from core.path_parameterization.uniform_resample import (
+            resample_path_uniform,
+        )
+        q_raw, poses, plate_xyz, _urs = resample_path_uniform(
+            q_raw, poses, plate_xyz, float(uniform_resample_mm),
+        )
+        _did_resample = True
+        print(
+            f"  Uniform resample: {_urs['n_in']}→{_urs['n_out']} samples @ "
+            f"{_urs['uniform_ds_mm']} mm (in Δs med/min/max = "
+            f"{_urs['in_ds_median_mm']:.3f}/{_urs['in_ds_min_mm']:.3f}/"
+            f"{_urs['in_ds_max_mm']:.3f} mm)"
+        )
+
     # Step 0
-    s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(
-        q_raw,
-        poses,
-        q_lower=limits.q_lower,
-        q_upper=limits.q_upper,
-        joint_types=limits.joint_types,
-        se3_lambda_mm_per_rad=se3_lambda_mm_per_rad,
-    )
+    try:
+        s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(
+            q_raw,
+            poses,
+            q_lower=limits.q_lower,
+            q_upper=limits.q_upper,
+            joint_types=limits.joint_types,
+            se3_lambda_mm_per_rad=se3_lambda_mm_per_rad,
+        )
+    except ValueError:
+        # Resampling a coarse dense path can surface an IK branch flip that
+        # the original dense spacing masked (the raw jump is split over two
+        # uniform cells).  Fall back to the raw sampling for this path.
+        if not _did_resample:
+            raise
+        print("  [WARN] uniform resample hit an IK branch flip in the coarse "
+              "dense path; falling back to the raw sampling.")
+        q_raw, poses, plate_xyz = _q_orig, _poses_orig, _plate_orig
+        _urs = None
+        _did_resample = False
+        s_mm, q_kept, pos_kept, quat_kept, step0 = step0_validate(
+            q_raw,
+            poses,
+            q_lower=limits.q_lower,
+            q_upper=limits.q_upper,
+            joint_types=limits.joint_types,
+            se3_lambda_mm_per_rad=se3_lambda_mm_per_rad,
+        )
     res.s_raw, res.q_raw, res.tcp_xyz_raw, res.step0 = s_mm, q_kept, pos_kept, step0
     res.quat_raw = quat_kept
     se3_on = bool(step0.get("se3_enabled", False))
@@ -598,12 +649,16 @@ def run_diagnostics(
     if secant_window_mm and secant_window_mm > 0:
         res.v_secant = secant_accel_ceiling(
             s_mm, q_kept, limits.q_ddot_max, s_eval, secant_window_mm,
+            sample_factor=secant_sample_factor,
+            median_windows=secant_median_windows,
         )
         res.v_lim_joint = np.minimum(res.v_lim_joint, res.v_secant)
         _mvc_v_lim_joint = np.minimum(
             _mvc_v_lim_joint,
             secant_accel_ceiling(
                 s_mm, q_kept, limits.q_ddot_max, _mvc_s, secant_window_mm,
+                sample_factor=secant_sample_factor,
+                median_windows=secant_median_windows,
             ),
         )
 
@@ -1012,7 +1067,30 @@ def run_diagnostics(
         "ceiling_smooth_mm": float(ceiling_smooth_mm or 0.0),
         "path_jerk_max_mm_s3": float(path_jerk_max or 0.0),
         "cmd_accel_max_mm_s2": float(cmd_accel_max or 0.0),
+        "uniform_resample_mm": float(uniform_resample_mm or 0.0),
+        "secant_window_mm": float(secant_window_mm or 0.0),
+        "secant_sample_factor": float(secant_sample_factor or 0.0),
+        "secant_median_windows": float(secant_median_windows or 0.0),
     }
+    if _urs is not None:
+        res.metrics["uniform_resample"] = dict(_urs)
+    # Explicit programmed-waypoint → solver-grid map (independent of sampling
+    # density).  Downstream per-waypoint diagnostics already use the same
+    # nearest-TCP projection; exposing it here makes the bookkeeping visible
+    # in the report / stagewise dumps.
+    if waypoints_base is not None and res.tcp_xyz is not None:
+        try:
+            from core.path_parameterization.uniform_resample import (
+                waypoint_arc_map,
+            )
+            _wp_map = waypoint_arc_map(waypoints_base, res.tcp_xyz, res.s_eval)
+            res.metrics["waypoint_map"] = {
+                "n_waypoints": int(len(_wp_map["wp_s"])),
+                "wp_s_mm": [float(x) for x in _wp_map["wp_s"]],
+                "seg_ds_mm": [float(x) for x in _wp_map["seg_ds"]],
+            }
+        except Exception:
+            pass
     if res.t is not None and res.q_ddot is not None and len(res.t) > 11:
         try:
             from scipy.ndimage import uniform_filter1d
@@ -1058,6 +1136,8 @@ def run_diagnostics(
             v_cmd_at_s=grid_v_cmd_v,
             time_optimal=time_optimal,
             secant_window_mm=secant_window_mm,
+            secant_sample_factor=secant_sample_factor,
+            secant_median_windows=secant_median_windows,
             se3_dp_ds_s=s_mm if se3_on else None,
             se3_dp_ds=dp_ds_raw if se3_on else None,
             se3_s_pos=s_pos_raw if se3_on else None,
