@@ -28,6 +28,10 @@ class ToolpathContext:
 
     q_raw: np.ndarray                 # (M, 6) rad — IK on blended dense path
     poses: np.ndarray                 # (M, 7) dense TCP [x_mm,y_mm,z_mm,qw,qx,qy,qz]
+    # Dense knife-tip positions in the plate/tool frame [mm], aligned with
+    # ``poses`` rows (inverse Zund knife transform).  Basis of the frame
+    # gain g(s) = ds_tool/ds_base used for tool-frame speed unification.
+    plate_xyz: np.ndarray             # (M, 3) [mm]
     limits: JointLimits
     # Pathwise commanded TCP speed from toolpath column 8 (Feature-3 dense grid).
     s_cmd_mm: np.ndarray              # (M_cmd,) arc-length [mm] for v_cmd_at_s
@@ -39,6 +43,9 @@ class ToolpathContext:
     orientation_smooth: Optional[Dict] = None  # Feature-3 Step 5b diagnostics
     # Piecewise-SLERP quats before smoothing (wxyz); None if smoothing off.
     quat_slerp_raw: Optional[np.ndarray] = None
+    # Calibrated knife pose T_B_K (for plate-twist series in pipeline).
+    knife_translation_m: Optional[np.ndarray] = None
+    knife_quaternion_wxyz: Optional[np.ndarray] = None
 
 
 def load_joint_path_from_toolpath(
@@ -134,6 +141,14 @@ def load_joint_path_from_toolpath(
     poses = np.asarray(result.dense_path.poses, dtype=float).copy()
     poses[:, :3] *= 1000.0  # metres -> millimetres
 
+    # Tool/plate-frame knife-tip trace of the SAME dense blended path
+    # (T_P_K = (T_B_P)^{-1}·T_B_K) — the frame the commanded speed and the
+    # RobotStudio speed log live in.
+    from core.path_parameterization.frame_conversion import plate_tcp_from_base_poses
+    plate_xyz = plate_tcp_from_base_poses(
+        poses, knife.translation_m, knife.quaternion,
+    )
+
     wp_plate = np.asarray(lr_plate.waypoints[0], dtype=float).copy()
     wp_plate[:, :3] *= 1000.0
     wp_base = np.asarray(lr.waypoints[0], dtype=float).copy()
@@ -164,6 +179,7 @@ def load_joint_path_from_toolpath(
     return ToolpathContext(
         q_raw=q_raw,
         poses=poses,
+        plate_xyz=plate_xyz,
         limits=limits,
         s_cmd_mm=s_cmd_mm,
         v_cmd_at_s=v_cmd_at_s,
@@ -173,4 +189,6 @@ def load_joint_path_from_toolpath(
         toolpath_csv=toolpath_csv,
         orientation_smooth=getattr(result, "orientation_smooth", None),
         quat_slerp_raw=getattr(result, "orientation_quats_raw", None),
+        knife_translation_m=np.asarray(knife.translation_m, dtype=float),
+        knife_quaternion_wxyz=np.asarray(knife.quaternion, dtype=float),
     )

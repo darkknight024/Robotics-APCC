@@ -116,6 +116,7 @@ def step0_validate(
             s_pos_kept + np.arange(len(s_pos_kept)) * 1e-9
         )
     report["n_kept"] = int(len(s_mm))
+    report["keep_mask"] = np.asarray(keep, dtype=bool)
     report["s_pos_mm"] = s_pos_kept
     report["dp_ds"] = dp_ds_kept
     report["dtheta_ds"] = dtheta_ds_kept

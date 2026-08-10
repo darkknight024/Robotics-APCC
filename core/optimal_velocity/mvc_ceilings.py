@@ -187,3 +187,45 @@ def secant_accel_ceiling(
     out[ok] = raw_cap
     return out
 
+
+def smooth_ceiling_min_preserving(
+    v_lim: np.ndarray,
+    s_grid: np.ndarray,
+    window_mm: float = 2.5,
+) -> np.ndarray:
+    """Conservative smoothing of a velocity ceiling along the path.
+
+    The joint ceiling ``min_j(q̇_max_j/|dq_j/ds|)`` zigzags at ~mm scale as
+    the binding joint switches between (individually smooth) per-joint
+    curves; time-optimal TOPP rides every switch and produces bang-bang
+    corners in ``q̇``.  This flattens the switching texture while NEVER
+    raising the ceiling above its true value:
+
+        erode  → moving-minimum over one window (widens real valleys)
+        smooth → moving-average of the erosion (fills switching notches)
+        clamp  → min(·, original)  (feasibility guaranteed pointwise)
+
+    The result is ≤ ``v_lim`` everywhere, so any profile that respects the
+    smoothed ceiling also respects the true one.  ``window_mm <= 0``
+    disables (identity).
+    """
+    v = np.asarray(v_lim, dtype=float)
+    if window_mm is None or float(window_mm) <= 0 or len(v) < 5:
+        return v
+    s = np.asarray(s_grid, dtype=float)
+    ds = float(np.median(np.diff(s))) if len(s) > 1 else float(window_mm)
+    w = max(3, int(round(float(window_mm) / max(ds, 1e-9))))
+    if w <= 1:
+        return v
+    from scipy.ndimage import minimum_filter, uniform_filter1d
+
+    finite = np.isfinite(v)
+    fill = float(np.max(v[finite])) if np.any(finite) else 1.0
+    vf = np.where(finite, v, 10.0 * max(fill, 1.0))
+    e = minimum_filter(vf, size=w, mode="nearest")
+    a = uniform_filter1d(e, size=w, mode="nearest")
+    out = np.minimum(a, vf)
+    out[~finite] = np.inf
+    return out
+
+

@@ -30,6 +30,7 @@ _TOOLPATH_WP_HEADER_BASE = [
 _TOOLPATH_WP_HEADER_EXTRA = [
     "v_actual_mm_s", "v_optimal_mm_s", "v_constant_mm_s",
     "Ignored", "feasible", "RS_benchmarking",
+    "v_seg_mean_mm_s", "rs_seg_mean_mm_s",
 ]
 
 def _rs_bench_fail_mask(

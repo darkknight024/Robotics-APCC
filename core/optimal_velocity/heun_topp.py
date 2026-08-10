@@ -51,6 +51,7 @@ def step3_time_optimal(
     c_tol: float = 1e-9,
     mvc_s: Optional[np.ndarray] = None,
     mvc_v_lim: Optional[np.ndarray] = None,
+    path_jerk_max: Optional[float] = None,
 ) -> Dict:
     """Forward/backward numerical integration in ``u = s_dot^2``.
 
@@ -59,6 +60,14 @@ def step3_time_optimal(
     conservative dense MVC (``mvc_s``/``mvc_v_lim``) so the result is
     grid-independent.  Returns the timing (v_star, u, s_ddot, t) and joint
     realization (q_dot, q_ddot).
+
+    When ``path_jerk_max > 0`` the applied path acceleration ``s̈`` is
+    slew-rate limited (``|d s̈/dt| ≤ path_jerk_max``, mm/s³): the feasible
+    accel from the joint bounds is clamped into
+    ``[s̈_prev − J·dt, s̈_prev + J·dt]`` before use — clamped INTO the
+    feasible interval, so per-cell joint-accel feasibility is preserved by
+    construction while the bang-bang corners in ``q̇`` become finite-slope
+    ramps (controller-like jerk behaviour).
     """
     N = len(s_eval)
     ds = float(s_eval[1] - s_eval[0])
@@ -66,6 +75,11 @@ def step3_time_optimal(
     c_arr = dqds
     h_arr = d2qds2
     u_lim = _conservative_ulim(s_eval, v_lim, mvc_s, mvc_v_lim)
+    j_max = (
+        float(path_jerk_max)
+        if path_jerk_max is not None and path_jerk_max > 0
+        else None
+    )
 
     def bounds_at(i: int, u_val: float) -> Tuple[float, float]:
         c = c_arr[i]
@@ -83,33 +97,59 @@ def step3_time_optimal(
     def _forward(ceiling: np.ndarray) -> np.ndarray:
         """Acceleration-limited pass (Heun predictor-corrector)."""
         uf = np.zeros(N)
+        a_prev = 0.0
         for i in range(N - 1):
             _, A0 = bounds_at(i, uf[i])
             if not np.isfinite(A0):
                 A0 = 1e12
+            if j_max is not None:
+                v0 = float(np.sqrt(max(uf[i], 0.0)))
+                v1 = float(np.sqrt(max(uf[i] + 2.0 * A0 * ds, 0.0)))
+                dt = 2.0 * ds / max(v0 + v1, _EPS)
+                # Slew-limit the accel increase; never relax the joint bound
+                # itself (feasibility dominates jerk preference).
+                A0 = min(A0, a_prev + j_max * dt)
             u_pred = min(uf[i] + 2.0 * A0 * ds, ceiling[i + 1])
             u_pred = max(u_pred, 0.0)
             _, A1 = bounds_at(i + 1, u_pred)
             if not np.isfinite(A1):
                 A1 = 1e12
+            if j_max is not None:
+                v1 = float(np.sqrt(max(u_pred, 0.0)))
+                v0 = float(np.sqrt(max(uf[i], 0.0)))
+                dt = 2.0 * ds / max(v0 + v1, _EPS)
+                A1 = min(A1, a_prev + j_max * dt)
             uf[i + 1] = min(uf[i] + (A0 + A1) * ds, ceiling[i + 1])
             uf[i + 1] = max(uf[i + 1], 0.0)
+            a_prev = A1
         return uf
 
     def _backward(ceiling: np.ndarray) -> np.ndarray:
         """Deceleration-limited pass (Heun predictor-corrector)."""
         ub = np.zeros(N)
+        a_prev = 0.0
         for i in range(N - 2, -1, -1):
             A0, _ = bounds_at(i + 1, ub[i + 1])
             if not np.isfinite(A0):
                 A0 = -1e12
+            if j_max is not None:
+                v1 = float(np.sqrt(max(ub[i + 1], 0.0)))
+                v0 = float(np.sqrt(max(ub[i + 1] - 2.0 * A0 * ds, 0.0)))
+                dt = 2.0 * ds / max(v0 + v1, _EPS)
+                A0 = max(A0, a_prev - j_max * dt)
             u_pred = min(ceiling[i], ub[i + 1] - 2.0 * A0 * ds)
             u_pred = max(u_pred, 0.0)
             A1, _ = bounds_at(i, u_pred)
             if not np.isfinite(A1):
                 A1 = -1e12
+            if j_max is not None:
+                v0 = float(np.sqrt(max(u_pred, 0.0)))
+                v1 = float(np.sqrt(max(ub[i + 1], 0.0)))
+                dt = 2.0 * ds / max(v0 + v1, _EPS)
+                A1 = max(A1, a_prev - j_max * dt)
             ub[i] = min(ceiling[i], ub[i + 1] - (A0 + A1) * ds)
             ub[i] = max(ub[i], 0.0)
+            a_prev = A1
         return ub
 
     u = np.minimum(_forward(u_lim), _backward(u_lim))

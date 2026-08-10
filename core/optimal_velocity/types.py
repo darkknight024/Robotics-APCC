@@ -75,9 +75,11 @@ class ProfileResult:
     binding_kind: np.ndarray = None     # (N,) 0=velocity, 1=acceleration
 
     # Step 3
-    v_star: np.ndarray = None           # (N,) s_dot = TCP linear speed [mm/s]
-    u: np.ndarray = None                # (N,) s_dot^2 [mm^2/s^2]
-    s_ddot: np.ndarray = None           # (N,) [mm/s^2]
+    v_star: np.ndarray = None           # (N,) TCP linear speed in the REPORTING
+                                        # frame [mm/s] (tool frame when plate
+                                        # geometry was supplied, else base)
+    u: np.ndarray = None                # (N,) v_star^2 [mm^2/s^2]
+    s_ddot: np.ndarray = None           # (N,) path-parameter accel s̈ [mm/s^2]
     t: np.ndarray = None                # (N,) time axis [s]
     q_dot: np.ndarray = None            # (N, 6) [rad/s]
     q_ddot: np.ndarray = None           # (N, 6) [rad/s^2]
@@ -130,3 +132,42 @@ class ProfileResult:
 
     # Dense TCP quaternions retained with q_raw (for FK residual checks)
     quat_raw: np.ndarray = None         # (M, 4) wxyz
+
+    # ── Tool (plate) frame unification ──────────────────────────────────
+    # "base": v_star & ceilings are base-frame TCP speeds (legacy).
+    # "tool": all speed quantities were converted with the frame gain g(s);
+    #         commanded / constant / RS-zone caps were enforced as v_tool.
+    frame: str = "base"
+    plate_gain: np.ndarray = None       # (N,) g = ds_tool/ds_base on s_eval
+    s_plate: np.ndarray = None          # (N,) tool-frame arc on s_eval [mm]
+    s_dot_path: np.ndarray = None       # (N,) TOPP path speed ṡ [mm/s]
+                                        # (pre frame/SE(3) conversion; drives
+                                        # q̇ = dq/ds·ṡ and ω = dθ/ds·ṡ)
+    s_ddot_tool: np.ndarray = None      # (N,) tool-frame tangential accel
+                                        # dv_tool/dt [mm/s²] (None if base)
+
+    # ── Command target + path-space ceilings (pre frame conversion) ─────
+    # Segment zero-order-hold command target in path space [mm/s]:
+    # ṡ_target(s) = v_cmd_seg · L_param_seg / L_plate_seg per programmed
+    # segment (controller semantics), the cap TOPP actually tracked when
+    # cap_mode == "segment".  None for pointwise cap mode / other modes.
+    v_target_path_zoh: np.ndarray = None  # (N,)
+    # The command target TOPP actually tracked (path space [mm/s]): the ZOH
+    # target in "segment" mode, the clamped v_cmd/g_spline curve in
+    # "pointwise_spline" mode.  None for pointwise/other modes.
+    v_target_path: np.ndarray = None      # (N,)
+    cap_mode: str = "segment"
+    # Joint-only ceiling in path space [mm/s] before the reporting-frame
+    # conversion (v_lim_joint is re-expressed in the reporting frame).
+    v_lim_joint_path: np.ndarray = None  # (N,)
+
+    # ── Plate twist on s_eval (None when no plate geometry) ─────────────
+    # base_lin/base_ang: plate twist in robot-base coordinates about the
+    # plate origin  (ṗ_BP [mm/s], ω_BP [rad/s]).
+    # knife_lin/knife_ang: same twist referenced to the knife tip and
+    # expressed in knife coordinates (R_BKᵀ·(ṗ_BP + ω×r), R_BKᵀ·ω).
+    # |knife_lin| ≡ tool-frame cut speed (adjoint identity).
+    twist_base_lin: np.ndarray = None     # (N, 3) [mm/s]
+    twist_base_ang: np.ndarray = None     # (N, 3) [rad/s]
+    twist_knife_lin: np.ndarray = None    # (N, 3) [mm/s]
+    twist_knife_ang: np.ndarray = None    # (N, 3) [rad/s]

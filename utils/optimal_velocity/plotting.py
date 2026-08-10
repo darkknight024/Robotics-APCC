@@ -120,6 +120,8 @@ _PLOT_GROUPS = {
     "H": "H_tcp_rotation",
     "I": "I_spline_fk_check",
     "J": "J_sawtooth_debug",
+    "K": "K_base_frame_command",
+    "T": "T_twist_components",
 }
 
 
@@ -1273,12 +1275,16 @@ def _plot_tcp_rotation(
     out_path: Path,
     res: ProfileResult,
     mode_name: str,
+    rs_rec: Optional[RSRecording] = None,
 ) -> str:
     """TCP rotation: θ(s), geometric rate dθ/ds, and realized ω / α.
 
     θ is the cumulative geodesic reorientation angle of the dense pose
-    quaternions.  ω = dθ/ds · v*(s) is the TCP angular speed realized by
-    this mode's speed profile; α = dω/dt.  Red bands = accel transients.
+    quaternions.  ω = dθ/ds · ṡ is the TCP angular speed realized by this
+    mode's speed profile (ṡ = path-parameter speed, NOT the tool-frame
+    v*); α = dω/dt.  ω magnitude is frame-invariant, so RobotStudio's
+    logged ``orientation_speed_deg_per_s`` is overlaid directly when
+    available.  Red bands = accel transients.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -1287,11 +1293,15 @@ def _plot_tcp_rotation(
 
     s = res.s_eval
     r2d = np.rad2deg
-    omega = res.ori_dtheta_ds * res.v_star          # rad/s
-    # α = dω/dt = θ''·v*² + θ'·s̈  (chain rule; all analytic, no gradients)
-    alpha = (res.ori_d2theta_ds2 * res.v_star ** 2
+    s_dot = res.s_dot_path if res.s_dot_path is not None else res.v_star
+    omega = res.ori_dtheta_ds * s_dot               # rad/s
+    # α = dω/dt = θ''·ṡ² + θ'·s̈  (chain rule; all analytic, no gradients)
+    alpha = (res.ori_d2theta_ds2 * s_dot ** 2
              + res.ori_dtheta_ds * res.s_ddot)      # rad/s²
 
+    has_rs_omega = (
+        rs_rec is not None and rs_rec.ori_speed_deg_s is not None
+    )
     fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
     panels = (
         (r2d(res.ori_theta), "θ [deg]",
@@ -1299,12 +1309,21 @@ def _plot_tcp_rotation(
         (r2d(res.ori_dtheta_ds), "dθ/ds [deg/mm]",
          "H2  geometric rotation rate (property of the toolpath)"),
         (r2d(omega), "ω [deg/s]",
-         f"H3  TCP angular speed ω = dθ/ds · v*  — {mode_name}"),
+         f"H3  TCP angular speed ω = dθ/ds · ṡ  — {mode_name}"
+         + ("  (blue = RS logged |ω|; frame-invariant)" if has_rs_omega else "")),
         (r2d(alpha), "α [deg/s²]",
          "H4  TCP angular acceleration α = dω/dt"),
     )
-    for ax, (y, ylabel, title) in zip(axes, panels):
-        ax.plot(s, y, lw=1.2, color="#4C78A8", label=ylabel.split(" [")[0])
+    for k, (ax, (y, ylabel, title)) in enumerate(zip(axes, panels)):
+        handles = []
+        rs_here = k == 2 and has_rs_omega
+        if rs_here:
+            ax.plot(rs_rec.s_mm, np.abs(rs_rec.ori_speed_deg_s), lw=1.2,
+                    color=_RS_COLOR, alpha=0.9, label="RobotStudio |ω|")
+            handles.append(Line2D([0], [0], color=_RS_COLOR, lw=1.2,
+                                  label="RobotStudio |ω|"))
+        line_color = _SOLVER_COLOR if rs_here else "#4C78A8"
+        ax.plot(s, y, lw=1.2, color=line_color, label=ylabel.split(" [")[0])
         ax.set_ylabel(ylabel)
         ax.set_title(title, fontsize=10)
         ax.grid(True, alpha=0.3)
@@ -1312,8 +1331,8 @@ def _plot_tcp_rotation(
             for a, b in _mask_spans(res.accel_transient_mask):
                 ax.axvspan(s[a], s[b], color="red", alpha=0.08, lw=0, zorder=0)
         ax.legend(
-            handles=[
-                Line2D([0], [0], color="#4C78A8", lw=1.2, label=ylabel),
+            handles=handles + [
+                Line2D([0], [0], color=line_color, lw=1.2, label=ylabel),
                 _accel_transient_legend_handle(),
             ],
             fontsize=7, loc="upper right",
@@ -1495,10 +1514,18 @@ def _plot_tcp_vs_rs(
     if excl_handles:
         h = list(h) + excl_handles
         lab = list(lab) + [hnd.get_label() for hnd in excl_handles]
-    ax.set_ylabel("TCP speed [mm/s]")
+    tool_frame = res.frame == "tool"
+    ax.set_ylabel(
+        "TCP cut speed (tool frame) [mm/s]" if tool_frame
+        else "TCP speed [mm/s]"
+    )
     ax.grid(True, alpha=0.3)
     ax.legend(h, lab, loc="best", fontsize=8)
+    frame_note = (
+        "all speeds unified in the TOOL (plate) frame; " if tool_frame else ""
+    )
     ax.set_title(f"G1  TCP speed & accel — {mode_name}\n"
+                 f"{frame_note}"
                  "RS = recorded RobotStudio run at toolpath commanded speed "
                  "(blue = RobotStudio, green = solver)")
 
@@ -1511,8 +1538,10 @@ def _plot_tcp_vs_rs(
             rs_geom.s_mm, np.abs(rs_geom.s_ddot_mm_s2), "--", lw=1.2,
             color=_RS_COLOR, alpha=0.95, label="RS |d(speed)/dt| ≈ |s̈|",
         )
-    ax2.plot(s, np.abs(res.s_ddot), lw=1.2, color=_SOLVER_COLOR,
-             label="solver |s̈|")
+    a_sol = res.s_ddot_tool if res.s_ddot_tool is not None else res.s_ddot
+    ax2.plot(s, np.abs(a_sol), lw=1.2, color=_SOLVER_COLOR,
+             label=("solver |dv_tool/dt|" if res.s_ddot_tool is not None
+                    else "solver |s̈|"))
     _draw_bench_exclusion_spans(ax2, s, excl)
     ax2.set_ylabel("|TCP accel| [mm/s²]")
     ax2.grid(True, alpha=0.3)
@@ -1525,7 +1554,7 @@ def _plot_tcp_vs_rs(
     if plot_jerk and res.t is not None and res.s_ddot is not None:
         axj = axes[panel]
         panel += 1
-        solver_jerk = _savgol_time_derivative(res.s_ddot, res.t)
+        solver_jerk = _savgol_time_derivative(a_sol, res.t)
         rs_jerk = _savgol_time_derivative(rs.tcp_accel_mm_s2, rs.t_s)
         axj.plot(rs.s_mm, np.abs(rs_jerk), lw=1.1, color=_RS_COLOR,
                  alpha=0.9, label="RobotStudio")
@@ -1607,6 +1636,275 @@ def _plot_joint_series_vs_rs(
     plt.close(fig)
     return str(out_path)
 
+_TWIST_COMP_COLORS = ("#1f77b4", "#2ca02c", "#d62728")  # x, y, z
+_COMP_LABELS = ("x", "y", "z")
+
+
+def _plot_twist_row(ax, s_sol, sol_xyz, s_rs, rs_xyz, ylabel, mag_label,
+                    rs_mag_override=None):
+    """One twist row: 3 components + magnitude, solver solid vs RS dashed."""
+    sol_mag = np.linalg.norm(sol_xyz, axis=1)
+    ax.plot(s_sol, sol_mag, lw=1.7, color="black", label=mag_label)
+    for k in range(3):
+        ax.plot(s_sol, sol_xyz[:, k], lw=0.8, alpha=0.75,
+                color=_TWIST_COMP_COLORS[k],
+                label=f"solver {_COMP_LABELS[k]}")
+    if s_rs is not None and rs_xyz is not None:
+        rs_mag = (np.asarray(rs_mag_override, dtype=float)
+                  if rs_mag_override is not None
+                  else np.linalg.norm(rs_xyz, axis=1))
+        ax.plot(s_rs, rs_mag, lw=1.4, ls="--", color="0.45",
+                label="RS |·|" + (" (logged)" if rs_mag_override is not None
+                                  else ""))
+        for k in range(3):
+            ax.plot(s_rs, rs_xyz[:, k], lw=0.8, ls="--", alpha=0.75,
+                    color=_TWIST_COMP_COLORS[k],
+                    label=f"RS {_COMP_LABELS[k]}")
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=6.5, ncol=4, loc="upper right")
+
+
+def _plot_twist_components(
+    out_path: Path,
+    res: ProfileResult,
+    rs_rec: Optional["RSRecording"],
+    mode_name: str,
+) -> str:
+    """Plate twist split linear/angular, in base and knife frames, vs RS.
+
+    Rows: base-frame linear, base-frame angular, knife-frame linear,
+    knife-frame angular.  |knife_lin| is the tool-frame cut speed by the
+    adjoint identity — its solver/RS agreement is the end-to-end check.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    s = res.s_eval
+    rs_s = rs_rec.s_mm if rs_rec is not None else None
+    # RS logged orientation speed is |ω| already (frame-invariant) and far
+    # less noisy than differentiating the sparse logged quaternions.
+    rs_omega_logged = (
+        rs_rec.ori_speed_deg_s
+        if (rs_rec is not None and rs_rec.ori_speed_deg_s is not None)
+        else None
+    )
+    rs_blocks = (
+        (rs_rec.twist_base_lin_mm_s, rs_rec.twist_base_ang_rad_s,
+         rs_rec.twist_knife_lin_mm_s, rs_rec.twist_knife_ang_rad_s)
+        if rs_rec is not None else (None, None, None, None)
+    )
+    rows = [
+        ("base frame — linear (ṗ_BP)", res.twist_base_lin, rs_blocks[0], "v [mm/s]", "solver |v|", None),
+        ("base frame — angular (ω_BP)", np.rad2deg(res.twist_base_ang),
+         np.rad2deg(rs_blocks[1]) if rs_blocks[1] is not None else None,
+         "ω [deg/s]", "solver |ω|", rs_omega_logged),
+        ("knife frame — linear (v at knife tip)", res.twist_knife_lin,
+         rs_blocks[2], "v [mm/s]", "solver |v| ≡ cut speed", None),
+        ("knife frame — angular (ω)", np.rad2deg(res.twist_knife_ang),
+         np.rad2deg(rs_blocks[3]) if rs_blocks[3] is not None else None,
+         "ω [deg/s]", "solver |ω|", rs_omega_logged),
+    ]
+    fig, axes = plt.subplots(4, 1, figsize=(13, 11), sharex=True)
+    for ax, (label, sol, rs_v, ylabel, mag_label, rs_mag) in zip(axes, rows):
+        _plot_twist_row(ax, s, sol, rs_s, rs_v, ylabel, mag_label,
+                        rs_mag_override=rs_mag)
+        ax.set_title(label, fontsize=9, loc="left")
+    axes[-1].set_xlabel("arc-length s [mm]")
+    fig.suptitle(
+        f"T  Plate twist components — {mode_name}\n"
+        "solid = solver (spline twist × ṡ_path), dashed = RobotStudio "
+        "(S–G time derivative of logged poses)",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path)
+
+
+def _plot_base_frame_command(
+    out_path: Path,
+    res: ProfileResult,
+    mode_name: str,
+) -> str:
+    """Base-frame command chain: converted target, achieved ṡ, gain, twist.
+
+    Row 1 is the deliverable intermediate: the tool-frame v_cmd schedule
+    converted to the robot-base path-speed target the solver tracks
+    (segment ZOH when cap_mode == 'segment'), the achieved ṡ and the
+    joint-only ceiling — all in path space [mm/s].
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    s = res.s_eval
+    fig, axes = plt.subplots(4, 1, figsize=(13, 10), sharex=True)
+
+    ax = axes[0]
+    if res.v_target_path_zoh is not None:
+        ax.plot(s, res.v_target_path_zoh, lw=1.6, color="#9467bd",
+                label="converted base-frame target (segment ZOH)")
+    if getattr(res, "v_target_path", None) is not None and (
+        res.v_target_path is not res.v_target_path_zoh
+    ):
+        ax.plot(s, res.v_target_path, lw=1.4, color="#e377c2",
+                label="command target tracked by TOPP (pointwise spline)")
+    if res.v_cmd_path is not None and res.plate_gain is not None:
+        pointwise = res.v_cmd_path / np.clip(res.plate_gain, 1e-4, None)
+        ax.plot(s, np.clip(pointwise, 0, 1.2 * np.nanmax(res.s_dot_path) + 50),
+                lw=0.8, alpha=0.6, color="0.4",
+                label="pointwise v_cmd/g (reference)")
+    ax.plot(s, res.s_dot_path, lw=1.4, color=_SOLVER_COLOR,
+            label="achieved ṡ (TOPP)")
+    if res.v_lim_joint_path is not None:
+        ax.plot(s, res.v_lim_joint_path, lw=0.9, color="0.2", alpha=0.7,
+                label="joint ceiling (path space)")
+    ax.set_ylabel("path speed [mm/s]", fontsize=8)
+    ax.set_title("T_B_P command chain — converted target vs achieved", fontsize=9,
+                 loc="left")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7, loc="upper right")
+
+    ax = axes[1]
+    ax.plot(s, res.plate_gain, lw=1.2, color="#8c564b")
+    ax.axhline(1.0, ls=":", lw=0.8, color="0.4")
+    ax.set_ylabel("gain g = ds_tool/ds_base", fontsize=8)
+    ax.set_title("frame gain (reorientation regions g ≪ 1: base moves faster "
+                 "than the cut)", fontsize=9, loc="left")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[2]
+    ax.plot(s, np.linalg.norm(res.twist_base_lin, axis=1), lw=1.4,
+            color="black", label="|ṗ_BP|")
+    for k in range(3):
+        ax.plot(s, res.twist_base_lin[:, k], lw=0.8, alpha=0.75,
+                color=_TWIST_COMP_COLORS[k], label=f"ṗ_{_COMP_LABELS[k]}")
+    ax.set_ylabel("base linear [mm/s]", fontsize=8)
+    ax.set_title("plate linear velocity in robot base frame", fontsize=9,
+                 loc="left")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=6.5, ncol=4, loc="upper right")
+
+    ax = axes[3]
+    ax.plot(s, np.rad2deg(np.linalg.norm(res.twist_base_ang, axis=1)),
+            lw=1.4, color="black", label="|ω_BP|")
+    for k in range(3):
+        ax.plot(s, np.rad2deg(res.twist_base_ang[:, k]), lw=0.8, alpha=0.75,
+                color=_TWIST_COMP_COLORS[k], label=f"ω_{_COMP_LABELS[k]}")
+    ax.set_ylabel("base angular [deg/s]", fontsize=8)
+    ax.set_title("plate angular velocity in robot base frame", fontsize=9,
+                 loc="left")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=6.5, ncol=4, loc="upper right")
+    axes[-1].set_xlabel("arc-length s [mm]")
+
+    fig.suptitle(f"K  Base-frame command & twist — {mode_name}", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path)
+
+
+def _plot_tcp_velocity_profile(
+    out_path: Path,
+    res: ProfileResult,
+    rs_rec: Optional["RSRecording"],
+    mode_name: str,
+) -> str:
+    """Unified tool-frame comparison: linear speed, angular speed, accel.
+
+    Panel 1: solver v* (T_P_K cut speed) vs RS logged speed vs the col-8
+    commanded schedule.  Panel 2: plate angular speed vs RS logged
+    orientation speed.  Panel 3: |dv_tool/dt| vs RS logged linear accel.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    s = res.s_eval
+    fig, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=True)
+
+    ax = axes[0]
+    if rs_rec is not None:
+        ax.plot(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, lw=1.2, color=_RS_COLOR,
+                marker=".", ms=3.5,
+                label="RobotStudio speed_mm_per_s (tool; dots = log samples)")
+    ax.plot(s, res.v_star, lw=0.7, color=_SOLVER_COLOR, alpha=0.45,
+            label="solver v* (tool frame, full resolution)")
+    # Solver at RS cadence: arc-window boxcar of v* centred on each RS
+    # sample (window = the RS local sample spacing).  The RS log (~24 ms,
+    # 1-6 mm between samples) cannot resolve the 1-2 mm adjoint gain
+    # valleys the dense profile shows — this is the apples-to-apples line.
+    if rs_rec is not None and len(rs_rec.s_mm) > 3:
+        _s_rs = np.asarray(rs_rec.s_mm, dtype=float)
+        _ds_rs = np.maximum(np.gradient(_s_rs), 0.3)
+        _v_box = np.empty(len(_s_rs))
+        for _i in range(len(_s_rs)):
+            _m = (s >= _s_rs[_i] - _ds_rs[_i] / 2) & (s <= _s_rs[_i] + _ds_rs[_i] / 2)
+            _v_box[_i] = float(np.mean(res.v_star[_m])) if np.any(_m) else float(
+                np.interp(_s_rs[_i], s, res.v_star))
+        ax.plot(_s_rs, _v_box, lw=1.5, color="#1a7a1a",
+                label="solver v* averaged at RS log cadence")
+    if res.v_cmd_path is not None:
+        ax.plot(s, res.v_cmd_path, lw=1.1, ls=":", color="#9467bd",
+                label="v_cmd (col-8, tool frame)")
+    ax.set_ylabel("cut speed [mm/s]", fontsize=8)
+    ax.set_title("T_P_K linear (cut) speed — solver vs RobotStudio",
+                 fontsize=9, loc="left")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7.5, loc="upper right")
+
+    ax = axes[1]
+    if rs_rec is not None and rs_rec.ori_speed_deg_s is not None:
+        ax.plot(rs_rec.s_mm, rs_rec.ori_speed_deg_s, lw=1.4, color=_RS_COLOR,
+                label="RobotStudio orientation_speed_deg_per_s")
+    if res.twist_base_ang is not None:
+        ax.plot(s, np.rad2deg(np.linalg.norm(res.twist_base_ang, axis=1)),
+                lw=1.3, color=_SOLVER_COLOR, label="solver |ω_BP|")
+    ax.set_ylabel("angular speed [deg/s]", fontsize=8)
+    ax.set_title("plate angular speed (frame-invariant magnitude)",
+                 fontsize=9, loc="left")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7.5, loc="upper right")
+
+    ax = axes[2]
+    if rs_rec is not None:
+        ax.plot(rs_rec.s_mm, np.abs(rs_rec.tcp_accel_mm_s2), lw=1.4,
+                color=_RS_COLOR, label="RobotStudio |linear accel|")
+    # Time-domain S–G derivative of v*(t) — same smoothing class as the RS
+    # accel series, so needle neighborhoods compare fairly (the raw
+    # s_ddot_tool contains the geometric g'(s)·ṡ³ term and spikes at
+    # segment boundaries).
+    if res.s_ddot_tool is not None and res.t is not None:
+        try:
+            a_sol = _savgol_time_derivative(res.v_star[:, None], res.t).ravel()
+            ax.plot(s, np.abs(a_sol), lw=1.3, color=_SOLVER_COLOR,
+                    label="solver |dv_tool/dt| (S–G, time domain)")
+        except Exception:
+            ax.plot(s, np.abs(res.s_ddot_tool), lw=1.3, color=_SOLVER_COLOR,
+                    label="solver |dv_tool/dt|")
+    ax.set_ylabel("|accel| [mm/s²]", fontsize=8)
+    ax.set_title("tool-frame tangential acceleration (time-smoothed)",
+                 fontsize=9, loc="left")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7.5, loc="upper right")
+    axes[-1].set_xlabel("arc-length s [mm]")
+
+    rs_frame = rs_rec.logged_frame if rs_rec is not None else "n/a"
+    fig.suptitle(
+        f"TCP velocity profile — {mode_name}\n"
+        f"unified TOOL frame (RS log declared '{rs_frame}')",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path)
+
+
 def _make_plots(
     res: ProfileResult,
     out_dir: Path,
@@ -1635,6 +1933,8 @@ def _make_plots(
     dir_f = _group_dir(out_dir, "F")
     dir_g = _group_dir(out_dir, "G")
     dir_h = _group_dir(out_dir, "H")
+    dir_k = _group_dir(out_dir, "K")
+    dir_t = _group_dir(out_dir, "T")
     # F1/F2 are toolpath-common (same for all modes) → toolpath folder.
     common = Path(common_dir) if common_dir is not None else out_dir
     common.mkdir(parents=True, exist_ok=True)
@@ -1714,7 +2014,7 @@ def _make_plots(
     # ---- H: TCP rotation ----
     if res.ori_theta is not None:
         paths.append(_plot_tcp_rotation(
-            dir_h / "H_tcp_rotation.png", res, mode_name,
+            dir_h / "H_tcp_rotation.png", res, mode_name, rs_rec=rs_rec,
         ))
 
     # ---- J: sawtooth / upstream root-cause dump (all modes; critical for optimal)
@@ -1777,10 +2077,23 @@ def _make_plots(
     if rs_geom is not None:
         a3_title += " | blue=RS (q̇/ṡ)"
         a4_title += " | blue=RS ((q̈−c·s̈)/ṡ²)"
+    # SE(3) mode: res.dqds/d2qds2 are per SE(3)-parameter mm while the raw
+    # FD (res.s_raw = position arc after the reporting overwrite) and RS's
+    # measured derivatives are per position mm.  Convert the spline
+    # derivatives to the position-arc parameter for display so the three
+    # curves are commensurable (chain rule; dsigma/ds_pos = 1/(ds_pos/dsigma)).
+    dqds_disp, d2qds2_disp = res.dqds, res.d2qds2
+    _dp_ev = None if res.step0 is None else res.step0.get("dp_ds_eval")
+    if _dp_ev is not None and len(_dp_ev) == len(res.s_eval):
+        _inv = 1.0 / np.maximum(np.asarray(_dp_ev, dtype=float), 1e-9)
+        dqds_disp = res.dqds * _inv[:, None]
+        _dinv = np.gradient(_inv, res.s_eval)
+        d2qds2_disp = (res.d2qds2 * (_inv ** 2)[:, None]
+                       + res.dqds * (_inv * _dinv)[:, None])
     paths.append(_plot_per_joint_vs_s(
         res, dir_a / "A3_dqds_per_joint.png",
         y_raw_fn=lambda j: r2d(dqds_raw[:, j]),
-        y_eval_fn=lambda j: r2d(res.dqds[:, j]),
+        y_eval_fn=lambda j: r2d(dqds_disp[:, j]),
         ylabel="dq/ds [deg/mm]",
         title=a3_title,
         regions=regions,
@@ -1792,7 +2105,7 @@ def _make_plots(
     paths.append(_plot_per_joint_vs_s(
         res, dir_a / "A4_d2qds2_per_joint.png",
         y_raw_fn=lambda j: r2d(d2qds2_raw[:, j]),
-        y_eval_fn=lambda j: r2d(res.d2qds2[:, j]),
+        y_eval_fn=lambda j: r2d(d2qds2_disp[:, j]),
         ylabel="d²q/ds² [deg/mm²]",
         title=a4_title,
         regions=regions,
@@ -1883,17 +2196,21 @@ def _make_plots(
     paths.append(str(pB))
 
     # ---- PANEL GROUP C: path-parameter dynamics -------------------------
+    _tool = res.frame == "tool"
+    _v_lab = "solver v* (tool frame)"
     figC, axC = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
     if rs_geom is not None:
         axC[0].plot(
             rs_geom.s_mm, rs_geom.s_dot_mm_s, "-", lw=1.4, color=_RS_COLOR,
             alpha=0.9, label="RS ṡ (logged TCP speed)",
         )
-    axC[0].plot(s, res.v_star, "-", lw=1.8, color=_SOLVER_COLOR, label="solver v* = ṡ")
+    axC[0].plot(s, res.v_star, "-", lw=1.8, color=_SOLVER_COLOR,
+                label=_v_lab if _tool else "solver v* = ṡ")
     axC[0].plot(s, res.v_lim, "--", lw=1.0, color="k", alpha=0.7, label="v_lim")
-    axC[0].set_ylabel("s_dot = v* [mm/s]")
+    axC[0].set_ylabel("v* [mm/s]" if _tool else "s_dot = v* [mm/s]")
     axC[0].set_title(
-        "C1  path speed s_dot(s) = TCP linear speed"
+        ("C1  TCP cut speed v*(s) — tool frame" if _tool
+         else "C1  path speed s_dot(s) = TCP linear speed")
         + ("  |  blue=RS, green=solver" if rs_geom is not None else "")
     )
     h, lab = axC[0].get_legend_handles_labels()
@@ -1919,7 +2236,10 @@ def _make_plots(
             rs_geom.s_mm, rs_geom.s_ddot_mm_s2, "-", lw=1.2, color=_RS_COLOR,
             alpha=0.9, label="RS s̈ ≈ d(speed)/dt",
         )
-    axC[2].plot(s, res.s_ddot, "-", lw=1.2, color=_SOLVER_COLOR, label="solver s̈")
+    axC[2].plot(s,
+                res.s_ddot_tool if res.s_ddot_tool is not None else res.s_ddot,
+                "-", lw=1.2, color=_SOLVER_COLOR,
+                label="solver dv/dt (tool)" if _tool else "solver s̈")
     axC[2].axhline(0.0, color="grey", lw=0.6, label="zero")
     axC[2].set_ylabel("s_ddot [mm/s²]")
     axC[2].set_title(
@@ -2077,15 +2397,39 @@ def _make_plots(
         summary = _write_rs_compare_summary(dir_g, res, rs_rec, mode_name)
         paths.append(str(summary))
 
-    # ---- top-level key artifact: copy G1 (no re-render) ----------------
-    import shutil
-    key_plot = (dir_g / "G1_tcp_speed_accel_vs_rs.png" if rs_rec is not None
-                else dir_d / "D1_optimal_vs_ceiling.png")
-    if key_plot.exists():
-        top = out_dir / "tcp_velocity_profile.png"
-        if top.resolve() != key_plot.resolve():
-            shutil.copyfile(key_plot, top)
-        paths.append(str(top))
+    # ---- PANEL GROUPS K / T: base-frame command chain + twist ----------
+    if res.frame == "tool" and res.plate_gain is not None:
+        try:
+            paths.append(_plot_base_frame_command(
+                dir_k / "K_base_frame_command.png", res, mode_name,
+            ))
+        except Exception as exc:
+            print(f"  [WARN] K base-frame command plot failed: {exc}")
+        if res.twist_base_lin is not None:
+            try:
+                paths.append(_plot_twist_components(
+                    dir_t / "T_twist_components.png", res, rs_rec, mode_name,
+                ))
+            except Exception as exc:
+                print(f"  [WARN] T twist components plot failed: {exc}")
+
+    # ---- top-level key artifact: unified tool-frame comparison ---------
+    if res.frame == "tool":
+        try:
+            paths.append(_plot_tcp_velocity_profile(
+                out_dir / "tcp_velocity_profile.png", res, rs_rec, mode_name,
+            ))
+        except Exception as exc:
+            print(f"  [WARN] tcp_velocity_profile.png failed: {exc}")
+    else:
+        import shutil
+        key_plot = (dir_g / "G1_tcp_speed_accel_vs_rs.png" if rs_rec is not None
+                    else dir_d / "D1_optimal_vs_ceiling.png")
+        if key_plot.exists():
+            top = out_dir / "tcp_velocity_profile.png"
+            if top.resolve() != key_plot.resolve():
+                shutil.copyfile(key_plot, top)
+            paths.append(str(top))
 
     return paths
 

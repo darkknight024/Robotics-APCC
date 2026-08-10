@@ -55,6 +55,32 @@ def _write_waypoint_benchmark_csv(
             wp_s, rs_rec.s_mm, rs_rec.tcp_speed_mm_s,
         )
 
+    # Segment-average speeds: under segment cap semantics the controller
+    # regulates the MEAN cut speed over each programmed move, so the
+    # feasibility verdict uses the segment mean (instantaneous v* at the
+    # waypoint is still reported for transparency).
+    segment_mode = (
+        getattr(res_cmd, "frame", "base") == "tool"
+        and getattr(res_cmd, "cap_mode", "pointwise") == "segment"
+        and len(wp_s) >= 2
+    )
+    seg_mean_actual = seg_mean_rs = None
+    if segment_mode:
+        seg_mean_actual = np.full(len(wp_s), np.nan)
+        seg_mean_rs = np.full(len(wp_s), np.nan)
+        for k in range(len(wp_s)):
+            s0 = wp_s[k]
+            s1 = wp_s[k + 1] if k + 1 < len(wp_s) else float(res_cmd.s_eval[-1])
+            if s1 <= s0:
+                continue
+            m_sol = (res_cmd.s_eval >= s0) & (res_cmd.s_eval <= s1)
+            if np.any(m_sol):
+                seg_mean_actual[k] = float(np.mean(res_cmd.v_star[m_sol]))
+            if rs_rec is not None:
+                m_rs = (rs_rec.s_mm >= s0) & (rs_rec.s_mm <= s1)
+                if np.any(m_rs):
+                    seg_mean_rs[k] = float(np.mean(rs_rec.tcp_speed_mm_s[m_rs]))
+
     out_lines: List[str] = []
     header_written = False
     n_wp = 0
@@ -87,16 +113,37 @@ def _write_waypoint_benchmark_csv(
             rs_bench = "N/A"
             n_rs_na += 1
         else:
-            feasible = bool(v_cmd_wp <= v_actual[n_wp] + 1e-6)
+            # Same dual tolerance as RS benchmarking: the commanded profile
+            # rides marginally below a pathwise-varying ceiling, so an exact
+            # v_actual ≥ v_cmd gate would flag sub-mm/s undershoots.
+            # Segment cap mode: verdict on the segment-MEAN cut speed
+            # (controller semantics); pointwise stays instantaneous.
+            cruise_kw = _bench_cruise_kw(res_cmd)
+            tol_frac = cruise_kw.get("rel_tol", _RS_BENCH_REL_TOL)
+            tol_abs = cruise_kw.get("abs_floor_mm_s", _RS_BENCH_ABS_FLOOR_MM_S)
+            v_check = (
+                seg_mean_actual[n_wp]
+                if segment_mode and np.isfinite(seg_mean_actual[n_wp])
+                else float(v_actual[n_wp])
+            )
+            shortfall = v_cmd_wp - v_check
+            feasible = bool(
+                shortfall <= max(tol_abs, tol_frac * max(v_cmd_wp, 0.0))
+            )
             if feasible:
                 n_feasible += 1
             else:
                 n_infeasible += 1
-            if rs_v_wp is not None and rs_v_wp[n_wp] > 1.0:
-                err = abs(v_actual[n_wp] - rs_v_wp[n_wp])
+            rs_check = (
+                seg_mean_rs[n_wp]
+                if segment_mode and np.isfinite(seg_mean_rs[n_wp])
+                else (rs_v_wp[n_wp] if rs_v_wp is not None else None)
+            )
+            if rs_check is not None and rs_check > 1.0:
+                err = abs(v_check - float(rs_check))
                 cruise_kw = _bench_cruise_kw(res_cmd)
                 if _rs_bench_fail_mask(
-                    np.array([err]), np.array([rs_v_wp[n_wp]]), **cruise_kw,
+                    np.array([err]), np.array([rs_check]), **cruise_kw,
                 )[0]:
                     rs_bench = "fail"
                     n_rs_fail += 1
@@ -110,7 +157,8 @@ def _write_waypoint_benchmark_csv(
         def _fmt_v(v: Optional[np.ndarray], i: int) -> str:
             if v is None:
                 return "N/A"
-            return f"{float(v[i]):.4f}"
+            val = float(v[i])
+            return "N/A" if not np.isfinite(val) else f"{val:.4f}"
 
         extra = [
             _fmt_v(v_actual, n_wp),
@@ -119,6 +167,8 @@ def _write_waypoint_benchmark_csv(
             ign,
             "true" if feasible else "false",
             rs_bench,
+            _fmt_v(seg_mean_actual, n_wp) if seg_mean_actual is not None else "N/A",
+            _fmt_v(seg_mean_rs, n_wp) if seg_mean_rs is not None else "N/A",
         ]
         out_lines.append(",".join(parts + extra))
         n_wp += 1
@@ -242,12 +292,19 @@ def _write_rs_compare_summary(
     cfg = res.rs_bench_exclusions.config if res.rs_bench_exclusions else None
     tol_frac = cfg.cruise_tol_frac if cfg else _RS_BENCH_REL_TOL
     tol_abs = cfg.cruise_tol_abs_mm_s if cfg else _RS_BENCH_ABS_FLOOR_MM_S
+    frame_line = (
+        "Frame: all TCP speeds/accels unified in the TOOL (plate) frame "
+        f"(RS logged frame = {rs.logged_frame})."
+        if res.frame == "tool"
+        else "Frame: robot base (legacy — no plate geometry supplied)."
+    )
     lines = [
         f"Solver vs RobotStudio — {mode_name}",
         "=" * 60,
         f"RS file: {rs.path}",
         "RS = recorded run at the toolpath commanded speed.",
         "RS series resampled onto the solver arc-length axis.",
+        frame_line,
         f"solver duration = {res.metrics_duration:.4f} s",
         f"RS duration     = {float(rs.t_s[-1]):.4f} s",
         "",
@@ -274,7 +331,8 @@ def _write_rs_compare_summary(
         )
 
     lines.append("TCP |accel| [mm/s²]:")
-    a_err = np.abs(res.s_ddot) - rs_a
+    a_sol = res.s_ddot_tool if res.s_ddot_tool is not None else res.s_ddot
+    a_err = np.abs(a_sol) - rs_a
     lines.append(
         f"  |err| med={np.median(np.abs(a_err)):.1f}  "
         f"p95={np.percentile(np.abs(a_err), 95):.1f}  "
@@ -330,6 +388,11 @@ def _write_mode_summary(
     lines = [
         f"Velocity mode: {res.mode}",
         "=" * 56,
+        (
+            "frame:                tool (plate) — speeds are cut speeds"
+            if res.frame == "tool"
+            else "frame:                robot base (legacy)"
+        ),
     ]
     if res.mode == "commanded":
         if res.v_cmd_path is not None:
@@ -434,6 +497,11 @@ def _write_benchmark_summary(
         "=" * 64,
         f"toolpath: {toolpath}",
         f"v_cmd:    {v_cmd:.1f} mm/s",
+        (
+            "frame:    tool (plate) — solver and RS speeds unified"
+            if res_cmd.frame == "tool"
+            else "frame:    robot base (legacy)"
+        ),
         "",
         "Traversal times",
         "-" * 40,

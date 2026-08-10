@@ -54,6 +54,12 @@ def process_one_toolpath(
     se3_lambda_scale: float = 1.0,
     se3_lambda_mode: str = "auto",
     se3_lambda_fixed: float = 172.7,
+    rs_frame: str = "tool",
+    cap_mode: str = "pointwise_spline",
+    ceiling_smooth_mm: float = 2.5,
+    path_jerk_max: float = 0.0,
+    pointwise_overshoot: float = 0.0,
+    cmd_accel_max: float = 8000.0,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -103,11 +109,12 @@ def process_one_toolpath(
 
     rs_rec = None
     if rs_path is not None and rs_path.is_file():
-        rs_rec = load_rs_recording(rs_path)
+        rs_rec = load_rs_recording(rs_path, rs_frame=rs_frame)
         print(
             f"  RobotStudio: {rs_path.name}  samples={len(rs_rec.s_mm)}  "
             f"dur={rs_rec.t_s[-1]:.3f}s  "
-            f"vmax={float(np.nanmax(rs_rec.tcp_speed_mm_s)):.1f} mm/s"
+            f"vmax={float(np.nanmax(rs_rec.tcp_speed_mm_s)):.1f} mm/s "
+            f"(logged frame={rs_frame}; unified to tool frame)"
         )
     else:
         print(f"  [WARN] No matching RobotStudio CSV for {toolpath.name}")
@@ -144,6 +151,14 @@ def process_one_toolpath(
         plot_jerk=plot_jerk,
         rs_bench_exclusion_config=rs_bench_exclusion_config,
         se3_lambda_mm_per_rad=se3_lambda,
+        plate_xyz=ctx.plate_xyz,
+        cap_mode=cap_mode,
+        knife_translation_m=ctx.knife_translation_m,
+        knife_quaternion_wxyz=ctx.knife_quaternion_wxyz,
+        ceiling_smooth_mm=ceiling_smooth_mm,
+        path_jerk_max=path_jerk_max,
+        pointwise_overshoot=pointwise_overshoot,
+        cmd_accel_max=cmd_accel_max,
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
@@ -166,16 +181,16 @@ def process_one_toolpath(
         res_opt = _run(case_dir / "optimal", time_optimal=True)
         # Fastest constant TCP speed the whole-path ceiling admits: the
         # minimum of the joint-only velocity ceiling (incl. secant cap),
-        # excluding the start/stop samples where v_lim is forced to 0 by
-        # the boundary conditions / singular c≈0 cells.
+        # excluding only samples where the ceiling is ~0 / non-finite
+        # (forced endpoints).  Do NOT exclude region "boundary" masks: with
+        # jerk limiting the takeoff/braking ramps legitimately cover long
+        # stretches, and masking them out would hide real interior
+        # bottlenecks and overestimate the feasible constant speed.
         finite = np.isfinite(res_opt.v_lim_joint) & (res_opt.v_lim_joint > 1e-6)
-        if res_opt.boundary_mask is not None:
-            finite &= ~res_opt.boundary_mask
-        if not finite.any():
-            finite = np.isfinite(res_opt.v_lim_joint) & (res_opt.v_lim_joint > 1e-6)
         v_const = float(np.min(res_opt.v_lim_joint[finite]))
         print(f"  derived v_const = {v_const:.2f} mm/s "
-              "(min joint-feasible ceiling over the whole path)")
+              f"(min joint-feasible ceiling over the whole path, "
+              f"{res_opt.frame} frame)")
 
         print("\n--- mode: commanded ---")
         res_cmd = _run(case_dir / "commanded")

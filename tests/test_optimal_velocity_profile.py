@@ -127,6 +127,58 @@ def main() -> None:
         default=None,
         help="Explicit RobotStudio CSV for a single --toolpath run.",
     )
+    parser.add_argument(
+        "--rs-frame",
+        choices=["tool", "base"],
+        default="tool",
+        help="Frame of the RobotStudio CSV poses and speed columns.  "
+             "'tool' (default): T_P_K poses + plate-frame cut speed "
+             "(current recordings).  'base': T_B_P poses + base-frame TCP "
+             "speed.  Either way all reported/plotted/compared velocities "
+             "are unified to the TOOL frame.",
+    )
+    parser.add_argument(
+        "--cap-mode",
+        choices=["segment", "pointwise", "pointwise_spline"],
+        default="pointwise_spline",
+        help="Commanded-mode cap construction in tool (plate) frame mode.  "
+             "'pointwise_spline' (default): continuous target "
+             "v_cmd(s)/g_spline(s) with the spline-adjoint gain; only joint "
+             "limits and the command governor may pull the profile below "
+             "command.  'segment': legacy per-segment ZOH target "
+             "s_dot = v_cmd_seg*L_param/L_plate (staircases the path speed "
+             "at every programmed waypoint → sawtooth joint velocities).  "
+             "'pointwise': legacy FD-gain cap (needle-prone).",
+    )
+    parser.add_argument(
+        "--cmd-accel-max", type=float, default=8000.0,
+        help="Command-governor path-acceleration budget [mm/s^2] used to "
+             "track the authored speed target (commanded/constant modes). "
+             "Models the controller's speed governor: the target is never "
+             "raised, only rate-limited, so mm-scale target fluctuations "
+             "are not chased at full joint-accel capability. 0 disables.",
+    )
+    parser.add_argument(
+        "--pointwise-overshoot", type=float, default=0.0,
+        help="OPTIONAL legacy clamp for --cap-mode pointwise_spline: cap the "
+             "pointwise target at this multiple of the segment-ZOH target. "
+             "Default 0 = disabled (only joint velocity/accel limits and the "
+             "jerk slew may limit the profile).",
+    )
+    parser.add_argument(
+        "--ceiling-smooth-mm", type=float, default=2.5,
+        help="Min-preserving smoothing window [mm] for the joint velocity "
+             "ceiling before TOPP (flattens binding-joint switching; never "
+             "raises the true ceiling). 0 disables.",
+    )
+    parser.add_argument(
+        "--path-jerk-max", type=float, default=0.0,
+        help="Slew-rate limit on path acceleration s_ddot inside TOPP "
+             "[mm/s^3]; turns bang-bang corners into finite-slope ramps. "
+             "Default 0 = OFF: the current slew only throttles ramps below "
+             "joint-accel capability without bounding realized jerk, causing "
+             "speed sags not justified by any joint limit.",
+    )
     parser.add_argument("--ik-tol-rad", type=float, default=1e-4)
     parser.add_argument(
         "--resid-tol-deg", type=float, default=_RESID_TOL_DEG,
@@ -265,6 +317,12 @@ def main() -> None:
             se3_lambda_scale=float(args.se3_lambda_scale),
             se3_lambda_mode=str(args.se3_lambda_mode),
             se3_lambda_fixed=float(args.se3_lambda_fixed),
+            rs_frame=str(args.rs_frame),
+            cap_mode=str(args.cap_mode),
+            ceiling_smooth_mm=float(args.ceiling_smooth_mm),
+            path_jerk_max=float(args.path_jerk_max),
+            pointwise_overshoot=float(args.pointwise_overshoot),
+            cmd_accel_max=float(args.cmd_accel_max),
         )
         batch_rows.append(row)
 

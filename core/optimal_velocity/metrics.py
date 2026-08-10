@@ -14,7 +14,12 @@ from core.path_parameterization.speed_conversion import (
 
 from .differentiation import eval_splines, fit_joint_splines
 from .heun_topp import step3_time_optimal
-from .mvc_ceilings import _DEFAULT_SECANT_WINDOW_MM, secant_accel_ceiling, step2_velocity_limit
+from .mvc_ceilings import (
+    _DEFAULT_SECANT_WINDOW_MM,
+    secant_accel_ceiling,
+    smooth_ceiling_min_preserving,
+    step2_velocity_limit,
+)
 from .types import JointLimits, ProfileResult
 
 def _grid_independence(
@@ -32,6 +37,10 @@ def _grid_independence(
     se3_dp_ds_s: Optional[np.ndarray] = None,
     se3_dp_ds: Optional[np.ndarray] = None,
     se3_s_pos: Optional[np.ndarray] = None,
+    plate_g_s: Optional[np.ndarray] = None,
+    plate_g: Optional[np.ndarray] = None,
+    ceiling_smooth_mm: float = 0.0,
+    path_jerk_max: float = 0.0,
 ) -> Dict:
     """Recompute dq/ds, d2q/ds2, v_lim, and duration at 0.5x and 2x N_eval.
 
@@ -57,34 +66,53 @@ def _grid_independence(
                 s_mm, q_kept, limits.q_ddot_max, mvc_s, secant_window_mm,
             ),
         )
+    if ceiling_smooth_mm and ceiling_smooth_mm > 0:
+        mvc_v_lim_joint = smooth_ceiling_min_preserving(
+            mvc_v_lim_joint, mvc_s, ceiling_smooth_mm,
+        )
 
     se3_on = (
         se3_dp_ds_s is not None
         and se3_dp_ds is not None
         and len(se3_dp_ds_s) == len(se3_dp_ds)
     )
+    plate_on = (
+        plate_g_s is not None
+        and plate_g is not None
+        and len(plate_g_s) == len(plate_g)
+    )
+
+    def _conv_on(s_grid: np.ndarray) -> Optional[np.ndarray]:
+        """Authored-TCP-speed → path-speed divisor on a probe grid.
+
+        Tool-frame gain g (includes the SE(3) dp/ds factor) when plate
+        geometry is present, else the SE(3) dp/ds, else None (identity).
+        """
+        if plate_on:
+            return np.interp(s_grid, plate_g_s, plate_g)
+        if se3_on:
+            return np.interp(s_grid, se3_dp_ds_s, se3_dp_ds)
+        return None
 
     def _cap(s_grid: np.ndarray, v_joint: np.ndarray) -> np.ndarray:
         if time_optimal:
             return v_joint
+        conv = _conv_on(s_grid)
         if (v_cmd_s_mm is not None and v_cmd_at_s is not None
                 and len(np.asarray(v_cmd_at_s)) > 0):
             # Pathwise TCP schedule is on s_pos; map via se3↔pos when needed.
             if se3_on and se3_s_pos is not None:
                 s_pos_g = np.interp(s_grid, se3_dp_ds_s, se3_s_pos)
                 v_tcp = _v_cmd_on_grid(s_pos_g, v_cmd_s_mm, v_cmd_at_s)
-                dp = np.interp(s_grid, se3_dp_ds_s, se3_dp_ds)
-                return _apply_v_cmd_cap(
-                    v_joint, _tcp_speed_to_path_speed(v_tcp, dp), False,
-                )
+            else:
+                v_tcp = _v_cmd_on_grid(s_grid, v_cmd_s_mm, v_cmd_at_s)
+            if conv is not None:
+                v_tcp = _tcp_speed_to_path_speed(v_tcp, conv)
+            return _apply_v_cmd_cap(v_joint, v_tcp, False)
+        # Scalar authored TCP / path ceiling.
+        if conv is not None and v_cmd is not None and np.ndim(v_cmd) == 0:
             return _apply_v_cmd_cap(
-                v_joint, _v_cmd_on_grid(s_grid, v_cmd_s_mm, v_cmd_at_s), False,
-            )
-        # Scalar (or matching-length) TCP / path ceiling.
-        if se3_on and v_cmd is not None and np.ndim(v_cmd) == 0:
-            dp = np.interp(s_grid, se3_dp_ds_s, se3_dp_ds)
-            return _apply_v_cmd_cap(
-                v_joint, _tcp_speed_to_path_speed(float(v_cmd), dp), False,
+                v_joint, _tcp_speed_to_path_speed(float(v_cmd), conv), False,
             )
         return _apply_v_cmd_cap(v_joint, v_cmd, False)
 
@@ -98,10 +126,13 @@ def _grid_independence(
             vl_j = np.minimum(vl_j, secant_accel_ceiling(
                 s_mm, q_kept, limits.q_ddot_max, s_e, secant_window_mm,
             ))
+        if ceiling_smooth_mm and ceiling_smooth_mm > 0:
+            vl_j = smooth_ceiling_min_preserving(vl_j, s_e, ceiling_smooth_mm)
         v_lim = _cap(s_e, vl_j)
         topt = step3_time_optimal(
             s_e, a["dqds"], a["d2qds2"], v_lim, limits,
             mvc_s=mvc_s, mvc_v_lim=mvc_v_lim,
+            path_jerk_max=path_jerk_max,
         )
         return topt["duration_s"]
 
