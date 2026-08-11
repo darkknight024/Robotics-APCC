@@ -63,12 +63,12 @@ logger = logging.getLogger(__name__)
 # chart residual is small vs typical reorientation while forcing coarse knots.
 _DEFAULT_RESID_CEILING_DEG = 2.0
 
-# Overshoot guard: max |dr/ds| of the smooth fit vs raw FD envelope.
+# Overshoot guard: pointwise |dr/ds|_smooth ≤ osc_factor × local raw envelope.
 _DEFAULT_OSC_FACTOR = 1.5
 
-# Orientation knot floor [mm]: never denser than this (plus Schoenberg floor).
-# Joint splines may go to ~1 mm; ori smoothing must stay coarser than WP spacing.
-_ORI_MIN_KNOT_SPACING_MM = 5.0
+# Orientation knot floor [mm]: keep coarser than single-sample IK noise, but
+# fine enough not to smear ~few-mm pivot features (was 5 mm + L/40 → ~9 mm).
+_ORI_MIN_KNOT_SPACING_MM = 2.0
 
 
 # ---------------------------------------------------------------------
@@ -246,7 +246,7 @@ def _tune_rotvec_shared(
     w = np.sqrt(meas)
     L = float(s[-1] - s[0])
     max_gap = float(np.max(np.diff(s))) if len(s) > 1 else L
-    floor_mm = max(float(min_knot_spacing_mm), 2.0 * max_gap, L / 40.0)
+    floor_mm = max(float(min_knot_spacing_mm), 2.0 * max_gap, L / 80.0)
 
     def _fit_all(spacing: float):
         spls = []
@@ -282,7 +282,12 @@ def _tune_rotvec_shared(
             pick = i
             break
 
-    # Overshoot guard on ||dr/ds||
+    # Overshoot guard on ||dr/ds||: keep the smooth peak within osc_factor of
+    # the raw peak.  A samplewise envelope is too strict for discrete SLERP
+    # FD (forces the search back to ~L/8 knots and smears pivot phasing).
+    # Shape preservation vs authored tip density is handled upstream by the
+    # tool-arc orientation schedule; Step 5b only needs to avoid amplifying
+    # the global density peak while rounding WP kinks.
     raw_d1 = np.linalg.norm(_safe_gradient(r, s, axis=0), axis=1)
     slope_ref = max(float(np.percentile(raw_d1, 99.5)), 1e-12)
     n_backoff = 0
@@ -304,6 +309,8 @@ def _tune_rotvec_shared(
         "spacings_tried": len(history),
         "overshoot_backoffs": n_backoff,
         "knot_floor_mm": float(floor_mm),
+        "density_guard": "global_peak",
+        "osc_factor": float(osc_factor),
     }
     return r_hat, info
 

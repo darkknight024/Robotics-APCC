@@ -105,6 +105,9 @@ def _zone_to_dict(z: ZoneParams) -> dict:
         "pzone_tcp_mm": z.pzone_tcp_mm,
         "pzone_ori_mm": z.pzone_ori_mm,
         "zone_ori_deg": z.zone_ori_deg,
+        "pzone_eax_mm": z.pzone_eax_mm,
+        "zone_leax_mm": z.zone_leax_mm,
+        "zone_reax_deg": z.zone_reax_deg,
         "eff_pzone_tcp_mm": z.eff_pzone_tcp_mm,
         "eff_pzone_ori_mm": z.eff_pzone_ori_mm,
         "source": z.source,
@@ -128,6 +131,8 @@ def run_feature3(
     plot_kinds: Optional[List[str]] = None,
     preloaded_load_result=None,
     jacobian_dynamics_override: Optional[bool] = None,
+    knife_translation_m: Optional[np.ndarray] = None,
+    knife_quaternion_wxyz: Optional[np.ndarray] = None,
 ) -> Feature3D1Result:
     """Execute the full Feature 3 pipeline: zone blending → speed profile.
 
@@ -375,8 +380,25 @@ def run_feature3(
         populate_orientation_zones(blend_geoms, zone_params, waypoints)
 
         # ── Step 5: Dense blended path ──
+        # Knife always present for APCC base-frame runs: orientation is
+        # scheduled vs tool-frame cut arc so dθ/ds_tool matches authored/RS.
+        _knife_t = knife_translation_m
+        _knife_q = knife_quaternion_wxyz
+        if _knife_t is None and not use_base_frame:
+            try:
+                from utils.config_loader import load_knife_config
+                from pathlib import Path as _P
+                _kc = load_knife_config(
+                    str(_P(__file__).resolve().parents[2] / "config" / "knife_config.yaml")
+                )["zundV1"]
+                _knife_t = np.asarray(_kc.translation_m, dtype=float)
+                _knife_q = np.asarray(_kc.quaternion, dtype=float)
+            except Exception:
+                _knife_t = _knife_q = None
         dense_path = sample_blended_path(
             waypoints, zone_params, blend_geoms, v_cmd, ds_mm=f3_cfg.ds_mm,
+            knife_translation_m=_knife_t,
+            knife_quaternion_wxyz=_knife_q,
         )
         if verbose:
             print(
@@ -394,8 +416,11 @@ def run_feature3(
             resid_ceil = float(
                 getattr(f3_cfg, "ori_smooth_resid_ceiling_deg", 2.0)
             )
+            osc_fac = float(getattr(f3_cfg, "ori_smooth_osc_factor", 1.5))
             dense_path, ori_res = smooth_dense_path_orientation(
-                dense_path, resid_ceiling_deg=resid_ceil,
+                dense_path,
+                resid_ceiling_deg=resid_ceil,
+                osc_factor=osc_fac,
             )
             ori_smooth_info = dict(ori_res.info)
             ori_quats_raw = np.asarray(ori_res.quats_raw_wxyz, dtype=float)

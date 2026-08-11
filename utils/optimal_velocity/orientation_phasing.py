@@ -31,6 +31,7 @@ import numpy as np
 
 from utils.optimal_velocity.rs_recording import RSRecording
 from utils.optimal_velocity.toolpath_load import ToolpathContext
+from core.path_parameterization.frame_conversion import plate_tcp_from_base_poses
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +327,20 @@ def write_orientation_phasing_debug(
     th_sv = _theta_cum_rad(poses[:, 3:7])
     dens_sv = _dtheta_ds(s_tool_sv, th_sv, win_mm=density_win_mm)
 
-    # ---- Pre-smoothing SLERP (XYZ identical → same tool arc) ----
+    # ---- Pre-smoothing SLERP ----
+    # Tip position depends on R, so raw density must be measured on the tip
+    # arc from (XYZ, q_raw) — not on the post-smooth tip arc.
     q_raw = ctx.quat_slerp_raw
-    th_raw = dens_raw = None
-    if q_raw is not None and len(q_raw) == len(s_tool_sv):
+    th_raw = dens_raw = s_tool_raw = None
+    if q_raw is not None and len(q_raw) == len(poses):
         th_raw = _theta_cum_rad(q_raw)
-        dens_raw = _dtheta_ds(s_tool_sv, th_raw, win_mm=density_win_mm)
+        tip_raw = plate_tcp_from_base_poses(
+            np.column_stack([poses[:, :3], np.asarray(q_raw, dtype=float)]),
+            ctx.knife_translation_m,
+            ctx.knife_quaternion_wxyz,
+        ) if ctx.knife_translation_m is not None else poses[:, :3]
+        s_tool_raw = _arc_from_xyz(np.asarray(tip_raw, dtype=float))
+        dens_raw = _dtheta_ds(s_tool_raw, th_raw, win_mm=density_win_mm)
 
     # ---- RobotStudio ----
     s_tool_rs = th_rs = dens_rs = g_rs = None
@@ -374,8 +383,8 @@ def write_orientation_phasing_debug(
             label=f"authored WPs (L={s_wp[-1]:.1f} mm, θ={np.rad2deg(th_wp[-1]):.1f}°)")
     ax.plot(s_tool_sv, np.rad2deg(th_sv), "-", lw=1.4, color="#2ca02c",
             label=f"solver dense (L={s_tool_sv[-1]:.1f} mm, θ={np.rad2deg(th_sv[-1]):.1f}°)")
-    if th_raw is not None:
-        ax.plot(s_tool_sv, np.rad2deg(th_raw), "--", lw=1.0, color="#98df8a",
+    if th_raw is not None and s_tool_raw is not None:
+        ax.plot(s_tool_raw, np.rad2deg(th_raw), "--", lw=1.0, color="#98df8a",
                 label="solver pre-smooth (piecewise-SLERP)")
     if th_rs is not None:
         ax.plot(s_tool_rs, np.rad2deg(th_rs), "-", lw=1.3, color="#1f77b4",
@@ -401,9 +410,10 @@ def write_orientation_phasing_debug(
     ax = axes[1]
     ax.plot(s_tool_sv, resid_sv, "-", lw=1.2, color="#2ca02c",
             label="solver − authored")
-    if th_raw is not None:
-        resid_raw = np.rad2deg(th_raw - th_auth_on_sv)
-        ax.plot(s_tool_sv, resid_raw, "--", lw=1.0, color="#98df8a",
+    if th_raw is not None and s_tool_raw is not None:
+        th_auth_on_raw = _interp_onto(s_wp, th_wp, s_tool_raw)
+        resid_raw = np.rad2deg(th_raw - th_auth_on_raw)
+        ax.plot(s_tool_raw, resid_raw, "--", lw=1.0, color="#98df8a",
                 label="pre-smooth − authored")
     if th_rs is not None:
         th_auth_on_rs = _interp_onto(s_wp, th_wp, s_tool_rs)
@@ -449,8 +459,8 @@ def write_orientation_phasing_debug(
                   colors="0.15", lw=2.0, label="authored (per-seg)" if i == 0 else None)
     ax.plot(s_tool_sv, np.rad2deg(dens_sv), "-", lw=1.3, color="#2ca02c",
             label="solver dense (smoothed)")
-    if dens_raw is not None:
-        ax.plot(s_tool_sv, np.rad2deg(dens_raw), "--", lw=1.0, color="#98df8a",
+    if dens_raw is not None and s_tool_raw is not None:
+        ax.plot(s_tool_raw, np.rad2deg(dens_raw), "--", lw=1.0, color="#98df8a",
                 label="solver pre-smooth SLERP")
     if dens_rs is not None:
         ax.plot(s_tool_rs, np.rad2deg(dens_rs), "-", lw=1.3, color="#1f77b4",
@@ -499,9 +509,9 @@ def write_orientation_phasing_debug(
                     f"{np.rad2deg(d):.8g}\n")
         for i in range(len(s_tool_sv)):
             f.write(f"solver,{s_tool_sv[i]:.8g},{np.rad2deg(dens_sv[i]):.8g}\n")
-        if dens_raw is not None:
-            for i in range(len(s_tool_sv)):
-                f.write(f"solver_presmooth,{s_tool_sv[i]:.8g},"
+        if dens_raw is not None and s_tool_raw is not None:
+            for i in range(len(s_tool_raw)):
+                f.write(f"solver_presmooth,{s_tool_raw[i]:.8g},"
                         f"{np.rad2deg(dens_raw[i]):.8g}\n")
         if dens_rs is not None:
             for i in range(len(s_tool_rs)):
@@ -641,8 +651,8 @@ def write_orientation_phasing_debug(
     # M5 — Step 5b before/after report
     # ==================================================================
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-    if dens_raw is not None and th_raw is not None:
-        axes[0].plot(s_tool_sv, np.rad2deg(th_raw), "-", lw=1.1, color="0.45",
+    if dens_raw is not None and th_raw is not None and s_tool_raw is not None:
+        axes[0].plot(s_tool_raw, np.rad2deg(th_raw), "-", lw=1.1, color="0.45",
                      label="raw piecewise-SLERP")
         axes[0].plot(s_tool_sv, np.rad2deg(th_sv), "-", lw=1.3, color="#2ca02c",
                      label="smooth R(s)")
@@ -652,7 +662,7 @@ def write_orientation_phasing_debug(
         axes[0].set_title("M5a  Step 5b orientation smooth — θ(s_tool)")
         axes[0].legend(fontsize=8)
 
-        axes[1].plot(s_tool_sv, np.rad2deg(dens_raw), "-", lw=1.1, color="0.45",
+        axes[1].plot(s_tool_raw, np.rad2deg(dens_raw), "-", lw=1.1, color="0.45",
                      label="raw density")
         axes[1].plot(s_tool_sv, np.rad2deg(dens_sv), "-", lw=1.3, color="#2ca02c",
                      label="smooth density")
@@ -662,15 +672,21 @@ def write_orientation_phasing_debug(
                            label="authored" if i == 0 else None)
         axes[1].axvspan(pivot_tool_lo, pivot_tool_hi, color="tomato", alpha=0.12)
         axes[1].set_ylabel("dθ/ds_tool [deg/mm]")
-        # Local overshoot: max(smooth/raw) pointwise where raw>eps
-        with np.errstate(divide="ignore", invalid="ignore"):
-            over = dens_sv / np.maximum(dens_raw, 1e-9)
-        over[~np.isfinite(over)] = np.nan
-        over_piv = over[m_piv] if np.any(m_piv) else over
-        max_over = float(np.nanmax(over_piv)) if len(over_piv) else float("nan")
+        m_piv_raw = (s_tool_raw >= pivot_tool_lo) & (s_tool_raw <= pivot_tool_hi)
+        peak_raw_piv = (
+            float(np.nanmax(dens_raw[m_piv_raw])) if np.any(m_piv_raw) else float("nan")
+        )
+        peak_sm_piv = (
+            float(np.nanmax(dens_sv[m_piv])) if np.any(m_piv) else float("nan")
+        )
+        max_over = (
+            peak_sm_piv / peak_raw_piv
+            if (peak_raw_piv > 1e-12 and np.isfinite(peak_raw_piv))
+            else float("nan")
+        )
         axes[1].set_title(
             f"M5b  Density before/after smooth  "
-            f"(local overshoot max in pivot = {max_over:.2f}×)"
+            f"(pivot peak smooth/raw = {max_over:.2f}×)"
         )
         axes[1].legend(fontsize=8)
 
@@ -701,34 +717,34 @@ def write_orientation_phasing_debug(
     m5["density_win_mm"] = float(density_win_mm)
     m5["pivot_tool_lo_mm"] = float(pivot_tool_lo)
     m5["pivot_tool_hi_mm"] = float(pivot_tool_hi)
-    if dens_raw is not None:
-        with np.errstate(divide="ignore", invalid="ignore"):
-            # Only score overshoot where raw density is meaningful
-            # (≥10% of authored pivot peak) — avoid /≈0 blow-ups.
-            floor = max(0.1 * peak_auth, 1e-4)
-            over = np.where(
-                dens_raw >= floor, dens_sv / dens_raw, np.nan,
-            )
-        over[~np.isfinite(over)] = np.nan
-        m5["density_overshoot_max_global"] = float(np.nanmax(over))
+    if dens_raw is not None and s_tool_raw is not None:
+        m_piv_raw = (s_tool_raw >= pivot_tool_lo) & (s_tool_raw <= pivot_tool_hi)
+        peak_raw_piv = (
+            float(np.nanmax(dens_raw[m_piv_raw])) if np.any(m_piv_raw) else float("nan")
+        )
+        peak_sm_piv = (
+            float(np.nanmax(dens_sv[m_piv])) if np.any(m_piv) else float("nan")
+        )
+        # Peak-ratio overshoot (each curve on its own tip arc).  Pointwise
+        # smooth/raw is invalid because tip geometry depends on R.
+        m5["density_overshoot_max_global"] = float(
+            np.nanmax(dens_sv) / max(float(np.nanmax(dens_raw)), 1e-12)
+        )
         m5["density_overshoot_max_pivot"] = float(
-            np.nanmax(over[m_piv]) if np.any(m_piv) else np.nan
+            peak_sm_piv / peak_raw_piv
+            if (np.isfinite(peak_raw_piv) and peak_raw_piv > 1e-12)
+            else float("nan")
         )
-        m5["density_peak_raw_deg_per_mm_pivot"] = float(
-            np.rad2deg(np.nanmax(dens_raw[m_piv])) if np.any(m_piv) else np.nan
-        )
-        m5["density_peak_smooth_deg_per_mm_pivot"] = float(
-            np.rad2deg(np.nanmax(dens_sv[m_piv])) if np.any(m_piv) else np.nan
-        )
-        m5["density_peak_authored_deg_per_mm_pivot"] = float(
-            np.rad2deg(peak_auth)
-        )
+        m5["density_peak_raw_deg_per_mm_pivot"] = float(np.rad2deg(peak_raw_piv))
+        m5["density_peak_smooth_deg_per_mm_pivot"] = float(np.rad2deg(peak_sm_piv))
+        m5["density_peak_authored_deg_per_mm_pivot"] = float(np.rad2deg(peak_auth))
         m5["proof"] = (
             "If density_overshoot_max_pivot ≫ 1 while geodesic residual is "
             "small, Step 5b redistributed rotation along the tool arc "
             "(phasing change) rather than merely filtering noise.  "
             "If raw (pre-smooth) peak already ≫ authored, the gap starts "
-            "in Feature-3 SLERP timing on the blended base arc."
+            "in Feature-3 SLERP timing on the blended base path "
+            "(raw peak measured on the pre-smooth tip arc)."
         )
     p5j = out_dir / "M5_step5b_summary.json"
     p5j.write_text(json.dumps(m5, indent=2, default=str) + "\n", encoding="utf-8")
@@ -853,8 +869,11 @@ def write_orientation_phasing_debug(
         "  p′ ≈ −θ′×r (cancellation → g needle).  That is a GEOMETRY gap",
         "  upstream of TOPP / joint limits — not a velocity-profile bug.",
     ]
-    if dens_raw is not None:
-        peak_raw = float(np.nanmax(dens_raw[m_piv])) if np.any(m_piv) else float("nan")
+    if dens_raw is not None and s_tool_raw is not None:
+        m_piv_raw = (s_tool_raw >= pivot_tool_lo) & (s_tool_raw <= pivot_tool_hi)
+        peak_raw = (
+            float(np.nanmax(dens_raw[m_piv_raw])) if np.any(m_piv_raw) else float("nan")
+        )
         lines += [
             f"  Pre-smooth (piecewise-SLERP) pivot peak = "
             f"{np.rad2deg(peak_raw):.2f} deg/mm "

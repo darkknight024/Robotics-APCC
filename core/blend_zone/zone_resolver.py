@@ -38,6 +38,10 @@ class ZoneParams:
         pzone_tcp_mm:       TCP position zone radius in mm (programmed).
         pzone_ori_mm:       Orientation zone radius in mm of TCP movement (programmed).
         zone_ori_deg:       Orientation zone in degrees of tool reorientation (programmed).
+        pzone_eax_mm:       External-axis path zone in mm TCP movement (stored; unused
+                            without external axes — ABB TRM 3.95).
+        zone_leax_mm:       Linear external-axis zone in mm (stored; unused w/o eax).
+        zone_reax_deg:      Rotating external-axis zone in degrees (stored; unused w/o eax).
         eff_pzone_tcp_mm:   Effective TCP zone after overlap reduction.
         eff_pzone_ori_mm:   Effective orientation zone after overlap reduction.
         source:             Origin label for diagnostics ('fine', 'z10', 'custom', …).
@@ -47,6 +51,9 @@ class ZoneParams:
     pzone_tcp_mm: float
     pzone_ori_mm: float
     zone_ori_deg: float
+    pzone_eax_mm: float = 0.0
+    zone_leax_mm: float = 0.0
+    zone_reax_deg: float = 0.0
     eff_pzone_tcp_mm: float = 0.0
     eff_pzone_ori_mm: float = 0.0
     source: str = ""
@@ -62,6 +69,9 @@ class ZoneParams:
             pzone_tcp_mm=self.pzone_tcp_mm,
             pzone_ori_mm=self.pzone_ori_mm,
             zone_ori_deg=self.zone_ori_deg,
+            pzone_eax_mm=self.pzone_eax_mm,
+            zone_leax_mm=self.zone_leax_mm,
+            zone_reax_deg=self.zone_reax_deg,
             eff_pzone_tcp_mm=eff_tcp,
             eff_pzone_ori_mm=eff_ori,
             source=self.source,
@@ -123,12 +133,18 @@ def resolve_zone_from_number(zone_num: float, fine: bool = False) -> str:
     return name
 
 
-def resolve_zone_spec(spec: Union[str, Tuple[float, float, float]]) -> ZoneParams:
+def resolve_zone_spec(
+    spec: Union[str, Tuple[float, ...], List[float]],
+) -> ZoneParams:
     """Resolve a single zone specification into :class:`ZoneParams`.
 
     Args:
-        spec: Either a predefined zone name (``'fine'``, ``'z10'``, …) or a
-              3-tuple ``(pzone_tcp_mm, pzone_ori_mm, zone_ori_deg)``.
+        spec: Either a predefined zone name (``'fine'``, ``'z10'``, …), a
+              3-tuple ``(pzone_tcp_mm, pzone_ori_mm, zone_ori_deg)``, or a
+              full ABB 6-tuple
+              ``(pzone_tcp, pzone_ori, pzone_eax, zone_ori, zone_leax, zone_reax)``.
+              External-axis fields are stored but ignored in ``r_ori_eff`` when
+              the cell has no external axes (TRM 3.95).
 
     Returns:
         :class:`ZoneParams` with programmed values.  Effective values are set
@@ -146,41 +162,62 @@ def resolve_zone_spec(spec: Union[str, Tuple[float, float, float]]) -> ZoneParam
             )
         tcp, ori, ori_deg = PREDEFINED_ZONES[key]
         is_fine = key == "fine"
+        # Predefined table also lists eax / leax / reax (TRM p. 1797); mirror
+        # pzone_ori / zone_ori for the unused eax slots so audits match ABB.
         return ZoneParams(
             finep=is_fine,
             pzone_tcp_mm=tcp,
             pzone_ori_mm=ori,
             zone_ori_deg=ori_deg,
+            pzone_eax_mm=ori,
+            zone_leax_mm=tcp,
+            zone_reax_deg=ori_deg,
             eff_pzone_tcp_mm=tcp,
             eff_pzone_ori_mm=ori,
             source=key,
         )
 
     if isinstance(spec, (tuple, list)):
-        if len(spec) != 3:
+        if len(spec) == 6:
+            tcp = float(spec[0])
+            ori = float(spec[1])
+            eax = float(spec[2])
+            ori_deg = float(spec[3])
+            leax = float(spec[4])
+            reax = float(spec[5])
+        elif len(spec) == 3:
+            tcp, ori, ori_deg = float(spec[0]), float(spec[1]), float(spec[2])
+            eax = ori
+            leax = tcp
+            reax = ori_deg
+        else:
             raise ValueError(
-                f"Custom zone spec must have 3 values (pzone_tcp, pzone_ori, zone_ori), "
-                f"got {len(spec)}"
+                f"Custom zone spec must have 3 values "
+                f"(pzone_tcp, pzone_ori, zone_ori) or 6 ABB values "
+                f"(… pzone_eax, zone_ori, zone_leax, zone_reax), got {len(spec)}"
             )
-        tcp, ori, ori_deg = float(spec[0]), float(spec[1]), float(spec[2])
         is_fine = tcp <= 0.0
-        # ABB: pzone_ori must be >= pzone_tcp; clamp up if needed.
+        # ABB: pzone_ori / pzone_eax must be >= pzone_tcp; clamp up if needed.
         ori = max(ori, tcp)
+        eax = max(eax, tcp)
         return ZoneParams(
             finep=is_fine,
             pzone_tcp_mm=tcp,
             pzone_ori_mm=ori,
             zone_ori_deg=ori_deg,
+            pzone_eax_mm=eax,
+            zone_leax_mm=leax,
+            zone_reax_deg=reax,
             eff_pzone_tcp_mm=tcp,
             eff_pzone_ori_mm=ori,
             source=f"custom({tcp},{ori},{ori_deg})",
         )
 
-    raise TypeError(f"Zone spec must be str or 3-tuple, got {type(spec)}")
+    raise TypeError(f"Zone spec must be str or 3/6-tuple, got {type(spec)}")
 
 
 def resolve_zone_list(
-    zone_specs: List[Union[str, Tuple[float, float, float]]],
+    zone_specs: List[Union[str, Tuple[float, ...], List[float]]],
 ) -> List[ZoneParams]:
     """Resolve a list of per-waypoint zone specifications.
 

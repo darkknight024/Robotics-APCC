@@ -434,6 +434,8 @@ class Feature3D1Config:
     # diagnostics enable it explicitly.
     smooth_orientation: bool = False
     ori_smooth_resid_ceiling_deg: float = 2.0
+    # Pointwise |dr/ds| guard for Step 5b (≤ factor × local raw envelope).
+    ori_smooth_osc_factor: float = 1.5
     enable_near_collinear_skip: bool = True
     min_corner_deflection_deg: float = 3.0
     # Per-ceiling toggles for M5 speed composition (True = include in min).

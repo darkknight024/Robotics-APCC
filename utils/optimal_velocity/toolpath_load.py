@@ -133,6 +133,8 @@ def load_joint_path_from_toolpath(
         reports=False,
         preloaded_load_result=lr,
         jacobian_dynamics_override=True,
+        knife_translation_m=np.asarray(knife.translation_m, dtype=float),
+        knife_quaternion_wxyz=np.asarray(knife.quaternion, dtype=float),
     )
     if result.q_star is None or result.dense_path is None:
         raise RuntimeError(

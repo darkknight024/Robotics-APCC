@@ -489,7 +489,11 @@ def _parse_f3_headerless_custom(vals: List[float], n_cols: int, default_v_cmd: f
 
     if n_cols >= 14:
         v_cmd = vals[7]
-        zone_spec = (vals[8], vals[9], vals[11])
+        # Full ABB zonedata: pzone_tcp, pzone_ori, pzone_eax, zone_ori,
+        # zone_leax, zone_reax (eax stored on ZoneParams; unused w/o axes).
+        zone_spec = (
+            vals[8], vals[9], vals[10], vals[11], vals[12], vals[13],
+        )
         zone_ok = True
         speed_ok = True
     elif n_cols >= 11:

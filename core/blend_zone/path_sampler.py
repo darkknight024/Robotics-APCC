@@ -11,9 +11,11 @@ Feature 3 must run IK on the actual path — the path that includes blend arcs �
 to prevent a fundamental inconsistency between joint states and the speed
 prediction.
 
-Handles orientation SLERP onset correctly: orientation does not begin
-transitioning at the blend arc entry point; it begins earlier, at
-``r_ori_eff`` before the waypoint on the incoming segment, as populated by M3.
+Handles orientation SLERP correctly against the *tool-frame* cut arc when a
+knife pose is supplied (fixed knife K, moving plate P): progress ``t`` is
+``Δs_tool / L_tool`` so authored ``dθ/ds_tool`` is preserved.  Without a knife
+(plate-frame paths) the position arc is used.  ABB ``r_ori_eff`` onset is
+honoured as hold–SLERP–hold within each waypoint interval.
 
 DensePath Output:
     ``poses``        (M, 7) SE(3) poses in metres + quaternion.
@@ -291,12 +293,184 @@ def _sample_bezier_arc(
     return positions, quats, cum_arc, t_vals
 
 
+def _cumulative_param_arc_mm(
+    pos_mm: np.ndarray,
+    quats_wxyz: np.ndarray,
+    knife_translation_m: Optional[np.ndarray],
+    knife_quaternion_wxyz: Optional[np.ndarray],
+) -> np.ndarray:
+    """Cumulative orientation-parameter arc [mm] along dense samples.
+
+    With a calibrated knife pose the parameter is the **tool-frame** cut arc
+    (knife tip in the plate frame).  Otherwise it is the position arc of the
+    sampled TCP (plate-frame Feature-3 runs).
+    """
+    pos = np.asarray(pos_mm, dtype=float)
+    if len(pos) == 0:
+        return np.zeros(0)
+    if knife_translation_m is not None and knife_quaternion_wxyz is not None:
+        from core.path_parameterization.frame_conversion import (
+            plate_tcp_from_base_poses,
+        )
+        poses = np.column_stack([pos, np.asarray(quats_wxyz, dtype=float)])
+        tip = plate_tcp_from_base_poses(
+            poses,
+            np.asarray(knife_translation_m, dtype=float),
+            np.asarray(knife_quaternion_wxyz, dtype=float),
+        )
+        ds = np.linalg.norm(np.diff(tip, axis=0), axis=1)
+    else:
+        ds = np.linalg.norm(np.diff(pos, axis=0), axis=1)
+    return np.concatenate([[0.0], np.cumsum(ds)])
+
+
+def _rebuild_orientation_schedule(
+    pos_mm: np.ndarray,
+    quat_array: np.ndarray,
+    seg_arr: np.ndarray,
+    blend_geoms: List[Optional[BlendArcGeometry]],
+    wp_quats: np.ndarray,
+    *,
+    knife_translation_m: Optional[np.ndarray] = None,
+    knife_quaternion_wxyz: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Monotone hold–SLERP–hold orientation vs tool (or position) arc.
+
+    When a knife pose is supplied, orientation progress is synchronized to the
+    **tool-frame cut arc**.  Because tip position depends on plate orientation,
+    we use a two-pass schedule:
+
+    1. Provisional quats = hold–SLERP–hold vs **position** arc (base TCP).
+    2. Measure tip arc from ``(pos, provisional_quats)`` via the knife pose.
+    3. Final quats = hold–SLERP–hold vs that tip arc.
+
+    Without a knife, a single position-arc pass is used (plate-frame Feature-3).
+    XYZ is never modified.
+    """
+    n_samp = len(quat_array)
+    if n_samp < 2:
+        return np.asarray(quat_array, dtype=float).copy()
+
+    # Pass 1 — always build a provisional schedule on the position arc.
+    s_pos = np.concatenate([
+        [0.0],
+        np.cumsum(np.linalg.norm(np.diff(np.asarray(pos_mm, dtype=float), axis=0), axis=1)),
+    ])
+    provisional = _apply_hold_slerp_hold(
+        s_pos, seg_arr, blend_geoms, wp_quats,
+    )
+
+    if knife_translation_m is None or knife_quaternion_wxyz is None:
+        return provisional
+
+    # Pass 2 — re-parameterise against tip arc from the provisional motion.
+    # Floor each step by a fraction of position ds so tip-stall regions cannot
+    # compress a full Δθ into a vanishing tip span (which creates density needles
+    # and a different tip geometry after rebuild).
+    tip = None
+    from core.path_parameterization.frame_conversion import (
+        plate_tcp_from_base_poses,
+    )
+    poses = np.column_stack([
+        np.asarray(pos_mm, dtype=float),
+        np.asarray(provisional, dtype=float),
+    ])
+    tip = plate_tcp_from_base_poses(
+        poses,
+        np.asarray(knife_translation_m, dtype=float),
+        np.asarray(knife_quaternion_wxyz, dtype=float),
+    )
+    ds_tip = np.linalg.norm(np.diff(tip, axis=0), axis=1)
+    ds_pos = np.linalg.norm(np.diff(np.asarray(pos_mm, dtype=float), axis=0), axis=1)
+    ds = np.maximum(ds_tip, 0.25 * ds_pos)
+    s_tool = np.concatenate([[0.0], np.cumsum(ds)])
+    return _apply_hold_slerp_hold(
+        s_tool, seg_arr, blend_geoms, wp_quats,
+    )
+
+
+def _apply_hold_slerp_hold(
+    s_param: np.ndarray,
+    seg_arr: np.ndarray,
+    blend_geoms: List[Optional[BlendArcGeometry]],
+    wp_quats: np.ndarray,
+) -> np.ndarray:
+    """Apply per-segment hold–SLERP–hold on a fixed parameter arc."""
+    n_samp = len(s_param)
+    out = np.empty((n_samp, 4), dtype=float)
+    n_wp = len(wp_quats)
+    s_param = np.asarray(s_param, dtype=float)
+
+    i0 = 0
+    while i0 < n_samp:
+        s = int(seg_arr[i0])
+        i1 = i0
+        while i1 + 1 < n_samp and int(seg_arr[i1 + 1]) == s:
+            i1 += 1
+
+        q_a = np.asarray(wp_quats[s], dtype=float)
+        q_b = np.asarray(wp_quats[min(s + 1, n_wp - 1)], dtype=float)
+        qa_n = np.linalg.norm(q_a)
+        qb_n = np.linalg.norm(q_b)
+        if qa_n > 1e-12:
+            q_a = q_a / qa_n
+        if qb_n > 1e-12:
+            q_b = q_b / qb_n
+        if np.dot(q_a, q_b) < 0.0:
+            q_b = -q_b
+
+        geom_a = blend_geoms[s] if s < len(blend_geoms) else None
+        geom_b = blend_geoms[s + 1] if (s + 1) < len(blend_geoms) else None
+        r_leave = float(getattr(geom_a, "ori_onset_out_mm", 0.0) or 0.0) if geom_a else 0.0
+        r_arrive = float(getattr(geom_b, "ori_onset_in_mm", 0.0) or 0.0) if geom_b else 0.0
+        r_leave = max(0.0, r_leave)
+        r_arrive = max(0.0, r_arrive)
+
+        s0 = float(s_param[i0])
+        s1 = float(s_param[i1])
+        span = s1 - s0
+        count = i1 - i0
+
+        if span > 1e-9 and (r_leave + r_arrive) >= span:
+            scale = 0.45 * span / max(r_leave + r_arrive, 1e-12)
+            r_leave *= scale
+            r_arrive *= scale
+
+        s_lo = s0 + r_leave
+        s_hi = s1 - r_arrive
+        mid = max(s_hi - s_lo, 0.0)
+
+        for k in range(i0, i1 + 1):
+            if span <= 1e-9:
+                t = float((k - i0) / count) if count > 0 else 0.0
+            else:
+                sk = float(s_param[k])
+                if mid <= 1e-12:
+                    t = 0.0 if sk < 0.5 * (s0 + s1) else 1.0
+                elif sk <= s_lo:
+                    t = 0.0
+                elif sk >= s_hi:
+                    t = 1.0
+                else:
+                    t = (sk - s_lo) / mid
+            out[k] = _slerp(q_a, q_b, min(1.0, max(0.0, t)))
+        i0 = i1 + 1
+
+    q_last = np.asarray(wp_quats[-1], dtype=float)
+    n_last = np.linalg.norm(q_last)
+    out[-1] = q_last / n_last if n_last > 1e-12 else q_last
+    return out
+
+
 def sample_blended_path(
     waypoints_m: np.ndarray,
     zones: List[ZoneParams],
     blend_geoms: List[Optional[BlendArcGeometry]],
     v_cmd_per_wp: np.ndarray,
     ds_mm: float = 1.0,
+    *,
+    knife_translation_m: Optional[np.ndarray] = None,
+    knife_quaternion_wxyz: Optional[np.ndarray] = None,
 ) -> DensePath:
     """Generate a dense SE(3) path along the actual TCP trajectory.
 
@@ -305,6 +479,11 @@ def sample_blended_path(
     *destination* of its programmed segment (RAPID-style): CSV column 8 at
     waypoint ``k`` is the speed used to reach waypoint ``k`` from ``k-1``.
 
+    Orientation is rebuilt after assembly as hold–SLERP–hold vs the
+    **tool-frame** cut arc when ``knife_translation_m`` / quaternion are
+    provided (base-frame plate poses + fixed knife).  Otherwise the
+    position arc is used (plate-frame Feature-3 runs).
+
     Args:
         waypoints_m:    (N, 7) [x_m, y_m, z_m, qw, qx, qy, qz].
         zones:          Per-waypoint :class:`ZoneParams` (overlap-reduced).
@@ -312,6 +491,8 @@ def sample_blended_path(
         v_cmd_per_wp:   (N,) commanded TCP speed per waypoint in mm/s
                         (destination speed for the inbound segment).
         ds_mm:          Desired arc-length spacing between samples in mm.
+        knife_translation_m: Optional (3,) knife position in base [m].
+        knife_quaternion_wxyz: Optional (4,) knife orientation in base [wxyz].
 
     Returns:
         :class:`DensePath` with the full dense trajectory.
@@ -456,46 +637,25 @@ def sample_blended_path(
         if arc_array[i] < arc_array[i - 1]:
             arc_array[i] = arc_array[i - 1]
 
-    # ── Orientation-continuity pass ──────────────────────────────────────
-    # The straight part of a segment and its end-blend arc each independently
-    # SLERP the *full* quats[i]→quats[i+1] transition.  At the straight→blend
-    # boundary that resets the orientation backward (quats[i+1] → quats[i]),
-    # which for orientation-heavy paths (Exp24 v9 n90) shows up as large
-    # adjacent wrist-joint jumps (J4/J6 up to ~38°) that wreck the TOPP-RA
-    # spline fit.  Rebuild a single monotonic orientation sweep per waypoint
-    # interval, parameterised by cumulative arc length within that interval
-    # (index fraction when the interval has ~zero translation).
+    # ── Orientation schedule: tool-arc hold–SLERP–hold (uses M3 onset) ──
+    # Straight / blend pieces above each SLERP independently; rebuilding once
+    # per waypoint interval removes discontinuities and synchronises
+    # orientation progress to the cut arc (ABB TCP-path semantics).
     seg_arr = np.array(all_seg_id, dtype=int)
-    n_samp = len(quat_array)
-    if n_samp > 1:
-        i0 = 0
-        while i0 < n_samp:
-            s = int(seg_arr[i0])
-            i1 = i0
-            while i1 + 1 < n_samp and int(seg_arr[i1 + 1]) == s:
-                i1 += 1
-            q_a = quats[s]
-            q_b = quats[min(s + 1, n - 1)]
-            span = float(arc_array[i1] - arc_array[i0])
-            count = i1 - i0
-            for k in range(i0, i1 + 1):
-                if span > 1e-9:
-                    t = float((arc_array[k] - arc_array[i0]) / span)
-                elif count > 0:
-                    t = float((k - i0) / count)
-                else:
-                    t = 0.0
-                quat_array[k] = _slerp(q_a, q_b, min(1.0, max(0.0, t)))
-            i0 = i1 + 1
-    # Keep the final pose exactly at the last programmed orientation.
-    quat_array[-1] = quats[-1]
+    quat_array = _rebuild_orientation_schedule(
+        pos_array, quat_array, seg_arr, blend_geoms, quats,
+        knife_translation_m=knife_translation_m,
+        knife_quaternion_wxyz=knife_quaternion_wxyz,
+    )
 
     # Convert positions from mm back to metres for SE(3) consistency
     poses = np.column_stack([pos_array / 1000.0, quat_array])
 
     logger.info(
-        "Dense path: %d samples, total arc-length %.1f mm, ds=%.1f mm",
+        "Dense path: %d samples, total arc-length %.1f mm, ds=%.1f mm%s",
         len(poses), arc_array[-1] if len(arc_array) > 0 else 0.0, ds_mm,
+        (" [ori vs tool-arc]" if knife_translation_m is not None
+         else " [ori vs position-arc]"),
     )
 
     return DensePath(
