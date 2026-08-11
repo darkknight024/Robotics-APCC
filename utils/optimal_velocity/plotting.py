@@ -121,6 +121,7 @@ _PLOT_GROUPS = {
     "I": "I_spline_fk_check",
     "J": "J_sawtooth_debug",
     "K": "K_base_frame_command",
+    "M": "M_orientation_phasing",
     "T": "T_twist_components",
 }
 

@@ -16,6 +16,9 @@ from core.path_parameterization.se3_arc_length import (
     resolve_lambda,
 )
 from utils.optimal_velocity.benchmarking import RSBenchExclusionConfig
+from utils.optimal_velocity.orientation_phasing import (
+    write_orientation_phasing_debug,
+)
 from utils.optimal_velocity.plotting import (
     _PLOT_GROUPS,
     _plot_orientation_smooth_compare,
@@ -137,6 +140,16 @@ def process_one_toolpath(
                 )
             except Exception as exc:
                 print(f"  [WARN] orientation_smooth plot failed: {exc}")
+
+    # Geometry-only proof: orientation phasing authored vs solver vs RS
+    # (tool-frame arc).  Lives at the toolpath folder — same for all modes.
+    if make_plots:
+        try:
+            write_orientation_phasing_debug(
+                case_dir / "M_orientation_phasing", ctx, rs_rec,
+            )
+        except Exception as exc:
+            print(f"  [WARN] M_orientation_phasing failed: {exc}")
 
     common = dict(
         v_cmd=ctx.v_cmd,

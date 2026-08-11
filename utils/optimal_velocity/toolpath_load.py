@@ -46,6 +46,9 @@ class ToolpathContext:
     # Calibrated knife pose T_B_K (for plate-twist series in pipeline).
     knife_translation_m: Optional[np.ndarray] = None
     knife_quaternion_wxyz: Optional[np.ndarray] = None
+    # Feature-3 zone / blend geometry (for M_orientation_phasing r_ori_eff).
+    zone_params: Optional[list] = None
+    blend_geoms: Optional[list] = None
 
 
 def load_joint_path_from_toolpath(
@@ -191,4 +194,6 @@ def load_joint_path_from_toolpath(
         quat_slerp_raw=getattr(result, "orientation_quats_raw", None),
         knife_translation_m=np.asarray(knife.translation_m, dtype=float),
         knife_quaternion_wxyz=np.asarray(knife.quaternion, dtype=float),
+        zone_params=getattr(result, "zone_params", None),
+        blend_geoms=getattr(result, "blend_geoms", None),
     )
