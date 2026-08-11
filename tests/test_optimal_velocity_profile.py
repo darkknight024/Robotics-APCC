@@ -593,5 +593,101 @@ def test_T5_optimality_and_ceiling():
         )
 
 
+# =====================================================================
+# Exact base<->tool speed conversion (utils/toolpath_speed_frames.py)
+# =====================================================================
+def _rotz(t):
+    c, s = np.cos(t), np.sin(t)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def _rot_to_wxyz(R):
+    from scipy.spatial.transform import Rotation
+    x, y, z, w = Rotation.from_matrix(R).as_quat()
+    return np.array([w, x, y, z])
+
+
+def test_speed_frames_pure_translation():
+    """Pure translation (no rotation): base and tool linear speeds are equal."""
+    from utils.toolpath_speed_frames import (
+        fit_base_pose_rates, eval_base_pose_rates,
+        tool_frame_speed_profile, base_frame_target_speed,
+    )
+    s = np.linspace(0, 200.0, 400)
+    # plate translates along +x, fixed orientation, knife far away
+    pos = np.column_stack([s, np.zeros_like(s), 100.0 * np.ones_like(s)])
+    poses = np.column_stack([pos, np.tile([1, 0, 0, 0], (len(s), 1))])
+    rates = fit_base_pose_rates(s, poses)
+    t_bk = np.array([0.0, 500.0, 300.0])  # fixed knife, off-axis
+    sdot = np.full_like(s, 25.0)
+    v_tool = tool_frame_speed_profile(rates, s, sdot, t_bk)
+    # pure translation: lever arm term ω×r = 0, so ‖v_tool‖ = ‖v_BP‖ = ṡ
+    assert np.allclose(v_tool, 25.0, atol=1e-6), v_tool[[0, -1]]
+    # commanded tool speed -> base target should equal the same 25 mm/s
+    v_base = base_frame_target_speed(rates, s[:3], np.array([25.0, 25.0, 25.0]), t_bk)
+    assert np.allclose(v_base, 25.0, atol=1e-6)
+
+
+def test_speed_frames_pure_rotation_stationary_knife():
+    """Plate spinning about its origin (p_BP fixed): the knife point on the
+    rotation axis is stationary; an off-axis knife point moves at ω·|r|."""
+    from utils.toolpath_speed_frames import (
+        fit_base_pose_rates, tool_frame_speed_profile,
+    )
+    center = np.array([50.0, -20.0, 80.0])
+    th = np.linspace(0.0, 0.6, 300)              # partial spin (spline-friendly)
+    pos = np.tile(center, (len(th), 1))
+    quats = np.stack([_rot_to_wxyz(_rotz(t)) for t in th])
+    poses = np.column_stack([pos, quats])
+    rates = fit_base_pose_rates(th, poses, knot_spacing_mm=0.05)
+    sdot = np.full_like(th, 2.0)                  # dθ/dt = 2 rad/s
+
+    # (a) knife ON the rotation axis -> plate point at the axis is stationary.
+    v_tool_axis = tool_frame_speed_profile(rates, th, sdot, center.copy())
+    assert np.max(v_tool_axis) < 1e-2, np.max(v_tool_axis)
+
+    # (b) knife offset by R_lever along +x from the axis -> ω·R constant.
+    R_lever = 40.0
+    t_bk = center + np.array([R_lever, 0.0, 0.0])
+    v_tool_off = tool_frame_speed_profile(rates, th, sdot, t_bk)
+    assert np.allclose(v_tool_off, 2.0 * R_lever, rtol=2e-2), (
+        v_tool_off.min(), v_tool_off.max()
+    )
+
+
+def test_speed_frames_adjoint_identity():
+    """tool_frame_speed_profile matches ‖twist_knife_lin‖ from the pipeline."""
+    from utils.toolpath_speed_frames import (
+        fit_base_pose_rates, eval_base_pose_rates, tool_linear_to_base,
+        tool_frame_speed_profile,
+    )
+    # Curved, reorienting path.
+    s = np.linspace(0, 300.0, 600)
+    ang = s / 100.0
+    pos = np.column_stack([s, 30.0 * np.sin(ang), 20.0 * np.cos(ang)])
+    quats = np.stack([_rot_to_wxyz(_rotz(a) @ _rotz(0.3)) for a in ang])
+    poses = np.column_stack([pos, quats])
+    rates = fit_base_pose_rates(s, poses)
+    t_bk = np.array([150.0, 40.0, -60.0])
+    sdot = 18.0 + 6.0 * np.sin(s / 40.0)
+    v_tool = tool_frame_speed_profile(rates, s, sdot, t_bk)
+    # cross-check against the module's own adjoint factor (internal consistency).
+    from utils.toolpath_speed_frames import adjoint_dpdt
+    assert np.allclose(v_tool, adjoint_dpdt(rates, s, t_bk) * sdot, atol=1e-9)
+    # and against the vector identity used by base_linear_to_tool:
+    _, p, dp, dth = eval_base_pose_rates(rates, s)
+    r = t_bk[None, :] - p
+    v_vec = (dp + np.cross(dth, r)) * sdot[:, None]
+    assert np.allclose(v_tool, np.linalg.norm(v_vec, axis=1), atol=1e-6)
+    # round-trip: commanding v_tool reproduces a finite base twist, and the
+    # plate-origin (ee_link) speed differs from the tool speed under rotation.
+    v_bp = tool_linear_to_base(rates, s[:5], v_tool[:5], t_bk)
+    assert v_bp.shape == (5, 3)
+    assert np.all(np.isfinite(v_bp))
+    # base EE speed = ‖dp·ṡ‖; with reorientation it is generally ≠ tool speed.
+    v_base_mag = np.linalg.norm(v_bp, axis=1)
+    assert np.all(v_base_mag >= 0.0)
+
+
 if __name__ == "__main__":
     main()

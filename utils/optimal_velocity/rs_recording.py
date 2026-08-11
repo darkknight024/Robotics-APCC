@@ -196,7 +196,7 @@ def load_rs_recording(
         data["rs_z_mm"] / 1000.0,
         data["rs_qw"], data["rs_qx"], data["rs_qy"], data["rs_qz"],
     ])
-    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
+    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["zundV1"]
 
     if rs_frame == "tool":
         xyz_plate_mm = poses_logged[:, :3] * 1000.0

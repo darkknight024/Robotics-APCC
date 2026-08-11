@@ -29,7 +29,7 @@ class ToolpathContext:
     q_raw: np.ndarray                 # (M, 6) rad — IK on blended dense path
     poses: np.ndarray                 # (M, 7) dense TCP [x_mm,y_mm,z_mm,qw,qx,qy,qz]
     # Dense knife-tip positions in the plate/tool frame [mm], aligned with
-    # ``poses`` rows (inverse Zund knife transform).  Basis of the frame
+    # ``poses`` rows (inverse zundV1 knife transform).  Basis of the frame
     # gain g(s) = ds_tool/ds_base used for tool-frame speed unification.
     plate_xyz: np.ndarray             # (M, 3) [mm]
     limits: JointLimits
@@ -38,7 +38,7 @@ class ToolpathContext:
     v_cmd_at_s: np.ndarray            # (M_cmd,) commanded speed [mm/s]
     v_cmd: float                      # max(v_cmd_at_s) — label / ramp fallback
     waypoints_plate: np.ndarray       # (N, 7) programmed WPs in plate/knife frame [mm+quat]
-    waypoints_base: np.ndarray        # (N, 7) same WPs after Zund → robot-base transform
+    waypoints_base: np.ndarray        # (N, 7) same WPs after zundV1 → robot-base transform
     toolpath_csv: Path
     orientation_smooth: Optional[Dict] = None  # Feature-3 Step 5b diagnostics
     # Piecewise-SLERP quats before smoothing (wxyz); None if smoothing off.
@@ -61,7 +61,7 @@ def load_joint_path_from_toolpath(
     ``tests/experiment24_validation.py``: prepare a base-frame load result,
     then call ``run_feature3`` and read ``q_star`` / ``dense_path.poses``.
 
-    Also returns the programmed waypoints in plate frame and after the Zund
+    Also returns the programmed waypoints in plate frame and after the zundV1
     knife → robot-base transform (for context plots).
 
     When ``smooth_orientation`` is True (default for this diagnostic),
@@ -92,7 +92,7 @@ def load_joint_path_from_toolpath(
     cfg.solver = "eaik"
 
     robot = get_robot_by_name(_ROBOT_NAME)
-    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["Zund"]
+    knife = load_knife_config(str(repo / "config" / "knife_config.yaml"))["zundV1"]
 
     # Plate-frame programmed waypoints (as in the CSV — no knife transform).
     lr_plate = prepare_toolpath_load_result_for_feature3(
@@ -102,7 +102,7 @@ def load_joint_path_from_toolpath(
         default_v_cmd=20.0,
         use_base_frame=True,
     )
-    # Base-frame waypoints after Zund knife pose (same transform as the solver).
+    # Base-frame waypoints after zundV1 knife pose (same transform as the solver).
     lr = prepare_toolpath_load_result_for_feature3(
         str(toolpath_csv),
         custom_zone=True,

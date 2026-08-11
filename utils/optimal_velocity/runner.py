@@ -181,10 +181,62 @@ def process_one_toolpath(
         _write_mode_summary(mode_dir, r, rs_rec)
         return r
 
+    # ---- Exact base<->tool speed conversion (geometry-only; no frame gain) --
+    # Commanded mode: attach per-waypoint base-frame target linear speed.
+    # Optimal/constant mode: report per-waypoint tool-frame cut speed.
+    knife_t_mm = (
+        None if ctx.knife_translation_m is None
+        else np.asarray(ctx.knife_translation_m, dtype=float) * 1000.0
+    )
+    knife_q = ctx.knife_quaternion_wxyz
+
+    def _attach_commanded_base_targets(r: ProfileResult, mode_dir: Path) -> None:
+        if r is None or knife_t_mm is None:
+            return
+        try:
+            from utils.toolpath_speed_frames import attach_base_target_speeds
+            v_base_wp = attach_base_target_speeds(
+                r, ctx.knife_translation_m, ctx.s_cmd_mm, ctx.v_cmd_at_s,
+                ctx.waypoints_base,
+            )
+            out = mode_dir / "waypoint_base_target_speed.csv"
+            with open(out, "w", encoding="utf-8") as f:
+                f.write("waypoint_idx,v_tool_cmd_mm_s,v_base_target_mm_s\n")
+                for i in range(len(v_base_wp)):
+                    f.write(
+                        f"{i},{float(r.wp_target_speed_tool_mm_s[i]):.6f},"
+                        f"{float(v_base_wp[i]):.6f}\n"
+                    )
+            print(f"  [commanded] base-frame target speed per waypoint -> {out.name}")
+        except Exception as exc:
+            print(f"  [WARN] base-target speed attach failed: {exc}")
+
+    def _report_tool_speed(r: ProfileResult, mode_dir: Path, label: str) -> None:
+        if r is None or knife_t_mm is None:
+            return
+        try:
+            from utils.toolpath_speed_frames import (
+                compute_tool_speed_profile,
+                tool_speed_at_waypoints,
+            )
+            compute_tool_speed_profile(r, ctx.knife_translation_m, knife_q)
+            v_tool_wp = tool_speed_at_waypoints(r, ctx.knife_translation_m, ctx.waypoints_base)
+            out = mode_dir / "waypoint_tool_speed.csv"
+            with open(out, "w", encoding="utf-8") as f:
+                f.write("waypoint_idx,v_tool_mm_s\n")
+                for i, v in enumerate(v_tool_wp):
+                    f.write(f"{i},{float(v):.6f}\n")
+            print(f"  [{label}] tool-frame speed: median "
+                  f"{float(np.nanmedian(r.v_tool_exact_mm_s)):.2f} mm/s "
+                  f"(exact adjoint; {len(v_tool_wp)} waypoints -> {out.name})")
+        except Exception as exc:
+            print(f"  [WARN] tool-speed profile failed ({label}): {exc}")
+
     res_cmd = res_const = res_opt = None
     if time_optimal:
         print("\n--- mode: optimal ---")
         res_opt = _run(case_dir / "optimal", time_optimal=True)
+        _report_tool_speed(res_opt, case_dir / "optimal", "optimal")
         # Fastest constant TCP speed the whole-path ceiling admits: the
         # minimum of the joint-only velocity ceiling (incl. secant cap),
         # excluding only samples where the ceiling is ~0 / non-finite
@@ -200,9 +252,11 @@ def process_one_toolpath(
 
         print("\n--- mode: commanded ---")
         res_cmd = _run(case_dir / "commanded")
+        _attach_commanded_base_targets(res_cmd, case_dir / "commanded")
 
         print("\n--- mode: constant ---")
         res_const = _run(case_dir / "constant", v_const=v_const)
+        _report_tool_speed(res_const, case_dir / "constant", "constant")
 
         summary = _write_benchmark_summary(
             case_dir / "summary.txt", str(toolpath), ctx.v_cmd, rs_rec,
@@ -211,6 +265,7 @@ def process_one_toolpath(
     else:
         print("\n--- mode: commanded ---")
         res_cmd = _run(case_dir / "commanded")
+        _attach_commanded_base_targets(res_cmd, case_dir / "commanded")
         summary = _write_benchmark_summary(
             case_dir / "summary.txt", str(toolpath), ctx.v_cmd, rs_rec, res_cmd,
         )
