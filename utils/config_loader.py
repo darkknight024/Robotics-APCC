@@ -436,6 +436,13 @@ class Feature3D1Config:
     ori_smooth_resid_ceiling_deg: float = 2.0
     # Pointwise |dr/ds| guard for Step 5b (≤ factor × local raw envelope).
     ori_smooth_osc_factor: float = 1.5
+    # Fix 3 — cancellation / ISA re-phase after orientation smooth (quats only).
+    # Raises spline-adjoint min g toward g_floor while keeping WP orientations.
+    ori_rephase_enabled: bool = True
+    ori_rephase_g_floor: float = 0.15
+    ori_rephase_max_rounds: int = 16
+    ori_rephase_max_wp_err_deg: float = 2.5
+    ori_rephase_allow_endpoint_fallback: bool = True
     enable_near_collinear_skip: bool = True
     min_corner_deflection_deg: float = 3.0
     # Per-ceiling toggles for M5 speed composition (True = include in min).

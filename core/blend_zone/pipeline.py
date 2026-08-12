@@ -92,6 +92,8 @@ class Feature3D1Result:
     orientation_smooth: Optional[dict] = None
     # Piecewise-SLERP quats before Step 5b (wxyz); None if smoothing off.
     orientation_quats_raw: Optional[np.ndarray] = None
+    # Fix-3 cancellation re-phase diagnostics (None when disabled / no knife).
+    orientation_rephase: Optional[dict] = None
     # SE(3) arc-length parameterisation diagnostics (None if not computed).
     se3_parameterisation: Optional[dict] = None
     # Lambda-sensitivity comparison results (None unless sensitivity run).
@@ -411,6 +413,7 @@ def run_feature3(
         # Must run BEFORE IK so q* traces the smoothed SE(3) path.
         ori_smooth_info = None
         ori_quats_raw = None
+        ori_rephase_info = None
         if bool(getattr(f3_cfg, "smooth_orientation", False)):
             from .orientation_smooth import smooth_dense_path_orientation
             resid_ceil = float(
@@ -431,6 +434,37 @@ def run_feature3(
                     f"mean={ori_smooth_info.get('geodesic_resid_mean_deg', float('nan')):.3f}°  "
                     f"knots={ori_smooth_info.get('n_interior_knots')}  "
                     f"spacing={ori_smooth_info.get('base_knot_spacing_mm'):.2f} mm"
+                )
+
+        # ── Step 5b2: Fix-3 cancellation / ISA orientation re-phase ──
+        # Quats only; raises spline-adjoint min g used by commanded TOPP.
+        if (
+            bool(getattr(f3_cfg, "ori_rephase_enabled", True))
+            and _knife_t is not None
+        ):
+            from .orientation_rephase import rephase_dense_path_orientation
+            dense_path, rp = rephase_dense_path_orientation(
+                dense_path,
+                wp_quats_wxyz=np.asarray(waypoints[:, 3:7], dtype=float),
+                knife_translation_m=np.asarray(_knife_t, dtype=float),
+                wp_pos_mm=np.asarray(waypoints[:, :3], dtype=float) * 1000.0,
+                g_floor=float(getattr(f3_cfg, "ori_rephase_g_floor", 0.15)),
+                max_rounds=int(getattr(f3_cfg, "ori_rephase_max_rounds", 16)),
+                max_wp_err_deg=float(
+                    getattr(f3_cfg, "ori_rephase_max_wp_err_deg", 2.5)
+                ),
+                allow_endpoint_fallback=bool(
+                    getattr(f3_cfg, "ori_rephase_allow_endpoint_fallback", True)
+                ),
+            )
+            ori_rephase_info = dict(rp.info)
+            if verbose:
+                print(
+                    f"    Orientation rephase: "
+                    f"g_min {ori_rephase_info.get('g_min_before', float('nan')):.3f}"
+                    f"→{ori_rephase_info.get('g_min_after', float('nan')):.3f}  "
+                    f"rounds={ori_rephase_info.get('n_rounds')}  "
+                    f"WP|Δθ|_max={ori_rephase_info.get('wp_err_deg_after', float('nan')):.2f}°"
                 )
 
         # ── Step 5c: Weighted SE(3) arc-length parameterisation ──
@@ -520,6 +554,7 @@ def run_feature3(
                 waypoints_m=waypoints,
                 orientation_smooth=ori_smooth_info,
                 orientation_quats_raw=ori_quats_raw,
+                orientation_rephase=ori_rephase_info,
                 se3_parameterisation=se3_info,
             )
             all_results.append(result)
@@ -797,6 +832,7 @@ def run_feature3(
             commanded_topp=commanded_topp,
             orientation_smooth=ori_smooth_info,
             orientation_quats_raw=ori_quats_raw,
+            orientation_rephase=ori_rephase_info,
             se3_parameterisation=se3_info,
         )
 
