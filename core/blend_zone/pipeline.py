@@ -397,10 +397,12 @@ def run_feature3(
                 _knife_q = np.asarray(_kc.quaternion, dtype=float)
             except Exception:
                 _knife_t = _knife_q = None
+        _ori_sched = str(getattr(f3_cfg, "ori_schedule_mode", "abb")).lower()
         dense_path = sample_blended_path(
             waypoints, zone_params, blend_geoms, v_cmd, ds_mm=f3_cfg.ds_mm,
             knife_translation_m=_knife_t,
             knife_quaternion_wxyz=_knife_q,
+            ori_schedule=_ori_sched,
         )
         if verbose:
             print(
@@ -411,10 +413,21 @@ def run_feature3(
         # ── Step 5b: Optional global orientation smooth R(s) ──
         # XYZ (zones / Bézier blends) stays bit-identical; only quats change.
         # Must run BEFORE IK so q* traces the smoothed SE(3) path.
+        # SKIPPED under the ABB orientation schedule: that schedule is C³ by
+        # construction, and a global smoother leaks orientation error into
+        # regions where ABB guarantees exact stop-point SLERP tracking.
         ori_smooth_info = None
         ori_quats_raw = None
         ori_rephase_info = None
-        if bool(getattr(f3_cfg, "smooth_orientation", False)):
+        _abb_sched = _ori_sched == "abb"
+        if bool(getattr(f3_cfg, "smooth_orientation", False)) and _abb_sched:
+            ori_quats_raw = np.asarray(dense_path.poses[:, 3:7], dtype=float).copy()
+            if verbose:
+                print(
+                    "    Orientation smooth: skipped (ABB schedule is C³; "
+                    "smoothing would violate stop-point regions)"
+                )
+        elif bool(getattr(f3_cfg, "smooth_orientation", False)):
             from .orientation_smooth import smooth_dense_path_orientation
             resid_ceil = float(
                 getattr(f3_cfg, "ori_smooth_resid_ceiling_deg", 2.0)
@@ -435,13 +448,27 @@ def run_feature3(
                     f"knots={ori_smooth_info.get('n_interior_knots')}  "
                     f"spacing={ori_smooth_info.get('base_knot_spacing_mm'):.2f} mm"
                 )
+        elif _abb_sched:
+            # Diagnostics still expect the pre-rephase schedule as "raw".
+            ori_quats_raw = np.asarray(dense_path.poses[:, 3:7], dtype=float).copy()
 
         # ── Step 5b2: Fix-3 cancellation / ISA orientation re-phase ──
         # Quats only; raises spline-adjoint min g used by commanded TOPP.
-        if (
-            bool(getattr(f3_cfg, "ori_rephase_enabled", True))
-            and _knife_t is not None
+        # Skipped under the ABB schedule: re-timing builds its own monotone
+        # t(s) numerically and anchors the fly-by quaternions, which both
+        # breaks the schedule's C³ construction and puts orientation error
+        # into the regions where ABB tracks stop-point SLERP exactly.
+        _rephase_on = bool(getattr(f3_cfg, "ori_rephase_enabled", True))
+        if _rephase_on and _abb_sched and not bool(
+            getattr(f3_cfg, "ori_rephase_force_under_abb", False)
         ):
+            _rephase_on = False
+            if verbose:
+                print(
+                    "    Orientation rephase: skipped (ABB schedule — "
+                    "re-timing would break C³ and stop-point tracking)"
+                )
+        if _rephase_on and _knife_t is not None:
             from .orientation_rephase import rephase_dense_path_orientation
             dense_path, rp = rephase_dense_path_orientation(
                 dense_path,

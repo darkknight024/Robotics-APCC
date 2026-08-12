@@ -43,6 +43,10 @@ def test_tool_arc_lower_peak_density_than_position_arc():
     Tip geometry depends on R, so both schedules are scored against the
     provisional (position-arc) tip arc — the same parameter the two-pass
     rebuild uses for the final schedule.
+
+    Both arms here are ``ori_schedule="legacy"``; the ABB dual-schedule blend
+    is a different model (it does not attain the corner quaternions) and is
+    covered by ``test_orientation_schedule_continuity``.
     """
     from scipy.spatial.transform import Rotation
     from utils.transform_handler import transform_trajectory_to_base_frame
@@ -69,6 +73,7 @@ def test_tool_arc_lower_peak_density_than_position_arc():
         wp_base, zones, geoms, v_cmd, ds_mm=0.5,
         knife_translation_m=knife_t,
         knife_quaternion_wxyz=knife_q,
+        ori_schedule="legacy",
     )
     poses_mm = dense.poses.copy()
     poses_mm[:, :3] *= 1000.0

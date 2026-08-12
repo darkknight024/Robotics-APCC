@@ -286,6 +286,17 @@ def main() -> None:
         help="Disable the v_cmd approach-ramp window on continuous arc-length "
              "benchmarking (does not disable per-waypoint evaluation).",
     )
+    parser.add_argument(
+        "--gain-smooth-segment-aware", action="store_true",
+        help="Fit the adjoint gain with spline knots pinned to the programmed "
+             "waypoints before it is used for the command cap and the "
+             "reporting conversion.  Removes the within-segment gain scatter "
+             "that base-frame (rather than plate-frame) position "
+             "interpolation manufactures (~11-14%% on v7 vs ~0.4%% authored), "
+             "which commanded mode otherwise inverts into the path speed as a "
+             "waypoint-frequency ripple in omega.  Stays continuous, so it "
+             "does not staircase the target like --cap-mode segment.",
+    )
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument(
         "--se3-arc-length", action="store_true",
@@ -360,6 +371,7 @@ def main() -> None:
             uniform_resample_mm=float(args.uniform_resample_mm),
             secant_sample_factor=float(args.secant_sample_factor),
             secant_median_windows=float(args.secant_median_windows),
+            gain_smooth_segment_aware=bool(args.gain_smooth_segment_aware),
         )
         batch_rows.append(row)
 

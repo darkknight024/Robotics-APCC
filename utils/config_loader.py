@@ -428,10 +428,22 @@ class Feature3D1Config:
     ds_mm: float = 1.0
     default_zone: str = "fine"
     default_v_cmd_mm_s: float = 300.0
+    # Dense-path orientation schedule: "abb" (default) = ABB dual-schedule
+    # blend — stop-point SLERP tracking outside orientation zones, C³
+    # septic-kernel cross-fade of the incoming/outgoing schedules inside
+    # (never attains fly-by quats, matching RobotStudio).  "legacy" = former
+    # tool-arc hold–SLERP–hold rebuild.
+    ori_schedule_mode: str = "abb"
+    # Escape hatch: run the Fix-3 cancellation re-phase even under the ABB
+    # schedule (it is skipped there by default because its numerically built
+    # re-timing is not C³ and it anchors the fly-by quaternions).
+    ori_rephase_force_under_abb: bool = False
     # Replace piecewise-SLERP orientation on the dense path with a globally
     # smooth R(s) (cumulative-rotvec LSQ) before IK.  XYZ blends / zones are
     # unchanged.  Default False for general Feature-3; velocity-profile
-    # diagnostics enable it explicitly.
+    # diagnostics enable it explicitly.  Ignored when
+    # ori_schedule_mode="abb" (the ABB schedule is already C³; global
+    # smoothing would leak into ABB's guaranteed stop-point regions).
     smooth_orientation: bool = False
     ori_smooth_resid_ceiling_deg: float = 2.0
     # Pointwise |dr/ds| guard for Step 5b (≤ factor × local raw envelope).

@@ -11,11 +11,25 @@ Feature 3 must run IK on the actual path — the path that includes blend arcs �
 to prevent a fundamental inconsistency between joint states and the speed
 prediction.
 
-Handles orientation SLERP correctly against the *tool-frame* cut arc when a
-knife pose is supplied (fixed knife K, moving plate P): progress ``t`` is
-``Δs_tool / L_tool`` so authored ``dθ/ds_tool`` is preserved.  Without a knife
-(plate-frame paths) the position arc is used.  ABB ``r_ori_eff`` onset is
-honoured as hold–SLERP–hold within each waypoint interval.
+Orientation scheduling follows ABB's dual-schedule blend (default,
+``ori_schedule="abb"``): away from waypoints the orientation tracks the
+**stop-point SLERP** schedule of the current segment exactly; inside each
+fly-by waypoint's orientation zone ``[A, D]`` (``ori_onset_in/out_mm`` from
+M3, floored at ``pzone_tcp``) the schedule cross-fades between the incoming
+and outgoing stop-point schedules — each evaluated by projecting the actual
+path position onto its own segment line (unclamped, so the great-circle
+rotation extrapolates smoothly around the corner) — with the C³ septic kernel
+``h(u) = 35u⁴ − 84u⁵ + 70u⁶ − 20u⁷`` (vanishing 1st–3rd derivatives at the
+zone boundaries ⇒ C³ contact, safe to differentiate in parameter space).
+The blended path never passes through the programmed corner point, so fly-by
+orientations are approached but never exactly attained — matching RobotStudio.
+
+With a calibrated knife pose (fixed knife K, moving plate P) the schedule is
+evaluated in the **programmed plate frame** ``T_P_K`` (the frame ABB blends
+in), using a two-pass construction: a provisional schedule on the base-frame
+polyline gives tip positions, then the final schedule is evaluated on the
+plate-frame polyline and mapped back.  ``ori_schedule="legacy"`` keeps the
+former hold–SLERP–hold tool-arc schedule.
 
 DensePath Output:
     ``poses``        (M, 7) SE(3) poses in metres + quaternion.
@@ -29,7 +43,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -389,6 +403,276 @@ def _rebuild_orientation_schedule(
     )
 
 
+# ---------------------------------------------------------------------------
+# ABB dual-schedule orientation blend (C³)
+# ---------------------------------------------------------------------------
+
+def _septic_kernel(u: np.ndarray) -> np.ndarray:
+    """C³ blend kernel h(u) = 35u⁴ − 84u⁵ + 70u⁶ − 20u⁷ on [0, 1].
+
+    ``h' = 140u³(1−u)³`` ⇒ the 1st–3rd derivatives vanish at both ends, so a
+    schedule blended with h meets the pure stop-point schedules with C³
+    contact at the orientation-zone boundaries.
+    """
+    u = np.clip(np.asarray(u, dtype=float), 0.0, 1.0)
+    return u**4 * (35.0 + u * (-84.0 + u * (70.0 - 20.0 * u)))
+
+
+def _qmul_wxyz(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    bw, bx, by, bz = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+    return np.stack([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ], axis=-1)
+
+
+def _qconj_wxyz(q: np.ndarray) -> np.ndarray:
+    out = np.asarray(q, dtype=float).copy()
+    out[..., 1:] *= -1.0
+    return out
+
+
+def _slerp_batch(
+    qa: np.ndarray,
+    qb: np.ndarray,
+    t: np.ndarray,
+    *,
+    extrapolate: bool = False,
+) -> np.ndarray:
+    """Row-wise SLERP (wxyz).  ``extrapolate=True`` leaves ``t`` unclamped so
+    the great-circle rotation continues smoothly past the endpoints."""
+    qa = np.asarray(qa, dtype=float)
+    qb = np.asarray(qb, dtype=float)
+    t = np.asarray(t, dtype=float)
+    if qa.ndim == 1:
+        qa = np.tile(qa, (len(t), 1))
+    if qb.ndim == 1:
+        qb = np.tile(qb, (len(t), 1))
+    if not extrapolate:
+        t = np.clip(t, 0.0, 1.0)
+    d = np.einsum("ij,ij->i", qa, qb)
+    qb = np.where((d < 0.0)[:, None], -qb, qb)
+    d = np.abs(d)
+    th = np.arccos(np.clip(d, -1.0, 1.0))
+    s = np.sin(th)
+    small = th < 1e-9
+    a = np.where(small, 1.0 - t, np.sin((1.0 - t) * th) / np.maximum(s, 1e-12))
+    b = np.where(small, t, np.sin(t * th) / np.maximum(s, 1e-12))
+    out = a[:, None] * qa + b[:, None] * qb
+    return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-12)
+
+
+def _waypoint_stations(
+    n_wp: int,
+    seg_ids: np.ndarray,
+    blend_wp_idx: np.ndarray,
+    blend_t: np.ndarray,
+    phase: np.ndarray,
+) -> np.ndarray:
+    """Phase value at which the path passes each programmed waypoint.
+
+    For a fly-by that is the apex of its blend arc (``t = 0.5``) — the point
+    of the actual path closest to the programmed corner.  For a stop point it
+    is the sample at the segment handover.  Projecting the path onto the
+    waypoint polyline instead would be ill-conditioned exactly where it
+    matters: through a tight corner the tip's projection onto one segment's
+    line runs far past that segment and is not monotone.
+    """
+    stations = np.full(n_wp, np.nan)
+    for j in range(n_wp):
+        m = blend_wp_idx == j
+        if np.any(m):
+            idx = np.flatnonzero(m)
+            stations[j] = float(phase[idx[np.argmin(np.abs(blend_t[idx] - 0.5))]])
+            continue
+        if j == 0:
+            stations[j] = float(phase[0])
+        elif j >= n_wp - 1:
+            stations[j] = float(phase[-1])
+        else:
+            idx = np.flatnonzero(seg_ids == j)
+            stations[j] = float(phase[idx[0]]) if len(idx) else np.nan
+
+    # Fill any gaps and enforce strict monotonicity so every segment has a
+    # non-degenerate phase span.
+    good = np.flatnonzero(np.isfinite(stations))
+    if len(good) == 0:
+        return np.linspace(phase[0], phase[-1], n_wp)
+    stations = np.interp(
+        np.arange(n_wp), good, stations[good],
+        left=stations[good[0]], right=stations[good[-1]],
+    )
+    eps = max(1e-9, 1e-9 * (float(phase[-1]) - float(phase[0])))
+    for j in range(1, n_wp):
+        if stations[j] <= stations[j - 1]:
+            stations[j] = stations[j - 1] + eps
+    return stations
+
+
+def _abb_orientation_schedule(
+    phase: np.ndarray,
+    wp_pos_mm: np.ndarray,
+    wp_quats_wxyz: np.ndarray,
+    r_in_mm: np.ndarray,
+    r_out_mm: np.ndarray,
+    seg_ids: np.ndarray,
+    blend_wp_idx: np.ndarray,
+    blend_t: np.ndarray,
+) -> np.ndarray:
+    """ABB dual-schedule orientation blend, C³ in the path parameter.
+
+    ``phase`` is the strictly increasing path parameter the schedule must be
+    smooth in (the dense path's arc).  Each programmed segment gets its own
+    **affine** map from phase to segment fraction, pinned to the phase
+    stations of its two waypoints, so:
+
+    * **Outside every orientation zone** the schedule is exactly the
+      segment's stop-point SLERP, advancing uniformly with cut progress —
+      ABB Regions 1/5, which RobotStudio tracks to ~0.003°.
+    * **Inside waypoint j's zone** ``[A, D]`` the incoming and outgoing
+      stop-point schedules — the *same* affine maps, simply evaluated past
+      their own segment — are cross-faded by the C³ septic kernel ``h(u)``.
+
+    Because ``h`` and its first three derivatives vanish at both ends and the
+    blended schedules are the very functions used on either side, the blend
+    meets the base layer with C³ contact at A and D, and every ingredient is
+    analytic in the phase.  The schedule is therefore C³ along the whole path
+    with no reliance on differentiating sampled geometry.
+    """
+    wp_quats_wxyz = np.asarray(wp_quats_wxyz, dtype=float).copy()
+    n_wp = len(wp_quats_wxyz)
+    for i in range(1, n_wp):
+        if np.dot(wp_quats_wxyz[i - 1], wp_quats_wxyz[i]) < 0.0:
+            wp_quats_wxyz[i] = -wp_quats_wxyz[i]
+
+    phase = np.asarray(phase, dtype=float)
+    seg_ids = np.clip(np.asarray(seg_ids, dtype=int), 0, n_wp - 2)
+    seg_len = np.linalg.norm(np.diff(np.asarray(wp_pos_mm, float), axis=0), axis=1)
+
+    T = _waypoint_stations(n_wp, seg_ids, blend_wp_idx, blend_t, phase)
+    span = np.diff(T)
+
+    def _frac(seg: int) -> np.ndarray:
+        return (phase - T[seg]) / span[seg]
+
+    f_own = (phase - T[seg_ids]) / span[seg_ids]
+    q = _slerp_batch(
+        wp_quats_wxyz[seg_ids], wp_quats_wxyz[seg_ids + 1],
+        np.clip(f_own, 0.0, 1.0),
+    )
+
+    prev_D = -np.inf
+    for j in range(1, n_wp - 1):
+        r_in = max(0.0, float(r_in_mm[j]))
+        r_out = max(0.0, float(r_out_mm[j]))
+        if r_in <= 1e-9 and r_out <= 1e-9:
+            continue
+        L_in = float(seg_len[j - 1])
+        L_out = float(seg_len[j])
+        if L_in <= 1e-9 or L_out <= 1e-9:
+            continue
+        # ABB overlap rule: a zone may not reach past a segment midpoint.
+        frac_in = min(r_in / L_in, 0.5)
+        frac_out = min(r_out / L_out, 0.5)
+        # Zone boundaries in phase units, via each side's own affine map.
+        pA = T[j] - frac_in * span[j - 1]
+        pD = T[j] + frac_out * span[j]
+        pA = max(pA, prev_D)
+        if not (pD > pA + 1e-12):
+            continue
+        mask = (phase >= pA) & (phase <= pD)
+        prev_D = pD
+        if not np.any(mask):
+            continue
+        h = _septic_kernel((phase[mask] - pA) / (pD - pA))
+        q_in = _slerp_batch(
+            wp_quats_wxyz[j - 1], wp_quats_wxyz[j],
+            _frac(j - 1)[mask], extrapolate=True,
+        )
+        q_out = _slerp_batch(
+            wp_quats_wxyz[j], wp_quats_wxyz[j + 1],
+            _frac(j)[mask], extrapolate=True,
+        )
+        q[mask] = _slerp_batch(q_in, q_out, h)
+
+    sgn = np.sign(np.einsum("ij,ij->i", q[:-1], q[1:]))
+    sgn[sgn == 0] = 1.0
+    q[1:] *= np.cumprod(sgn)[:, None]
+    return q
+
+
+def _rebuild_orientation_schedule_abb(
+    pos_mm: np.ndarray,
+    waypoints_m: np.ndarray,
+    zones: List[ZoneParams],
+    blend_geoms: List[Optional[BlendArcGeometry]],
+    wp_quats_wxyz: np.ndarray,
+    seg_ids: np.ndarray,
+    blend_wp_idx: np.ndarray,
+    blend_t: np.ndarray,
+) -> np.ndarray:
+    """ABB dual-schedule orientation rebuild, C³ in the path parameter.
+
+    The schedule is evaluated against the dense path's own arc — the parameter
+    every downstream stage differentiates — so it is analytic in that
+    parameter by construction.
+
+    Two notes on the phase:
+
+    * Interpolating in the programmed plate frame would give the same
+      rotations: ``q_PK = q_BP* ⊗ q_BK``, and both inversion and constant
+      right-multiplication are isometries of the quaternion sphere, so a
+      geodesic between two plate poses maps to the geodesic between the two
+      corresponding knife-in-plate poses.  Only the *phase* along that
+      geodesic can differ between frames.
+    * Phasing on the cut arc instead of the base arc changes nothing over a
+      segment: cut-arc phasing gives ``dθ/ds_base = (Δθ/L_tool)·g_i`` with
+      ``g_i = L_tool/L_base``, which is exactly the base-arc density
+      ``Δθ/L_base``.  The two differ only in the *within*-segment profile,
+      measured at ≤0.4% of the segment fraction on v7 (traj_1/7/15), so the
+      simpler base-arc phase is used.  Any waypoint-frequency ripple seen
+      downstream in ``ω = θ'·ṡ`` comes from ``ṡ = v_cmd/g`` using the
+      pointwise gain rather than from this schedule.
+
+    XYZ is never modified.
+    """
+    n_wp = len(wp_quats_wxyz)
+    r_in = np.zeros(n_wp)
+    r_out = np.zeros(n_wp)
+    for j in range(n_wp):
+        g = blend_geoms[j] if j < len(blend_geoms) else None
+        if g is not None:
+            r_in[j] = float(getattr(g, "ori_onset_in_mm", 0.0) or 0.0)
+            r_out[j] = float(getattr(g, "ori_onset_out_mm", 0.0) or 0.0)
+        elif 0 < j < n_wp - 1 and j < len(zones) and not zones[j].finep:
+            # No position blend (near-collinear skip): orientation may still
+            # blend over the (overlap-reduced) orientation zone.
+            r = max(
+                float(getattr(zones[j], "eff_pzone_ori_mm", 0.0) or 0.0),
+                float(getattr(zones[j], "eff_pzone_tcp_mm", 0.0) or 0.0),
+            )
+            r_in[j] = r_out[j] = r
+
+    wp_pos_mm = np.asarray(waypoints_m[:, :3], dtype=float) * 1000.0
+    wp_q = np.asarray(wp_quats_wxyz, dtype=float)
+
+    # The schedule must be C³ in the parameter the downstream stages
+    # differentiate: the dense path's own (base-frame) position arc.
+    s_path = np.concatenate([
+        [0.0],
+        np.cumsum(np.linalg.norm(np.diff(np.asarray(pos_mm, float), axis=0), axis=1)),
+    ])
+    s_path = np.maximum.accumulate(s_path)
+
+    return _abb_orientation_schedule(
+        s_path, wp_pos_mm, wp_q, r_in, r_out,
+        seg_ids, blend_wp_idx, blend_t,
+    )
+
+
 def _apply_hold_slerp_hold(
     s_param: np.ndarray,
     seg_arr: np.ndarray,
@@ -471,6 +755,7 @@ def sample_blended_path(
     *,
     knife_translation_m: Optional[np.ndarray] = None,
     knife_quaternion_wxyz: Optional[np.ndarray] = None,
+    ori_schedule: str = "abb",
 ) -> DensePath:
     """Generate a dense SE(3) path along the actual TCP trajectory.
 
@@ -479,10 +764,11 @@ def sample_blended_path(
     *destination* of its programmed segment (RAPID-style): CSV column 8 at
     waypoint ``k`` is the speed used to reach waypoint ``k`` from ``k-1``.
 
-    Orientation is rebuilt after assembly as hold–SLERP–hold vs the
-    **tool-frame** cut arc when ``knife_translation_m`` / quaternion are
-    provided (base-frame plate poses + fixed knife).  Otherwise the
-    position arc is used (plate-frame Feature-3 runs).
+    Orientation is rebuilt after assembly: ABB's dual-schedule C³ blend by
+    default (stop-point SLERP tracking outside orientation zones; two-schedule
+    septic-kernel cross-fade inside, evaluated in the programmed frame — the
+    plate frame when a knife pose is supplied).  ``ori_schedule="legacy"``
+    selects the former tool-arc hold–SLERP–hold rebuild.
 
     Args:
         waypoints_m:    (N, 7) [x_m, y_m, z_m, qw, qx, qy, qz].
@@ -493,6 +779,7 @@ def sample_blended_path(
         ds_mm:          Desired arc-length spacing between samples in mm.
         knife_translation_m: Optional (3,) knife position in base [m].
         knife_quaternion_wxyz: Optional (4,) knife orientation in base [wxyz].
+        ori_schedule:   ``"abb"`` (default) or ``"legacy"``.
 
     Returns:
         :class:`DensePath` with the full dense trajectory.
@@ -637,25 +924,30 @@ def sample_blended_path(
         if arc_array[i] < arc_array[i - 1]:
             arc_array[i] = arc_array[i - 1]
 
-    # ── Orientation schedule: tool-arc hold–SLERP–hold (uses M3 onset) ──
-    # Straight / blend pieces above each SLERP independently; rebuilding once
-    # per waypoint interval removes discontinuities and synchronises
-    # orientation progress to the cut arc (ABB TCP-path semantics).
+    # ── Orientation schedule ──
+    # Default: ABB dual-schedule blend (C³).  "legacy": tool-arc
+    # hold–SLERP–hold (uses M3 onset; pre-ABB-model behaviour).
     seg_arr = np.array(all_seg_id, dtype=int)
-    quat_array = _rebuild_orientation_schedule(
-        pos_array, quat_array, seg_arr, blend_geoms, quats,
-        knife_translation_m=knife_translation_m,
-        knife_quaternion_wxyz=knife_quaternion_wxyz,
-    )
+    if str(ori_schedule).lower() == "abb":
+        quat_array = _rebuild_orientation_schedule_abb(
+            pos_array, waypoints_m, zones, blend_geoms, quats, seg_arr,
+            np.array(all_blend_wp, dtype=int),
+            np.array(all_blend_t, dtype=float),
+        )
+    else:
+        quat_array = _rebuild_orientation_schedule(
+            pos_array, quat_array, seg_arr, blend_geoms, quats,
+            knife_translation_m=knife_translation_m,
+            knife_quaternion_wxyz=knife_quaternion_wxyz,
+        )
 
     # Convert positions from mm back to metres for SE(3) consistency
     poses = np.column_stack([pos_array / 1000.0, quat_array])
 
     logger.info(
-        "Dense path: %d samples, total arc-length %.1f mm, ds=%.1f mm%s",
+        "Dense path: %d samples, total arc-length %.1f mm, ds=%.1f mm [ori=%s]",
         len(poses), arc_array[-1] if len(arc_array) > 0 else 0.0, ds_mm,
-        (" [ori vs tool-arc]" if knife_translation_m is not None
-         else " [ori vs position-arc]"),
+        str(ori_schedule).lower(),
     )
 
     return DensePath(

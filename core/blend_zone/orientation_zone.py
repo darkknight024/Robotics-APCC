@@ -133,7 +133,20 @@ def compute_effective_orientation_zone(
         r_ori_eff = r_from_zone_ori
         governed_by = "zone_ori"
 
-    # Floor: orientation zone must be >= position zone
+    # Overlap cap (ABB overlap rule): the orientation zone may not extend past
+    # the midpoint of either adjacent segment, otherwise neighbouring
+    # orientation zones would overlap.  This cap also applies to the
+    # zone_ori-derived extent (previously uncapped).
+    d_prev = seg_len_in if idx > 0 else np.inf
+    d_next = seg_len_out if idx < n - 1 else np.inf
+    half_min_d = 0.5 * min(d_prev, d_next)
+    if r_ori_eff > half_min_d:
+        r_ori_eff = half_min_d
+        governed_by = f"{governed_by}+overlap"
+
+    # Floor: orientation zone must be >= position zone (pzone_tcp is itself
+    # overlap-reduced upstream, so the floor cannot re-violate the cap when
+    # zones went through apply_overlap_reduction).
     r_ori_eff = max(r_ori_eff, pzone_tcp)
 
     return EffectiveOrientationZone(

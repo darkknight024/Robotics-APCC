@@ -49,6 +49,12 @@ class ToolpathContext:
     # Feature-3 zone / blend geometry (for M_orientation_phasing r_ori_eff).
     zone_params: Optional[list] = None
     blend_geoms: Optional[list] = None
+    # Dense-path provenance from the sampler: which programmed segment each
+    # sample belongs to, and whether it sits on a blend arc.  Orientation
+    # diagnostics need the sampler's own assignment — near a tight corner a
+    # nearest-segment search disagrees with it.
+    segment_ids: Optional[np.ndarray] = None
+    is_blend_arc: Optional[np.ndarray] = None
 
 
 def load_joint_path_from_toolpath(
@@ -198,4 +204,6 @@ def load_joint_path_from_toolpath(
         knife_quaternion_wxyz=np.asarray(knife.quaternion, dtype=float),
         zone_params=getattr(result, "zone_params", None),
         blend_geoms=getattr(result, "blend_geoms", None),
+        segment_ids=np.asarray(result.dense_path.segment_ids, dtype=int).copy(),
+        is_blend_arc=np.asarray(result.dense_path.is_blend_arc, dtype=bool).copy(),
     )

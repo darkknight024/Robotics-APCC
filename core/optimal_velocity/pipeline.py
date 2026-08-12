@@ -94,6 +94,90 @@ def _try_import_transient():
         )
 
 
+def _segment_aware_gain_smoother(
+    s_raw_mm: np.ndarray,
+    g_raw: np.ndarray,
+    pos_kept_mm: np.ndarray,
+    waypoints_base: Optional[np.ndarray],
+):
+    """Fit ``g(s)`` with knots pinned to the programmed waypoints.
+
+    The adjoint gain ``g = ‖p' + θ'×r‖`` should be nearly constant inside one
+    programmed move: ABB sweeps the knife uniformly along a straight line in
+    the *plate* frame, and under that motion the authored gain varies by only
+    ~0.3–0.4% across a segment (measured on v7 traj_1/7/15).  Our dense path
+    interpolates the plate position straight in the *base* frame instead, and
+    that frame mismatch injects 11–14% of within-segment scatter that the
+    authored geometry does not have.
+
+    Commanded mode divides by this gain (``ṡ = v_cmd/g``), so the scatter is
+    inverted into the path speed and shows up as a waypoint-frequency ripple
+    in ``ω = θ'·ṡ`` — with ``g ≈ 0.1`` the inversion is violent.
+
+    Placing the spline knots exactly at the waypoint stations keeps what is
+    real (gain genuinely changes from move to move, and the blend corners sit
+    on knots so their dips survive) while averaging out the within-segment
+    scatter, which is the part we manufacture.  Unlike a per-segment
+    zero-order hold this stays continuous, so it does not reintroduce the
+    sawtooth joint velocities that the ZOH cap produces at every waypoint.
+
+    Returns a callable ``s → g_smooth`` (positive, range-clamped), or None if
+    the fit is not well posed.  The caller must use the result for BOTH the
+    command cap and the reporting conversion — mixing estimators prints their
+    pointwise disagreement onto the reported tool speed.
+
+    NOTE: this compensates for the base-frame position interpolation; it is
+    not a substitute for authoring the segment in the plate frame.
+    """
+    s = np.asarray(s_raw_mm, dtype=float)
+    g = np.asarray(g_raw, dtype=float)
+    if waypoints_base is None or len(s) < 8 or not np.all(np.isfinite(g)):
+        return None
+    wp = np.asarray(waypoints_base, dtype=float)[:, :3]
+    pos = np.asarray(pos_kept_mm, dtype=float)
+    if len(wp) < 3 or len(pos) != len(s):
+        return None
+
+    idx = np.maximum.accumulate(np.array(
+        [int(np.argmin(np.sum((pos - w[None, :]) ** 2, axis=1))) for w in wp],
+        dtype=int,
+    ))
+    knots = np.unique(s[np.clip(idx, 0, len(s) - 1)])
+    # Interior knots only, and each must have samples on both sides.
+    knots = knots[(knots > s[0] + 1e-9) & (knots < s[-1] - 1e-9)]
+    if len(knots) < 1:
+        return None
+
+    try:
+        from scipy.interpolate import LSQUnivariateSpline
+        from scipy.ndimage import minimum_filter1d
+        spl = LSQUnivariateSpline(s, g, knots, k=3)
+    except Exception:
+        return None
+
+    # With ~1 degree of freedom per segment the fit rings where a blend
+    # corner dips sharply, and an undershoot there is the dangerous
+    # direction: g too low ⇒ ṡ = v_cmd/g over-demanded ⇒ spurious
+    # infeasibility.  Floor the fit with a running minimum of the raw gain
+    # (window ≈ one segment) so smoothing can lift a dip but never deepen
+    # one.  A sliding min of a continuous signal is itself continuous.
+    ds_med = float(np.median(np.diff(s))) if len(s) > 1 else 1.0
+    seg_med = float(np.median(np.diff(knots))) if len(knots) > 1 else 10.0 * ds_med
+    win = int(np.clip(round(seg_med / max(ds_med, 1e-9)), 3, max(3, len(s) // 4)))
+    g_floor = minimum_filter1d(g, size=win, mode="nearest")
+
+    lo = float(np.min(g))
+    hi = float(np.max(g))
+
+    def _eval(s_query: np.ndarray) -> np.ndarray:
+        sq = np.clip(np.asarray(s_query, dtype=float), s[0], s[-1])
+        out = np.asarray(spl(sq), dtype=float)
+        floor = np.interp(sq, s, g_floor)
+        return np.clip(np.maximum(out, floor), max(lo * 0.5, 1e-6), hi)
+
+    return _eval
+
+
 def _segment_zoh_target_raw(
     s_param_mm: np.ndarray,
     s_plate_mm: np.ndarray,
@@ -254,6 +338,7 @@ def run_diagnostics(
     uniform_resample_mm: Optional[float] = 0.25,
     secant_sample_factor: float = _DEFAULT_SECANT_SAMPLE_FACTOR,
     secant_median_windows: float = _DEFAULT_SECANT_MEDIAN_WINDOWS,
+    gain_smooth_segment_aware: bool = False,
 ) -> ProfileResult:
     """Run Steps 0-5 and return a fully-populated :class:`ProfileResult`.
 
@@ -486,6 +571,7 @@ def run_diagnostics(
     # and reporting with the other prints their pointwise disagreement
     # (±30-60% at blend corners) directly onto the reported tool speed.
     g_spline_eval = g_spline_mvc = None
+    gain_smoothed = False
     if plate_on and knife_translation_m is not None:
         from core.path_parameterization.twist import (
             eval_pose_twist,
@@ -509,6 +595,26 @@ def run_diagnostics(
                   "FD gain for reporting"
                   + (" and to the segment ZOH cap"
                      if cap_mode == "pointwise_spline" else ""))
+        elif gain_smooth_segment_aware:
+            # Strip the within-segment scatter our base-frame position
+            # interpolation manufactures, before it is inverted into ṡ.
+            _p_raw, _dp_raw, _dth_raw = eval_pose_twist(_ptspl, s_mm)
+            _g_raw = np.linalg.norm(
+                _dp_raw + np.cross(_dth_raw, _t_bk_mm[None, :] - _p_raw), axis=1,
+            )
+            _sm = _segment_aware_gain_smoother(
+                s_mm, _g_raw, pos_kept, waypoints_base,
+            )
+            if _sm is not None:
+                _before = float(np.std(g_spline_eval) / max(np.mean(g_spline_eval), 1e-9))
+                g_spline_eval = _sm(s_eval)
+                g_spline_mvc = _sm(_mvc_s)
+                _after = float(np.std(g_spline_eval) / max(np.mean(g_spline_eval), 1e-9))
+                gain_smoothed = True
+                print(f"  Gain smoothing (segment-aware): cv {_before:.3f} → "
+                      f"{_after:.3f}, g min/med/max = "
+                      f"{g_spline_eval.min():.3f}/"
+                      f"{np.median(g_spline_eval):.3f}/{g_spline_eval.max():.3f}")
     elif cap_mode == "pointwise_spline" and knife_translation_m is None:
         print("  [WARN] pointwise_spline needs the knife pose "
               "(knife_translation_m); falling back to segment ZOH cap")
@@ -996,7 +1102,9 @@ def run_diagnostics(
             "gain_median": float(np.median(_g_metrics)),
             "gain_max": float(np.max(_g_metrics)),
             "gain_estimator": (
-                "spline_adjoint" if g_spline_eval is not None else "fd"
+                ("spline_adjoint_segment_smoothed" if gain_smoothed
+                 else "spline_adjoint")
+                if g_spline_eval is not None else "fd"
             ),
             "s_tool_total_mm": float(res.s_plate[-1]),
         }

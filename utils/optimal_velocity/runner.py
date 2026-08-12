@@ -66,6 +66,7 @@ def process_one_toolpath(
     uniform_resample_mm: Optional[float] = 0.25,
     secant_sample_factor: float = 5.0,
     secant_median_windows: float = 2.0,
+    gain_smooth_segment_aware: bool = False,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -178,6 +179,7 @@ def process_one_toolpath(
         uniform_resample_mm=uniform_resample_mm,
         secant_sample_factor=secant_sample_factor,
         secant_median_windows=secant_median_windows,
+        gain_smooth_segment_aware=gain_smooth_segment_aware,
     )
 
     def _run(mode_dir: Path, **kw) -> ProfileResult:
