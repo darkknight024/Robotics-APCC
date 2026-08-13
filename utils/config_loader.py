@@ -438,6 +438,14 @@ class Feature3D1Config:
     # schedule (it is skipped there by default because its numerically built
     # re-timing is not C³ and it anchors the fly-by quaternions).
     ori_rephase_force_under_abb: bool = False
+    # Build the dense path (zone reduction, Bézier corners, straights and the
+    # orientation phase) in the programmed plate frame T_P_K instead of the
+    # robot base frame, then map the finished samples back to base.  T_P_K is
+    # the frame RAPID interpolates when the knife is the stationary tool, so
+    # base-frame blending bows the tip off the authored chord and manufactures
+    # ~10-14% within-segment swing in the frame gain, which shows up as
+    # waypoint-frequency ripple in dθ/ds_tool and ω.  Requires a knife pose.
+    plate_frame_blend: bool = True
     # Replace piecewise-SLERP orientation on the dense path with a globally
     # smooth R(s) (cumulative-rotvec LSQ) before IK.  XYZ blends / zones are
     # unchanged.  Default False for general Feature-3; velocity-profile

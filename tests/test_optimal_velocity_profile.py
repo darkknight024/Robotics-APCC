@@ -290,12 +290,21 @@ def main() -> None:
         "--gain-smooth-segment-aware", action="store_true",
         help="Fit the adjoint gain with spline knots pinned to the programmed "
              "waypoints before it is used for the command cap and the "
-             "reporting conversion.  Removes the within-segment gain scatter "
-             "that base-frame (rather than plate-frame) position "
-             "interpolation manufactures (~11-14%% on v7 vs ~0.4%% authored), "
-             "which commanded mode otherwise inverts into the path speed as a "
-             "waypoint-frequency ripple in omega.  Stays continuous, so it "
-             "does not staircase the target like --cap-mode segment.",
+             "reporting conversion.  Largely superseded: it was a filter for "
+             "the within-segment gain scatter that base-frame position "
+             "interpolation manufactured, and the plate-frame dense path now "
+             "removes that scatter at the source.  Still useful with "
+             "--no-plate-frame-blend, or when no knife pose is calibrated.",
+    )
+    parser.add_argument(
+        "--no-plate-frame-blend", action="store_true",
+        help="Build the Feature-3 dense path in the robot base frame instead "
+             "of the programmed plate frame T_P_K.  T_P_K is the frame RAPID "
+             "interpolates with a stationary knife, so base-frame blending "
+             "bows the tip off the authored chord and manufactures ~10-14%% "
+             "within-segment swing in the frame gain, which commanded mode "
+             "inverts into the path speed as waypoint-frequency ripple in "
+             "omega.  Kept only for A/B comparison against older results.",
     )
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument(
@@ -372,6 +381,7 @@ def main() -> None:
             secant_sample_factor=float(args.secant_sample_factor),
             secant_median_windows=float(args.secant_median_windows),
             gain_smooth_segment_aware=bool(args.gain_smooth_segment_aware),
+            plate_frame_blend=not args.no_plate_frame_blend,
         )
         batch_rows.append(row)
 

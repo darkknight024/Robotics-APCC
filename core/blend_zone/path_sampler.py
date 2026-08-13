@@ -24,12 +24,15 @@ zone boundaries ⇒ C³ contact, safe to differentiate in parameter space).
 The blended path never passes through the programmed corner point, so fly-by
 orientations are approached but never exactly attained — matching RobotStudio.
 
-With a calibrated knife pose (fixed knife K, moving plate P) the schedule is
-evaluated in the **programmed plate frame** ``T_P_K`` (the frame ABB blends
-in), using a two-pass construction: a provisional schedule on the base-frame
-polyline gives tip positions, then the final schedule is evaluated on the
-plate-frame polyline and mapped back.  ``ori_schedule="legacy"`` keeps the
-former hold–SLERP–hold tool-arc schedule.
+With a calibrated knife pose (fixed knife K, moving plate P) the whole dense
+path — zone reduction, Bézier corners, straights and the orientation phase — is
+built in the **programmed plate frame** ``T_P_K`` by
+:func:`sample_blended_path_plate_frame`, then mapped back to base.  That is the
+frame RAPID interpolates with a stationary tool; building in base instead bows
+the knife tip off the authored chord and makes the frame gain swing inside each
+segment, which surfaces downstream as waypoint-frequency ripple in
+``dθ/ds_tool`` and ``ω``.  ``ori_schedule="legacy"`` keeps the former
+hold–SLERP–hold tool-arc schedule.
 
 DensePath Output:
     ``poses``        (M, 7) SE(3) poses in metres + quaternion.
@@ -261,6 +264,7 @@ def _sample_bezier_arc(
     q_in: np.ndarray,
     q_out: np.ndarray,
     ds_mm: float,
+    min_step_mm: float = _MIN_BLEND_STEP_MM,
 ) -> tuple:
     """Sample the cubic Bézier blend arc described by ``geom``.
 
@@ -290,7 +294,7 @@ def _sample_bezier_arc(
     # get _MIN_BLEND_SUBDIV=40 samples at ~0.008 mm spacing, whose position
     # steps alternate wildly against the surrounding straights and inject
     # high-frequency ripple into every arc-length derivative (v_tcp, dq/ds).
-    n_sub_cap = max(2, int(np.ceil(arc_len / _MIN_BLEND_STEP_MM)))
+    n_sub_cap = max(2, int(np.ceil(arc_len / max(min_step_mm, 1e-9))))
     n_sub = min(n_sub, n_sub_cap)
     if n_sub % 2 == 1:                 # ensure t = 0.5 is sampled
         n_sub += 1
@@ -958,4 +962,347 @@ def sample_blended_path(
         v_cmd_at_s=np.array(all_vcmd),
         blend_t=np.array(all_blend_t, dtype=float),
         blend_wp_idx=np.array(all_blend_wp, dtype=int),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plate-frame (programmed-frame) path construction
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _qrot(q_wxyz: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotate row-wise vectors ``v`` by unit quaternions ``q`` (wxyz)."""
+    q = np.atleast_2d(np.asarray(q_wxyz, dtype=float))
+    v = np.atleast_2d(np.asarray(v, dtype=float))
+    w = q[:, 0:1]
+    u = q[:, 1:4]
+    return v + 2.0 * np.cross(u, np.cross(u, v) + w * v)
+
+
+#: Factor by which the plate-frame grid is built finer than the requested
+#: ``ds_mm`` before being thinned to uniform base-arc spacing.  8 puts the
+#: residual spacing error at ~ds/8 while keeping the fine grid affordable.
+_PLATE_OVERSAMPLE = 8
+
+
+def _uniform_arc_indices(s: np.ndarray, ds_mm: float) -> np.ndarray:
+    """Indices of ``s`` closest to a uniform ``ds_mm`` ladder, strictly rising.
+
+    Thinning by selection rather than by resampling matters: every retained
+    sample is still an exact evaluation of the orientation schedule, so the C³
+    construction survives.  Interpolating between fine samples would flatten it
+    to piecewise-linear and put the ripple straight back.
+    """
+    s = np.asarray(s, dtype=float)
+    if len(s) < 3 or ds_mm <= 0.0 or s[-1] <= s[0]:
+        return np.arange(len(s))
+
+    n_out = max(2, int(np.ceil((s[-1] - s[0]) / ds_mm)) + 1)
+    targets = np.linspace(s[0], s[-1], n_out)
+    idx = np.searchsorted(s, targets)
+    idx = np.clip(idx, 1, len(s) - 1)
+    left_closer = np.abs(s[idx - 1] - targets) <= np.abs(s[idx] - targets)
+    idx = np.where(left_closer, idx - 1, idx)
+
+    idx[0] = 0
+    idx[-1] = len(s) - 1
+    return np.unique(idx)
+
+
+def plate_frame_waypoints(
+    waypoints_m: np.ndarray,
+    knife_translation_m: np.ndarray,
+    knife_quaternion_wxyz: np.ndarray,
+) -> np.ndarray:
+    """Re-express base-frame plate poses ``T_B_P`` as knife-in-plate ``T_P_K``.
+
+    With a stationary knife and the plate on the flange, RAPID's ``MoveL``
+    interpolates the tool relative to the work object — i.e. ``T_P_K``, not
+    ``T_B_P``.  ``T_P_K = T_B_P⁻¹ · T_B_K``.
+
+    Args:
+        waypoints_m: ``(N, 7)`` ``[x_m, y_m, z_m, qw, qx, qy, qz]`` in base.
+        knife_translation_m: ``(3,)`` knife origin in base [m].
+        knife_quaternion_wxyz: ``(4,)`` knife orientation in base.
+
+    Returns:
+        ``(N, 7)`` knife-in-plate poses, same layout, metres.
+    """
+    wp = np.asarray(waypoints_m, dtype=float)
+    q_bp = wp[:, 3:7]
+    q_bp = q_bp / np.maximum(np.linalg.norm(q_bp, axis=1, keepdims=True), 1e-12)
+    p_bp = wp[:, :3]
+
+    q_bk = np.asarray(knife_quaternion_wxyz, dtype=float).reshape(4)
+    q_bk = q_bk / max(float(np.linalg.norm(q_bk)), 1e-12)
+    p_bk = np.asarray(knife_translation_m, dtype=float).reshape(3)
+
+    q_pk = _qmul_wxyz(_qconj_wxyz(q_bp), np.tile(q_bk, (len(q_bp), 1)))
+    q_pk = q_pk / np.maximum(np.linalg.norm(q_pk, axis=1, keepdims=True), 1e-12)
+    p_pk = _qrot(_qconj_wxyz(q_bp), p_bk[None, :] - p_bp)
+
+    return np.column_stack([p_pk, q_pk])
+
+
+def _base_from_plate(
+    p_pk_mm: np.ndarray,
+    q_pk: np.ndarray,
+    knife_translation_m: np.ndarray,
+    knife_quaternion_wxyz: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Invert :func:`plate_frame_waypoints` on dense samples.
+
+    ``q_BP = q_BK ⊗ q_PK*`` and ``p_BP = p_BK − R_BP · p_PK``.
+    """
+    q_bk = np.asarray(knife_quaternion_wxyz, dtype=float).reshape(4)
+    q_bk = q_bk / max(float(np.linalg.norm(q_bk)), 1e-12)
+    p_bk_mm = np.asarray(knife_translation_m, dtype=float).reshape(3) * 1000.0
+
+    q_pk = np.asarray(q_pk, dtype=float)
+    q_pk = q_pk / np.maximum(np.linalg.norm(q_pk, axis=1, keepdims=True), 1e-12)
+
+    q_bp = _qmul_wxyz(np.tile(q_bk, (len(q_pk), 1)), _qconj_wxyz(q_pk))
+    q_bp = q_bp / np.maximum(np.linalg.norm(q_bp, axis=1, keepdims=True), 1e-12)
+    p_bp_mm = p_bk_mm[None, :] - _qrot(q_bp, np.asarray(p_pk_mm, dtype=float))
+
+    # Keep the dense quaternion track on one hemisphere; downstream splines and
+    # finite differences assume no sign flips.
+    flip = np.cumprod(
+        np.where(
+            np.concatenate([[1.0], np.einsum("ij,ij->i", q_bp[:-1], q_bp[1:])]) < 0.0,
+            -1.0, 1.0,
+        )
+    )
+    return p_bp_mm, q_bp * flip[:, None]
+
+
+def sample_blended_path_plate_frame(
+    waypoints_m: np.ndarray,
+    zones: List[ZoneParams],
+    v_cmd_per_wp: np.ndarray,
+    ds_mm: float = 1.0,
+    *,
+    knife_translation_m: np.ndarray,
+    knife_quaternion_wxyz: np.ndarray,
+    shape_k: Optional[float] = None,
+    min_corner_angle_rad: Optional[float] = None,
+) -> DensePath:
+    """Build the dense path in the **programmed (plate) frame**, then map to base.
+
+    ``sample_blended_path`` rounds corners and interpolates straights along the
+    base-frame plate origin.  That is the wrong frame: the RAPID program moves
+    the knife relative to the plate, so a straight ``MoveL`` is straight in
+    ``T_P_K``.  Blending in base makes the knife tip bow off the authored chord
+    and — because the lever arm sweeps as the plate turns — makes the frame gain
+    ``g = ds_tool/ds_base`` swing by 10–14 % *within* a single segment where the
+    authored geometry has < 0.5 %.  Everything measured per unit tool arc then
+    inherits that swing: ``dθ/ds_tool = (dθ/ds_base)/g`` wobbles at waypoint
+    frequency, and so does ``ω = (dθ/ds_tool)·v_tool``.
+
+    Here the zone reduction, the Bézier corners and the straights are all built
+    on ``T_P_K``, the orientation schedule is phased on the resulting **cut
+    arc**, and only the finished samples are mapped back to base.  Within a
+    segment the cut arc then advances uniformly, so ``dθ/ds_tool`` is flat by
+    construction and the waypoint-frequency ripple disappears at the source
+    rather than being filtered out downstream.
+
+    Args:
+        waypoints_m:  ``(N, 7)`` programmed waypoints in the **base** frame.
+        zones:        Per-waypoint :class:`ZoneParams`; the *programmed* radii
+                      are re-reduced against plate-frame segment lengths.
+        v_cmd_per_wp: ``(N,)`` commanded TCP speed in mm/s (destination
+                      semantics, as in :func:`sample_blended_path`).
+        ds_mm:        Target sample spacing in mm, measured in the **base**
+                      frame so downstream IK/TOPP density is unchanged.
+        knife_translation_m:   ``(3,)`` knife origin in base [m].
+        knife_quaternion_wxyz: ``(4,)`` knife orientation in base.
+        shape_k:      Cubic-Bézier shape parameter; module default when None.
+        min_corner_angle_rad: Corner-detection threshold; default when None.
+
+    Returns:
+        :class:`DensePath` with **base-frame** poses and base-frame arc length.
+    """
+    from .zone_resolver import apply_overlap_reduction
+    from .blend_geometry import (
+        DEFAULT_BLEND_SHAPE_K,
+        _MIN_CORNER_ANGLE_RAD,
+        compute_blend_geometries,
+    )
+    from .orientation_zone import populate_orientation_zones
+
+    if shape_k is None:
+        shape_k = DEFAULT_BLEND_SHAPE_K
+    if min_corner_angle_rad is None:
+        min_corner_angle_rad = _MIN_CORNER_ANGLE_RAD
+
+    n = len(waypoints_m)
+    wp_plate = plate_frame_waypoints(
+        waypoints_m, knife_translation_m, knife_quaternion_wxyz,
+    )
+
+    # Hemisphere-align the plate quaternions before anything consumes them.
+    q_plate = wp_plate[:, 3:7]
+    for i in range(1, n):
+        if float(np.dot(q_plate[i - 1], q_plate[i])) < 0.0:
+            q_plate[i] = -q_plate[i]
+
+    # Zones and corner geometry belong to the frame the move is programmed in.
+    zones_plate = apply_overlap_reduction(list(zones), wp_plate)
+    geoms_plate = compute_blend_geometries(
+        wp_plate, zones_plate, shape_k=shape_k,
+        min_corner_angle_rad=min_corner_angle_rad,
+    )
+    populate_orientation_zones(geoms_plate, zones_plate, wp_plate)
+
+    pos_plate_mm = wp_plate[:, :3] * 1000.0
+    pos_base_mm = np.asarray(waypoints_m[:, :3], dtype=float) * 1000.0
+
+    # A plate-frame step of ds·g_i lands ~ds in base, keeping the sample density
+    # that downstream IK and the TOPP spline fit were tuned for.  g_i is the
+    # authored chord ratio; clamped so a near-cancelling segment cannot explode
+    # the sample count.
+    seg_gain = np.ones(max(n - 1, 1))
+    for i in range(n - 1):
+        l_plate = float(np.linalg.norm(pos_plate_mm[i + 1] - pos_plate_mm[i]))
+        l_base = float(np.linalg.norm(pos_base_mm[i + 1] - pos_base_mm[i]))
+        if l_plate > 1e-9 and l_base > 1e-9:
+            seg_gain[i] = float(np.clip(l_plate / l_base, 0.02, 1.0))
+
+    # The grid is built ``_PLATE_OVERSAMPLE`` times finer than requested and
+    # thinned afterwards to a uniform base-arc spacing.  Assembling directly at
+    # the target density does not give a usable grid: blend arcs carry a forced
+    # minimum subdivision, so a 0.6 mm corner lands ~30 samples at ~0.02 mm
+    # while the neighbouring straight runs at ~0.12 mm.  That 5× spacing jump
+    # repeats at every waypoint, and any finite difference taken across it —
+    # dθ/ds, the gain, the joint-spline knots — picks up a waypoint-frequency
+    # component that has nothing to do with the geometry.  Thinning a fine grid
+    # keeps every sample an exact evaluation of the schedule (no interpolation)
+    # while making the spacing uniform.
+    ds_fine_scale = 1.0 / float(_PLATE_OVERSAMPLE)
+
+    all_pos: List[np.ndarray] = []
+    all_quat: List[np.ndarray] = []
+    all_is_blend: List[bool] = []
+    all_seg_id: List[int] = []
+    all_vcmd: List[float] = []
+    all_blend_t: List[float] = []
+    all_blend_wp: List[int] = []
+
+    for seg_idx in range(n - 1):
+        geom_start = geoms_plate[seg_idx]
+        geom_end = geoms_plate[seg_idx + 1]
+
+        seg_start_mm = (
+            geom_start.exit_point_mm if geom_start is not None
+            else pos_plate_mm[seg_idx]
+        )
+        seg_end_mm = (
+            geom_end.entry_point_mm if geom_end is not None
+            else pos_plate_mm[seg_idx + 1]
+        )
+
+        v_cmd_seg = float(v_cmd_per_wp[seg_idx + 1])
+        ds_seg = max(ds_mm * seg_gain[seg_idx] * ds_fine_scale, 1e-7)
+
+        if seg_idx == 0 and geom_start is not None:
+            pos_b, quat_b, _arc_b, t_b = _sample_bezier_arc(
+                geom_start, q_plate[max(0, seg_idx - 1)], q_plate[seg_idx],
+                max(ds_mm * seg_gain[0] * ds_fine_scale, 1e-7),
+                min_step_mm=_MIN_BLEND_STEP_MM * seg_gain[0] * ds_fine_scale,
+            )
+            for k in range(len(pos_b)):
+                all_pos.append(pos_b[k])
+                all_quat.append(quat_b[k])
+                all_is_blend.append(True)
+                all_seg_id.append(seg_idx)
+                all_vcmd.append(v_cmd_seg)
+                all_blend_t.append(float(t_b[k]))
+                all_blend_wp.append(int(geom_start.waypoint_idx))
+
+        pos_s, quat_s, _arc_s = _sample_straight_segment(
+            seg_start_mm, seg_end_mm,
+            q_plate[seg_idx], q_plate[seg_idx + 1],
+            ds_seg,
+            include_start=(seg_idx == 0 and geom_start is None),
+            include_end=False,
+        )
+        for k in range(len(pos_s)):
+            all_pos.append(pos_s[k])
+            all_quat.append(quat_s[k])
+            all_is_blend.append(False)
+            all_seg_id.append(seg_idx)
+            all_vcmd.append(v_cmd_seg)
+            all_blend_t.append(float("nan"))
+            all_blend_wp.append(-1)
+
+        if geom_end is not None:
+            g_arc = min(seg_gain[seg_idx], seg_gain[min(seg_idx + 1, n - 2)])
+            pos_b, quat_b, _arc_b, t_b = _sample_bezier_arc(
+                geom_end, q_plate[seg_idx], q_plate[seg_idx + 1],
+                max(ds_mm * g_arc * ds_fine_scale, 1e-7),
+                min_step_mm=_MIN_BLEND_STEP_MM * g_arc * ds_fine_scale,
+            )
+            for k in range(len(pos_b)):
+                all_pos.append(pos_b[k])
+                all_quat.append(quat_b[k])
+                all_is_blend.append(True)
+                all_seg_id.append(seg_idx)
+                all_vcmd.append(v_cmd_seg)
+                all_blend_t.append(float(t_b[k]))
+                all_blend_wp.append(int(geom_end.waypoint_idx))
+
+    all_pos.append(pos_plate_mm[-1])
+    all_quat.append(q_plate[-1])
+    all_is_blend.append(False)
+    all_seg_id.append(n - 2)
+    all_vcmd.append(float(v_cmd_per_wp[-1]))
+    all_blend_t.append(float("nan"))
+    all_blend_wp.append(-1)
+
+    pos_arr = np.array(all_pos, dtype=float)
+    seg_arr = np.array(all_seg_id, dtype=int)
+    blend_wp_arr = np.array(all_blend_wp, dtype=int)
+    blend_t_arr = np.array(all_blend_t, dtype=float)
+
+    # Orientation is scheduled against the cut arc of the plate-frame path —
+    # the parameter ABB blends in and the one dθ/ds_tool is measured against.
+    q_pk_dense = _rebuild_orientation_schedule_abb(
+        pos_arr, wp_plate, zones_plate, geoms_plate, q_plate,
+        seg_arr, blend_wp_arr, blend_t_arr,
+    )
+
+    pos_base, quat_base = _base_from_plate(
+        pos_arr, q_pk_dense, knife_translation_m, knife_quaternion_wxyz,
+    )
+
+    s_fine = np.zeros(len(pos_base), dtype=float)
+    if len(pos_base) > 1:
+        s_fine[1:] = np.cumsum(np.linalg.norm(np.diff(pos_base, axis=0), axis=1))
+    s_fine = np.maximum.accumulate(s_fine)
+
+    keep = _uniform_arc_indices(s_fine, ds_mm)
+
+    pos_base = pos_base[keep]
+    quat_base = quat_base[keep]
+    arc_array = np.maximum.accumulate(s_fine[keep])
+    cut_arc_mm = (
+        float(np.sum(np.linalg.norm(np.diff(pos_arr, axis=0), axis=1)))
+        if len(pos_arr) > 1 else 0.0
+    )
+
+    logger.info(
+        "Dense path (plate-frame blend): %d samples (from %d fine), base arc "
+        "%.1f mm, cut arc %.1f mm, ds=%.2f mm",
+        len(pos_base), len(s_fine),
+        arc_array[-1] if len(arc_array) else 0.0, cut_arc_mm, ds_mm,
+    )
+
+    return DensePath(
+        poses=np.column_stack([pos_base / 1000.0, quat_base]),
+        arc_lengths=arc_array,
+        is_blend_arc=np.array(all_is_blend, dtype=bool)[keep],
+        segment_ids=seg_arr[keep],
+        v_cmd_at_s=np.array(all_vcmd, dtype=float)[keep],
+        blend_t=blend_t_arr[keep],
+        blend_wp_idx=blend_wp_arr[keep],
     )

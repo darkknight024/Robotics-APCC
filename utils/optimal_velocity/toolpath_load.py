@@ -63,6 +63,7 @@ def load_joint_path_from_toolpath(
     ds_mm: float = _DEFAULT_DS_MM,
     smooth_orientation: bool = True,
     ori_smooth_resid_ceiling_deg: float = 2.0,
+    plate_frame_blend: Optional[bool] = None,
 ) -> ToolpathContext:
     """Blend a toolpath, run IK, and return the joint path that traces it.
 
@@ -95,6 +96,8 @@ def load_joint_path_from_toolpath(
     cfg.feature3_d1.compute_corner_limits = False
     cfg.feature3_d1.smooth_orientation = bool(smooth_orientation)
     cfg.feature3_d1.ori_smooth_resid_ceiling_deg = float(ori_smooth_resid_ceiling_deg)
+    if plate_frame_blend is not None:
+        cfg.feature3_d1.plate_frame_blend = bool(plate_frame_blend)
     cfg.use_base_frame = False
     # EAIK is the default for velocity-profile diagnostics: Pinocchio cold-start
     # is flaky on awkward approach poses (e.g. v7 traj_15 sample 0).

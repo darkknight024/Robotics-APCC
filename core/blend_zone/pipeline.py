@@ -35,7 +35,11 @@ from .blend_geometry import (
     BlendArcGeometry, DEFAULT_BLEND_SHAPE_K, compute_blend_geometries,
 )
 from .orientation_zone import populate_orientation_zones
-from .path_sampler import DensePath, sample_blended_path
+from .path_sampler import (
+    DensePath,
+    sample_blended_path,
+    sample_blended_path_plate_frame,
+)
 from .speed_profile import SpeedCalibration, SpeedProfileResult, predict_speed_profile
 
 logger = logging.getLogger(__name__)
@@ -398,12 +402,31 @@ def run_feature3(
             except Exception:
                 _knife_t = _knife_q = None
         _ori_sched = str(getattr(f3_cfg, "ori_schedule_mode", "abb")).lower()
-        dense_path = sample_blended_path(
-            waypoints, zone_params, blend_geoms, v_cmd, ds_mm=f3_cfg.ds_mm,
-            knife_translation_m=_knife_t,
-            knife_quaternion_wxyz=_knife_q,
-            ori_schedule=_ori_sched,
+        _plate_blend = (
+            bool(getattr(f3_cfg, "plate_frame_blend", False))
+            and _ori_sched == "abb"
+            and _knife_t is not None
+            and _knife_q is not None
         )
+        if _plate_blend:
+            # Corners, straights and the orientation phase are all built on
+            # T_P_K — the frame the RAPID move is programmed in — so the tip
+            # follows the authored chord and the cut arc advances uniformly
+            # inside each segment.
+            dense_path = sample_blended_path_plate_frame(
+                waypoints, zone_params_raw, v_cmd, ds_mm=f3_cfg.ds_mm,
+                knife_translation_m=_knife_t,
+                knife_quaternion_wxyz=_knife_q,
+                shape_k=shape_k,
+                min_corner_angle_rad=min_corner_rad,
+            )
+        else:
+            dense_path = sample_blended_path(
+                waypoints, zone_params, blend_geoms, v_cmd, ds_mm=f3_cfg.ds_mm,
+                knife_translation_m=_knife_t,
+                knife_quaternion_wxyz=_knife_q,
+                ori_schedule=_ori_sched,
+            )
         if verbose:
             print(
                 f"    Dense path: {dense_path.n_samples} samples, "

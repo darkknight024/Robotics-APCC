@@ -67,6 +67,7 @@ def process_one_toolpath(
     secant_sample_factor: float = 5.0,
     secant_median_windows: float = 2.0,
     gain_smooth_segment_aware: bool = False,
+    plate_frame_blend: Optional[bool] = None,
 ) -> Dict:
     """Load one toolpath, run commanded (and optionally all 3 modes)."""
     print("\n" + "#" * 72)
@@ -74,6 +75,7 @@ def process_one_toolpath(
     print("#" * 72)
     ctx = load_joint_path_from_toolpath(
         str(toolpath), ds_mm=ds_mm, smooth_orientation=smooth_orientation,
+        plate_frame_blend=plate_frame_blend,
     )
 
     se3_lambda = None
