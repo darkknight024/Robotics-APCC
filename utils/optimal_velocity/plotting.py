@@ -1892,12 +1892,24 @@ def _plot_tcp_velocity_profile(
                  fontsize=9, loc="left")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=7.5, loc="upper right")
-    axes[-1].set_xlabel("arc-length s [mm]")
+    # The x-axis is deliberately the ROBOT-BASE arc — the solver's path
+    # parameter, shared with every other plot — while all three panels show
+    # TOOL-frame quantities.  The two arcs differ by the frame gain (2.2x on
+    # v7), so a reorientation-heavy segment occupies far more x than its share
+    # of the cut.  Spell both out; "arc-length s" alone reads as tool arc next
+    # to a title that says TOOL frame.
+    axes[-1].set_xlabel("arc-length s [mm] — ROBOT BASE frame (solver path parameter)")
 
     rs_frame = rs_rec.logged_frame if rs_rec is not None else "n/a"
+    arc_note = ""
+    if res.s_plate is not None and len(res.s_plate) and len(s):
+        arc_note = (
+            f"  |  x-axis = base arc {float(s[-1]):.1f} mm; "
+            f"cut (T_P_K) arc {float(res.s_plate[-1]):.1f} mm"
+        )
     fig.suptitle(
         f"TCP velocity profile — {mode_name}\n"
-        f"unified TOOL frame (RS log declared '{rs_frame}')",
+        f"y: unified TOOL frame (RS log declared '{rs_frame}'){arc_note}",
         fontsize=11,
     )
     fig.tight_layout()

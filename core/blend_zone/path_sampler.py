@@ -518,7 +518,6 @@ def _waypoint_stations(
 
 def _abb_orientation_schedule(
     phase: np.ndarray,
-    wp_pos_mm: np.ndarray,
     wp_quats_wxyz: np.ndarray,
     r_in_mm: np.ndarray,
     r_out_mm: np.ndarray,
@@ -527,6 +526,13 @@ def _abb_orientation_schedule(
     blend_t: np.ndarray,
 ) -> np.ndarray:
     """ABB dual-schedule orientation blend, C³ in the path parameter.
+
+    Everything here lives in ``phase``: the waypoint *positions* are
+    deliberately not an argument.  Mixing the two length scales the geometry
+    offers — arc travelled along the path, and chord between programmed
+    corners — is what put a step into θ(s) before, since a rounded corner
+    makes the arc between two waypoint stations strictly shorter than the
+    chord they span.
 
     ``phase`` is the strictly increasing path parameter the schedule must be
     smooth in (the dense path's arc).  Each programmed segment gets its own
@@ -554,7 +560,7 @@ def _abb_orientation_schedule(
 
     phase = np.asarray(phase, dtype=float)
     seg_ids = np.clip(np.asarray(seg_ids, dtype=int), 0, n_wp - 2)
-    seg_len = np.linalg.norm(np.diff(np.asarray(wp_pos_mm, float), axis=0), axis=1)
+    blend_wp_idx = np.asarray(blend_wp_idx, dtype=int)
 
     T = _waypoint_stations(n_wp, seg_ids, blend_wp_idx, blend_t, phase)
     span = np.diff(T)
@@ -574,16 +580,23 @@ def _abb_orientation_schedule(
         r_out = max(0.0, float(r_out_mm[j]))
         if r_in <= 1e-9 and r_out <= 1e-9:
             continue
-        L_in = float(seg_len[j - 1])
-        L_out = float(seg_len[j])
-        if L_in <= 1e-9 or L_out <= 1e-9:
+        if span[j - 1] <= 1e-9 or span[j] <= 1e-9:
             continue
+        # The radii are distances in mm and so is ``phase``, so they go in
+        # directly.  Expressing them as a fraction of the polyline chord and
+        # re-applying that to the phase span instead makes the zone short by
+        # span/L, which starves it of the blend arc's tail.
         # ABB overlap rule: a zone may not reach past a segment midpoint.
-        frac_in = min(r_in / L_in, 0.5)
-        frac_out = min(r_out / L_out, 0.5)
-        # Zone boundaries in phase units, via each side's own affine map.
-        pA = T[j] - frac_in * span[j - 1]
-        pD = T[j] + frac_out * span[j]
+        pA = T[j] - min(r_in, 0.5 * span[j - 1])
+        pD = T[j] + min(r_out, 0.5 * span[j])
+        # Whatever the radii work out to, waypoint j's own blend arc has to sit
+        # inside j's zone.  Its outgoing half carries ``seg_ids == j-1`` with
+        # ``phase`` past ``T[j]``: the base layer can only clamp there, which
+        # freezes the schedule on the corner quaternion and steps θ(s).
+        arc_j = phase[blend_wp_idx == j]
+        if arc_j.size:
+            pA = min(pA, float(arc_j.min()))
+            pD = max(pD, float(arc_j.max()))
         pA = max(pA, prev_D)
         if not (pD > pA + 1e-12):
             continue
@@ -610,7 +623,6 @@ def _abb_orientation_schedule(
 
 def _rebuild_orientation_schedule_abb(
     pos_mm: np.ndarray,
-    waypoints_m: np.ndarray,
     zones: List[ZoneParams],
     blend_geoms: List[Optional[BlendArcGeometry]],
     wp_quats_wxyz: np.ndarray,
@@ -636,10 +648,9 @@ def _rebuild_orientation_schedule_abb(
       segment: cut-arc phasing gives ``dθ/ds_base = (Δθ/L_tool)·g_i`` with
       ``g_i = L_tool/L_base``, which is exactly the base-arc density
       ``Δθ/L_base``.  The two differ only in the *within*-segment profile,
-      measured at ≤0.4% of the segment fraction on v7 (traj_1/7/15), so the
-      simpler base-arc phase is used.  Any waypoint-frequency ripple seen
-      downstream in ``ω = θ'·ṡ`` comes from ``ṡ = v_cmd/g`` using the
-      pointwise gain rather than from this schedule.
+      measured at ≤0.4% of the segment fraction on v7 (traj_1/7/15).  The
+      caller therefore picks the phase: the plate-frame sampler passes the cut
+      arc (the parameter ABB blends in), the base-frame one passes its own.
 
     XYZ is never modified.
     """
@@ -660,11 +671,11 @@ def _rebuild_orientation_schedule_abb(
             )
             r_in[j] = r_out[j] = r
 
-    wp_pos_mm = np.asarray(waypoints_m[:, :3], dtype=float) * 1000.0
     wp_q = np.asarray(wp_quats_wxyz, dtype=float)
 
     # The schedule must be C³ in the parameter the downstream stages
-    # differentiate: the dense path's own (base-frame) position arc.
+    # differentiate: the arc of the positions handed in (plate-frame cut arc
+    # from the plate-frame sampler, base arc from the legacy one).
     s_path = np.concatenate([
         [0.0],
         np.cumsum(np.linalg.norm(np.diff(np.asarray(pos_mm, float), axis=0), axis=1)),
@@ -672,8 +683,7 @@ def _rebuild_orientation_schedule_abb(
     s_path = np.maximum.accumulate(s_path)
 
     return _abb_orientation_schedule(
-        s_path, wp_pos_mm, wp_q, r_in, r_out,
-        seg_ids, blend_wp_idx, blend_t,
+        s_path, wp_q, r_in, r_out, seg_ids, blend_wp_idx, blend_t,
     )
 
 
@@ -934,7 +944,7 @@ def sample_blended_path(
     seg_arr = np.array(all_seg_id, dtype=int)
     if str(ori_schedule).lower() == "abb":
         quat_array = _rebuild_orientation_schedule_abb(
-            pos_array, waypoints_m, zones, blend_geoms, quats, seg_arr,
+            pos_array, zones, blend_geoms, quats, seg_arr,
             np.array(all_blend_wp, dtype=int),
             np.array(all_blend_t, dtype=float),
         )
@@ -1267,7 +1277,7 @@ def sample_blended_path_plate_frame(
     # Orientation is scheduled against the cut arc of the plate-frame path —
     # the parameter ABB blends in and the one dθ/ds_tool is measured against.
     q_pk_dense = _rebuild_orientation_schedule_abb(
-        pos_arr, wp_plate, zones_plate, geoms_plate, q_plate,
+        pos_arr, zones_plate, geoms_plate, q_plate,
         seg_arr, blend_wp_arr, blend_t_arr,
     )
 
@@ -1279,6 +1289,26 @@ def sample_blended_path_plate_frame(
     if len(pos_base) > 1:
         s_fine[1:] = np.cumsum(np.linalg.norm(np.diff(pos_base, axis=0), axis=1))
     s_fine = np.maximum.accumulate(s_fine)
+
+    # Thinning can only pick from what the fine grid offers, so a fine step
+    # wider than the target stride survives into the output and every finite
+    # difference taken across it — dθ/ds, the frame gain, the joint-spline
+    # knots — is wrong by that ratio.  The fine grid is built ~8x denser than
+    # the stride, so a violation means the geometry jumped, not that the grid
+    # was too coarse; say where, because the symptom surfaces far downstream
+    # as a velocity notch.
+    if len(s_fine) > 1:
+        step_fine = np.diff(s_fine)
+        over = np.flatnonzero(step_fine > ds_mm)
+        if len(over):
+            worst = int(over[np.argmax(step_fine[over])])
+            logger.warning(
+                "Plate-frame fine grid has %d base-arc step(s) above the %.3f mm "
+                "target stride (worst %.3f mm at s=%.2f mm, p99 %.4f mm); the "
+                "thinned path will inherit them",
+                len(over), ds_mm, float(step_fine[worst]), float(s_fine[worst]),
+                float(np.percentile(step_fine, 99)),
+            )
 
     keep = _uniform_arc_indices(s_fine, ds_mm)
 

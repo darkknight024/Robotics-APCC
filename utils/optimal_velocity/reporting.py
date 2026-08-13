@@ -25,6 +25,37 @@ from utils.optimal_velocity.benchmarking import (
 )
 from utils.optimal_velocity.rs_recording import RSRecording, _interp_rs_to_solver
 
+
+def _rs_linear_speed_err(
+    res: ProfileResult,
+    rs_rec: Optional[RSRecording],
+) -> Dict:
+    """Max |v* − v_RS| on bench-eligible samples (tool-frame linear speed).
+
+    Transient, v_cmd ramps, and RS v_cap lookup holes are excluded via the
+    same unified mask used for RS benchmarking — those are segments we do
+    not profile against.
+    """
+    out = {
+        "rs_err_max_mm_s": None,
+        "rs_err_max_s_mm": None,
+        "rs_n_bench_eligible": 0,
+    }
+    if rs_rec is None or res.v_star is None or res.s_eval is None:
+        return out
+    rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, res.s_eval)
+    keep = (rs_v > 1.0) & ~_rs_bench_exclude_mask(res)
+    n_keep = int(np.count_nonzero(keep))
+    out["rs_n_bench_eligible"] = n_keep
+    if n_keep == 0:
+        return out
+    err = np.abs(np.asarray(res.v_star, dtype=float) - rs_v)
+    i = int(np.argmax(np.where(keep, err, -np.inf)))
+    out["rs_err_max_mm_s"] = float(err[i])
+    out["rs_err_max_s_mm"] = float(res.s_eval[i])
+    return out
+
+
 def _write_waypoint_benchmark_csv(
     toolpath_csv: Path,
     out_path: Path,
@@ -179,10 +210,12 @@ def _write_waypoint_benchmark_csv(
     n_eval = n_wp - n_ignored
     overall_feasible = (n_infeasible == 0)
     overall_rs_pass = (n_rs_fail == 0) if n_eval > 0 and rs_rec is not None else None
+    rs_err = _rs_linear_speed_err(res_cmd, rs_rec)
 
     return {
         "path": str(out_path),
         "n_waypoints": n_wp,
+        "n_evaluated": n_eval,
         "n_ignored": n_ignored,
         "n_feasible": n_feasible,
         "n_infeasible": n_infeasible,
@@ -190,6 +223,7 @@ def _write_waypoint_benchmark_csv(
         "n_rs_fail": n_rs_fail,
         "overall_feasible": overall_feasible,
         "overall_rs_pass": overall_rs_pass,
+        **rs_err,
     }
 
 
@@ -204,7 +238,9 @@ def _write_run_feasibility_summary(
         f"output: {out_root}",
         f"n toolpaths: {len(batch_rows)}",
         "",
-        "Per toolpath (non-ignored waypoints only for feasibility / RS bench)",
+        "Per toolpath. Feasibility / RS bench use evaluated (non-ignored) waypoints only.",
+        "RS |Δv|_max (failed RS bench only) is on compared samples — "
+        "transient / v_cmd ramp / v_cap lookup excluded.",
         "-" * 72,
     ]
     n_all_feasible = 0
@@ -214,18 +250,23 @@ def _write_run_feasibility_summary(
     for row in batch_rows:
         name = Path(row["toolpath"]).name
         wp = row.get("waypoint_benchmark", {})
-        n_wp = wp.get("n_waypoints", 0)
-        n_ign = wp.get("n_ignored", 0)
-        n_infeas = wp.get("n_infeasible", 0)
-        n_rs_fail = wp.get("n_rs_fail", 0)
-        n_rs_pass = wp.get("n_rs_pass", 0)
+        n_wp = int(wp.get("n_waypoints", 0) or 0)
+        n_ign = int(wp.get("n_ignored", 0) or 0)
+        n_eval = int(wp.get("n_evaluated", max(n_wp - n_ign, 0)) or 0)
+        n_infeas = int(wp.get("n_infeasible", 0) or 0)
+        n_rs_fail = int(wp.get("n_rs_fail", 0) or 0)
+        n_rs_pass = int(wp.get("n_rs_pass", 0) or 0)
         feas_ok = wp.get("overall_feasible")
         rs_ok = wp.get("overall_rs_pass")
 
         lines.append(f"\n{name}")
         lines.append(
-            f"  feasibility:  {n_wp - n_ign - n_infeas}/{max(n_wp - n_ign, 0)} "
-            f"waypoints meet v_cmd  "
+            f"  waypoints:    {n_wp} total, {n_eval} evaluated "
+            f"({n_ign} ignored)"
+        )
+        lines.append(
+            f"  feasibility:  {n_eval - n_infeas}/{n_eval} "
+            f"evaluated waypoints meet v_cmd  "
             f"({'PASS' if feas_ok else 'FAIL' if feas_ok is False else 'n/a'})"
         )
         if row.get("rs_duration_s") is not None:
@@ -234,6 +275,24 @@ def _write_run_feasibility_summary(
                 f"  RS bench:     {n_rs_pass} pass / {n_rs_fail} fail  "
                 f"({'PASS' if rs_ok else 'FAIL' if rs_ok is False else 'n/a'})"
             )
+            if rs_ok is False:
+                err_max = wp.get("rs_err_max_mm_s")
+                err_s = wp.get("rs_err_max_s_mm")
+                n_keep = wp.get("rs_n_bench_eligible", 0) or 0
+                if err_max is not None and np.isfinite(err_max):
+                    at = (
+                        f" @ s={float(err_s):.1f} mm"
+                        if err_s is not None and np.isfinite(err_s) else ""
+                    )
+                    lines.append(
+                        f"  RS |Δv|_max:  {float(err_max):.2f} mm/s{at}  "
+                        f"({int(n_keep)} compared samples; "
+                        f"transient/ramp/vcap excluded)"
+                    )
+                else:
+                    lines.append(
+                        "  RS |Δv|_max:  n/a  (no bench-eligible samples)"
+                    )
             if rs_ok:
                 n_all_rs_pass += 1
         else:
@@ -422,6 +481,19 @@ def _write_mode_summary(
         f"  max |q̈|/q̈_max:      {lc.get('qddot_util_max', float('nan')):.3f}",
         f"  within limits:      {'YES' if lc.get('ok') else 'NO (!)'}",
     ]
+    ct = res.metrics.get("command_tracking")
+    if ct:
+        lines += [
+            "",
+            "Command tracking (v* vs toolpath col-8, unmasked)",
+            f"  below v_cmd:        {100 * ct['shortfall_frac']:.1f}% of path "
+            f"({100 * ct['ceiling_limited_frac']:.1f}% ceiling-limited, "
+            f"{100 * ct['ramp_limited_frac']:.1f}% accel ramp)",
+            f"  worst:              v*/v_cmd={ct['worst_ratio']:.2f} @ "
+            f"s={ct['worst_s_mm']:.1f} mm ({ct['worst_v_star_mm_s']:.1f} vs "
+            f"{ct['worst_v_cmd_mm_s']:.1f} mm/s)",
+            f"  binding there:      {ct['worst_binder']}",
+        ]
     if rs_rec is not None:
         rs_v = _interp_rs_to_solver(rs_rec.s_mm, rs_rec.tcp_speed_mm_s, res.s_eval)
         bench_ex = _rs_bench_exclude_mask(res)

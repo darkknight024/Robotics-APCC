@@ -33,8 +33,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.optimal_velocity import JointLimits, ProfileResult, run_diagnostics
 from core.optimal_velocity.differentiation import (
-    _FK_CHECK_POS_TOL_MM,
-    _FK_CHECK_ROT_TOL_RAD,
     _RESID_TOL_DEG,
     eval_splines,
     fit_joint_splines,
@@ -389,37 +387,6 @@ def main() -> None:
         n_fk = sum(1 for r in batch_rows if r.get("fk_check_pass") is not None)
         n_fk_pass = sum(1 for r in batch_rows if r.get("fk_check_pass") is True)
         n_fk_fail = sum(1 for r in batch_rows if r.get("fk_check_pass") is False)
-        lines = [
-            "Batch velocity-profile benchmarking",
-            "=" * 64,
-            f"output: {out_root}",
-            f"n toolpaths: {len(batch_rows)}",
-            f"I_spline_fk_check: {n_fk_pass} PASS / {n_fk_fail} FAIL "
-            f"(of {n_fk} checked; tol |Δp|<{_FK_CHECK_POS_TOL_MM:g} mm, "
-            f"|Δθ|<{_FK_CHECK_ROT_TOL_RAD:g} rad)",
-            "",
-        ]
-        for r in batch_rows:
-            lines.append(Path(r["toolpath"]).name)
-            lines.append(
-                f"  v_cmd={r['v_cmd']:.1f}  RS={r['rs_duration_s']}  "
-                f"cmd={r['commanded_s']}  const={r['constant_s']}  "
-                f"opt={r['optimal_s']}"
-            )
-            fk = r.get("fk_check_pass")
-            if fk is None:
-                lines.append("  I_spline_fk_check: (skipped)")
-            else:
-                lines.append(
-                    f"  I_spline_fk_check: {'PASS' if fk else 'FAIL'}  "
-                    f"|Δp|_max={r.get('fk_pos_max_mm')} mm  "
-                    f"|Δθ|_max={r.get('fk_rot_max_rad')} rad  "
-                    f"fail_segs={r.get('fk_n_fail_segments')}"
-                )
-            lines.append(f"  summary: {r['summary']}")
-            lines.append("")
-        batch_path = out_root / "batch_summary.txt"
-        batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         fk_csv = out_root / "batch_fk_check.csv"
         with open(fk_csv, "w", encoding="utf-8") as f:
             f.write(
@@ -438,8 +405,7 @@ def main() -> None:
                     f"{r.get('optimal_s')},"
                     f"{r.get('rs_duration_s')}\n"
                 )
-        print(f"\nBatch summary: {batch_path}")
-        print(f"Batch FK CSV:  {fk_csv}")
+        print(f"\nBatch FK CSV:  {fk_csv}")
         print(
             f"I_spline_fk_check batch: {n_fk_pass} PASS / {n_fk_fail} FAIL "
             f"(of {n_fk})"

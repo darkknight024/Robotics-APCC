@@ -32,6 +32,7 @@ from core.blend_zone.zone_resolver import resolve_zone_list
 
 _KNIFE_T = np.array([0.60, 0.05, 0.35])          # metres
 _KNIFE_Q = np.array([0.0, 0.0, 1.0, 0.0])        # 180° about y
+_DS_MM = 0.25                                    # target base-arc stride
 
 
 def _axis_quat(axis: np.ndarray, deg: float) -> np.ndarray:
@@ -106,7 +107,7 @@ def _build(plate: bool):
     wp_base, zones, v_cmd, p_pk_mm = _authored_case()
     if plate:
         dp = sample_blended_path_plate_frame(
-            wp_base, zones, v_cmd, ds_mm=0.25,
+            wp_base, zones, v_cmd, ds_mm=_DS_MM,
             knife_translation_m=_KNIFE_T, knife_quaternion_wxyz=_KNIFE_Q,
         )
     else:
@@ -118,7 +119,7 @@ def _build(plate: bool):
         geoms = compute_blend_geometries(wp_base, z)
         populate_orientation_zones(geoms, z, wp_base)
         dp = sample_blended_path(
-            wp_base, z, geoms, v_cmd, ds_mm=0.25,
+            wp_base, z, geoms, v_cmd, ds_mm=_DS_MM,
             knife_translation_m=_KNIFE_T, knife_quaternion_wxyz=_KNIFE_Q,
         )
     return dp, p_pk_mm
@@ -156,20 +157,31 @@ def test_plate_frame_keeps_the_tip_on_the_authored_chord():
 
 
 def test_plate_frame_grid_is_uniform_in_base_arc():
-    """Downstream differentiates against the base arc, so its stride matters."""
+    """Downstream differentiates against the base arc, so its stride matters.
+
+    Scored on the full min/max range, not on percentiles: a handful of bad
+    steps is the whole failure mode.  Two outliers out of 8594 once survived a
+    p1–p99 check and still put a 6x-stride hole in a v7 path, which read
+    downstream as a collapsed frame gain and a 4x velocity notch.
+    """
     dp, _ = _build(True)
     d = np.diff(np.asarray(dp.arc_lengths, float))
     d = d[d > 0]
-    spread = float((np.percentile(d, 99) - np.percentile(d, 1)) / np.median(d))
-    assert spread < 0.35, f"base-arc stride spread {spread:.3f}"
+    assert d.max() < 1.3 * _DS_MM, (
+        f"base-arc stride reaches {d.max():.4f} mm against a {_DS_MM} mm target"
+    )
+    assert d.min() > 0.7 * _DS_MM, (
+        f"base-arc stride drops to {d.min():.4f} mm against a {_DS_MM} mm target"
+    )
 
+    spread = float((d.max() - d.min()) / np.median(d))
     dp_base, _ = _build(False)
     db = np.diff(np.asarray(dp_base.arc_lengths, float))
     db = db[db > 0]
-    base_spread = float(
-        (np.percentile(db, 99) - np.percentile(db, 1)) / np.median(db)
-    )
-    assert base_spread > spread
+    base_spread = float((db.max() - db.min()) / np.median(db))
+    # Guard against passing for the wrong reason: base-frame assembly must be
+    # visibly less uniform on the same case.
+    assert base_spread > 2.0 * spread
 
 
 def test_orientation_density_per_tool_arc_matches_the_authored_constant():

@@ -84,6 +84,84 @@ def _corner_path(ds_mm: float = 0.01):
     return pos, wp, wp_q, seg_ids, blend_wp, blend_t, s
 
 
+def _short_segment_path(ds_mm: float = 0.002):
+    """Four waypoints whose blend arcs are longer than the radii they blend in.
+
+    Laid out directly in arc units — the schedule is a function of the phase
+    and the sample structure only, never of the waypoint positions.  wp1's
+    blend arc runs 0.9 mm past its apex, so any orientation radius below that
+    leaves the tail of the arc outside wp1's zone, and a radius below 0.5 mm
+    leaves it outside wp2's zone too.  Those samples carry ``seg_ids == 0``
+    with a phase beyond ``T[1]``, which is exactly what the base layer cannot
+    represent.
+    """
+    pieces = [                     # (arc length, seg id, blend wp, is arc)
+        (3.0, 0, -1, False),
+        (0.9, 0, 1, True),         # wp1 blend, incoming half
+        (0.9, 0, 1, True),         # wp1 blend, outgoing half
+        (0.2, 1, -1, False),
+        (0.3, 1, 2, True),
+        (0.3, 1, 2, True),
+        (3.0, 2, -1, False),
+    ]
+    s, seg_ids, blend_wp, blend_t = [], [], [], []
+    cursor = 0.0
+    for k, (length, sid, bwp, is_arc) in enumerate(pieces):
+        n = int(round(length / ds_mm))
+        u = cursor + np.arange(n) * ds_mm
+        s.append(u)
+        seg_ids.append(np.full(n, sid, dtype=int))
+        blend_wp.append(np.full(n, bwp, dtype=int))
+        if is_arc:
+            half = 0.0 if pieces[k - 1][2] != bwp else 0.5
+            blend_t.append(np.linspace(half, half + 0.5, n, endpoint=False))
+        else:
+            blend_t.append(np.full(n, np.nan))
+        cursor += length
+    s.append(np.array([cursor]))
+    seg_ids.append(np.array([2]))
+    blend_wp.append(np.array([-1]))
+    blend_t.append(np.array([np.nan]))
+
+    wp_q = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [np.cos(np.deg2rad(6)), 0.0, np.sin(np.deg2rad(6)), 0.0],
+        [np.cos(np.deg2rad(13)), np.sin(np.deg2rad(4)), np.sin(np.deg2rad(9)), 0.0],
+        [np.cos(np.deg2rad(21)), np.sin(np.deg2rad(7)), np.sin(np.deg2rad(14)), 0.0],
+    ])
+    wp_q /= np.linalg.norm(wp_q, axis=1, keepdims=True)
+    return (np.concatenate(s), wp_q, np.concatenate(seg_ids),
+            np.concatenate(blend_wp), np.concatenate(blend_t))
+
+
+def test_blend_arc_never_escapes_its_own_orientation_zone():
+    """No step in θ(s) where a blend arc outruns the zone the radii imply.
+
+    Outside every zone the base layer clamps the segment fraction to [0, 1],
+    so a blend-arc sample left there freezes on the corner quaternion and the
+    schedule steps.  On the real v7 paths that step reached 0.9° against a
+    0.023° neighbourhood, and the lever arm turned it into a 1.4 mm jump in
+    the base-frame position of those samples — which then read as a collapsed
+    frame gain and a 4x velocity notch.
+    """
+    s, wp_q, seg, bwp, bt = _short_segment_path()
+    # 0.5 mm zones against a 0.9 mm half-arc at wp1: the arc's last 0.4 mm sits
+    # past wp1's zone and before wp2's, the same crack the v7 paths fell into.
+    r = np.full(len(wp_q), 0.5)
+    q = _abb_orientation_schedule(s, wp_q, r, r, seg, bwp, bt)
+
+    step = np.diff(_theta_cum_deg(q))
+    assert np.median(step) > 0, "fixture does not rotate; the test proves nothing"
+    assert step.max() < 4.0 * np.median(step), (
+        f"θ(s) steps {step.max():.5f} deg against a {np.median(step):.5f} deg "
+        f"median — a blend-arc sample fell outside its waypoint's zone"
+    )
+    assert step.min() > 0.2 * np.median(step), (
+        f"θ(s) stalls ({step.min():.5f} deg vs {np.median(step):.5f} median) — "
+        f"the schedule froze on a corner quaternion"
+    )
+
+
 def _theta_cum_deg(q: np.ndarray) -> np.ndarray:
     q = q / np.linalg.norm(q, axis=1, keepdims=True)
     sgn = np.sign(np.einsum("ij,ij->i", q[:-1], q[1:]))
@@ -132,7 +210,7 @@ def test_schedule_derivatives_stay_bounded_under_refinement():
         for n in (0.02, 0.01):
             pos, wp, wp_q, seg, bwp, bt, s = _corner_path(n)
             r = np.full(len(wp), 8.0)
-            q = _abb_orientation_schedule(s, wp, wp_q, r, r, seg, bwp, bt)
+            q = _abb_orientation_schedule(s, wp_q, r, r, seg, bwp, bt)
             maxima.append(_max_derivative(s, _theta_cum_deg(q), order))
 
         growth = maxima[1] / max(maxima[0], 1e-12)
@@ -175,7 +253,7 @@ def test_schedule_tracks_stop_point_slerp_outside_the_zone():
     """Away from the zone the schedule is exactly the segment's own SLERP."""
     pos, wp, wp_q, seg, bwp, bt, s = _corner_path(0.01)
     r = np.full(len(wp), 8.0)
-    q = _abb_orientation_schedule(s, wp, wp_q, r, r, seg, bwp, bt)
+    q = _abb_orientation_schedule(s, wp_q, r, r, seg, bwp, bt)
 
     # First segment, comfortably before the zone: the schedule must advance
     # uniformly along the geodesic between the first two waypoint quats.
@@ -191,7 +269,7 @@ def test_schedule_does_not_dwell_at_fly_by_waypoints():
     """No hold: rotation keeps advancing through the corner."""
     pos, wp, wp_q, seg, bwp, bt, s = _corner_path(0.01)
     r = np.full(len(wp), 8.0)
-    q = _abb_orientation_schedule(s, wp, wp_q, r, r, seg, bwp, bt)
+    q = _abb_orientation_schedule(s, wp_q, r, r, seg, bwp, bt)
     theta = _theta_cum_deg(q)
     d = np.diff(theta) / np.diff(s)
     active = d[np.isfinite(d)]

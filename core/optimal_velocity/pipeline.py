@@ -37,6 +37,11 @@ from .validate import step0_validate
 
 _EPS = 1e-12
 
+#: Relative slack allowed before a commanded-mode sample counts as not
+#: tracking its col-8 target.  2% sits above the ~0.5% round-trip noise of the
+#: reporting-frame conversion and well under anything worth investigating.
+_CMD_TRACK_TOL = 0.02
+
 if TYPE_CHECKING:
     # Forward refs — concrete types live in utils once that package is created.
     RSRecording = Any  # noqa: F401
@@ -1158,6 +1163,43 @@ def run_diagnostics(
                 if res.vcap_excluded_mask is not None else None
             ),
         }
+    # Commanded-mode tracking.  In this mode v* is meant to equal the
+    # toolpath's col-8 cut speed wherever the joints allow it, so a shortfall
+    # is either a genuine ceiling or a bug — and nothing else reported here
+    # would show it.  ``cruise_fraction`` barely moves for a 3 mm notch in a
+    # 260 mm path, and the RS benchmark masks the transient zones a notch
+    # lives in, so this number is deliberately unmasked.
+    if res.mode == "commanded" and res.v_cmd_path is not None:
+        v_cmd_r = np.asarray(res.v_cmd_path, dtype=float)
+        live = np.isfinite(v_cmd_r) & (v_cmd_r > 1e-9)
+        ratio = np.ones(len(v_cmd_r))
+        ratio[live] = np.asarray(res.v_star, float)[live] / v_cmd_r[live]
+        # v(0) = v(L) = 0 are boundary conditions, not tracking failures, so
+        # score between the first and last time the profile does reach command.
+        reached = np.flatnonzero(live & (ratio >= 1.0 - _CMD_TRACK_TOL))
+        if len(reached):
+            live[:reached[0]] = False
+            live[reached[-1] + 1:] = False
+        short = live & (ratio < 1.0 - _CMD_TRACK_TOL)
+        # A ceiling under the command forbids it outright; otherwise the gap is
+        # TOPP ramping between two commanded levels, which is expected.
+        ceiling_short = short & (
+            np.asarray(res.v_lim, float) < v_cmd_r * (1.0 - _CMD_TRACK_TOL)
+        )
+        worst = int(np.argmin(np.where(live, ratio, np.inf)))
+        res.metrics["command_tracking"] = {
+            "tol_frac": _CMD_TRACK_TOL,
+            "scored_frac": float(np.mean(live)),
+            "shortfall_frac": float(np.mean(short)),
+            "ceiling_limited_frac": float(np.mean(ceiling_short)),
+            "ramp_limited_frac": float(np.mean(short & ~ceiling_short)),
+            "worst_ratio": float(ratio[worst]),
+            "worst_s_mm": float(s_eval[worst]),
+            "worst_v_star_mm_s": float(res.v_star[worst]),
+            "worst_v_cmd_mm_s": float(v_cmd_r[worst]),
+            "worst_binder": _ceiling_binder_label(res, worst, float(v_cmd_r[worst])),
+        }
+
     # Joint-limit compliance: the realized profile must respect BOTH joint
     # velocity and acceleration limits for all joints at every sample.
     qd_util = np.max(np.abs(res.q_dot) / limits.q_dot_max[None, :])
@@ -1303,6 +1345,38 @@ def run_diagnostics(
     return res
 
 
+def _ceiling_binder_label(res: ProfileResult, i: int, v_cmd_i: float) -> str:
+    """Name whatever set ``v_lim`` at sample ``i`` (reporting frame).
+
+    ``v_lim`` often equals none of the raw channels: min-preserving ceiling
+    smoothing carries a minimum in from up to a window away, so a notch can be
+    attributed to an acceleration limit that binds 2 mm downstream.  Say so
+    rather than reporting "other".
+    """
+    lim = float(res.v_lim[i])
+    tol = 1e-6 + 1e-6 * abs(lim)
+    local_min = np.inf
+    nearest, nearest_gap = "unknown", np.inf
+    for name, arr in (("joint velocity", res.v_vel),
+                      ("joint acceleration", res.v_accel),
+                      ("secant acceleration", res.v_secant)):
+        if arr is None:
+            continue
+        v = float(arr[i])
+        if not np.isfinite(v):
+            continue
+        local_min = min(local_min, v)
+        if abs(v - lim) < nearest_gap:
+            nearest, nearest_gap = name, abs(v - lim)
+    if nearest_gap <= tol:
+        return nearest
+    if abs(lim - v_cmd_i) <= max(tol, 1e-3 * abs(v_cmd_i)):
+        return "v_cmd cap"
+    if lim < local_min:
+        return f"{nearest}, smoothed in from a neighbour"
+    return "unattributed"
+
+
 def _print_metrics(res: ProfileResult) -> None:
     m = res.metrics
     print("\n" + "=" * 64)
@@ -1334,6 +1408,15 @@ def _print_metrics(res: ProfileResult) -> None:
         print(f"  rotation:            θ_total={rot['theta_total_deg']:.1f}°  "
               f"ω_max={rot['omega_max_deg_s']:.1f}°/s  "
               f"transient regions={rot['n_transient_regions']}")
+    ct = m.get("command_tracking")
+    if ct:
+        print(f"  command tracking:    {100 * ct['shortfall_frac']:.1f}% of path "
+              f"below v_cmd ({100 * ct['ceiling_limited_frac']:.1f}% ceiling, "
+              f"{100 * ct['ramp_limited_frac']:.1f}% ramp)")
+        print(f"    worst:             v*/v_cmd={ct['worst_ratio']:.2f} @ "
+              f"s={ct['worst_s_mm']:.1f} mm "
+              f"({ct['worst_v_star_mm_s']:.1f} vs {ct['worst_v_cmd_mm_s']:.1f} mm/s"
+              f"; {ct['worst_binder']})")
     lc = m.get("limits_check", {})
     if lc:
         print(f"  joint-limit check:   |q̇|/q̇max={lc['qdot_util_max']:.3f}  "
