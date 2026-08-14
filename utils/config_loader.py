@@ -220,13 +220,16 @@ def load_fixture_config(config_path: str = None) -> Dict[str, FixtureConfig]:
     config = load_yaml(config_path)
     result = {}
     for name, data in config.get('fixtures', {}).items():
+        raw_stl = data.get('stl', data.get('mesh_path'))
+        if raw_stl is not None:
+            raw_stl = str(raw_stl).strip() or None
         result[name] = FixtureConfig(
             name=name,
             description=data.get('description', ''),
             parent_link=data.get('parent_link', 'Link_6'),
             origin_xyz=list(data.get('origin', {}).get('xyz', [0, 0, 0])),
             origin_rpy=list(data.get('origin', {}).get('rpy', [0, 0, 0])),
-            stl=data.get('stl') or data.get('mesh_path'),
+            stl=raw_stl,
             stl_scale=float(data.get('scale', data.get('stl_scale', 1.0))),
         )
     return result
@@ -456,12 +459,62 @@ class CollisionConfig:
     enabled: bool = True
     scene_yaml: str = "config/collision_objects.yaml"
     scene_calibrate: bool = True
-    scene_calibrate_n_samples: int = 10
+    scene_calibrate_n_samples: int = 32
     scene_calibrate_seed: int = 42
     # Offline / pre-recorded tests only (no meshes); disabled unless set via CLI or YAML
     cspace_forbidden_yaml: Optional[str] = None
     # When true with cspace_forbidden_yaml: C-space zones only (skip scene meshes)
     cspace_only: bool = False
+
+
+@dataclass
+class CollisionSetupConfig:
+    """URDF / fixture / scene defaults for collision checking (Exp25 + checkers).
+
+    Loaded from ``config/collision_config.yaml``. ``fixture_name`` is an entry
+    in ``fixture_config.yaml`` (TCP for IK/FK). An empty fixture ``stl`` means
+    no fixture mesh is attached to the URDF collision model.
+    """
+
+    robot_name: str = "IRB 1300-7/1.4"
+    urdf_path: str = (
+        "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"
+    )
+    fixture_name: str = "ee_link"
+    ee_frame_name: str = "ee_link"
+    solver: str = "eaik"
+    scene_yaml: str = "config/collision_objects.yaml"
+    scene_calibrate: bool = True
+    scene_calibrate_n_samples: int = 32
+    scene_calibrate_seed: int = 42
+    toolpaths_dir: str = "Robot_APCC/Experiments/Experiment_25/Toolpaths"
+    results_dir: str = "Robot_APCC/Experiments/Experiment_25/Results"
+
+
+def load_collision_setup_config(config_path: str = None) -> CollisionSetupConfig:
+    """Load ``config/collision_config.yaml`` (URDF, fixture, scene, Exp25 paths)."""
+    if config_path is None:
+        path = Path(__file__).parent.parent / "config" / "collision_config.yaml"
+    else:
+        path = Path(config_path)
+        if not path.is_absolute():
+            path = Path(__file__).parent.parent / path
+    raw = load_yaml(str(path)) if path.is_file() else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    fields = CollisionSetupConfig.__dataclass_fields__
+    filtered = {k: v for k, v in raw.items() if k in fields and v is not None}
+    cfg = CollisionSetupConfig(**filtered)
+    if not str(cfg.urdf_path or "").strip():
+        robot = get_robot_by_name(cfg.robot_name)
+        cfg.urdf_path = robot.urdf_path
+        if "fixture_name" not in filtered:
+            cfg.fixture_name = robot.fixture_name or cfg.fixture_name
+    if not str(cfg.ee_frame_name or "").strip():
+        cfg.ee_frame_name = cfg.fixture_name
+    cfg.fixture_name = str(cfg.fixture_name or "ee_link")
+    cfg.ee_frame_name = str(cfg.ee_frame_name or cfg.fixture_name)
+    return cfg
 
 
 @dataclass

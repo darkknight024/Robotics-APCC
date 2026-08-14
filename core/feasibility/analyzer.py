@@ -131,7 +131,12 @@ class FeasibilityAnalyzer:
             self.ik_solver, target_position, target_quaternion, q_init
         )
         if self.collision_checker is not None:
-            annotate_cfx_collision_blocked(ik_info, self.collision_checker)
+            annotate_cfx_collision_blocked(
+                ik_info,
+                self.collision_checker,
+                self.lower_position_limit,
+                self.upper_position_limit,
+            )
 
         if not is_reachable:
             return FeasibilityResult(

@@ -21,6 +21,7 @@ from .mesh_processing import effective_mesh_path
 from .pair_rules import (
     add_robot_environment_pairs,
     add_robot_self_pairs,
+    calibrate_exclude_frequent_self_pairs,
     index_pair_for_names,
     remove_adjacent_pairs,
 )
@@ -28,60 +29,6 @@ from .scene_config import CollisionObjectsFile
 from .types import CollisionResult
 
 logger = logging.getLogger(__name__)
-
-
-def _calibrate_remove_always_colliding(
-    model: pin.Model,
-    geom_model: pin.GeometryModel,
-    data: pin.Data,
-    geom_data: pin.GeometryData,
-    n_samples: int,
-    seed: int,
-    verbose: bool,
-) -> Tuple[List[Tuple[str, str]], pin.GeometryData]:
-    """Remove robot self pairs that collide in every random sample."""
-    rng = np.random.RandomState(seed)
-    lower = model.lowerPositionLimit[: model.nq]
-    upper = model.upperPositionLimit[: model.nq]
-    configs = [pin.neutral(model)]
-    for _ in range(n_samples):
-        configs.append(lower + rng.rand(model.nq) * (upper - lower))
-
-    n_pairs = len(geom_model.collisionPairs)
-    hit_counts = np.zeros(n_pairs, dtype=int)
-
-    for q in configs:
-        q_full = pad_q(model, q)
-        pin.computeCollisions(model, data, geom_model, geom_data, q_full, False)
-        for i, cr in enumerate(geom_data.collisionResults):
-            if cr.isCollision():
-                hit_counts[i] += 1
-
-    n_total = len(configs)
-    to_remove: List[Tuple[pin.CollisionPair, str, str]] = []
-    for i in range(n_pairs):
-        if hit_counts[i] == n_total:
-            cp = geom_model.collisionPairs[i]
-            to_remove.append(
-                (
-                    pin.CollisionPair(cp.first, cp.second),
-                    geom_model.geometryObjects[cp.first].name,
-                    geom_model.geometryObjects[cp.second].name,
-                )
-            )
-
-    excluded_names: List[Tuple[str, str]] = []
-    for cp, n1, n2 in to_remove:
-        excluded_names.append((n1, n2))
-        geom_model.removeCollisionPair(cp)
-
-    geom_data_out = pin.GeometryData(geom_model)
-    if verbose:
-        logger.info(
-            "Scene calibration excluded %d always-colliding robot pairs",
-            len(excluded_names),
-        )
-    return excluded_names, geom_data_out
 
 
 class SceneCollisionChecker:
@@ -127,8 +74,9 @@ class SceneCollisionChecker:
         project_root: Optional[Path] = None,
         min_joint_gap: int = 1,
         calibrate: bool = True,
-        calibrate_n_samples: int = 10,
+        calibrate_n_samples: int = 32,
         calibrate_seed: int = 42,
+        calibrate_min_hit_fraction: float = 0.95,
         verbose: bool = False,
         fixture_name: Optional[str] = "ee_link",
     ) -> "SceneCollisionChecker":
@@ -146,21 +94,29 @@ class SceneCollisionChecker:
 
         geom_model.removeAllCollisionPairs()
         add_robot_self_pairs(geom_model, robot_indices)
-        remove_adjacent_pairs(geom_model, min_joint_gap, robot_indices)
+        remove_adjacent_pairs(
+            geom_model, min_joint_gap, robot_indices, model=model,
+        )
 
         data = model.createData()
         geom_data = pin.GeometryData(geom_model)
         excluded: List[Tuple[str, str]] = []
         if calibrate:
-            excluded, geom_data = _calibrate_remove_always_colliding(
+            excluded, geom_data = calibrate_exclude_frequent_self_pairs(
                 model,
                 geom_model,
                 data,
                 geom_data,
-                calibrate_n_samples,
-                calibrate_seed,
-                verbose,
+                robot_indices,
+                n_samples=calibrate_n_samples,
+                seed=calibrate_seed,
+                min_hit_fraction=calibrate_min_hit_fraction,
             )
+            if verbose:
+                logger.info(
+                    "Scene calibration excluded %d frequent self-collision pairs",
+                    len(excluded),
+                )
 
         scene_doc = CollisionObjectsFile.load(scene_yaml_path)
         geom_tol = [0.0] * len(geom_model.geometryObjects)

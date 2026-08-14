@@ -169,11 +169,21 @@ def attach_fixture_collision_geometry(
     from .mesh_processing import resolve_mesh_path
 
     fixture = get_fixture_by_name(fixture_name)
-    if fixture is None or not fixture.stl:
+    stl = (fixture.stl or "").strip() if fixture is not None else ""
+    if fixture is None or not stl:
         return 0
     if project_root is None:
         project_root = Path(__file__).resolve().parents[2]
-    mesh_abs = resolve_mesh_path(fixture.stl, project_root=project_root)
+    try:
+        mesh_abs = resolve_mesh_path(stl, project_root=project_root)
+    except FileNotFoundError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Fixture %r stl %r not found; skipping fixture collision mesh",
+            fixture_name,
+            stl,
+        )
+        return 0
     T = build_transform_from_xyz_rpy(fixture.origin_xyz, fixture.origin_rpy)
     placement = pin.SE3(T[:3, :3].copy(), T[:3, 3].copy())
     scale = float(fixture.stl_scale)

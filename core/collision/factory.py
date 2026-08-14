@@ -39,7 +39,7 @@ def build_collision_checker_for_feasibility(
     project_root: Optional[Path] = None,
     scene_yaml: Optional[str] = None,
     scene_calibrate: bool = True,
-    scene_calibrate_n_samples: int = 10,
+    scene_calibrate_n_samples: int = 32,
     scene_calibrate_seed: int = 42,
     cspace_forbidden_yaml: Optional[str] = None,
     verbose: bool = False,

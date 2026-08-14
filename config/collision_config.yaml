@@ -1,0 +1,39 @@
+# =============================================================================
+# Collision / Experiment 25 setup defaults
+# =============================================================================
+# Single place for URDF, fixture TCP, scene meshes, and Exp25 I/O.
+# ``tests/test_collision.py`` loads this file (override with --collision-config).
+# Feasibility batch collision still uses the ``collision:`` block in
+# ``batch_feasibility_config.yaml``; keep ``scene_yaml`` in sync if you change it.
+#
+# Fixture vs URDF
+# ---------------
+# URDF is the robot **without** a baked-in fixture mesh
+# (``IRB_1300_1400_URDF.urdf``, not ``..._with_fixture.urdf``).
+# ``fixture_name`` selects an entry in ``config/fixture_config.yaml``:
+#   * IK/FK TCP = that entry's origin (ee_link by default).
+#   * Collision mesh is attached only if that entry has a non-empty ``stl``.
+# Current ``ee_link.stl`` is empty → TCP pose only, no fixture geometry.
+# No extra CLI flag is required; change fixture_name or stl here / in
+# fixture_config.yaml.
+
+robot_name: "IRB 1300-7/1.4"
+
+# Explicit path (must match robots_config.yaml for this robot). Empty → look up
+# robot_name in robots_config.yaml.
+urdf_path: "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf"
+
+# Name in fixture_config.yaml (TCP). Same string is used as the IK/FK frame.
+fixture_name: "ee_link"
+ee_frame_name: "ee_link"
+
+solver: "eaik"
+
+# Cell meshes (pedestal, scanner, Zund knife, …). Paths relative to repo root.
+scene_yaml: "config/collision_objects.yaml"
+scene_calibrate: true
+scene_calibrate_n_samples: 32
+scene_calibrate_seed: 42
+
+toolpaths_dir: "Robot_APCC/Experiments/Experiment_25/Toolpaths"
+results_dir: "Robot_APCC/Experiments/Experiment_25/Results"

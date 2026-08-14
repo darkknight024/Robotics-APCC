@@ -30,7 +30,7 @@ collision:
   enabled: true
   scene_yaml: config/collision_objects.yaml
   scene_calibrate: true
-  scene_calibrate_n_samples: 10
+  scene_calibrate_n_samples: 32
   scene_calibrate_seed: 42
   # Offline RS / unit tests only (no meshes); leave null for production runs
   cspace_forbidden_yaml: null

@@ -103,9 +103,9 @@ def add_fixture_mesh(server: viser.ViserServer, fixture_name: str, repo_root: st
     with open(cfg_path, "r") as f:
         doc = yaml.safe_load(f) or {}
     data = (doc.get("fixtures") or {}).get(fixture_name)
-    if not data or not data.get("stl"):
+    stl_rel = str((data or {}).get("stl") or "").strip()
+    if not data or not stl_rel:
         return None, None
-    stl_rel = data["stl"]
     stl_path = stl_rel if os.path.isabs(stl_rel) else os.path.join(repo_root, stl_rel)
     if not os.path.exists(stl_path):
         print(f"Fixture STL not found: {stl_path}")

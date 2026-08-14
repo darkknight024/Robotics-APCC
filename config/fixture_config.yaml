@@ -10,6 +10,9 @@
 #
 # Optional ``stl``: collision/visual mesh for the fixture, expressed in the
 # fixture frame (same origin as xyz/rpy below). Path is relative to repo root.
+# Current ``ee_link.stl`` is empty: IK/FK use this TCP, collision attaches
+# no fixture mesh. See ``config/collision_config.yaml`` for the URDF +
+# fixture_name used by Experiment 25 / collision checks.
 # ``scale`` is a uniform vertex scale (1.0 if the STL is already in metres).
 
 fixtures:
@@ -19,5 +22,5 @@ fixtures:
     origin:
       xyz: [0.0998237, 0.123033, 0.0828027]
       rpy: [0.001199, 0.000599, 2.782547]
-    stl: "Assets/Robot APCC/IRB_1300_1400_URDF/meshes/Link_1.STL"  # TEMP placeholder
+    stl: ""
     scale: 1.0

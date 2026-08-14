@@ -10,7 +10,11 @@ import numpy as np
 import pinocchio as pin
 
 from .geometry import build_robot_collision_geometry, pad_q
-from .pair_rules import add_robot_self_pairs, remove_adjacent_pairs
+from .pair_rules import (
+    add_robot_self_pairs,
+    calibrate_exclude_frequent_self_pairs,
+    remove_adjacent_pairs,
+)
 from .types import CollisionResult
 
 logger = logging.getLogger(__name__)
@@ -59,7 +63,9 @@ class SelfCollisionChecker:
 
         self.geom_model.removeAllCollisionPairs()
         add_robot_self_pairs(self.geom_model, self._robot_indices)
-        remove_adjacent_pairs(self.geom_model, min_joint_gap, self._robot_indices)
+        remove_adjacent_pairs(
+            self.geom_model, min_joint_gap, self._robot_indices, model=self.model,
+        )
 
         self.data: pin.Data = self.model.createData()
         self.geom_data: pin.GeometryData = pin.GeometryData(self.geom_model)
@@ -75,58 +81,29 @@ class SelfCollisionChecker:
 
     def calibrate(
         self,
-        n_samples: int = 10,
+        n_samples: int = 32,
         seed: int = 42,
+        min_hit_fraction: float = 0.95,
     ) -> List[Tuple[str, str]]:
-        """Exclude link pairs that collide at *every* test configuration."""
-        rng = np.random.RandomState(seed)
-        lower = self.model.lowerPositionLimit[: self.model.nq]
-        upper = self.model.upperPositionLimit[: self.model.nq]
-        configs = [pin.neutral(self.model)]
-        for _ in range(n_samples):
-            configs.append(lower + rng.rand(self.model.nq) * (upper - lower))
-
-        n_pairs = len(self.geom_model.collisionPairs)
-        hit_counts = np.zeros(n_pairs, dtype=int)
-
-        for q in configs:
-            q_full = pad_q(self.model, q)
-            pin.computeCollisions(
-                self.model,
-                self.data,
-                self.geom_model,
-                self.geom_data,
-                q_full,
-                False,
-            )
-            for i, cr in enumerate(self.geom_data.collisionResults):
-                if cr.isCollision():
-                    hit_counts[i] += 1
-
-        n_total = len(configs)
-        to_remove = []
-        for i in range(n_pairs):
-            if hit_counts[i] == n_total:
-                cp = self.geom_model.collisionPairs[i]
-                to_remove.append(
-                    (
-                        pin.CollisionPair(cp.first, cp.second),
-                        self.geom_model.geometryObjects[cp.first].name,
-                        self.geom_model.geometryObjects[cp.second].name,
-                    )
-                )
-
-        excluded_names: List[Tuple[str, str]] = []
-        for cp, n1, n2 in to_remove:
-            excluded_names.append((n1, n2))
-            self.geom_model.removeCollisionPair(cp)
-
-        self.geom_data = pin.GeometryData(self.geom_model)
+        """Exclude robot self-pairs that collide in most sampled configurations."""
+        excluded_names, self.geom_data = calibrate_exclude_frequent_self_pairs(
+            self.model,
+            self.geom_model,
+            self.data,
+            self.geom_data,
+            self._robot_indices,
+            n_samples=n_samples,
+            seed=seed,
+            min_hit_fraction=min_hit_fraction,
+        )
         self._excluded_pairs = excluded_names
         self._is_calibrated = True
 
         if self._verbose:
-            logger.info("Calibration excluded %d always-colliding pairs:", len(excluded_names))
+            logger.info(
+                "Calibration excluded %d frequent self-collision pairs:",
+                len(excluded_names),
+            )
             for n1, n2 in excluded_names:
                 logger.info("  %s <-> %s", n1, n2)
             logger.info("Remaining active pairs: %d", len(self.geom_model.collisionPairs))

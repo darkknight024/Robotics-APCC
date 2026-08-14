@@ -9,6 +9,7 @@ import numpy as np
 
 from utils.config_loader import SingularityGroupConfig
 
+from .collision_gate import finite_cfx_q, usable_cfx_q
 from .eaik_scoring import IkSolutionScoreBreakdown, score_ik_solution_breakdown
 from .result import FeasibilityResult
 
@@ -92,12 +93,8 @@ def select_best_cfx_branch(
         is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
 
         for cfx in range(_N_CFX):
-            if cfx >= len(sols) or np.any(np.isnan(sols[cfx])):
-                continue
-            if cfx < len(is_ls_list) and is_ls_list[cfx]:
-                continue
-            q = sols[cfx]
-            if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
+            q = usable_cfx_q(sols, is_ls_list, cfx, lower_limits, upper_limits, tol)
+            if q is None:
                 continue
             if collision_checker is not None and collision_checker.has_collision(q):
                 continue
@@ -148,12 +145,8 @@ def _q_for_cfx_if_valid(
     collision_checker: Optional[Any] = None,
 ) -> Optional[np.ndarray]:
     """Return ``all_solutions[cfx]`` if usable (finite, not LS, in joint limits), else None."""
-    if cfx >= len(sols) or np.any(np.isnan(sols[cfx])):
-        return None
-    if cfx < len(is_ls_list) and is_ls_list[cfx]:
-        return None
-    q = sols[cfx]
-    if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
+    q = usable_cfx_q(sols, is_ls_list, cfx, lower_limits, upper_limits, tol)
+    if q is None:
         return None
     if collision_checker is not None and collision_checker.has_collision(q):
         return None
@@ -214,14 +207,15 @@ def select_mixed_cfx_branches(
         sols = dbg.get('all_solutions', [])
         is_ls_list = dbg.get('cfx_sorted_is_ls', [None] * _N_CFX)
         for cfx in range(_N_CFX):
-            if cfx >= len(sols) or np.any(np.isnan(sols[cfx])):
+            q = finite_cfx_q(sols, cfx)
+            if q is None:
                 _dbg_reject_nan[cfx] += 1
                 continue
-            if cfx < len(is_ls_list) and is_ls_list[cfx]:
+            if cfx < len(is_ls_list) and bool(is_ls_list[cfx]):
                 _dbg_reject_ls[cfx] += 1
                 continue
-            q = sols[cfx]
-            if not (np.all(q >= lower_limits - tol) and np.all(q <= upper_limits + tol)):
+            q = usable_cfx_q(sols, is_ls_list, cfx, lower_limits, upper_limits, tol)
+            if q is None:
                 _dbg_reject_jl[cfx] += 1
                 continue
             if collision_checker is not None and collision_checker.has_collision(q):
