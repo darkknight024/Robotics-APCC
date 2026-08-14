@@ -27,9 +27,11 @@ from .collision_gate import (
     annotate_cfx_collision_blocked,
     first_collision_free_cfx_q,
     has_any_collision_free_cfx,
+    has_any_kinematic_cfx,
 )
 from .cfx_branch_selection import (
     MixedBranchResult,
+    _N_CFX,
     _q_for_cfx_if_valid,
     select_mixed_cfx_branches,
 )
@@ -59,18 +61,12 @@ def check_reachability(
 
 
 class FeasibilityAnalyzer:
-    """4-phase feasibility orchestrator.
+    """Phase-1 feasibility orchestrator (IK, CFX selection, C0, optional collision).
 
-    Usage::
-
-        analyzer = FeasibilityAnalyzer(robot_data, ik_solver, fk_solver, ...)
-
-        # Phase 1: IK solve + C0 check
-        traj_result = analyzer.analyze_trajectory(positions, quaternions)
-
-        # Phase 2: TOPP-RA  (call externally via core.topp_check)
-        # Phase 3: Task-space velocity  (call externally via core.checks)
-        # Phase 4: Dashboarding checks  (call externally via core.checks)
+    Collision is a **joint-state gate on each EAIK CFX branch**, not a kinematic
+    reachability failure. Attach ``collision_checker`` here (not on the IK
+    solver) so all eight slots stay available; mixed-branch selection then
+    skips colliding configurations.
     """
 
     def __init__(
@@ -134,6 +130,8 @@ class FeasibilityAnalyzer:
         is_reachable, q, ik_info = check_reachability(
             self.ik_solver, target_position, target_quaternion, q_init
         )
+        if self.collision_checker is not None:
+            annotate_cfx_collision_blocked(ik_info, self.collision_checker)
 
         if not is_reachable:
             return FeasibilityResult(
@@ -148,55 +146,6 @@ class FeasibilityAnalyzer:
                 target_position=target_position,
                 target_quaternion=target_quaternion,
             )
-
-        if self.collision_checker is not None:
-            annotate_cfx_collision_blocked(ik_info, self.collision_checker)
-            if self.multi_solution_weights is not None:
-                if not has_any_collision_free_cfx(
-                    ik_info,
-                    self.lower_position_limit,
-                    self.upper_position_limit,
-                    self.collision_checker,
-                ):
-                    ik_info = dict(ik_info)
-                    ik_info["solve_method"] = "collision"
-                    ik_info["reason"] = "collision_all_branches"
-                    return FeasibilityResult(
-                        is_reachable=False,
-                        manipulability=0.0,
-                        min_singular_value=0.0,
-                        max_singular_value=0.0,
-                        condition_number=np.inf,
-                        near_singularity=False,
-                        joint_positions_rad=None,
-                        ik_debug_info=ik_info,
-                        target_position=target_position,
-                        target_quaternion=target_quaternion,
-                    )
-                q_seed = first_collision_free_cfx_q(
-                    ik_info,
-                    self.lower_position_limit,
-                    self.upper_position_limit,
-                    self.collision_checker,
-                )
-                if q_seed is not None:
-                    q = q_seed
-            elif self._collision_invalidates_single_solution(q):
-                ik_info = dict(ik_info)
-                ik_info["solve_method"] = "collision"
-                ik_info["reason"] = "collision"
-                return FeasibilityResult(
-                    is_reachable=False,
-                    manipulability=0.0,
-                    min_singular_value=0.0,
-                    max_singular_value=0.0,
-                    condition_number=np.inf,
-                    near_singularity=False,
-                    joint_positions_rad=None,
-                    ik_debug_info=ik_info,
-                    target_position=target_position,
-                    target_quaternion=target_quaternion,
-                )
 
         jacobian = self.fk_solver.get_jacobian(q)
         manip = compute_manipulability(jacobian, self.characteristic_length_m)
@@ -271,6 +220,68 @@ class FeasibilityAnalyzer:
                     i,
                 )
         return n_bad
+
+    def _summarize_collision(
+        self,
+        results: List[FeasibilityResult],
+        output_collision_leaks: int,
+    ) -> Dict[str, Any]:
+        """Aggregate per-branch and selected-path collision flags."""
+        n_cfx = _N_CFX
+        any_branch = 0
+        all_blocked = 0
+        selected_hit = 0
+        per_cfx = [0] * n_cfx
+        if self.collision_checker is not None:
+            for result in results:
+                dbg = result.ik_debug_info or {}
+                blocked = dbg.get("cfx_collision_blocked") or []
+                if any(bool(b) for b in blocked):
+                    any_branch += 1
+                for i, b in enumerate(blocked):
+                    if i < n_cfx and b:
+                        per_cfx[i] += 1
+                reason = dbg.get("reason")
+                if reason == "collision_all_branches" or self._kinematic_but_all_colliding(result):
+                    all_blocked += 1
+                q = result.joint_positions_rad
+                if q is not None and self.collision_checker.has_collision(q):
+                    selected_hit += 1
+        reject = selected_hit + all_blocked
+        ok = reject == 0 and output_collision_leaks == 0
+        return {
+            "collision_ok": ok,
+            "collision_reject_count": reject,
+            "collision_selected_count": selected_hit,
+            "collision_all_branches_count": all_blocked,
+            "collision_any_branch_count": any_branch,
+            "collision_cfx_blocked_counts": per_cfx,
+            "collision_output_leak_count": output_collision_leaks,
+        }
+
+    def _kinematic_but_all_colliding(self, result: FeasibilityResult) -> bool:
+        """Reachable IK with in-limit CFX slots, all of which collide."""
+        if self.collision_checker is None or not result.is_reachable:
+            return False
+        dbg = result.ik_debug_info or {}
+        if not has_any_kinematic_cfx(
+            dbg, self.lower_position_limit, self.upper_position_limit,
+        ):
+            return False
+        return not has_any_collision_free_cfx(
+            dbg,
+            self.lower_position_limit,
+            self.upper_position_limit,
+            self.collision_checker,
+        )
+
+    def _drop_selected_q_keep_reachable(self, result: FeasibilityResult) -> None:
+        """No collision-free CFX to emit; keep kinematic reachability True."""
+        result.joint_positions_rad = None
+        dbg = dict(result.ik_debug_info or {})
+        dbg["solve_method"] = "collision_all_branches"
+        dbg["reason"] = "collision_all_branches"
+        result.ik_debug_info = dbg
 
     def _clear_result_for_missing_global_branch(self, result: FeasibilityResult) -> None:
         """No configuration on the chosen global cfx branch — drop joints (single-branch truth)."""
@@ -352,6 +363,7 @@ class FeasibilityAnalyzer:
 
         tol = 1e-6
         n_cleared = 0
+        n_collision_dropped = 0
         for wi, result in enumerate(results):
             cfx_i = mixed.selected_cfx_per_waypoint[wi] if wi < len(mixed.selected_cfx_per_waypoint) else None
             if not result.is_reachable and result.joint_positions_rad is None:
@@ -367,18 +379,31 @@ class FeasibilityAnalyzer:
                 )
                 if q is not None:
                     self._update_result_metrics(result, q)
+                elif self._kinematic_but_all_colliding(result):
+                    self._drop_selected_q_keep_reachable(result)
+                    n_collision_dropped += 1
                 else:
                     self._clear_result_for_missing_global_branch(result)
                     n_cleared += 1
             else:
                 if result.joint_positions_rad is not None:
-                    self._clear_result_for_missing_global_branch(result)
-                    n_cleared += 1
+                    if self._kinematic_but_all_colliding(result):
+                        self._drop_selected_q_keep_reachable(result)
+                        n_collision_dropped += 1
+                    else:
+                        self._clear_result_for_missing_global_branch(result)
+                        n_cleared += 1
 
         if n_cleared > 0:
             logger.warning(
                 "Mixed cfx selection: cleared joints at %d waypoint(s) (no valid branch).",
                 n_cleared,
+            )
+        if n_collision_dropped > 0:
+            logger.info(
+                "Mixed cfx selection: dropped selected q at %d waypoint(s) "
+                "(all kinematic CFX slots collide).",
+                n_collision_dropped,
             )
         n_with_q = sum(1 for r in results if r.joint_positions_rad is not None)
         logger.info(
@@ -447,6 +472,13 @@ class FeasibilityAnalyzer:
         cfx_per_waypoint_breakdowns: Optional[List[List[Optional[IkSolutionScoreBreakdown]]]] = None
         if self.multi_solution_weights is not None:
             mixed_result, cfx_branch_costs, cfx_per_waypoint_breakdowns = self._apply_global_cfx_selection(results)
+        elif self.collision_checker is not None:
+            for result in results:
+                q = result.joint_positions_rad
+                if q is None:
+                    continue
+                if self._collision_invalidates_single_solution(q):
+                    self._drop_selected_q_keep_reachable(result)
 
         # ── Pass 3: aggregate metrics from (possibly overridden) results ──
         reachable_count = 0
@@ -523,23 +555,13 @@ class FeasibilityAnalyzer:
         reachability_ok = reachable_count == n_waypoints
         c0_ok = c0_result.passed if c0_result is not None else True
 
-        collision_reject_count = sum(
-            1
-            for r in results
-            if (r.ik_debug_info or {}).get("solve_method") in (
-                "collision",
-                "collision_all_branches",
-            )
-            or (r.ik_debug_info or {}).get("reason")
-            in ("collision", "collision_all_branches")
-        )
         collision_check_enabled = self.collision_checker is not None
         output_collision_leaks = self._verify_output_configs_collision_free(
             results, joint_angles_rad,
         )
-        collision_ok = (
-            collision_reject_count == 0 and output_collision_leaks == 0
-        ) if collision_check_enabled else True
+        collision_stats = self._summarize_collision(results, output_collision_leaks)
+        collision_ok = collision_stats["collision_ok"] if collision_check_enabled else True
+        collision_reject_count = collision_stats["collision_reject_count"]
 
         # Joint-limit violations
         joint_limit_stats: Dict[str, Any] = {}
@@ -567,6 +589,10 @@ class FeasibilityAnalyzer:
             },
             "collision_reject_count": collision_reject_count,
             "collision_output_leak_count": output_collision_leaks,
+            "collision_selected_count": collision_stats["collision_selected_count"],
+            "collision_all_branches_count": collision_stats["collision_all_branches_count"],
+            "collision_any_branch_count": collision_stats["collision_any_branch_count"],
+            "collision_cfx_blocked_counts": collision_stats["collision_cfx_blocked_counts"],
             "mixed_branch_result": mixed_result,
             "selected_cfx_branch": next((c for c in mixed_result.selected_cfx_per_waypoint if c is not None), None) if mixed_result else None,
             "cfx_branch_costs": cfx_branch_costs.tolist() if cfx_branch_costs is not None else None,

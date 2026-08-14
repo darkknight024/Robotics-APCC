@@ -220,24 +220,10 @@ def run_feature3(
         print(f"  Speed extracted: {load_result.metadata['speed_extracted']}")
 
     # ── Set up IK solvers ──
-    from core.collision.factory import build_collision_checker_for_feasibility
-
-    repo_root = Path(__file__).resolve().parents[2]
-    coll_cfg = getattr(config, "collision", None)
-    collision_checker = None
-    if coll_cfg is not None:
-        cspace_yaml = getattr(coll_cfg, "cspace_forbidden_yaml", None)
-        scene_yaml = coll_cfg.scene_yaml if coll_cfg.enabled else None
-        collision_checker = build_collision_checker_for_feasibility(
-            urdf_path=urdf_path,
-            project_root=repo_root,
-            scene_yaml=scene_yaml,
-            scene_calibrate=getattr(coll_cfg, "scene_calibrate", True),
-            scene_calibrate_n_samples=getattr(coll_cfg, "scene_calibrate_n_samples", 10),
-            scene_calibrate_seed=getattr(coll_cfg, "scene_calibrate_seed", 42),
-            cspace_forbidden_yaml=cspace_yaml,
-        )
-
+    # Feature 4 collision gating belongs in the Feature 2 feasibility pipeline
+    # (pipeline_runner), not here. run_feature3 reconstructs a kinematic joint
+    # path for speed / velocity profiling; filtering EAIK branches against
+    # collision_objects.yaml rejects siping poses (IK failure at sample 0).
     ik_cfg = load_ik_config_as_object(solver=config.solver)
 
     robot_config = None
@@ -251,7 +237,6 @@ def run_feature3(
     fk_solver, ik_solver, robot_data = create_solvers(
         urdf_path, solver=config.solver, ik_config=ik_cfg,
         ee_frame_name=ee_frame,
-        collision_checker=collision_checker,
     )
 
     final_vel_lims = velocity_limits_rad_s
@@ -297,7 +282,6 @@ def run_feature3(
         max_ik_failures_per_trajectory=config.max_ik_failures_per_trajectory,
         multi_solution_weights=ms_weights,
         j5_threshold_deg=config.singularity.j5_threshold_deg,
-        collision_checker=collision_checker,
     )
 
     ceiling_flags = dict(

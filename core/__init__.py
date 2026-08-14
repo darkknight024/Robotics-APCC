@@ -113,6 +113,10 @@ def create_solvers(
 
     ee_frame_name controls which frame is tracked. If the frame is not present
     in the URDF, it is resolved from fixture_config.yaml automatically.
+
+    ``collision_checker`` is accepted for backward compatibility. Feature 2
+    attaches the checker on :class:`~core.feasibility.analyzer.FeasibilityAnalyzer`
+    so every EAIK CFX slot remains available for branch gating.
     """
     solver = solver.lower().strip()
 

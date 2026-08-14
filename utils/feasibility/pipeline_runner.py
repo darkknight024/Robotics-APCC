@@ -144,7 +144,6 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
     fk_solver, ik_solver, robot_data = create_solvers(
         inputs.urdf_path, solver=inputs.config.solver, ik_config=ik_cfg,
         ee_frame_name=ee_frame,
-        collision_checker=collision_checker,
     )
 
     final_vel_lims = inputs.velocity_limits_rad_s
@@ -510,6 +509,15 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
                         )
                     if not c1_ok:
                         fails.append("C1 continuity (joint vel/accel limits)")
+                    if collision_enabled and not collision_ok:
+                        fails.append(
+                            "collision ("
+                            f"selected={traj_result.get('collision_selected_count', 0)}, "
+                            f"all_branches_blocked="
+                            f"{traj_result.get('collision_all_branches_count', 0)}, "
+                            f"any_branch="
+                            f"{traj_result.get('collision_any_branch_count', 0)})"
+                        )
                     (traj_out / "failure_reason.txt").write_text(
                         f"trajectory_{traj_idx + 1}: FAIL\n"
                         + "\n".join(f"- {f}" for f in fails)
@@ -584,6 +592,10 @@ def run_feasibility_pipeline(inputs: FeasibilityPipelineInputs) -> Dict[str, Any
             "ik_failure_count": traj_result.get("ik_failure_count", 0),
             "collision_reject_count": traj_result.get("collision_reject_count", 0),
             "collision_output_leak_count": traj_result.get("collision_output_leak_count", 0),
+            "collision_selected_count": traj_result.get("collision_selected_count", 0),
+            "collision_all_branches_count": traj_result.get("collision_all_branches_count", 0),
+            "collision_any_branch_count": traj_result.get("collision_any_branch_count", 0),
+            "collision_cfx_blocked_counts": traj_result.get("collision_cfx_blocked_counts"),
             "feasibility_flags": feasibility_flags,
             "level1_valid": level1_valid,
             "safety_tier": safety_tier,

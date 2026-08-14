@@ -80,12 +80,18 @@ def generate_analysis_report(results: Dict[str, Any], output_path: Path) -> None
             lines.append(
                 f"  Collision: {'PASS' if flags.get('collision_ok', True) else 'FAIL'}"
             )
-            n_rej = int(traj.get("collision_reject_count", 0) or 0)
+            n_sel = int(traj.get("collision_selected_count", 0) or 0)
+            n_all = int(traj.get("collision_all_branches_count", 0) or 0)
+            n_any = int(traj.get("collision_any_branch_count", 0) or 0)
             n_leak = int(traj.get("collision_output_leak_count", 0) or 0)
-            if n_rej or n_leak:
+            cfx_counts = traj.get("collision_cfx_blocked_counts")
+            if n_sel or n_all or n_any or n_leak:
                 lines.append(
-                    f"    (rejected_waypoints={n_rej}, output_leaks={n_leak})"
+                    f"    selected-path={n_sel}, all-branches-blocked={n_all}, "
+                    f"any-branch={n_any}, output_leaks={n_leak}"
                 )
+            if cfx_counts:
+                lines.append(f"    per-cfx blocked waypoints: {cfx_counts}")
 
         c1 = traj.get("c1_result")
         if c1 is not None:

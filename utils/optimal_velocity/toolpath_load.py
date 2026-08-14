@@ -88,6 +88,12 @@ def load_joint_path_from_toolpath(
 
     toolpath_csv = Path(toolpath_csv)
     cfg = load_batch_config(str(repo / "config" / "batch_feasibility_config.yaml"))
+    # Feature 4 collision is on by default in batch_feasibility_config.yaml.
+    # Path IK for velocity profiling must match feat3_2/transients: reconstruct
+    # the kinematic joint path, not a collision-filtered subset of EAIK branches.
+    if getattr(cfg, "collision", None) is not None:
+        cfg.collision.enabled = False
+        cfg.collision.cspace_forbidden_yaml = None
     cfg.feature3_d1.enabled = True
     cfg.feature3_d1.generate_plots = False
     cfg.feature3_d1.generate_report = False

@@ -3,28 +3,27 @@
 test_collision.py — Feature 4 validation harness
 ================================================
 
-Loads **externally collected** RobotStudio (or other oracle) datasets and compares
-them to outputs from ``core.collision`` checkers. All geometric collision
-computation lives in ``core.collision``; this script only:
+Thin wrapper around ``core.collision`` / the Feature 2 joint-state gate.
 
-* assembles file paths and experiment matrices,
-* invokes the checkers,
-* aggregates metrics (precision / recall / FP rate, per-experiment summaries),
-* writes JSON/Markdown reports under an output directory.
+Default: Experiment 25 toolpaths in robot-base frame ``T_B_K`` (no knife
+transform). Columns 1–7 are pose, 8–14 are ignored, last column is the
+RobotStudio collision label (0/1). Filenames ``*_cfxN.csv`` select EAIK
+CFX slot N (ABB ``cfx``); disable with ``--no-parse-cfx``.
 
 Usage
 -----
+    python tests/test_collision.py
+    python tests/test_collision.py --no-parse-cfx
     python tests/test_collision.py --smoke
-    python tests/test_collision.py --config tests/configs/collision_validation.yaml
     python tests/test_collision.py --internal-collision
-
-See ``tests/collision_validation_example.yaml`` for the configuration schema.
+    python tests/test_collision.py --config tests/configs/internal_collision_validation.yaml
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,6 +35,15 @@ import numpy as np
 # Repo root on sys.path (matches other tests/ scripts)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
+
+_EXP25_DEFAULT = (
+    _REPO_ROOT / "Robot_APCC" / "Experiments" / "Experiment_25" / "Toolpaths"
+)
+_CFX_STEM_RE = re.compile(r"_cfx(\d+)$", re.IGNORECASE)
+_N_CFX = 8
+# Headerless Exp25 rows: pose (1–7), speed/zone (8–14) ignored, label (last).
+_EXP25_POSE_COLS = 7
+_EXP25_IGNORE_THROUGH = 14  # 1-based; last column is the collision label
 
 
 @dataclass
@@ -60,6 +68,240 @@ def _resolve_path(p: str, base: Path) -> Path:
     if pp.is_absolute():
         return pp
     return (base / pp).resolve()
+
+
+def parse_cfx_from_filename(path: Path) -> Optional[int]:
+    """Return ABB/EAIK ``cfx`` from a ``*_cfxN`` stem, or None if absent."""
+    match = _CFX_STEM_RE.search(path.stem)
+    if match is None:
+        return None
+    cfx = int(match.group(1))
+    if not 0 <= cfx < _N_CFX:
+        raise ValueError(
+            f"CFX {cfx} from {path.name} is outside 0..{_N_CFX - 1}"
+        )
+    return cfx
+
+
+_EXP25_URDF = (
+    "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/"
+    "IRB_1300_1400_URDF_with_fixture.urdf"
+)
+_EXP25_EE_FRAME = "ee_link"
+
+
+def load_exp25_toolpath(csv_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """Load headerless T0 toolpath: last-column 0/1 labels, poses for IK in metres.
+
+    CSV xyz is millimetres in robot base (``T_B_K``), same as every other
+    toolpath in this repo. EAIK / Pinocchio / URDF are SI, so xyz is converted
+    to metres here. Quaternion is already unitless. Columns 8–14 are ignored.
+    """
+    poses: List[List[float]] = []
+    labels: List[int] = []
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        for raw in handle:
+            tokens = [tok.strip() for tok in raw.strip().split(",") if tok.strip()]
+            if not tokens:
+                continue
+            if len(tokens) == 1:
+                continue
+            if len(tokens) < _EXP25_IGNORE_THROUGH + 1:
+                continue
+            try:
+                xyz_mm = [float(tokens[i]) for i in range(3)]
+                quat = np.array([float(tokens[i]) for i in range(3, 7)], dtype=float)
+            except ValueError:
+                continue
+            label = int(float(tokens[-1]))
+            if label not in (0, 1):
+                raise ValueError(
+                    f"{csv_path.name}: collision label must be 0 or 1, got {label}"
+                )
+            norm = float(np.linalg.norm(quat))
+            if norm < 1e-10:
+                quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+            else:
+                quat = quat / norm
+            poses.append([
+                xyz_mm[0] / 1000.0,  # mm → m for EAIK / Pinocchio
+                xyz_mm[1] / 1000.0,
+                xyz_mm[2] / 1000.0,
+                float(quat[0]),
+                float(quat[1]),
+                float(quat[2]),
+                float(quat[3]),
+            ])
+            labels.append(label)
+    if not poses:
+        raise ValueError(f"No pose+label rows in {csv_path}")
+    return np.asarray(poses, dtype=float), np.asarray(labels, dtype=int)
+
+
+def _finite_q(q: Any) -> Optional[np.ndarray]:
+    if q is None:
+        return None
+    arr = np.asarray(q, dtype=float).reshape(-1)
+    if arr.size < 6 or not np.all(np.isfinite(arr[:6])):
+        return None
+    return arr[:6].copy()
+
+
+def _q_for_cfx_slot(ik_info: Dict[str, Any], cfx: int) -> Optional[np.ndarray]:
+    sols = ik_info.get("all_solutions") or []
+    if cfx >= len(sols):
+        return None
+    return _finite_q(sols[cfx])
+
+
+def run_exp25_dataset(
+    data_dir: Path,
+    *,
+    parse_cfx: bool,
+    base: Path,
+    out_dir: Path,
+    robot_name: str = "IRB 1300-7/1.4",
+    scene_yaml: str = "config/collision_objects.yaml",
+) -> ExperimentReport:
+    """IK each Exp25 pose (base frame) and compare ``has_collision(q)`` to GT."""
+    from core import create_solvers
+    from core.collision.factory import build_collision_checker_for_feasibility
+    from utils.config_loader import get_robot_by_name, load_ik_config_as_object
+
+    csv_paths = sorted(data_dir.rglob("*.csv")) if data_dir.is_dir() else []
+    if not csv_paths:
+        return ExperimentReport(
+            name="exp25_toolpaths",
+            experiment_type="exp25_pose_label",
+            checker="scene",
+            passed=True,
+            notes=[f"No CSV files under {data_dir}"],
+        )
+
+    robot = get_robot_by_name(robot_name)
+    urdf_path = str(_resolve_path(robot.urdf_path, base))
+    ik_cfg = load_ik_config_as_object(solver="eaik")
+    ee_frame = robot.fixture_name or ik_cfg.ee_frame_name
+    _fk, ik_solver, _robot = create_solvers(
+        urdf_path, solver="eaik", ik_config=ik_cfg, ee_frame_name=ee_frame,
+    )
+    checker = build_collision_checker_for_feasibility(
+        urdf_path=urdf_path,
+        project_root=base,
+        scene_yaml=str(_resolve_path(scene_yaml, base)),
+        scene_calibrate=True,
+        scene_calibrate_n_samples=10,
+        scene_calibrate_seed=42,
+    )
+    if checker is None:
+        return ExperimentReport(
+            name="exp25_toolpaths",
+            experiment_type="exp25_pose_label",
+            checker="scene",
+            passed=False,
+            notes=["build_collision_checker_for_feasibility returned None"],
+        )
+
+    per_file: List[Dict[str, Any]] = []
+    y_true_all: List[int] = []
+    y_pred_all: List[int] = []
+    notes: List[str] = [
+        f"data_dir={data_dir}",
+        "Poses are T_B_K (no knife transform). Speed/zone columns 8–14 ignored.",
+        (
+            "q evaluated on filename CFX slot (*_cfxN.csv)."
+            if parse_cfx
+            else "q evaluated on EAIK selected branch (--no-parse-cfx)."
+        ),
+    ]
+
+    for csv_path in csv_paths:
+        poses, y_true = load_exp25_toolpath(csv_path)
+        cfx: Optional[int] = None
+        cfx_note = "selected_branch"
+        if parse_cfx:
+            cfx = parse_cfx_from_filename(csv_path)
+            if cfx is not None:
+                cfx_note = f"cfx{cfx}"
+            else:
+                cfx_note = "selected_branch (no _cfxN in filename)"
+
+        try:
+            rel_path = str(csv_path.relative_to(base))
+        except ValueError:
+            rel_path = str(csv_path)
+        y_pred = np.full(len(poses), -1, dtype=int)
+        n_no_q = 0
+        q_seed: Optional[np.ndarray] = None
+        for i in range(len(poses)):
+            pos = poses[i, :3]
+            quat = poses[i, 3:7]
+            _ok, q_sel, info = ik_solver.solve(pos, quat, q_seed)
+            if cfx is not None:
+                q_eval = _q_for_cfx_slot(info or {}, cfx)
+            else:
+                q_eval = _finite_q(q_sel)
+            if q_eval is None:
+                n_no_q += 1
+                continue
+            y_pred[i] = int(checker.has_collision(q_eval))
+            q_seed = q_eval
+
+        scored = y_pred >= 0
+        n_scored = int(np.sum(scored))
+        file_metrics: Dict[str, Any] = {
+            "path": rel_path,
+            "n_rows": int(len(poses)),
+            "n_scored": n_scored,
+            "n_no_ik": n_no_q,
+            "n_gt_collision": int(np.sum(y_true == 1)),
+            "q_source": cfx_note,
+        }
+        if n_scored > 0:
+            metrics = _binary_metrics(y_true[scored], y_pred[scored])
+            file_metrics.update(metrics)
+            y_true_all.extend(y_true[scored].tolist())
+            y_pred_all.extend(y_pred[scored].tolist())
+        per_file.append(file_metrics)
+
+    overall = (
+        _binary_metrics(np.asarray(y_true_all, dtype=int), np.asarray(y_pred_all, dtype=int))
+        if y_true_all
+        else {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "precision": 0.0, "recall": 0.0, "false_positive_rate": 0.0}
+    )
+    all_scored = bool(per_file) and all(int(f["n_no_ik"]) == 0 for f in per_file)
+    exact_match = bool(y_true_all) and overall["fp"] == 0 and overall["fn"] == 0
+    metrics = {
+        "urdf": urdf_path,
+        "scene_yaml": scene_yaml,
+        "parse_cfx": parse_cfx,
+        "n_files": len(csv_paths),
+        "all_waypoints_scored": all_scored,
+        "exact_match_with_ground_truth": exact_match,
+        "overall": overall,                xyz_mm[0] / 1000.0,
+                xyz_mm[1] / 1000.0,
+                xyz_mm[2] / 1000.0,
+        "per_file": per_file,
+    }
+    (out_dir / "exp25_metrics.json").write_text(
+        json.dumps(metrics, indent=2), encoding="utf-8",
+    )
+    notes.append(
+        f"overall tp={overall['tp']} fp={overall['fp']} tn={overall['tn']} fn={overall['fn']} "
+        f"recall={overall['recall']:.3f} fpr={overall['false_positive_rate']:.3f}"
+    )
+    notes.append(
+        "exact_match_with_ground_truth="
+        f"{exact_match} (URDF meshes can disagree with RobotStudio; this is diagnostic)"
+    )
+    return ExperimentReport(
+        name="exp25_toolpaths",
+        experiment_type="exp25_pose_label",
+        checker="scene",
+        passed=all_scored,
+        metrics=metrics,
+        notes=notes,
+    )
 
 
 def _joint_matrix_from_rs_csv(
@@ -505,25 +747,45 @@ def write_summary_md(path: Path, reports: List[ExperimentReport]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Feature 4 collision validation harness")
     parser.add_argument(
+        "--exp25-dir",
+        type=str,
+        default=str(_EXP25_DEFAULT),
+        help="Experiment 25 Toolpaths directory (T_B_K pose CSVs with last-column GT)",
+    )
+    parser.add_argument(
+        "--parse-cfx",
+        dest="parse_cfx",
+        action="store_true",
+        default=True,
+        help="Use EAIK CFX from filename *_cfxN.csv (default: on)",
+    )
+    parser.add_argument(
+        "--no-parse-cfx",
+        dest="parse_cfx",
+        action="store_false",
+        help="Ignore filename CFX; evaluate EAIK's selected branch instead",
+    )
+    parser.add_argument(
+        "--skip-exp25",
+        action="store_true",
+        help="Do not run the Experiment 25 pose/label suite",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default="",
-        help="Validation YAML (see tests/collision_validation_example.yaml)",
+        help="Optional extra validation YAML (see tests/collision_validation_example.yaml)",
     )
     parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Run a minimal import + checker smoke test (no RS data required)",
+        help="Run a minimal import + checker smoke test",
     )
     parser.add_argument(
         "--out",
         type=str,
         default="",
-        help=(
-            "Output directory (default: Internal_Collision/Results/MM_DD_YY_HH_MM_SS for "
-            "--internal-collision or internal_collision_validation.yaml; else "
-            "tests/collision_validation_results/<YYYYMMDD_HHMMSS>)"
-        ),
+        help="Output directory (default: tests/collision_validation_results/<timestamp>)",
     )
     parser.add_argument(
         "--internal-collision",
@@ -534,10 +796,6 @@ def main() -> int:
 
     if args.internal_collision:
         args.config = "tests/configs/internal_collision_validation.yaml"
-        args.smoke = False
-
-    if not args.smoke and not args.config:
-        args.smoke = True
 
     base = _REPO_ROOT
     ts_default = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -563,9 +821,27 @@ def main() -> int:
 
     reports: List[ExperimentReport] = []
 
+    run_exp25 = (
+        not args.skip_exp25
+        and not args.internal_collision
+        and not args.config
+        and not args.smoke
+    )
     if args.smoke:
-        urdf = str(base / "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf")
+        from utils.config_loader import get_robot_by_name
+
+        urdf = str(_resolve_path(get_robot_by_name("IRB 1300-7/1.4").urdf_path, base))
         reports.append(run_smoke(out_dir / "smoke", urdf))
+
+    if run_exp25:
+        reports.append(
+            run_exp25_dataset(
+                Path(args.exp25_dir),
+                parse_cfx=bool(args.parse_cfx),
+                base=base,
+                out_dir=out_dir,
+            )
+        )
 
     if args.config:
         cfg_path = Path(args.config)
@@ -575,10 +851,7 @@ def main() -> int:
         experiments = cfg.get("experiments") or {}
         for exp_name, exp in experiments.items():
             etype = exp.get("type", "")
-            if etype in ("joint_table_binary",):
-                reports.append(run_joint_table_binary(exp_name, exp, cfg, base, out_dir))
-            elif etype == "waypoint_table_binary":
-                # Same layout as joint_table_binary; optional column waypoint ignored here
+            if etype in ("joint_table_binary", "waypoint_table_binary"):
                 reports.append(run_joint_table_binary(exp_name, exp, cfg, base, out_dir))
             elif etype == "tolerance_series":
                 reports.append(
@@ -609,6 +882,10 @@ def main() -> int:
                     )
                 )
 
+    if not reports:
+        print("Nothing to run. Use default Exp25, --smoke, --internal-collision, or --config.")
+        return 2
+
     summary = {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "experiments": [
@@ -627,6 +904,10 @@ def main() -> int:
     write_summary_md(out_dir / "summary.md", reports)
 
     print(f"Wrote reports under: {out_dir}")
+    for r in reports:
+        print(f"  {r.name}: {'PASS' if r.passed else 'FAIL'}")
+        for note in r.notes:
+            print(f"    {note}")
     return 0 if all(r.passed for r in reports) else 1
 
 

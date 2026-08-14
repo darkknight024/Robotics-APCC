@@ -8,7 +8,7 @@ Collision checking: discrete configuration tests at joint vector **q** (degrees)
 
 ### 1.1 Design intent
 
-We need a single, repeatable answer to: *“Is configuration **q** in collision?”* — for robot self-contact, static cell obstacles, and (in tests) artificial forbidden regions in joint space. That answer must plug into Feature 2 (EAIK multi-branch IK + mixed **cfx** selection) so every emitted waypoint uses a **collision-free** branch when a checker is attached.
+We need a single, repeatable answer to: *“Is configuration **q** in collision?”* — for robot self-contact, static cell obstacles, and (in tests) artificial forbidden regions in joint space. That answer plugs into Feature 2 as a **CFX-branch gate**: EAIK enumerates joint solutions, then colliding slots are excluded from mixed-branch selection so the emitted waypoint uses a collision-free branch when one exists.
 
 The production path is **task-space geometry** (URDF collision meshes + fixed environment STLs). A separate **C-space** gate exists for deterministic offline tests without loading meshes or depending on FK accuracy.
 
@@ -56,13 +56,12 @@ Collision is not implemented inside `core/collision` alone; feasibility owns orc
 | Location | Role |
 |----------|------|
 | `core/feasibility/collision_gate.py` | Shared predicates: `is_cfx_slot_collision_free`, `first_collision_free_cfx_q`, `annotate_cfx_collision_blocked` |
-| `core/feasibility/analyzer.py` | `FeasibilityAnalyzer(..., collision_checker=...)` — waypoint infeasible if no collision-free **cfx**; post-pass `collision_output_leak_count` |
+| `core/feasibility/analyzer.py` | Annotates per-CFX collisions; mixed-branch selection skips colliding slots; selected path must be collision-free |
 | `core/feasibility/cfx_branch_selection.py` | Mixed/global **cfx** scoring skips colliding branches before coverage/cost |
-| `core/eaik_ik_solver.py` | `EAIKIKSolver(..., collision_checker=...)` — `_filter_collision_free` before ECFX pick |
-| `core/__init__.py` | `create_solvers(..., collision_checker=...)` |
-| `utils/feasibility/pipeline_runner.py` | Builds checker from `FeasibilityConfig.collision` + runtime overrides |
+| `core/eaik_ik_solver.py` | Enumerates all CFX slots (joint limits + FK). Feature 2 does not attach the collision checker here. |
+| `utils/feasibility/pipeline_runner.py` | Builds checker from config + CLI; attaches it to the analyzer only |
 | `utils/config_loader.py` | `CollisionConfig` dataclass |
-| `feasibility_analysis.py` | CLI + `CollisionRunOverrides`; `process_toolpath` / `run_batch_single_job` |
+| `feasibility_analysis.py` | CLI + `CollisionRunOverrides`; `--no-collision` disables the Feature 2 gate |
 
 **Contract for any gate:** implement `has_collision(q: np.ndarray) -> bool` (`True` = infeasible). Optional `check(q) -> CollisionResult` for diagnostics.
 
