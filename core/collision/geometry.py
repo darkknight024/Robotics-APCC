@@ -59,29 +59,37 @@ def se3_from_pose_dict(pose: Dict[str, Any]) -> pin.SE3:
 def se3_from_collision_object_pose(pose: Dict[str, Any]) -> pin.SE3:
     """Build ``pin.SE3`` for ``collision_objects.yaml`` static objects.
 
-    **Contract** (robot base frame):
+    **Contract** (robot base frame), after :mod:`scene_config` normalization:
 
-    - ``xyz``: three translations in **millimetres**.
-    - ``quaternion``: ``[qw, qx, qy, qz]`` only (no ``rpy_*``).
+    - ``xyz`` / ``position_mm``: three translations in **millimetres**.
+    - ``quaternion`` / ``quat_wxyz``: ``[qw, qx, qy, qz]`` only
+      (no ``rpy_*`` / ``orientation_deg``).
 
-    Translation is converted to metres for Pinocchio.
+    Translation is converted to metres for Pinocchio. Quaternion is normalized.
     """
     if not isinstance(pose, dict):
         raise TypeError("pose must be a dict")
-    for k in ("rpy_deg", "rpy_rad"):
+    for k in ("rpy_deg", "rpy_rad", "orientation_deg", "rpy"):
         if k in pose:
             raise ValueError(
-                f"collision_objects.yaml pose must use quaternion [qw,qx,qy,qz] only; remove {k!r}"
+                f"collision_objects.yaml pose must use quaternion [qw,qx,qy,qz] only; "
+                f"remove {k!r}"
             )
-    if "xyz" not in pose:
-        raise ValueError("collision object pose requires 'xyz' [mm, mm, mm]")
-    if "quaternion" not in pose:
+    xyz = pose.get("xyz", pose.get("position_mm"))
+    quat_raw = pose.get("quaternion", pose.get("quat_wxyz", pose.get("quat")))
+    if xyz is None:
+        raise ValueError("collision object pose requires 'xyz' / 'position_mm' [mm, mm, mm]")
+    if quat_raw is None:
         raise ValueError(
-            "collision object pose requires 'quaternion' [qw, qx, qy, qz]"
+            "collision object pose requires 'quaternion' / 'quat_wxyz' [qw, qx, qy, qz]"
         )
-    xyz_mm = np.asarray(pose["xyz"], dtype=float).reshape(3)
+    xyz_mm = np.asarray(xyz, dtype=float).reshape(3)
     t_m = xyz_mm * 0.001
-    q = np.asarray(pose["quaternion"], dtype=float).reshape(4)
+    q = np.asarray(quat_raw, dtype=float).reshape(4)
+    n = float(np.linalg.norm(q))
+    if n < 1e-12:
+        raise ValueError("collision object quaternion has near-zero norm")
+    q = q / n
     quat = pin.Quaternion(q[0], q[1], q[2], q[3])
     R = quat.matrix()
     return pin.SE3(R, t_m)

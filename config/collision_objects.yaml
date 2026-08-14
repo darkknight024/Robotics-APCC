@@ -1,43 +1,129 @@
-# Feature 4 — static collision objects (robot base frame).
+# =============================================================================
+# Scene Objects Configuration (collision + Viser)
+# =============================================================================
+# Static cell meshes for Feature 4 collision and the Viser scene viewer.
 #
-# Pose contract (all objects):
-#   - ``xyz``: translation in **millimetres** (robot base frame).
-#   - ``quaternion``: ``[qw, qx, qy, qz]`` only (no rpy fields).
+# Collision contract (robot base frame):
+#   position_mm     - [x, y, z] translation in millimetres
+#   quat_wxyz       - [qw, qx, qy, qz] orientation (REQUIRED for collision)
+#   mesh_path       - path to STL (relative to repo root)
+#   scale           - uniform mesh vertex scale for Pinocchio
+#                     Exp25 STLs are already in metres → use 1.0
+#                     millimetre-vertex STLs → use 0.001
+#   collision       - true/false; false skips the object in collision checking
 #
-# STL meshes here use **millimetre** vertices; ``mesh_scale`` converts to metres for Pinocchio.
+# orientation_deg may be kept for viewer reference but is NOT used by the
+# collision checker — quat_wxyz is the source of truth.
 #
-# Obstacle placement matches ``Robot_APCC/Experiments/Internal_Collision/objects/obstacle_poses.csv``
-# (minimum-corner / local origin placement in world mm).
-
-version: 2
+# Viewer-only fields (ignored by collision): type, color, dimensions_mm, etc.
 
 objects:
-  - name: obstacle_1
-    group: environment
-    enabled: true
-    mesh_path: "Robot_APCC/Experiments/Internal_Collision/objects/Obstacle_1.stl"
-    mesh_scale: [0.001, 0.001, 0.001]
-    pose:
-      xyz: [500, 0, 0]
-      quaternion: [1, 0, 0, 0]
-    collision_tolerance_m: 0.0
+  - name: "VentionAssembly_288080_v8_2_STEP"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/VentionAssembly_288080_v8_2_STEP.stl"
+    position_mm: [-762.779, -817.25, 175.48]
+    orientation_deg: [90, 0, 92.50]
+    quat_wxyz: [0.48897357, 0.48897357, 0.51078846, 0.51078846]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
 
-  - name: obstacle_2
-    group: environment
-    enabled: true
-    mesh_path: "Robot_APCC/Experiments/Internal_Collision/objects/Obstacle_2.stl"
-    mesh_scale: [0.001, 0.001, 0.001]
-    pose:
-      xyz: [0, 500, 0]
-      quaternion: [1, 0, 0, 0]
-    collision_tolerance_m: 0.0
+  - name: "ATI-9105-Axia80-M20"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/ATI-9105-Axia80-M20.stl"
+    position_mm: [-366.178, -913.39, 190.48]
+    orientation_deg: [180, 0, 90]
+    quat_wxyz: [0.0, 0.70710678, 0.70710678, 0.0]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
 
-  - name: obstacle_3
-    group: environment
-    enabled: true
-    mesh_path: "Robot_APCC/Experiments/Internal_Collision/objects/Obstacle_3.stl"
-    mesh_scale: [0.001, 0.001, 0.001]
-    pose:
-      xyz: [250, -400, 0]
-      quaternion: [1, 0, 0, 0]
-    collision_tolerance_m: 0.0
+  - name: "ATI-9120-011M-000-000_011M"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/ATI-9120-011M-000-000_011M.stl"
+    position_mm: [-366.178, -913.38, 145.74]
+    orientation_deg: [0, 0, -179.99]
+    quat_wxyz: [0.0000873, 0.0, 0.0, -1.0]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
+
+  - name: "ground_plate"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/ground_plate.stl"
+    position_mm: [185.163, -1228.39, -409.53]
+    orientation_deg: [90, 0, 90]
+    quat_wxyz: [0.5, 0.5, 0.5, 0.5]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
+
+  - name: "Load_Cell_Plate_Vention_vention_22-5x22_5_grid"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/Load_Cell_Plate_Vention_vention_22-5x22_5_grid.stl"
+    position_mm: [-366.178,-913.39,175.48]
+    orientation_deg: [90, 0, 90]
+    quat_wxyz: [0.5, 0.5, 0.5, 0.5]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
+
+  - name: "Load_Cell_Tool_Adapter_Plate"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/Load_Cell_Tool_Adapter_Plate.stl"
+    position_mm: [-366.178,-913.39,215.87]
+    orientation_deg: [90, 0, -90]
+    quat_wxyz: [0.5, 0.5, -0.5, -0.5]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
+
+  - name: "POT_Mounting_Bracket_Assem1"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/POT_Mounting_Bracket_Assem1.stl"
+    position_mm: [-349.233,-918.14,279.94]
+    orientation_deg: [-90, 0, 0.01]
+    quat_wxyz: [0.70710678, -0.70710678, -0.0000617, 0.0000617]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
+
+  - name: "ROBOT_PEDESTAL_no_top"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/ROBOT_PEDESTAL_no_top.stl"
+    position_mm: [0,0,-425.40]
+    orientation_deg: [90,0,90]
+    quat_wxyz: [0.5, 0.5, 0.5, 0.5]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
+
+  - name: "ROBOT_PEDESTAL_Top_plate"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/ROBOT_PEDESTAL_Top_plate.stl"
+    position_mm: [0,0,-425.40]
+    orientation_deg: [90, 0, 90]
+    quat_wxyz: [0.5, 0.5, 0.5, 0.5]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: false
+
+  - name: "siping_scanner_subassy"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/siping_scanner_subassy.stl"
+    position_mm: [267.35,1078.20,-415.88]
+    orientation_deg: [90, 0, 90.0]
+    quat_wxyz: [0.5, 0.5, 0.5, 0.5]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true
+
+  - name: "ZUND_Knife_Dummy"
+    type: "mesh"
+    mesh_path: "Robot_APCC/Experiments/Experiment_25/objects/ZUND_Knife_Dummy.stl"
+    position_mm: [-366.178, -913.76, 361.89]
+    orientation_deg: [90,0,90.01]
+    quat_wxyz: [0.49995636, 0.49995636, 0.50004363, 0.50004363]
+    scale: 1.0
+    color: [0.5, 0.5, 0.6, 0.7]
+    collision: true

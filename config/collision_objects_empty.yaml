@@ -1,6 +1,9 @@
 # Empty environment (robot self-collision pairs only).
-# Same pose rules as ``collision_objects.yaml`` when you add objects: ``xyz`` in mm,
-# ``quaternion`` [qw,qx,qy,qz] only.
+# When adding objects, use the Exp25 flat schema:
+#   position_mm: [x, y, z]          # millimetres
+#   quat_wxyz: [qw, qx, qy, qz]     # quaternion only (no orientation_deg for collision)
+#   scale: 1.0                      # 1.0 if STL vertices are metres; 0.001 if mm
+#   collision: true
 
 version: 2
 
