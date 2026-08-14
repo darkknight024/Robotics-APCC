@@ -14,9 +14,9 @@ branch is scored 0/1; missing branches are -1. The predicted label is 1
 if **any** branch collides. Filenames ``*_cfxN.csv`` are optional diagnostics
 (disable with ``--no-parse-cfx``).
 
-URDF: ``IRB_1300_1400_URDF_with_fixture.urdf``, tracked frame ``ee_link``
-(IK/FK only; ee_link has no collision mesh). Scene:
-``config/collision_objects.yaml`` (Exp25 cell meshes, ``quat_wxyz`` poses).
+URDF: ``IRB_1300_1400_URDF.urdf`` plus ``ee_link`` from ``fixture_config.yaml``
+(IK/FK from the fixture origin; collision uses the fixture ``stl`` attached
+to ``Link_6``). Scene: ``config/collision_objects.yaml``.
 
 Results default to::
 
@@ -103,9 +103,10 @@ def parse_cfx_from_filename(path: Path) -> Optional[int]:
 
 _EXP25_URDF = (
     "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/"
-    "IRB_1300_1400_URDF_with_fixture.urdf"
+    "IRB_1300_1400_URDF.urdf"
 )
 _EXP25_EE_FRAME = "ee_link"
+_EXP25_FIXTURE = "ee_link"
 
 
 def load_exp25_toolpath(
@@ -252,7 +253,7 @@ def _write_exp25_summary_txt(
         f"results_dir: {out_dir}",
         f"toolpaths_dir: {data_dir}",
         f"urdf: {urdf}",
-        f"ee_frame: {ee_frame} (IK/FK only; no ee_link collision mesh)",
+        f"ee_frame: {ee_frame} (fixture_config.yaml; STL attached to parent link)",
         f"scene_yaml: {scene_yaml}",
         "",
         "Output CSV format:",
@@ -353,6 +354,7 @@ def run_exp25_dataset(
         scene_calibrate=True,
         scene_calibrate_n_samples=10,
         scene_calibrate_seed=42,
+        fixture_name=_EXP25_FIXTURE,
     )
     if checker is None:
         return ExperimentReport(
@@ -371,7 +373,7 @@ def run_exp25_dataset(
     notes: List[str] = [
         f"data_dir={data_dir}",
         f"urdf={_EXP25_URDF}",
-        f"ee_frame={_EXP25_EE_FRAME} (IK/FK only; no ee_link collision mesh)",
+        f"ee_frame={_EXP25_EE_FRAME} (fixture_config.yaml ee_link + stl on Link_6)",
         f"scene_yaml={scene_yaml} (Exp25 cell meshes; quat_wxyz placement)",
         "CSV xyz is millimetres; /1000 converts to metres for EAIK/Pinocchio. T_B_K, no knife transform.",
         "Per waypoint: 8 CFX flags in {-1 missing, 0 clear, 1 collision}.",
@@ -776,7 +778,7 @@ def run_smoke(out_dir: Path, urdf: str) -> ExperimentReport:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     notes: List[str] = []
-    sc = SelfCollisionChecker(urdf_path=urdf)
+    sc = SelfCollisionChecker(urdf_path=urdf, fixture_name="ee_link")
     sc.calibrate(n_samples=3, seed=0)
     q0 = np.zeros(sc.n_joints)
     pred = int(sc.has_self_collision(q0))
@@ -787,6 +789,7 @@ def run_smoke(out_dir: Path, urdf: str) -> ExperimentReport:
         str(scene_yaml),
         calibrate=False,
         project_root=_REPO_ROOT,
+        fixture_name="ee_link",
     )
     notes.append(f"SceneCollisionChecker pairs={len(scene.geom_model.collisionPairs)}")
     return ExperimentReport(

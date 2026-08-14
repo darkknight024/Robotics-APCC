@@ -173,6 +173,8 @@ class FixtureConfig:
     parent_link: str
     origin_xyz: List[float]
     origin_rpy: List[float]
+    stl: Optional[str] = None
+    stl_scale: float = 1.0
 
 
 @dataclass
@@ -224,6 +226,8 @@ def load_fixture_config(config_path: str = None) -> Dict[str, FixtureConfig]:
             parent_link=data.get('parent_link', 'Link_6'),
             origin_xyz=list(data.get('origin', {}).get('xyz', [0, 0, 0])),
             origin_rpy=list(data.get('origin', {}).get('rpy', [0, 0, 0])),
+            stl=data.get('stl') or data.get('mesh_path'),
+            stl_scale=float(data.get('scale', data.get('stl_scale', 1.0))),
         )
     return result
 

@@ -122,6 +122,9 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
         inputs.collision_cspace_only
         or (coll_cfg.cspace_only and cspace_yaml)
     )
+    ik_cfg = load_ik_config_as_object(solver=inputs.config.solver)
+    ee_frame = robot_config.fixture_name if robot_config and robot_config.fixture_name else ik_cfg.ee_frame_name
+
     collision_checker = None
     if not inputs.collision_disabled:
         use_scene = coll_cfg.enabled and not cspace_only
@@ -136,10 +139,8 @@ def _build_runtime_context(inputs: FeasibilityPipelineInputs, out_path: Path) ->
                 scene_calibrate_n_samples=coll_cfg.scene_calibrate_n_samples,
                 scene_calibrate_seed=coll_cfg.scene_calibrate_seed,
                 cspace_forbidden_yaml=cspace_for_build,
+                fixture_name=ee_frame,
             )
-
-    ik_cfg = load_ik_config_as_object(solver=inputs.config.solver)
-    ee_frame = robot_config.fixture_name if robot_config and robot_config.fixture_name else ik_cfg.ee_frame_name
 
     fk_solver, ik_solver, robot_data = create_solvers(
         inputs.urdf_path, solver=inputs.config.solver, ik_config=ik_cfg,

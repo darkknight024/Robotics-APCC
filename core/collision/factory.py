@@ -43,6 +43,7 @@ def build_collision_checker_for_feasibility(
     scene_calibrate_seed: int = 42,
     cspace_forbidden_yaml: Optional[str] = None,
     verbose: bool = False,
+    fixture_name: Optional[str] = "ee_link",
 ) -> Optional[CompositeCollisionChecker]:
     """Create the collision gate used by :class:`~core.feasibility.analyzer.FeasibilityAnalyzer`.
 
@@ -50,6 +51,8 @@ def build_collision_checker_for_feasibility(
 
     * ``scene_yaml`` — full :class:`SceneCollisionChecker` (URDF self + static obstacles).
     * ``cspace_forbidden_yaml`` — optional pure joint-space zones (tests / artificial failures).
+    * ``fixture_name`` — ``fixture_config.yaml`` entry (default ``ee_link``) whose
+      ``stl`` is attached to the flange for collision.
     """
     if project_root is None:
         project_root = Path(__file__).resolve().parents[2]
@@ -69,6 +72,7 @@ def build_collision_checker_for_feasibility(
                 calibrate_n_samples=scene_calibrate_n_samples,
                 calibrate_seed=scene_calibrate_seed,
                 verbose=verbose,
+                fixture_name=fixture_name,
             )
         )
 

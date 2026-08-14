@@ -7,6 +7,10 @@
 #
 # When fixture_name is set to "Link_6" in robots_config.yaml, no additional
 # fixture transform is applied — the robot flange itself is tracked.
+#
+# Optional ``stl``: collision/visual mesh for the fixture, expressed in the
+# fixture frame (same origin as xyz/rpy below). Path is relative to repo root.
+# ``scale`` is a uniform vertex scale (1.0 if the STL is already in metres).
 
 fixtures:
   ee_link:
@@ -15,3 +19,5 @@ fixtures:
     origin:
       xyz: [0.0998237, 0.123033, 0.0828027]
       rpy: [0.001199, 0.000599, 2.782547]
+    stl: "Assets/Robot APCC/IRB_1300_1400_URDF/meshes/Link_1.STL"  # TEMP placeholder
+    scale: 1.0

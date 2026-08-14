@@ -43,6 +43,88 @@ def load_config(config_path="config/robots_config.yaml"):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
+
+def _T_to_pos_wxyz(T: np.ndarray):
+    pos = T[:3, 3]
+    quat_xyzw = Rotation.from_matrix(T[:3, :3]).as_quat()
+    wxyz = (float(quat_xyzw[3]), float(quat_xyzw[0]), float(quat_xyzw[1]), float(quat_xyzw[2]))
+    return pos, wxyz
+
+
+def _load_trimesh(path: str, scale: float = 1.0):
+    import trimesh
+
+    mesh = trimesh.load(path, force="mesh")
+    if isinstance(mesh, trimesh.Scene):
+        mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+    if abs(scale - 1.0) > 1e-12:
+        mesh.apply_scale(scale)
+    return mesh
+
+
+def add_collision_scene_meshes(server: viser.ViserServer, scene_yaml: str, repo_root: str) -> int:
+    """Add static cell STLs from collision_objects.yaml (position_mm + quat_wxyz)."""
+    if not os.path.exists(scene_yaml):
+        print(f"Scene YAML not found: {scene_yaml}")
+        return 0
+    with open(scene_yaml, "r") as f:
+        doc = yaml.safe_load(f) or {}
+    n = 0
+    for obj in doc.get("objects") or []:
+        mesh_rel = obj.get("mesh_path")
+        if not mesh_rel:
+            continue
+        mesh_path = mesh_rel if os.path.isabs(mesh_rel) else os.path.join(repo_root, mesh_rel)
+        if not os.path.exists(mesh_path):
+            print(f"  skip missing mesh: {mesh_path}")
+            continue
+        pos_mm = obj.get("position_mm") or [0, 0, 0]
+        quat = obj.get("quat_wxyz") or obj.get("quaternion") or [1, 0, 0, 0]
+        scale = float(obj.get("scale", 1.0))
+        try:
+            mesh = _load_trimesh(mesh_path, scale=scale)
+        except Exception as e:
+            print(f"  failed to load {mesh_path}: {e}")
+            continue
+        pos_m = np.array(pos_mm, dtype=float) * 0.001
+        wxyz = (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
+        name = str(obj.get("name", f"scene_{n}"))
+        server.scene.add_mesh_trimesh(f"/scene/{name}", mesh, position=pos_m, wxyz=wxyz)
+        n += 1
+    print(f"Loaded {n} scene STL(s) from {scene_yaml}")
+    return n
+
+
+def add_fixture_mesh(server: viser.ViserServer, fixture_name: str, repo_root: str):
+    """Load fixture STL from fixture_config.yaml. Returns (handle, T_link_fixture) or (None, None)."""
+    cfg_path = os.path.join(repo_root, "config", "fixture_config.yaml")
+    if not os.path.exists(cfg_path):
+        return None, None
+    with open(cfg_path, "r") as f:
+        doc = yaml.safe_load(f) or {}
+    data = (doc.get("fixtures") or {}).get(fixture_name)
+    if not data or not data.get("stl"):
+        return None, None
+    stl_rel = data["stl"]
+    stl_path = stl_rel if os.path.isabs(stl_rel) else os.path.join(repo_root, stl_rel)
+    if not os.path.exists(stl_path):
+        print(f"Fixture STL not found: {stl_path}")
+        return None, None
+    origin = data.get("origin") or {}
+    xyz = list(origin.get("xyz") or [0, 0, 0])
+    rpy = list(origin.get("rpy") or [0, 0, 0])
+    from utils.urdf_loader import build_transform_from_xyz_rpy
+    T = build_transform_from_xyz_rpy(xyz, rpy)
+    scale = float(data.get("scale", 1.0))
+    try:
+        mesh = _load_trimesh(stl_path, scale=scale)
+    except Exception as e:
+        print(f"Failed to load fixture STL {stl_path}: {e}")
+        return None, None
+    handle = server.scene.add_mesh_trimesh(f"/fixture/{fixture_name}", mesh)
+    print(f"Loaded fixture '{fixture_name}' STL: {stl_path}")
+    return handle, T
+
 def update_frames_and_labels(server: viser.ViserServer, urdf_model: yourdfpy.URDF, handles: dict, visible: bool):
     """Updates the position and visibility of debug frames and labels."""
     if not visible:
@@ -107,6 +189,7 @@ def create_robot_control_sliders(
     get_visibility: callable,
     initial_cfg: Optional[np.ndarray] = None,
     use_radians: bool = False,
+    on_cfg_update: Optional[callable] = None,
 ):
     """Creates sliders and attaches callback to update robot AND frames.
 
@@ -138,6 +221,8 @@ def create_robot_control_sliders(
 
         # Update markers
         update_frames_and_labels(server, urdf_model, handles, get_visibility())
+        if on_cfg_update is not None:
+            on_cfg_update(urdf_model)
 
     num_joints = len(joints)
 
@@ -220,6 +305,31 @@ def main():
             return
         # Remove the flag and its argument from args.
         del args[idx : idx + 2]
+
+    scene_yaml = "config/collision_objects.yaml"
+    fixture_name = "ee_link"
+    if "--no-scene" in args:
+        scene_yaml = None
+        args = [a for a in args if a != "--no-scene"]
+    if "--scene" in args:
+        idx = args.index("--scene")
+        try:
+            scene_yaml = args[idx + 1]
+        except IndexError:
+            print("Error: --scene requires a YAML path.")
+            return
+        del args[idx : idx + 2]
+    if "--fixture" in args:
+        idx = args.index("--fixture")
+        try:
+            fixture_name = args[idx + 1]
+        except IndexError:
+            print("Error: --fixture requires a name from fixture_config.yaml.")
+            return
+        del args[idx : idx + 2]
+    if "--no-fixture" in args:
+        fixture_name = None
+        args = [a for a in args if a != "--no-fixture"]
 
     # If CSV is provided, load joint configurations from it.
     if csv_path is not None:
@@ -330,10 +440,27 @@ def main():
     debug_handles = {} # link_name -> [frame_handle, label_handle]
     current_urdf_model: Optional[yourdfpy.URDF] = None
     joint_state_label = None
+    fixture_handle = None
+    T_link_fixture = None
+    fixture_parent_link = "Link_6"
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+
+    def update_fixture_pose(urdf_model: yourdfpy.URDF) -> None:
+        if fixture_handle is None or T_link_fixture is None:
+            return
+        try:
+            T_world_link = urdf_model.scene.graph.get(fixture_parent_link)[0]
+        except Exception:
+            return
+        T_world = np.asarray(T_world_link, dtype=float) @ T_link_fixture
+        pos, wxyz = _T_to_pos_wxyz(T_world)
+        fixture_handle.position = pos
+        fixture_handle.wxyz = wxyz
 
     # 3. Callbacks
     def load_robot(name):
         nonlocal current_urdf_handle, current_sliders, debug_handles, joint_cfg, current_urdf_model
+        nonlocal fixture_handle, T_link_fixture, fixture_parent_link
         
         # Clear old handles
         for s in current_sliders: s.remove()
@@ -342,6 +469,8 @@ def main():
         # Clear scene (resets frames/labels too)
         server.scene.reset()
         debug_handles = {}
+        fixture_handle = None
+        T_link_fixture = None
         
         server.scene.add_grid("floor", width=10, height=10)
         server.scene.add_frame("world_frame", show_axes=True, axes_length=0.2)
@@ -375,6 +504,20 @@ def main():
                 load_collision_meshes=False
             )
             current_urdf_model = urdf_model
+
+            if scene_yaml:
+                scene_path = scene_yaml if os.path.isabs(scene_yaml) else os.path.join(repo_root, scene_yaml)
+                add_collision_scene_meshes(server, scene_path, repo_root)
+
+            if fixture_name:
+                fixture_parent_link = "Link_6"
+                cfg_path = os.path.join(repo_root, "config", "fixture_config.yaml")
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, "r") as f:
+                        fdoc = yaml.safe_load(f) or {}
+                    fdata = (fdoc.get("fixtures") or {}).get(fixture_name) or {}
+                    fixture_parent_link = str(fdata.get("parent_link") or "Link_6")
+                fixture_handle, T_link_fixture = add_fixture_mesh(server, fixture_name, repo_root)
             
             # Initial Frames Update
             update_frames_and_labels(server, urdf_model, debug_handles, show_frames_cb.value)
@@ -389,6 +532,7 @@ def main():
                     lambda: show_frames_cb.value,
                     initial_cfg=joint_cfg,
                     use_radians=use_radians,
+                    on_cfg_update=update_fixture_pose,
                 )
                 
         except Exception as e:
@@ -454,6 +598,7 @@ def main():
             update_frames_and_labels(
                 server, current_urdf_model, debug_handles, show_frames_cb.value
             )
+            update_fixture_pose(current_urdf_model)
             unit = "rad" if use_radians else "deg"
             if joint_state_label is not None:
                 text = f"Waypoint {waypoint_index} | units: {unit}\n"

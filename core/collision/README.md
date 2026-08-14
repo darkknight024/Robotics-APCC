@@ -171,9 +171,10 @@ Use `CollisionRunOverrides(cspace_forbidden_yaml="...", cspace_only=True)` for C
 from core.collision import SceneCollisionChecker
 
 checker = SceneCollisionChecker.from_urdf_and_scene_yaml(
-    urdf_path="Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf",
+    urdf_path="Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf",
     scene_yaml_path="config/collision_objects.yaml",
     calibrate=True,
+    fixture_name="ee_link",
 )
 q = ...  # (6,) or (n_joints,) radians
 if checker.has_collision(q):
@@ -302,7 +303,7 @@ Copy `tests/collision_validation_example.yaml` to `tests/configs/collision_valid
 ```bash
 python feasibility_analysis.py \
   -t Robot_APCC/Experiments/Internal_Collision/csv/non_collision_traj_1.csv \
-  -u "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF_with_fixture.urdf" \
+  -u "Assets/Robot APCC/IRB_1300_1400_URDF/urdf/IRB_1300_1400_URDF.urdf" \
   -c config/batch_feasibility_config.yaml \
   --base_frame
 ```

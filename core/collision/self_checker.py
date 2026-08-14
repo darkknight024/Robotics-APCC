@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""URDF-only self-collision checker (robot + fixture meshes from URDF)."""
+"""URDF-only self-collision checker (robot + optional fixture STL from fixture_config)."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ class SelfCollisionChecker:
         from utils.config_loader import get_robot_by_name
 
         robot_cfg = get_robot_by_name(robot_name, robots_config_path)
+        kwargs.setdefault("fixture_name", robot_cfg.fixture_name)
         return cls(urdf_path=robot_cfg.urdf_path, **kwargs)
 
     def __init__(
@@ -36,10 +37,14 @@ class SelfCollisionChecker:
         urdf_path: str,
         min_joint_gap: int = 1,
         verbose: bool = False,
+        fixture_name: Optional[str] = "ee_link",
     ):
         self._verbose = verbose
         self.model, self.geom_model, self._urdf_abs, self._urdf_dir, self._mesh_root, self._n_robot = (
-            build_robot_collision_geometry(urdf_path)
+            build_robot_collision_geometry(
+                urdf_path,
+                fixture_name=fixture_name,
+            )
         )
         self._robot_indices = list(range(self._n_robot))
 

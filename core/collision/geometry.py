@@ -104,10 +104,103 @@ def load_mesh_collision_geometry(mesh_abs_path: str):
     return geom
 
 
+def append_attached_collision_geometry(
+    model: pin.Model,
+    geom_model: pin.GeometryModel,
+    name: str,
+    mesh_abs_path: str,
+    parent_link: str,
+    placement_in_link: pin.SE3,
+    mesh_scale: Optional[np.ndarray] = None,
+) -> int:
+    """Append a mesh attached to ``parent_link`` (moves with that joint).
+
+    ``placement_in_link`` is the fixture origin in the parent link frame
+    (metres, URDF rpy convention).
+    """
+    if not model.existFrame(parent_link):
+        raise KeyError(
+            f"Parent link {parent_link!r} not in URDF; cannot attach fixture mesh {name!r}"
+        )
+    frame_id = model.getFrameId(parent_link)
+    frame = model.frames[frame_id]
+    joint_id = int(frame.parentJoint)
+    placement_in_joint = frame.placement * placement_in_link
+    mesh = load_mesh_collision_geometry(mesh_abs_path)
+    if mesh_scale is not None:
+        ms = np.asarray(mesh_scale, dtype=float).reshape(3)
+        go = pin.GeometryObject(
+            name,
+            joint_id,
+            frame_id,
+            placement_in_joint,
+            mesh,
+            mesh_abs_path,
+            ms,
+        )
+    else:
+        go = pin.GeometryObject(
+            name,
+            joint_id,
+            frame_id,
+            placement_in_joint,
+            mesh,
+            mesh_abs_path,
+        )
+    return geom_model.addGeometryObject(go)
+
+
+def attach_fixture_collision_geometry(
+    model: pin.Model,
+    geom_model: pin.GeometryModel,
+    *,
+    fixture_name: Optional[str] = "ee_link",
+    project_root: Optional[Path] = None,
+) -> int:
+    """Attach ``fixture_config.yaml`` STL as robot collision geometry.
+
+    Returns the number of geometries added (0 or 1). No-op when the fixture
+    has no ``stl``, is a bare link name, or is missing from the config.
+    """
+    if not fixture_name:
+        return 0
+    from utils.config_loader import get_fixture_by_name
+    from utils.urdf_loader import build_transform_from_xyz_rpy
+    from .mesh_processing import resolve_mesh_path
+
+    fixture = get_fixture_by_name(fixture_name)
+    if fixture is None or not fixture.stl:
+        return 0
+    if project_root is None:
+        project_root = Path(__file__).resolve().parents[2]
+    mesh_abs = resolve_mesh_path(fixture.stl, project_root=project_root)
+    T = build_transform_from_xyz_rpy(fixture.origin_xyz, fixture.origin_rpy)
+    placement = pin.SE3(T[:3, :3].copy(), T[:3, 3].copy())
+    scale = float(fixture.stl_scale)
+    ms = np.array([scale, scale, scale], dtype=float) if abs(scale - 1.0) > 1e-12 else None
+    geom_name = f"{fixture.name}_fixture"
+    append_attached_collision_geometry(
+        model,
+        geom_model,
+        geom_name,
+        mesh_abs,
+        fixture.parent_link,
+        placement,
+        mesh_scale=ms,
+    )
+    return 1
+
+
 def build_robot_collision_geometry(
     urdf_path: str,
+    *,
+    fixture_name: Optional[str] = "ee_link",
+    project_root: Optional[Path] = None,
 ) -> Tuple[pin.Model, pin.GeometryModel, str, str, str, int]:
     """Load Pinocchio model + collision ``GeometryModel`` from URDF.
+
+    If ``fixture_name`` is in ``fixture_config.yaml`` and has an ``stl``, that
+    mesh is attached to the fixture parent link (default ``Link_6`` / ``ee_link``).
 
     Returns:
         (model, geom_model, urdf_abs, urdf_dir, mesh_root, n_robot_geom)
@@ -121,6 +214,12 @@ def build_robot_collision_geometry(
         urdf_abs,
         pin.GeometryType.COLLISION,
         package_dirs=[urdf_dir, mesh_root],
+    )
+    attach_fixture_collision_geometry(
+        model,
+        geom_model,
+        fixture_name=fixture_name,
+        project_root=project_root,
     )
     n_robot = len(geom_model.geometryObjects)
     if n_robot == 0:

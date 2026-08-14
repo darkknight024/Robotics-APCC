@@ -130,12 +130,17 @@ class SceneCollisionChecker:
         calibrate_n_samples: int = 10,
         calibrate_seed: int = 42,
         verbose: bool = False,
+        fixture_name: Optional[str] = "ee_link",
     ) -> "SceneCollisionChecker":
         if project_root is None:
             project_root = Path(__file__).resolve().parents[2]
 
         model, geom_model, _urdf_abs, _urdf_dir, _mesh_root, n_robot = (
-            build_robot_collision_geometry(urdf_path)
+            build_robot_collision_geometry(
+                urdf_path,
+                fixture_name=fixture_name,
+                project_root=project_root,
+            )
         )
         robot_indices = list(range(n_robot))
 
