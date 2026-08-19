@@ -1,6 +1,9 @@
 # ignore debug folder
 Assets/Robot APCC/Toolpaths/debug/*
 
+# Local mesh assets (not tracked)
+Assets/Robot APCC/meshes/
+
 Assets/Robot APCC/Toolpaths/Successful/*
 results
 output/*

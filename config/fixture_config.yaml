@@ -9,18 +9,49 @@
 # fixture transform is applied — the robot flange itself is tracked.
 #
 # Optional ``stl``: collision/visual mesh for the fixture, expressed in the
-# fixture frame (same origin as xyz/rpy below). Path is relative to repo root.
-# Current ``ee_link.stl`` is empty: IK/FK use this TCP, collision attaches
-# no fixture mesh. See ``config/collision_config.yaml`` for the URDF +
-# fixture_name used by Experiment 25 / collision checks.
-# ``scale`` is a uniform vertex scale (1.0 if the STL is already in metres).
+# fixture frame (same origin as xyz/rpy below). Absolute paths are allowed.
+# ``visualize_robot.py`` loads every entry with a non-empty ``stl`` onto
+# ``parent_link`` (default Link_6). ``scale`` is a uniform vertex scale
+# (1.0 if the STL is already in metres; use 0.001 for millimetre meshes).
 
 fixtures:
-  ee_link:
-    description: "Default APCC fixture (calibrated tool center point)"
+  assembly_atif:
+    description: "Assembly ATIF component (refaticenter)"
     parent_link: "Link_6"
     origin:
-      xyz: [0.0998237, 0.123033, 0.0828027]
-      rpy: [0.001199, 0.000599, 2.782547]
-    stl: ""
-    scale: 1.0
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    stl: "/home/koushik/Nike/Robotics-APCC/Assets/Robot APCC/meshes/assembly_refaticenter_000_atif.stl"
+    # scale: 0.001
+    scale: 0.001
+
+  assembly_atim:
+    description: "Assembly ATIM component (refaticenter)"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    stl: "/home/koushik/Nike/Robotics-APCC/Assets/Robot APCC/meshes/assembly_refaticenter_000_atim.stl"
+    # scale: 0.001
+    scale: 0.001
+
+  assembly_fixture:
+    description: "Assembly fixture component (refaticenter fkspm9)"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    stl: "/home/koushik/Nike/Robotics-APCC/Assets/Robot APCC/meshes/assembly_refaticenter_000_fkspm9_fixture.stl"
+    # scale: 0.001
+    scale: 0.001
+
+  assembly_msos:
+    description: "Assembly MSOS component (refaticenter fkspm9)"
+    parent_link: "Link_6"
+    origin:
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    stl: "/home/koushik/Nike/Robotics-APCC/Assets/Robot APCC/meshes/assembly_refaticenter_000_fkspm9_msos.stl"
+    # scale: 0.001
+    scale: 0.001
+    

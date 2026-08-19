@@ -5,7 +5,7 @@ import subprocess
 import time
 import csv
 from collections import defaultdict
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 
 import numpy as np
 
@@ -95,21 +95,39 @@ def add_collision_scene_meshes(server: viser.ViserServer, scene_yaml: str, repo_
     return n
 
 
-def add_fixture_mesh(server: viser.ViserServer, fixture_name: str, repo_root: str):
-    """Load fixture STL from fixture_config.yaml. Returns (handle, T_link_fixture) or (None, None)."""
-    cfg_path = os.path.join(repo_root, "config", "fixture_config.yaml")
+def _fixture_config_path(repo_root: str) -> str:
+    return os.path.join(repo_root, "config", "fixture_config.yaml")
+
+
+def list_fixture_names(repo_root: str) -> List[str]:
+    """Return fixture names from fixture_config.yaml that have a non-empty stl."""
+    cfg_path = _fixture_config_path(repo_root)
     if not os.path.exists(cfg_path):
-        return None, None
+        return []
+    with open(cfg_path, "r") as f:
+        doc = yaml.safe_load(f) or {}
+    names: List[str] = []
+    for name, data in (doc.get("fixtures") or {}).items():
+        if data and str(data.get("stl") or "").strip():
+            names.append(str(name))
+    return names
+
+
+def add_fixture_mesh(server: viser.ViserServer, fixture_name: str, repo_root: str):
+    """Load one fixture STL. Returns (handle, T_link_fixture, parent_link) or (None, None, None)."""
+    cfg_path = _fixture_config_path(repo_root)
+    if not os.path.exists(cfg_path):
+        return None, None, None
     with open(cfg_path, "r") as f:
         doc = yaml.safe_load(f) or {}
     data = (doc.get("fixtures") or {}).get(fixture_name)
     stl_rel = str((data or {}).get("stl") or "").strip()
     if not data or not stl_rel:
-        return None, None
+        return None, None, None
     stl_path = stl_rel if os.path.isabs(stl_rel) else os.path.join(repo_root, stl_rel)
     if not os.path.exists(stl_path):
         print(f"Fixture STL not found: {stl_path}")
-        return None, None
+        return None, None, None
     origin = data.get("origin") or {}
     xyz = list(origin.get("xyz") or [0, 0, 0])
     rpy = list(origin.get("rpy") or [0, 0, 0])
@@ -120,10 +138,25 @@ def add_fixture_mesh(server: viser.ViserServer, fixture_name: str, repo_root: st
         mesh = _load_trimesh(stl_path, scale=scale)
     except Exception as e:
         print(f"Failed to load fixture STL {stl_path}: {e}")
-        return None, None
+        return None, None, None
+    parent_link = str(data.get("parent_link") or "Link_6")
     handle = server.scene.add_mesh_trimesh(f"/fixture/{fixture_name}", mesh)
-    print(f"Loaded fixture '{fixture_name}' STL: {stl_path}")
-    return handle, T
+    print(f"Loaded fixture '{fixture_name}' on {parent_link}: {stl_path}")
+    return handle, T, parent_link
+
+
+def add_fixture_meshes(
+    server: viser.ViserServer,
+    fixture_names: List[str],
+    repo_root: str,
+) -> List[Tuple[Any, np.ndarray, str]]:
+    """Load every named fixture that has an STL. Returns list of (handle, T, parent_link)."""
+    loaded: List[Tuple[Any, np.ndarray, str]] = []
+    for name in fixture_names:
+        handle, T, parent = add_fixture_mesh(server, name, repo_root)
+        if handle is not None and T is not None and parent is not None:
+            loaded.append((handle, T, parent))
+    return loaded
 
 def update_frames_and_labels(server: viser.ViserServer, urdf_model: yourdfpy.URDF, handles: dict, visible: bool):
     """Updates the position and visibility of debug frames and labels."""
@@ -307,7 +340,9 @@ def main():
         del args[idx : idx + 2]
 
     scene_yaml = "config/collision_objects.yaml"
-    fixture_name = "ee_link"
+    # Default: every fixture entry in fixture_config.yaml that has an STL.
+    # Override with --fixture name[,name2,...] or disable with --no-fixture.
+    fixture_names: Optional[List[str]] = None  # None → load all from YAML
     if "--no-scene" in args:
         scene_yaml = None
         args = [a for a in args if a != "--no-scene"]
@@ -322,13 +357,20 @@ def main():
     if "--fixture" in args:
         idx = args.index("--fixture")
         try:
-            fixture_name = args[idx + 1]
+            raw = args[idx + 1]
         except IndexError:
-            print("Error: --fixture requires a name from fixture_config.yaml.")
+            print(
+                "Error: --fixture requires one or more names from "
+                "fixture_config.yaml (comma-separated)."
+            )
+            return
+        fixture_names = [n.strip() for n in raw.split(",") if n.strip()]
+        if not fixture_names:
+            print("Error: --fixture got an empty name list.")
             return
         del args[idx : idx + 2]
     if "--no-fixture" in args:
-        fixture_name = None
+        fixture_names = []
         args = [a for a in args if a != "--no-fixture"]
 
     # If CSV is provided, load joint configurations from it.
@@ -440,27 +482,33 @@ def main():
     debug_handles = {} # link_name -> [frame_handle, label_handle]
     current_urdf_model: Optional[yourdfpy.URDF] = None
     joint_state_label = None
-    fixture_handle = None
-    T_link_fixture = None
-    fixture_parent_link = "Link_6"
+    # Each entry: (mesh_handle, T_parent_fixture, parent_link)
+    fixture_parts: List[Tuple[Any, np.ndarray, str]] = []
     repo_root = os.path.dirname(os.path.abspath(__file__))
+    if fixture_names is None:
+        fixture_names = list_fixture_names(repo_root)
+    print(
+        f"Fixture meshes to load ({len(fixture_names)}): "
+        f"{', '.join(fixture_names) if fixture_names else '(none)'}"
+    )
 
     def update_fixture_pose(urdf_model: yourdfpy.URDF) -> None:
-        if fixture_handle is None or T_link_fixture is None:
+        if not fixture_parts:
             return
-        try:
-            T_world_link = urdf_model.scene.graph.get(fixture_parent_link)[0]
-        except Exception:
-            return
-        T_world = np.asarray(T_world_link, dtype=float) @ T_link_fixture
-        pos, wxyz = _T_to_pos_wxyz(T_world)
-        fixture_handle.position = pos
-        fixture_handle.wxyz = wxyz
+        for handle, T_link_fixture, parent_link in fixture_parts:
+            try:
+                T_world_link = urdf_model.scene.graph.get(parent_link)[0]
+            except Exception:
+                continue
+            T_world = np.asarray(T_world_link, dtype=float) @ T_link_fixture
+            pos, wxyz = _T_to_pos_wxyz(T_world)
+            handle.position = pos
+            handle.wxyz = wxyz
 
     # 3. Callbacks
     def load_robot(name):
         nonlocal current_urdf_handle, current_sliders, debug_handles, joint_cfg, current_urdf_model
-        nonlocal fixture_handle, T_link_fixture, fixture_parent_link
+        nonlocal fixture_parts
         
         # Clear old handles
         for s in current_sliders: s.remove()
@@ -469,8 +517,7 @@ def main():
         # Clear scene (resets frames/labels too)
         server.scene.reset()
         debug_handles = {}
-        fixture_handle = None
-        T_link_fixture = None
+        fixture_parts = []
         
         server.scene.add_grid("floor", width=10, height=10)
         server.scene.add_frame("world_frame", show_axes=True, axes_length=0.2)
@@ -509,15 +556,9 @@ def main():
                 scene_path = scene_yaml if os.path.isabs(scene_yaml) else os.path.join(repo_root, scene_yaml)
                 add_collision_scene_meshes(server, scene_path, repo_root)
 
-            if fixture_name:
-                fixture_parent_link = "Link_6"
-                cfg_path = os.path.join(repo_root, "config", "fixture_config.yaml")
-                if os.path.exists(cfg_path):
-                    with open(cfg_path, "r") as f:
-                        fdoc = yaml.safe_load(f) or {}
-                    fdata = (fdoc.get("fixtures") or {}).get(fixture_name) or {}
-                    fixture_parent_link = str(fdata.get("parent_link") or "Link_6")
-                fixture_handle, T_link_fixture = add_fixture_mesh(server, fixture_name, repo_root)
+            if fixture_names:
+                fixture_parts = add_fixture_meshes(server, fixture_names, repo_root)
+                update_fixture_pose(urdf_model)
             
             # Initial Frames Update
             update_frames_and_labels(server, urdf_model, debug_handles, show_frames_cb.value)
